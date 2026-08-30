@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import PLANNER_PROMPT
@@ -11,6 +12,13 @@ if TYPE_CHECKING:
     from furrow.config import Settings
 
 
+def _extract_json(text: str) -> str:
+    match = re.search(r"```(?:json)?\s*(.*?)```", text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
+
+
 class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
@@ -19,7 +27,7 @@ class PlannerAgent:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
-            data = json.loads(response)
+            data = json.loads(_extract_json(response))
             return Plan(**data)
         except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
+            raise ValueError(f"Failed to parse plan from LLM: {e}\nRaw response: {response}")
