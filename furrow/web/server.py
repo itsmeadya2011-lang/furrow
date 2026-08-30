@@ -39,7 +39,14 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => {
+        if (ev.data === '__DONE__') {
+          out.textContent += '\\nSession complete.\\n';
+          ws.close();
+        } else {
+          out.textContent += ev.data + '\\n';
+        }
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,8 +62,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        
+        async def on_event(message: str) -> None:
+            await websocket.send_text(message)
+        
+        orchestrator = Orchestrator(goal=goal, on_event=on_event)
         await orchestrator.run()
+        
+        await websocket.send_text("__DONE__")
     except WebSocketDisconnect:
         pass
 
