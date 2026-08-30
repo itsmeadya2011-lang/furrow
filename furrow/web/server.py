@@ -38,7 +38,8 @@ async def index() -> HTMLResponse:
     form.onsubmit = async (e) => {
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
-      const ws = new WebSocket('ws://' + location.host + '/ws');
+    const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(wsProtocol + '//' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
