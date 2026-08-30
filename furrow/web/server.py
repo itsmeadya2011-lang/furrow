@@ -39,7 +39,7 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => { out.textContent += ev.data + '\\n'; out.scrollTop = out.scrollHeight; };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -56,7 +56,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        await orchestrator.run(websocket=websocket)
     except WebSocketDisconnect:
         pass
 
