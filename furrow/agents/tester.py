@@ -42,6 +42,7 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        last_output = ""
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -49,10 +50,13 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode == 0:
+                        return output
+                    last_output = output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+        return last_output or "No test runner found."

@@ -24,7 +24,11 @@ class LLMClient:
         if self._anthropic is None:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY is not set")
+                raise ValueError(
+                    f"ANTHROPIC_API_KEY is not set. "
+                    f"Configured provider: {self.settings.provider.value}. "
+                    f"Set the ANTHROPIC_API_KEY environment variable or configure anthropic_api_key in settings."
+                )
             self._anthropic = AsyncAnthropic(api_key=api_key)
         return self._anthropic
 
@@ -33,7 +37,11 @@ class LLMClient:
         if self._openai is None:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
+                raise ValueError(
+                    f"OPENAI_API_KEY is not set. "
+                    f"Configured provider: {self.settings.provider.value}. "
+                    f"Set the OPENAI_API_KEY environment variable or configure openai_api_key in settings."
+                )
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 

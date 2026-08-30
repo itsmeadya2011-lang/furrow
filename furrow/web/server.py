@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -55,7 +55,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def send_event(event: str, data: Any = None) -> None:
+            try:
+                await websocket.send_json({"event": event, "data": data})
+            except Exception:
+                pass
+
+        orchestrator = Orchestrator(goal=goal, on_event=send_event)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
