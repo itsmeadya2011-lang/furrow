@@ -37,31 +37,35 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(self, prompt: str, system: str = "", model: str | None = None, timeout: int = 120) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_anthropic(prompt, system, model, timeout)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_openai(prompt, system, model, timeout)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_anthropic(self, prompt: str, system: str, model: str, timeout: int) -> str:
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=4096,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
+            timeout=timeout,
         )
-        return response.content[0].text
+        if not response.content:
+            return ""
+        return response.content[0].text or ""
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_openai(self, prompt: str, system: str, model: str, timeout: int) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
+            timeout=timeout,
         )
         return response.choices[0].message.content or ""
 
