@@ -9,6 +9,12 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
 
@@ -43,9 +49,17 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        retry=retry_if_exception_type((anthropic.APITimeoutError, openai.APITimeoutError)),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,8 +69,30 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(
+        retry=retry_if_exception_type(openai.APITimeoutError),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        if self._openai is None:
+            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY") or "ollama"
+            self._openai = AsyncOpenAI(
+                api_key=api_key,
+                base_url=self.settings.ollama_base_url,
+            )
+        response = await self._openai.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},

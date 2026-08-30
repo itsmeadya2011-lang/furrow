@@ -21,10 +21,13 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
+            lint_output = await self._run_lint()
+            type_output = await self._run_type_check()
+            combined = "\n".join(part for part in [test_output, lint_output, type_output] if part)
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{combined}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -49,10 +52,59 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    out = stdout.decode() + stderr.decode()
+                    if out.strip():
+                        return out
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+    async def _run_lint(self) -> str:
+        candidates = [
+            ["ruff", "check", "."],
+            ["flake8"],
+            ["pylint", "."],
+            ["eslint", "."],
+        ]
+        for cmd in candidates:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    out = stdout.decode() + stderr.decode()
+                    if out.strip():
+                        return out
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    continue
+            except (FileNotFoundError, Exception):
+                continue
+        return ""
+
+    async def _run_type_check(self) -> str:
+        candidates = [
+            ["mypy", "."],
+            ["pyright", "."],
+            ["tsc", "--noEmit"],
+        ]
+        for cmd in candidates:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    out = stdout.decode() + stderr.decode()
+                    if out.strip():
+                        return out
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    continue
+            except (FileNotFoundError, Exception):
+                continue
+        return ""
