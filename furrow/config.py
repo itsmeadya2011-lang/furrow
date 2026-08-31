@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -11,7 +11,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Provider(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
-    OLLAMA = "ollama"
+
+
+TaskStatus = Literal["pending", "running", "completed", "failed"]
 
 
 class TaskModel(BaseModel):
@@ -19,7 +21,7 @@ class TaskModel(BaseModel):
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
+    status: TaskStatus = "pending"
     result: Optional[str] = None
 
 
@@ -44,11 +46,22 @@ class Settings(BaseSettings):
     tester_model: str = "claude-3-5-sonnet-20241022"
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
-    ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    llm_timeout: int = 120
+    llm_max_retries: int = 3
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
 
-settings = Settings()
+_settings: Settings | None = None
+
+
+def get_settings() -> Settings:
+    global _settings
+    if _settings is None:
+        _settings = Settings()
+    return _settings
+
+
+settings = get_settings()
