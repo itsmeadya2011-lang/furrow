@@ -26,12 +26,16 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._plan = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            if self.client.settings.max_cycles > 0 and self.cycles >= self.client.settings.max_cycles:
+                console.print(f"[bold yellow]Reached max cycles ({self.client.settings.max_cycles}). Halting.[/bold yellow]")
+                break
             await self._cycle()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
@@ -39,7 +43,13 @@ class Orchestrator:
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
+            try:
+                plan = await self.planner.plan(self.goal)
+            except Exception as e:
+                console.print(f"[red]Planner failed: {e}[/red]")
+                console.print("[yellow]Skipping cycle due to planner error.[/yellow]")
+                return
+        self._plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -74,6 +84,7 @@ class Orchestrator:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            self._plan = None
 
     def _is_done(self) -> bool:
         completed = sum(1 for t in self._get_tasks() if t.status == "completed")
@@ -85,4 +96,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._plan.tasks if self._plan else []

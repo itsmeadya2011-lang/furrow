@@ -10,13 +10,32 @@ from furrow.llm import LLMClient
 if TYPE_CHECKING:
     from furrow.config import Settings
 
+EXCLUDED_DIRS = {
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".next",
+    ".kilo",
+}
+
 
 class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
     async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+        all_files = self.client.list_files(self.client.settings.workspace)
+        filtered = [
+            f
+            for f in all_files
+            if not any(f == part or f.startswith(f"{part}/") for part in EXCLUDED_DIRS)
+        ]
+        file_list = "\n".join(filtered[:50])
+        prompt = f"{PLANNER_PROMPT}\n\nProject files:\n{file_list}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
