@@ -3,10 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import Plan, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
@@ -14,17 +14,33 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        goal: str = "",
+        plan: Plan | None = None,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        self.goal = goal
+        self.plan = plan
         self.client = client or LLMClient(settings=settings)
 
-    async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+    async def run(self) -> TestResult:
         test_output = ""
         try:
             test_output = await self._run_tests()
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        tasks_str = ""
+        if self.plan:
+            tasks_str = "\n".join(
+                f"- {t.id}: {t.description} ({t.status})" for t in self.plan.tasks
+            )
+        prompt = TESTER_PROMPT.format(
+            goal=self.goal,
+            tasks=tasks_str or "No tasks",
+        ) + f"\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -49,7 +65,9 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode is not None:
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue

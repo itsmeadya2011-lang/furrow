@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 from typing import Optional
 
 import uvicorn
@@ -12,6 +14,7 @@ from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+logger = logging.getLogger(__name__)
 
 
 class StartRequest(BaseModel):
@@ -52,14 +55,42 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    queue: asyncio.Queue[str] = asyncio.Queue()
+
+    async def on_log(message: str) -> None:
+        await queue.put(message)
+
+    forward_task: asyncio.Task[None] | None = None
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        forward_task = asyncio.create_task(_forward_logs(websocket, queue))
+        orchestrator = Orchestrator(goal=goal, on_log=on_log)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    finally:
+        if forward_task:
+            forward_task.cancel()
+            try:
+                await forward_task
+            except asyncio.CancelledError:
+                pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+
+
+async def _forward_logs(websocket: WebSocket, queue: asyncio.Queue[str]) -> None:
+    while True:
+        message = await queue.get()
+        try:
+            await websocket.send_text(message)
+        except Exception:
+            break
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    logging.basicConfig(level=logging.INFO)
     uvicorn.run(app, host=host, port=port)
