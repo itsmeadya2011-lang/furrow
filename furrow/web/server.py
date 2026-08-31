@@ -55,10 +55,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        if not goal or not goal.strip():
+            try:
+                await websocket.send_text("No goal provided.")
+            except Exception:
+                pass
+            return
+
+        async def ws_log(msg: str) -> None:
+            try:
+                await websocket.send_text(msg)
+            except Exception:
+                pass
+
+        orchestrator = Orchestrator(goal=goal, log=ws_log)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"Error: {e}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

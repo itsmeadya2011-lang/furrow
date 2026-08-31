@@ -27,8 +27,22 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+To create or modify a file, emit one or more file blocks using this EXACT format.
+Each block starts with a line "FILE: <path>" followed by a fenced code block
+containing the COMPLETE new contents of that file:
+
+FILE: src/example.py
+```python
+def hello():
+    return "world"
+```
+
+You may emit multiple FILE: blocks. After all file blocks, write a short
+summary of what you changed and any issues.
+
+If no files need to change, just write the summary.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
