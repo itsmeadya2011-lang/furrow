@@ -56,7 +56,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
+
+        async def _send(msg: str) -> None:
+            try:
+                await websocket.send_text(msg)
+            except Exception:
+                pass
+
+        await _send(f"Starting Furrow with goal: {goal}")
         await orchestrator.run()
+        await _send("Furrow completed.")
     except WebSocketDisconnect:
         pass
 

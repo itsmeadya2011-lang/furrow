@@ -37,3 +37,8 @@ Repeat this cycle continuously until explicitly stopped:
 - Maintain a short internal todo list of remaining tasks.
 - Update it after each cycle so the next iteration knows where to pick up.
 - If context becomes too large, compact yourself and continue.
+
+## Supported Providers
+- Anthropic (default)
+- OpenAI
+- Ollama (local models via OpenAI-compatible API)

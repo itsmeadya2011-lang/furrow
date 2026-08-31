@@ -19,12 +19,16 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
+@click.option("--cycles", default=None, type=int, help="Max cycles (0 = infinite)")
+def start(goal: str | None, model: str | None, cycles: int | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
         from furrow.config import settings
         settings.model = model
+    if cycles is not None:
+        from furrow.config import settings
+        settings.max_cycles = cycles
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:

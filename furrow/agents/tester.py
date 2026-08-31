@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -26,6 +25,9 @@ class TesterAgent:
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        return self._parse_result(response)
+
+    def _parse_result(self, response: str) -> TestResult:
         try:
             data = json.loads(response)
             return TestResult(**data)

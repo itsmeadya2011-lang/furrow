@@ -18,6 +18,9 @@ class PlannerAgent:
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
+        return self._parse_plan(response)
+
+    def _parse_plan(self, response: str) -> Plan:
         try:
             data = json.loads(response)
             return Plan(**data)
