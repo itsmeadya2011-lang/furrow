@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -52,3 +54,37 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+logger = structlog.get_logger()
+
+
+def configure_logging(log_level: str = "INFO") -> None:
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+    ]
+
+    if log_level == "DEBUG":
+        renderer = structlog.dev.ConsoleRenderer()
+    else:
+        renderer = structlog.processors.JSONRenderer()
+
+    structlog.configure(
+        processors=shared_processors + [
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.StackInfoRenderer(),
+            structlog.dev.set_exc_info,
+            renderer,
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    logging.basicConfig(level=log_level)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("anthropic").setLevel(logging.WARNING)
+    logging.getLogger("openai").setLevel(logging.WARNING)

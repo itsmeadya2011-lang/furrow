@@ -18,7 +18,7 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""  # noqa: E501
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
@@ -26,8 +26,17 @@ Your job is to implement the assigned task completely and concisely.
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
-- Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Read existing files carefully and make minimal, targeted changes.
+- Return ONLY valid JSON (no markdown, no explanation, no extra text).
+- The JSON must have exactly this shape:
+  {
+    "summary": "Brief summary of what you changed",
+    "changes": [
+      {"file": "path/to/file.py", "content": "full file content here"}
+    ]
+  }
+- Each change entry must contain the FULL file content (not a diff) for the file to be written.
+- For files that do not yet exist, return the new file content as-is.
 - Do not spawn subagents.
 """
 
