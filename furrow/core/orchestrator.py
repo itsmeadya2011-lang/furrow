@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import structlog
 from rich.console import Console
 from rich.panel import Panel
 from rich.pretty import Pretty
@@ -18,6 +19,7 @@ from furrow.config import Plan, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
+logger = structlog.get_logger(__name__)
 
 
 class Orchestrator:
@@ -26,20 +28,26 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.plan: Plan | None = None
 
     async def run(self) -> None:
+        logger.info("orchestrator_started", goal=self.goal)
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            logger.info("cycle_started", cycle=self.cycles)
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
+                logger.info("goal_complete")
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self.plan = plan
+        logger.info("plan_generated", tasks=len(plan.tasks), rationale=plan.rationale)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -57,15 +65,18 @@ class Orchestrator:
             if isinstance(result, Exception):
                 task.status = "failed"
                 task.result = str(result)
+                logger.info("task_completed", task_id=task.id, status="failed")
                 console.print(f"[red]Task {task.id} failed: {result}[/red]")
             else:
                 task.status = "completed"
                 task.result = result
+                logger.info("task_completed", task_id=task.id, status="completed")
                 console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
+        logger.info("test_result", passed=test_result.passed, summary=test_result.summary)
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
         else:
@@ -74,6 +85,7 @@ class Orchestrator:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            logger.info("goal_changed", goal=self.goal)
 
     def _is_done(self) -> bool:
         completed = sum(1 for t in self._get_tasks() if t.status == "completed")
@@ -85,4 +97,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.plan.tasks if self.plan else []

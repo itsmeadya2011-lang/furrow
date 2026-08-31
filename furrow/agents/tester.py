@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = structlog.get_logger(__name__)
 
 
 class TesterAgent:
@@ -21,6 +24,8 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
+        except asyncio.CancelledError:
+            return TestResult(passed=False, summary="Test run was cancelled", failures=["Test run was cancelled"])
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
@@ -34,8 +39,9 @@ class TesterAgent:
 
     async def _run_tests(self) -> str:
         candidates = [
-            ["pytest", "-q"],
+            ["python", "-m", "pytest"],
             ["python", "-m", "pytest", "-q"],
+            ["pytest", "-q"],
             ["npm", "test", "--", "--silent"],
             ["pnpm", "test", "--", "--silent"],
             ["yarn", "test", "--silent"],
@@ -52,7 +58,25 @@ class TesterAgent:
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    try:
+                        stdout, stderr = await asyncio.wait_for(proc.wait(), timeout=10)
+                    except asyncio.TimeoutError:
+                        logger.warning("timed_out_waiting_for_process_exit", cmd=cmd)
+                    try:
+                        remaining_stdout, remaining_stderr = await asyncio.wait_for(proc.communicate(), timeout=10)
+                        return remaining_stdout.decode() + remaining_stderr.decode()
+                    except asyncio.TimeoutError:
+                        logger.warning("timed_out_draining_remaining_output", cmd=cmd)
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                continue
+            except asyncio.CancelledError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                raise
+            except Exception:
+                logger.exception("unexpected_error_running_test_command", cmd=cmd)
                 continue
         return "No test runner found."
