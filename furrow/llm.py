@@ -6,9 +6,11 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
@@ -18,6 +20,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -25,7 +28,10 @@ class LLMClient:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(api_key=api_key)
+            self._anthropic = AsyncAnthropic(
+                api_key=api_key,
+                timeout=httpx.Timeout(120.0),
+            )
         return self._anthropic
 
     @property
@@ -34,18 +40,35 @@ class LLMClient:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            self._openai = AsyncOpenAI(
+                api_key=api_key,
+                timeout=httpx.Timeout(120.0),
+            )
         return self._openai
+
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        if self._ollama is None:
+            self._ollama = AsyncOpenAI(
+                base_url=self.settings.ollama_base_url,
+                api_key="ollama",
+                timeout=httpx.Timeout(120.0),
+            )
+        return self._ollama
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
+        provider = self.settings.provider
+        if provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
+        elif provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif provider == Provider.OLLAMA:
+            return await self._complete_openai(prompt, system, model, client=self.ollama)
         else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            raise ValueError(f"Unsupported provider: {provider}")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,8 +78,16 @@ class LLMClient:
         )
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential())
+    async def _complete_openai(
+        self,
+        prompt: str,
+        system: str,
+        model: str,
+        client: AsyncOpenAI | None = None,
+    ) -> str:
+        client = client or self.openai
+        response = await client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
