@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import logging
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from structlog.dev import ConsoleRenderer
+from structlog.processors import JSONRenderer, StackInfoRenderer, UnicodeDecoder, format_exc_info
 
 
 class Provider(str, Enum):
@@ -52,3 +57,26 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def configure_logging(level: str = "INFO") -> None:
+    is_prod = os.getenv("FURROW_ENV", "").lower() == "production"
+    renderer = JSONRenderer() if is_prod else ConsoleRenderer()
+
+    structlog.configure(
+        processors=[
+            StackInfoRenderer(),
+            format_exc_info,
+            UnicodeDecoder(),
+            renderer,
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.getLevelName(level)),
+        context_class=dict,
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+
+    logging.basicConfig(
+        format="%(message)s",
+        level=level,
+    )
