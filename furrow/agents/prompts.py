@@ -29,6 +29,20 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+When you have finished, respond with a short human-readable SUMMARY of what you changed.
+
+If you need to write or overwrite files, include them AFTER the summary inside a fenced
+"edits" block, each entry a JSON object with "path" and "content":
+
+```edits
+[
+  {"path": "src/example.py", "content": "print('hello')\\n"},
+  {"path": "tests/test_example.py", "content": "def test_ok():\\n    assert True\\n"}
+]
+```
+
+Only include files you actually create or modify. Prefer precise, complete file contents.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
