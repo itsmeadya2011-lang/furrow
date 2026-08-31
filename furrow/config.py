@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    request_timeout: float = 120.0
+    retry_attempts: int = 3
+    state_file: Path = Field(default_factory=lambda: Path(".furrow/state.json"))
 
 
 settings = Settings()
