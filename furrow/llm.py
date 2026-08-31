@@ -1,16 +1,48 @@
 from __future__ import annotations
 
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    """Return True if the exception is a transient error worth retrying.
+
+    Retries on API errors and timeouts, but not on authentication failures.
+    """
+    auth_errors = (
+        anthropic.AuthenticationError,
+        openai.AuthenticationError,
+    )
+    if isinstance(exc, auth_errors):
+        return False
+    transient_errors = (
+        anthropic.APIError,
+        anthropic.APITimeoutError,
+        openai.APIError,
+        openai.APITimeoutError,
+        TimeoutError,
+        ConnectionError,
+    )
+    return isinstance(exc, transient_errors)
 
 
 class LLMClient:
@@ -37,14 +69,42 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(_is_transient_error),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        start_time = time.monotonic()
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                result = await self._complete_anthropic(prompt, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                result = await self._complete_openai(prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            latency = time.monotonic() - start_time
+            logger.info(
+                "llm_call_completed",
+                model=model,
+                provider=self.settings.provider.value,
+                latency_ms=round(latency * 1000, 2),
+                prompt_tokens=len(prompt),
+                response_tokens=len(result),
+            )
+            return result
+        except Exception as e:
+            latency = time.monotonic() - start_time
+            logger.error(
+                "llm_call_failed",
+                model=model,
+                provider=self.settings.provider.value,
+                latency_ms=round(latency * 1000, 2),
+                error=str(e),
+            )
+            raise
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
