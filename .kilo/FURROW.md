@@ -19,11 +19,19 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
 - **Type:** Subagent
 - **Role:** Breaks a high-level goal into parallelizable, independent tasks.
 - **Output:** JSON with `tasks[]`, each having `id`, `description`, `files`, `dependencies`.
+- **Features:**
+  - Inspects workspace structure before planning
+  - Reads configuration files (pyproject.toml, package.json, etc.)
+  - Provides context-aware task decomposition
 
 ### 3. Worker (`furrow-worker`)
 - **Type:** Subagent
-- **Role:** Executes a single assigned task. Minimal, targeted changes. No scope creep.
+- **Role:** Executes a single assigned task by making actual file changes.
 - **Constraint:** 1-3 tool call rounds per task.
+- **Features:**
+  - Reads relevant files before making changes
+  - Creates, modifies, or deletes files as needed
+  - Returns detailed summary of changes made
 
 ### 4. Tester (`furrow-tester`)
 - **Type:** Subagent
@@ -43,6 +51,17 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
     furrow-tester.md   # Tester subagent
   command/
     furrow.md          # /furrow slash command
+furrow/
+  core/
+    orchestrator.py    # Main loop controller
+    state.py           # Persistent state management
+  agents/
+    planner.py         # Planning agent
+    worker.py          # Worker agent
+    tester.py          # Testing agent
+    prompts.py         # LLM prompts
+  config.py            # Settings and data models
+  llm.py               # LLM client interface
 kilo.json              # Project config (default agent = furrow, open permissions)
 ```
 
@@ -54,7 +73,27 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
+## Configuration
+Environment variables (prefix with `FURROW_`):
+- `FURROW_PROVIDER`: LLM provider (anthropic, openai, ollama)
+- `FURROW_MODEL`: Default model name
+- `FURROW_MAX_PARALLEL_TASKS`: Maximum parallel tasks (default: 5)
+- `FURROW_MAX_CYCLES`: Maximum cycles before stopping, 0 = infinite (default: 0)
+- `FURROW_WORKSPACE`: Working directory (default: current directory)
+
+## Error Handling
+- Automatic retry with exponential backoff for planning failures
+- Task-level retry for transient errors
+- Graceful handling of keyboard interrupts
+- Session state preserved on interruption
+
+## State Management
+- Session state saved to `.furrow_state.json` in workspace
+- Tracks completed/failed tasks across sessions
+- Allows resuming context from previous runs
+
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
+- Integration with version control (git).
+- Support for task dependencies and ordering.
