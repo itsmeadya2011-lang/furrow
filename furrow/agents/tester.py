@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
+from furrow.exceptions import TestError
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = get_logger(__name__)
 
 
 class TesterAgent:
@@ -18,19 +21,30 @@ class TesterAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        logger.info("Running tests", goal=goal)
         test_output = ""
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            logger.error("Test execution failed", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        try:
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        except Exception as e:
+            logger.error("Tester LLM call failed", error=str(e))
+            raise TestError(f"LLM call failed: {e}") from e
+
         try:
             data = json.loads(response)
-            return TestResult(**data)
-        except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            result = TestResult(**data)
+            logger.info("Tests completed", passed=result.passed)
+            return result
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error("Failed to parse test result", response=response[:200])
+            passed = "passed" in response.lower()
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
