@@ -39,14 +39,15 @@ class Settings(BaseSettings):
 
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
-    planner_model: str = "claude-3-5-haiku-20241022"
-    worker_model: str = "claude-3-5-sonnet-20241022"
-    tester_model: str = "claude-3-5-sonnet-20241022"
+    planner_model: str = "claude-haiku-4-5-20251001"
+    worker_model: str = "claude-sonnet-4-20250514"
+    tester_model: str = "claude-sonnet-4-20250514"
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    test_timeout_seconds: int = 120
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 

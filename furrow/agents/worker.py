@@ -11,10 +11,33 @@ if TYPE_CHECKING:
 
 
 class WorkerAgent:
-    def __init__(self, task: TaskModel, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        task: TaskModel,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        from furrow.config import settings as default_settings
+
         self.task = task
-        self.client = client or LLMClient(settings=settings)
+        self.settings = settings or default_settings
+        self.client = client or LLMClient(settings=self.settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        files_hint = (
+            ", ".join(self.task.files) if self.task.files else "any relevant files"
+        )
+        deps_hint = (
+            f"\nDependencies: {', '.join(self.task.dependencies)}"
+            if self.task.dependencies
+            else ""
+        )
+        prompt = (
+            f"{WORKER_PROMPT}\n\n"
+            f"Task: {self.task.description}\n"
+            f"Files to touch: {files_hint}"
+            f"{deps_hint}\n"
+        )
+        return await self.client.complete(
+            prompt, model=self.client.settings.worker_model
+        )

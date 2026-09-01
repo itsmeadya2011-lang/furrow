@@ -58,3 +58,17 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
+
+## Recent Improvements
+- `Orchestrator._is_done` now correctly inspects the latest plan's tasks
+  (previously returned an empty list and could never halt).
+- Planner tolerates LLM responses wrapped in ```json ... ``` fences.
+- Tester runs both test and lint commands with a shared timeout
+  (`FURROW_TEST_TIMEOUT_SECONDS`).
+- LLMClient supports the `ollama` provider end-to-end.
+- `furrow start` accepts `--max-cycles` and `--provider`.
+- WebSocket `/ws` endpoint supports JSON or raw-text goal frames and
+  honors `max_cycles`.
+- New tests in `tests/test_core.py` cover settings, plan parsing,
+  orchestrator done/ready logic, stop flag, and planner JSON fence
+  stripping.
