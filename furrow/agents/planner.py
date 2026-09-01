@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from furrow.agents.prompts import PLANNER_PROMPT
+from furrow.agents.prompts import PLANNER_FIX_PROMPT, PLANNER_PROMPT
 from furrow.config import Plan
 from furrow.llm import LLMClient
 
@@ -15,8 +15,18 @@ class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
-    async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+    async def plan(self, goal: str, is_fix_cycle: bool = False) -> Plan:
+        """Create a plan from the goal.
+        
+        Args:
+            goal: The goal to plan for
+            is_fix_cycle: If True, use the fix-focused prompt for test failure recovery
+        """
+        if is_fix_cycle:
+            prompt = f"{PLANNER_FIX_PROMPT}\n\nGoal: {goal}\n"
+        else:
+            prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+        
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)

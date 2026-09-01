@@ -12,34 +12,60 @@ from rich.pretty import Pretty
 from rich.status import Status
 
 from furrow.agents.planner import PlannerAgent
+from furrow.agents.prompts import PLANNER_FIX_PROMPT
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
 from furrow.config import Plan, TestResult
+from furrow.git import GitManager
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        max_cycles: int = 10,
+        enable_git: bool = True,
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.max_cycles = max_cycles
+        self._current_plan: Plan | None = None
+        self._is_fix_cycle = False
+        self._git = GitManager() if enable_git else None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+
+        # Initialize git if enabled
+        if self._git:
+            await self._git.ensure_repo()
+            await self._git.commit_changes("Initial state before Furrow", cycle=0)
+
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                if self._git:
+                    await self._git.commit_changes("Goal completed", self.cycles)
+                break
+            if self.max_cycles > 0 and self.cycles >= self.max_cycles:
+                console.print(f"[yellow]Reached max cycles ({self.max_cycles}). Halting.[/yellow]")
+                if self._git:
+                    await self._git.commit_changes("Max cycles reached", self.cycles)
                 break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
+            plan = await self.planner.plan(self.goal, is_fix_cycle=self._is_fix_cycle)
+        self._current_plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -68,12 +94,18 @@ class Orchestrator:
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            self._is_fix_cycle = False
+            if self._git:
+                await self._git.commit_changes(f"Tests passed: {test_result.summary}", self.cycles)
         else:
             console.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            self._is_fix_cycle = True
+            if self._git:
+                await self._git.commit_changes(f"Tests failed - will fix next cycle", self.cycles)
 
     def _is_done(self) -> bool:
         completed = sum(1 for t in self._get_tasks() if t.status == "completed")
@@ -85,4 +117,6 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        if self._current_plan is None:
+            return []
+        return self._current_plan.tasks
