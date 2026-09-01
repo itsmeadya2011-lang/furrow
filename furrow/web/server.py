@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -39,7 +40,14 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          out.textContent += msg.data + '\\n';
+        } catch {
+          out.textContent += ev.data + '\\n';
+        }
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,10 +63,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def send_output(text: str) -> None:
+            try:
+                await websocket.send_text(json.dumps({"type": "output", "data": text}))
+            except Exception:
+                pass
+
+        def _callback(text: str) -> None:
+            asyncio.create_task(send_output(text))
+
+        orchestrator = Orchestrator(goal=goal, output_callback=_callback)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(json.dumps({"type": "error", "data": str(e)}))
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
