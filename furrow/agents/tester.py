@@ -30,29 +30,43 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "pass" in response.lower() and "fail" not in response.lower()
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
+            ["pytest"],
+            ["python", "-m", "pytest"],
+            ["python", "-m", "unittest", "discover", "-v"],
             ["npm", "test", "--", "--silent"],
             ["pnpm", "test", "--", "--silent"],
             ["yarn", "test", "--silent"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
+            ["mvn", "test", "-q"],
+            ["gradle", "test", "--quiet"],
         ]
+        outputs: list[str] = []
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if output.strip():
+                        outputs.append(f"$ {' '.join(cmd)}\n{output}")
                 except asyncio.TimeoutError:
                     proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+                    await proc.wait()
+                    outputs.append(f"$ {' '.join(cmd)}\n[timed out after 120s]")
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+            except Exception as e:
+                outputs.append(f"$ {' '.join(cmd)}\n[error: {e}]")
+        return "\n".join(outputs) if outputs else "No test runner found or no tests executed."
