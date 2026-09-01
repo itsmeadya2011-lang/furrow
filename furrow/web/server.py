@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from io import StringIO
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
+from rich.console import Console
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+import furrow.core.orchestrator as orch_module
 
 app = FastAPI(title="Furrow")
 
@@ -52,11 +55,32 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    await websocket.send_text("[FURROW_START]\n")
     try:
         data = await websocket.receive_json()
-        goal = data.get("goal", "")
+        try:
+            request = StartRequest(**data)
+        except ValidationError as e:
+            await websocket.send_text(f'{{"error": "{str(e)}"}}')
+            return
+        goal = request.goal
+        if not goal or not goal.strip():
+            await websocket.send_text("[FURROW_ERROR] goal is required\n")
+            return
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        recording_console = Console(file=StringIO(), record=True, force_terminal=False)
+        original_console = orch_module.console
+        orch_module.console = recording_console
+        try:
+            try:
+                await orchestrator.run()
+            except Exception as exc:
+                await websocket.send_text(f"[FURROW_ERROR] {exc}\n")
+            output = recording_console.export_text()
+            await websocket.send_text(output)
+        finally:
+            orch_module.console = original_console
+        await websocket.send_text("[FURROW_DONE]\n")
     except WebSocketDisconnect:
         pass
 

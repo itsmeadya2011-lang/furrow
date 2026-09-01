@@ -13,6 +13,10 @@ if TYPE_CHECKING:
     from furrow.config import Settings
 
 
+NO_TEST_RUNNER_SENTINEL = "NO_TEST_RUNNER_FOUND"
+TEST_RUNNER_TIMEOUT_SENTINEL = "TEST_RUNNER_TIMEOUT"
+
+
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
@@ -23,6 +27,11 @@ class TesterAgent:
             test_output = await self._run_tests()
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
+
+        if test_output.startswith(NO_TEST_RUNNER_SENTINEL):
+            return TestResult(passed=False, summary=test_output, failures=[test_output])
+        if test_output.startswith(TEST_RUNNER_TIMEOUT_SENTINEL):
+            return TestResult(passed=False, summary=test_output, failures=[test_output])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
@@ -42,17 +51,22 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        tried: list[str] = []
         for cmd in candidates:
+            runner = cmd[0]
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                tried.append(runner)
                 continue
-        return "No test runner found."
+            tried.append(runner)
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                return stdout.decode() + stderr.decode()
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return f"{TEST_RUNNER_TIMEOUT_SENTINEL}: runner '{runner}' did not finish within 120s"
+        return f"{NO_TEST_RUNNER_SENTINEL}: tried {', '.join(tried) if tried else 'none'}"

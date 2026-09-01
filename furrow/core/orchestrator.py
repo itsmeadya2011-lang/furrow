@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, Settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
@@ -26,11 +26,17 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[TaskModel] = []
+        self.last_plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            max_cycles = self.client.settings.max_cycles
+            if max_cycles > 0 and self.cycles >= max_cycles:
+                console.print(f"[yellow]Reached max_cycles ({max_cycles}). Halting.[/yellow]")
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
@@ -40,6 +46,7 @@ class Orchestrator:
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self.last_plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -63,6 +70,8 @@ class Orchestrator:
                 task.result = result
                 console.print(f"[green]Task {task.id} completed[/green]")
 
+        self._merge_tasks(plan.tasks)
+
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
@@ -76,13 +85,20 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
+        tasks = self._get_tasks()
+        if any(t.status == "failed" for t in tasks):
             return False
-        if completed >= len(self._get_tasks()):
+        if tasks and all(t.status == "completed" for t in tasks):
+            return True
+        if self.last_plan is not None and len(self.last_plan.tasks) == 0:
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
+
+    def _merge_tasks(self, incoming: list[TaskModel]) -> None:
+        by_id: dict[str, TaskModel] = {t.id: t for t in self.tasks}
+        for task in incoming:
+            by_id[task.id] = task
+        self.tasks = list(by_id.values())
