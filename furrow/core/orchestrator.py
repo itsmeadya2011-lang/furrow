@@ -26,13 +26,21 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
+        self.last_test_result: TestResult | None = None
 
     async def run(self) -> None:
-        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        console.print(
+            Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow")
+        )
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
-            await self._cycle()
+            try:
+                await self._cycle()
+            except Exception as e:
+                console.print(f"[red]Error in cycle {self.cycles}: {e}[/red]")
+                console.print("[yellow]Continuing to next cycle...[/yellow]")
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
@@ -45,6 +53,8 @@ class Orchestrator:
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
+
+        self.tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -64,25 +74,41 @@ class Orchestrator:
                 console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            self.last_test_result = await TesterAgent(client=self.client).run(
+                self.goal, plan.tasks
+            )
 
-        if test_result.passed:
-            console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+        if self.last_test_result.passed:
+            console.print(f"[green]Tests passed: {self.last_test_result.summary}[/green]")
         else:
-            console.print(f"[red]Tests failed: {test_result.summary}[/red]")
-            for failure in test_result.failures:
+            console.print(f"[red]Tests failed: {self.last_test_result.summary}[/red]")
+            for failure in self.last_test_result.failures:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
-            self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            self.goal = "Fix failing tests:\n" + "\n".join(self.last_test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        max_cycles = self.client.settings.max_cycles
+        if max_cycles > 0 and self.cycles >= max_cycles:
+            console.print(
+                f"[yellow]Reached max_cycles limit ({max_cycles}). Halting.[/yellow]"
+            )
+            return True
+
+        if not self.tasks:
+            return False
+
+        completed = sum(1 for t in self.tasks if t.status == "completed")
+        failed = sum(1 for t in self.tasks if t.status == "failed")
+
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
-            return True
+
+        if completed >= len(self.tasks):
+            if self.last_test_result is not None and self.last_test_result.passed:
+                return True
+
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks

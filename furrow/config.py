@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +49,28 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @field_validator("max_parallel_tasks")
+    @classmethod
+    def validate_max_parallel_tasks(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_parallel_tasks must be at least 1")
+        return v
+
+    @field_validator("max_cycles")
+    @classmethod
+    def validate_max_cycles(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_cycles must be >= 0 (0 means unlimited)")
+        return v
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if v.upper() not in valid_levels:
+            raise ValueError(f"log_level must be one of {valid_levels}")
+        return v.upper()
 
 
 settings = Settings()
