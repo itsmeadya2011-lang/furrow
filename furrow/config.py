@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -34,6 +35,16 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class FileEdit(BaseModel):
+    path: str
+    content: str
+
+
+class WorkerResult(BaseModel):
+    files: list[FileEdit] = Field(default_factory=list)
+    summary: str = ""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
@@ -45,10 +56,38 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
-    workspace: Path = Field(default_factory=Path.cwd)
+    llm_timeout: int = 120
+    max_retries: int = 3
+    retry_base_delay: float = 1.0
     log_level: str = "INFO"
+    log_format: str = "console"  # "console" or "json"
+    workspace: Path = Field(default_factory=Path.cwd)
 
 
 settings = Settings()
+
+
+def configure_logging() -> None:
+    """Configure structlog with the project's logging settings."""
+    import structlog
+
+    processors: list = [
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.add_log_level,
+        structlog.processors.StackInfoRenderer(),
+    ]
+    if settings.log_format == "json":
+        processors.append(structlog.processors.JSONRenderer())
+    else:
+        processors.append(structlog.dev.ConsoleRenderer())
+
+    structlog.configure(
+        processors=processors,
+        wrapper_class=structlog.make_filtering_bound_logger(
+            getattr(logging, settings.log_level.upper(), logging.INFO)
+        ),
+        cache_logger_on_first_use=True,
+    )

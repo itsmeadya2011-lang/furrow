@@ -6,6 +6,7 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import configure_logging
 from furrow.core.orchestrator import Orchestrator
 
 console = Console()
@@ -25,6 +26,7 @@ def start(goal: str | None, model: str | None) -> None:
     if model:
         from furrow.config import settings
         settings.model = model
+    configure_logging()
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:
@@ -34,6 +36,7 @@ def start(goal: str | None, model: str | None) -> None:
 
 @main.command()
 def web() -> None:
+    configure_logging()
     from furrow.web.server import run
     run()
 
