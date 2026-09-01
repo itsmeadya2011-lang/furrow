@@ -6,7 +6,9 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 console = Console()
 
@@ -23,10 +25,12 @@ def start(goal: str | None, model: str | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
-        from furrow.config import settings
-        settings.model = model
+        run_settings = Settings(model=model)
+    else:
+        run_settings = settings
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        client = LLMClient(settings=run_settings)
+        asyncio.run(Orchestrator(goal=goal, client=client).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)

@@ -28,3 +28,4 @@ Return a JSON object (not wrapped in markdown) with this shape:
 - Tasks must be independent when possible.
 - Each task should be completable in 1-3 tool call rounds by a worker.
 - If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+- If the goal appears fully complete or no actionable tasks remain, return an empty tasks array.
