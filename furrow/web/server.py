@@ -49,6 +49,17 @@ async def index() -> HTMLResponse:
 """)
 
 
+@app.get("/api/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.post("/api/start")
+async def start(req: StartRequest) -> dict:
+    asyncio.create_task(Orchestrator(goal=req.goal).run())
+    return {"status": "started"}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -56,6 +67,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
+        orchestrator.on_output = lambda text: websocket.send_text(text)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
