@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
+import subprocess
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class TesterAgent:
@@ -42,6 +45,7 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        runner_found_but_timed_out = False
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -51,8 +55,13 @@ class TesterAgent:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
+                    logger.warning("Test runner %s timed out after %s seconds", cmd[0], 120)
                     proc.kill()
+                    runner_found_but_timed_out = True
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError, subprocess.SubprocessError) as e:
+                logger.warning("Test runner %s failed to start: %s", cmd[0], e)
                 continue
+        if runner_found_but_timed_out:
+            return "Test runner found but timed out."
         return "No test runner found."
