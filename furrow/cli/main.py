@@ -7,8 +7,10 @@ import click
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import configure_logging
 
 console = Console()
+configure_logging()
 
 
 @click.group()

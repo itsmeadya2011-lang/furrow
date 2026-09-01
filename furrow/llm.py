@@ -6,11 +6,22 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+TRANSIENT_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    openai.RateLimitError,
+    openai.APIConnectionError,
+    httpx.TimeoutException,
+    httpx.ConnectError,
+)
 
 
 class LLMClient:
@@ -37,6 +48,12 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(TRANSIENT_ERRORS),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
