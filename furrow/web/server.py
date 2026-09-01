@@ -5,13 +5,22 @@ from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class StartRequest(BaseModel):
@@ -49,6 +58,11 @@ async def index() -> HTMLResponse:
 """)
 
 
+@app.get("/health")
+async def health() -> JSONResponse:
+    return JSONResponse(content={"status": "ok"})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -59,7 +73,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        try:
+            await websocket.send_text(f"Error: {exc}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
     uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    run()
