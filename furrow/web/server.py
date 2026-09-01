@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import re
 from typing import Optional
 
 import uvicorn
@@ -8,7 +8,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -17,6 +16,11 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+def strip_rich_markup(text: str) -> str:
+    """Remove rich markup tags for plain text output."""
+    return re.sub(r"\[/?[a-zA-Z0-9 _#]*\]", "", text)
 
 
 @app.get("/")
@@ -55,8 +59,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def send_output(message: str) -> None:
+            await websocket.send_text(strip_rich_markup(message) + "\n")
+
+        orchestrator = Orchestrator(goal=goal, on_output=send_output)
         await orchestrator.run()
+        await send_output("\nFurrow finished.")
     except WebSocketDisconnect:
         pass
 
