@@ -2,6 +2,8 @@
 
 Autonomous coding agent with an infinite parallel development loop.
 
+**Canonical docs:** [`.kilo/FURROW.md`](./.kilo/FURROW.md)
+
 ## Install
 
 ```bash
