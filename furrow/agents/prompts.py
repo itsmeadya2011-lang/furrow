@@ -29,6 +29,19 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+Workspace: {workspace}
+
+File context (workspace file listing and contents of files to touch):
+{files_context}
+
+Task: {task_description}
+Files to touch: {files_to_touch}
+
+Output ONLY valid JSON, no markdown fences, with this exact structure:
+{"files": [{"path": "relative/path.py", "content": "..."}, ...], "summary": "..."}
+
+For each file you intend to create or modify, provide the full file path (relative to the workspace) and the complete file content. If a file already exists, your content replaces it entirely. Return an empty files array if no files need to be written. The summary should be a brief description of what was changed.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
