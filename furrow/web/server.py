@@ -9,7 +9,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from furrow.config import Settings
-from furrow.core.orchestrator import Orchestrator
+from furrow.core.orchestrator import Orchestrator, ProgressCallback
 
 app = FastAPI(title="Furrow")
 
@@ -55,7 +55,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def progress_callback(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator = Orchestrator(goal=goal, progress_callback=progress_callback)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass

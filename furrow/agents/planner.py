@@ -4,16 +4,16 @@ import json
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import PLANNER_PROMPT
-from furrow.config import Plan
+from furrow.config import Plan, Settings, settings as default_settings
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
-    from furrow.config import Settings
+    pass
 
 
 class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+        self.client = client or LLMClient(settings=settings or default_settings)
 
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
