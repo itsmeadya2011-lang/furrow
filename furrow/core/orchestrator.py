@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, Settings, TestResult, TaskModel
 from furrow.llm import LLMClient
 
 console = Console()
@@ -23,9 +23,11 @@ console = Console()
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None) -> None:
         self.goal = goal
+        self.original_goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.history: list[TaskModel] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -46,11 +48,16 @@ class Orchestrator:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
+        settings: Settings = self.client.settings
+        max_parallel = settings.max_parallel_tasks if settings.max_parallel_tasks > 0 else len(plan.tasks)
+        semaphore = asyncio.Semaphore(max_parallel)
+
+        async def _run_with_semaphore(task: TaskModel) -> Any:
+            async with semaphore:
+                return await WorkerAgent(task=task, client=self.client).run()
+
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
+            tasks = [_run_with_semaphore(task) for task in plan.tasks]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for task, result in zip(plan.tasks, results):
@@ -63,8 +70,10 @@ class Orchestrator:
                 task.result = result
                 console.print(f"[green]Task {task.id} completed[/green]")
 
+        self._merge_history(plan.tasks)
+
         with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            test_result = await TesterAgent(client=self.client).run(self.goal, self.history)
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
@@ -75,14 +84,35 @@ class Orchestrator:
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
+    def _merge_history(self, tasks: list[TaskModel]) -> None:
+        existing = {t.id: i for i, t in enumerate(self.history)}
+        for task in tasks:
+            if task.id in existing:
+                self.history[existing[task.id]] = task
+            else:
+                self.history.append(task)
+
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        settings: Settings = self.client.settings
+        max_cycles = settings.max_cycles
+
+        if max_cycles > 0 and self.cycles >= max_cycles:
+            return True
+
+        tasks = self._get_tasks()
+        if not tasks:
+            return True
+
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
+
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+
+        if completed >= len(tasks):
             return True
+
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return list(self.history)

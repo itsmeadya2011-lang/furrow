@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-from furrow.agents.prompts import PLANNER_PROMPT
+from furrow.agents.prompts import PLANNER_PROMPT, PLANNER_USER_TEMPLATE
 from furrow.config import Plan
 from furrow.llm import LLMClient
 
@@ -16,8 +16,10 @@ class PlannerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.planner_model)
+        prompt = PLANNER_USER_TEMPLATE.format(goal=goal, state="(none)")
+        response = await self.client.complete(
+            prompt, system=PLANNER_PROMPT, model=self.client.settings.planner_model
+        )
         try:
             data = json.loads(response)
             return Plan(**data)

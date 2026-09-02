@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from furrow.agents.prompts import WORKER_PROMPT
+from furrow.agents.prompts import WORKER_PROMPT, WORKER_USER_TEMPLATE
 from furrow.config import TaskModel
 from furrow.llm import LLMClient
 
@@ -16,5 +16,10 @@ class WorkerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        prompt = WORKER_USER_TEMPLATE.format(
+            description=self.task.description,
+            files=', '.join(self.task.files) if self.task.files else 'any',
+        )
+        return await self.client.complete(
+            prompt, system=WORKER_PROMPT, model=self.client.settings.worker_model
+        )
