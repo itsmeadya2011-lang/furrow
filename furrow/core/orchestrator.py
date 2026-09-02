@@ -26,11 +26,19 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._tasks: list[Any] = []
+        self._tests_passed: bool = False
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        max_cycles = self.client.settings.max_cycles
         while True:
             self.cycles += 1
+            if max_cycles > 0 and self.cycles > max_cycles:
+                console.print(
+                    f"[bold yellow]Reached max_cycles={max_cycles}. Halting.[/bold yellow]"
+                )
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
@@ -38,19 +46,28 @@ class Orchestrator:
                 break
 
     async def _cycle(self) -> None:
+        self._tasks = []
+        self._tests_passed = False
+
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+
+        self._tasks = list(plan.tasks)
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
+        max_parallel = max(1, self.client.settings.max_parallel_tasks)
+        semaphore = asyncio.Semaphore(max_parallel)
+
+        async def run_with_semaphore(task: Any) -> Any:
+            async with semaphore:
+                return await WorkerAgent(task=task, client=self.client).run()
+
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
+            tasks = [run_with_semaphore(task) for task in plan.tasks]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for task, result in zip(plan.tasks, results):
@@ -67,8 +84,10 @@ class Orchestrator:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
         if test_result.passed:
+            self._tests_passed = True
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
         else:
+            self._tests_passed = False
             console.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
                 console.print(f"  • {failure}")
@@ -76,13 +95,16 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        tasks = self._get_tasks()
+        if not tasks:
+            return False
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(tasks) and self._tests_passed:
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._tasks

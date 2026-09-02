@@ -5,6 +5,8 @@ import json
 import os
 from typing import TYPE_CHECKING
 
+import structlog
+
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
@@ -12,8 +14,12 @@ from furrow.llm import LLMClient
 if TYPE_CHECKING:
     from furrow.config import Settings
 
+logger = structlog.get_logger(__name__)
+
 
 class TesterAgent:
+    TEST_TIMEOUT = 120
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
@@ -43,16 +49,23 @@ class TesterAgent:
             ["go", "test", "./..."],
         ]
         for cmd in candidates:
+            logger.debug("attempting_test_runner", runner=" ".join(cmd))
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                logger.debug("test_runner_not_found", runner=" ".join(cmd))
                 continue
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=self.TEST_TIMEOUT
+                )
+                logger.info("test_runner_used", runner=" ".join(cmd))
+                return stdout.decode() + stderr.decode()
+            except asyncio.TimeoutError:
+                logger.warning("test_runner_timed_out", runner=" ".join(cmd))
+                proc.kill()
+                continue
+        logger.warning("no_test_runner_found")
         return "No test runner found."
