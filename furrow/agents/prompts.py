@@ -27,7 +27,13 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Output each file you create or modify in a fenced code block using the format
+  ```language:filepath followed by the file content on the next line, e.g.:
+  ```python:src/auth.py
+  def login(): ...
+  ```
+- Only include files that need to be written. After the code blocks, return a
+  concise summary of what you changed and any issues.
 - Do not spawn subagents.
 """
 
