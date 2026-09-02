@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -21,6 +21,7 @@ class TaskModel(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
     result: Optional[str] = None
+    error: Optional[str] = None
 
 
 class Plan(BaseModel):
@@ -32,6 +33,22 @@ class TestResult(BaseModel):
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
+
+
+class FileOperation(BaseModel):
+    action: Literal["create", "edit", "delete"]
+    path: str
+    content: Optional[str] = None
+    success: bool = True
+    error: Optional[str] = None
+
+
+class WorkerResult(BaseModel):
+    task_id: str
+    summary: str
+    operations: list[FileOperation] = Field(default_factory=list)
+    success: bool = True
+    error: Optional[str] = None
 
 
 class Settings(BaseSettings):

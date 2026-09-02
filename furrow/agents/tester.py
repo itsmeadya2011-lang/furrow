@@ -6,6 +6,7 @@ import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
+from furrow.agents.planner import _strip_code_fence
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
 
@@ -26,11 +27,12 @@ class TesterAgent:
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        cleaned = _strip_code_fence(response)
         try:
-            data = json.loads(response)
+            data = json.loads(cleaned)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(passed="passed" in cleaned.lower(), summary=cleaned, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -47,12 +49,18 @@ class TesterAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
+            except OSError:
+                continue
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            except asyncio.TimeoutError:
+                proc.kill()
+                continue
+            output = stdout.decode() + stderr.decode()
+            if proc.returncode == 0:
+                return output
+            # Test runner executed but exited with errors — return output for LLM analysis
+            return output
         return "No test runner found."
