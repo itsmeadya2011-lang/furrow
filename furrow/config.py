@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
+    state_dir: Path = Field(default_factory=lambda: Path.cwd() / ".furrow")
     log_level: str = "INFO"
 
 

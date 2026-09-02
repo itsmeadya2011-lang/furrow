@@ -24,11 +24,27 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+Available tools:
+- read_file(path): Read the contents of a file.
+- write_file(path, content): Write content to a file, creating directories as needed.
+- list_files(directory): List all files in a directory recursively.
+- run_command(command): Run a shell command and return its output.
+
+When you need to use a tool, output exactly one line in this format:
+TOOL: tool_name(args)
+
+For example:
+TOOL: read_file(src/main.py)
+TOOL: write_file(src/main.py, content here)
+TOOL: list_files(src)
+TOOL: run_command(pytest)
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+- After receiving a tool result, continue working. If no more tools are needed, provide your final summary without using the TOOL: format.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.

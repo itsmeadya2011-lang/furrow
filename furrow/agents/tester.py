@@ -32,16 +32,52 @@ class TesterAgent:
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
+    def _detect_project_type(self) -> str:
+        cwd = os.getcwd()
+        # Check JavaScript first so a project with both package.json and
+        # pyproject.toml (e.g. monorepos) doesn't get classified as Python.
+        if os.path.exists(os.path.join(cwd, "package.json")):
+            if os.path.exists(os.path.join(cwd, "pnpm-lock.yaml")):
+                return "javascript-pnpm"
+            if os.path.exists(os.path.join(cwd, "yarn.lock")):
+                return "javascript-yarn"
+            return "javascript-npm"
+        for marker in ("pyproject.toml", "pytest.ini", "setup.py"):
+            if os.path.exists(os.path.join(cwd, marker)):
+                return "python"
+        if os.path.exists(os.path.join(cwd, "Cargo.toml")):
+            return "rust"
+        if os.path.exists(os.path.join(cwd, "go.mod")):
+            return "go"
+        return "unknown"
+
     async def _run_tests(self) -> str:
-        candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
-            ["cargo", "test", "-q"],
-            ["go", "test", "./..."],
-        ]
+        project_type = self._detect_project_type()
+        if project_type == "python":
+            candidates: list[list[str]] = [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+            ]
+        elif project_type == "javascript-npm":
+            candidates = [["npm", "test", "--", "--silent"]]
+        elif project_type == "javascript-pnpm":
+            candidates = [["pnpm", "test", "--", "--silent"]]
+        elif project_type == "javascript-yarn":
+            candidates = [["yarn", "test", "--silent"]]
+        elif project_type == "rust":
+            candidates = [["cargo", "test", "-q"]]
+        elif project_type == "go":
+            candidates = [["go", "test", "./..."]]
+        else:
+            candidates = [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+                ["cargo", "test", "-q"],
+                ["go", "test", "./..."],
+            ]
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
