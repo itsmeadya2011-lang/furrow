@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -18,21 +17,28 @@ class TesterAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
-        test_output = ""
         try:
-            test_output = await self._run_tests()
+            returncode, test_output = await self._run_tests()
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
+        if returncode == 0:
+            return TestResult(passed=True, summary="All tests passed.", failures=[])
+
+        # Non-zero — try LLM for nicer summary, fall back to raw output
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(
+                passed=False,
+                summary=test_output[:500],
+                failures=[test_output[:1000]],
+            )
 
-    async def _run_tests(self) -> str:
+    async def _run_tests(self) -> tuple[int, str]:
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -49,10 +55,11 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    return (proc.returncode or 0, output)
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return (-1, "No test runner found.")

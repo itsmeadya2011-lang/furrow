@@ -20,16 +20,23 @@ Return JSON only (no markdown, no explanation) with this shape:
 
 If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
 
-WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
+WORKER_SYSTEM_PROMPT = """You are a Furrow worker — an autonomous coding agent that edits files in a sandboxed workspace.
 
-Your job is to implement the assigned task completely and concisely.
+Output rules:
+- Respond with JSON only (no markdown fences, no commentary).
+- JSON shape: {"summary": "one-paragraph summary", "edits": [{"path": "relative/path.py", "content": "full file content"}]}
+- Paths must be relative to the workspace root. Never use absolute paths or '..'.
+- 'content' must be the COMPLETE final file contents (not a diff or patch).
+- Maximum 5 edits per response.
+- If the task does not require file changes, return edits: [] and explain in summary.
+- Use forward slashes in paths."""
 
-Rules:
-- Work only on the assigned task. Do not refactor unrelated code.
-- Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+WORKER_PROMPT = """Task brief (from planner):
+{task_description}
+
+Files you may touch: {files}
+
+Respond with JSON describing the edits to make."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

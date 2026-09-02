@@ -8,7 +8,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -52,13 +51,45 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    orchestrator: Orchestrator | None = None
+    orch_task: asyncio.Task | None = None
+    hb_task: asyncio.Task | None = None
+
+    async def heartbeat() -> None:
+        try:
+            while True:
+                await asyncio.sleep(2.0)
+                if orchestrator is None:
+                    continue
+                await websocket.send_json(
+                    {"type": "event", "event": "heartbeat", "cycles": orchestrator.cycles}
+                )
+        except (asyncio.CancelledError, WebSocketDisconnect):
+            return
+
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        hb_task = asyncio.create_task(heartbeat())
+        try:
+            orch_task = asyncio.create_task(orchestrator.run())
+            await orch_task
+            await websocket.send_json(
+                {"type": "event", "event": "done", "cycles": orchestrator.cycles}
+            )
+        except Exception as exc:
+            await websocket.send_json(
+                {"type": "event", "event": "error", "message": str(exc)}
+            )
+        finally:
+            if hb_task and not hb_task.done():
+                hb_task.cancel()
     except WebSocketDisconnect:
-        pass
+        if orch_task and not orch_task.done():
+            orch_task.cancel()
+        if hb_task and not hb_task.done():
+            hb_task.cancel()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
