@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,25 +15,66 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        state_file: str = ".furrow_state.json",
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._current_tasks: list[TaskModel] = []
+        self.state_file = Path(state_file)
+        self.task_results: dict[str, Any] = {}
+
+    def _load_state(self) -> dict[str, Any] | None:
+        if not self.state_file.exists():
+            return None
+        try:
+            with self.state_file.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def _save_state(self) -> None:
+        state = {
+            "goal": self.goal,
+            "cycles": self.cycles,
+            "task_results": self.task_results,
+            "last_updated": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            with self.state_file.open("w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+        except OSError as exc:
+            console.print(f"[yellow]Warning: failed to save state: {exc}[/yellow]")
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        saved = self._load_state()
+        if saved and saved.get("goal") == self.goal:
+            self.cycles = saved.get("cycles", 0)
+            self.task_results = saved.get("task_results", {})
+            console.print(
+                f"[cyan]Resuming from saved state at cycle {self.cycles}[/cyan]"
+            )
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
+            self._save_state()
+            if self.client.settings.max_cycles > 0 and self.cycles >= self.client.settings.max_cycles:
+                console.print(f"[bold yellow]Max cycles ({self.client.settings.max_cycles}) reached. Stopping.[/bold yellow]")
+                break
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
@@ -47,6 +89,7 @@ class Orchestrator:
             return
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
+            self._current_tasks = plan.tasks
             tasks = [
                 WorkerAgent(task=task, client=self.client).run()
                 for task in plan.tasks
@@ -84,5 +127,5 @@ class Orchestrator:
             return True
         return False
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+    def _get_tasks(self) -> list[TaskModel]:
+        return self._current_tasks
