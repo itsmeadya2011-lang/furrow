@@ -56,5 +56,11 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
+- ~~Persistent state file for goal/task tracking across sessions.~~ *Implemented*
 - Web UI for monitoring parallel agent activity.
+
+## State Management (Implemented)
+- `furrow/core/state.py` — `StateManager` persists session state to `.furrow/state.json`.
+- Tracks: goal, cycle count, task statuses, plan history, test history, errors.
+- Supports session resume via `furrow start --resume`.
+- `max_cycles` setting terminates the loop to prevent runaway sessions.

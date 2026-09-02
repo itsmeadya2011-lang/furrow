@@ -37,3 +37,4 @@ Repeat this cycle continuously until explicitly stopped:
 - Maintain a short internal todo list of remaining tasks.
 - Update it after each cycle so the next iteration knows where to pick up.
 - If context becomes too large, compact yourself and continue.
+- Persist progress so a stopped session can resume via `furrow start --resume`.

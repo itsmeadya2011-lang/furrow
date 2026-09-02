@@ -42,13 +42,31 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
+
+    # API keys (optional; will fall back to env vars at runtime)
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
+
+    # Ollama settings
     ollama_base_url: str = "http://localhost:11434"
+
+    # Development loop settings
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 0  # 0 = unlimited
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    # LLM defaults
+    default_max_tokens: int = 8192
+    llm_timeout: float = 60.0
+    llm_max_retries: int = 3
+
+    # Test runner settings
+    test_timeout: int = 120
+
+    # Web server
+    web_host: str = "0.0.0.0"
+    web_port: int = 8000
 
 
 settings = Settings()
