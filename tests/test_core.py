@@ -1,5 +1,5 @@
 import pytest
-from furrow.config import Plan, TaskModel, TestResult
+from furrow.config import Plan, TaskModel, TestResult, Provider
 
 
 def test_plan_parse():
@@ -10,3 +10,8 @@ def test_plan_parse():
 def test_test_result():
     t = TestResult(passed=True, summary="ok", failures=[])
     assert t.passed is True
+
+
+def test_provider_ollama():
+    assert Provider.OLLAMA is not None
+    assert Provider.OLLAMA == "ollama"

@@ -3,19 +3,15 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
 
-if TYPE_CHECKING:
-    from furrow.config import Settings
-
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+    def __init__(self, client: LLMClient) -> None:
+        self.client = client
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -53,6 +49,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+        return "No supported test runner found (tried: pytest, npm, pnpm, yarn, cargo, go)."
