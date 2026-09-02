@@ -6,6 +6,7 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -43,6 +44,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -64,6 +67,26 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        url = f"{self.settings.ollama_base_url}/v1/chat/completions"
+        body = {"model": model, "messages": messages}
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=body, timeout=120.0)
+                response.raise_for_status()
+                data = response.json()
+                return data["choices"][0]["message"]["content"]
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"Ollama request failed: {e}") from e
+        except (KeyError, IndexError, TypeError) as e:
+            raise RuntimeError(f"Unexpected Ollama response format: {e}") from e
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
