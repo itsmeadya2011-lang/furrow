@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, Settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
@@ -22,14 +22,22 @@ console = Console()
 
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+        self.original_goal = goal
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.all_tasks: list[TaskModel] = []
 
     async def run(self) -> None:
+        settings: Settings = self.client.settings
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
+            if settings.max_cycles > 0 and self.cycles >= settings.max_cycles:
+                console.print(
+                    f"[bold yellow]Reached max_cycles={settings.max_cycles}. Halting.[/bold yellow]"
+                )
+                break
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
@@ -38,6 +46,7 @@ class Orchestrator:
                 break
 
     async def _cycle(self) -> None:
+        settings: Settings = self.client.settings
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
@@ -46,11 +55,16 @@ class Orchestrator:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
+        self.all_tasks.extend(plan.tasks)
+
+        sem = asyncio.Semaphore(settings.max_parallel_tasks)
+
+        async def _run_one(task: TaskModel) -> Any:
+            async with sem:
+                return await WorkerAgent(task=task, client=self.client).run()
+
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
+            tasks = [_run_one(task) for task in plan.tasks]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for task, result in zip(plan.tasks, results):
@@ -68,21 +82,20 @@ class Orchestrator:
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            self.goal = self.original_goal
         else:
             console.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
-            self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            self.goal = (
+                f"{self.original_goal}\n\nFix failing tests:\n"
+                + "\n".join(test_result.failures)
+            )
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
+        if any(t.status == "failed" for t in self.all_tasks):
             return False
-        if completed >= len(self._get_tasks()):
-            return True
-        return False
-
-    def _get_tasks(self) -> list[Any]:
-        return []
+        if any(t.status == "pending" for t in self.all_tasks):
+            return False
+        return True
