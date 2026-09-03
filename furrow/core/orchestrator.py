@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
@@ -26,6 +26,35 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._current_plan: Plan | None = None
+        self._state_path = self.client.settings.workspace / ".furrow" / "state.json"
+        self._load_state()
+
+    def _load_state(self) -> None:
+        if self._state_path.exists():
+            try:
+                data = json.loads(self._state_path.read_text())
+                self.cycles = data.get("cycles", 0)
+                self.goal = data.get("goal", self.goal)
+            except (json.JSONDecodeError, OSError):
+                pass
+
+    def _save_state(self) -> None:
+        state = {
+            "goal": self.goal,
+            "cycles": self.cycles,
+        }
+        if self._current_plan:
+            state["tasks"] = [
+                {
+                    "id": t.id,
+                    "status": t.status,
+                    "result": t.result,
+                }
+                for t in self._current_plan.tasks
+            ]
+        self._state_path.parent.mkdir(parents=True, exist_ok=True)
+        self._state_path.write_text(json.dumps(state))
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -33,13 +62,19 @@ class Orchestrator:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
+            self._save_state()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                break
+            max_cycles = self.client.settings.max_cycles
+            if max_cycles > 0 and self.cycles >= max_cycles:
+                console.print(f"[yellow]Reached max_cycles ({max_cycles}). Halting.[/yellow]")
                 break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self._current_plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -47,9 +82,10 @@ class Orchestrator:
             return
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
+            worker_count = min(self.client.settings.max_parallel_tasks, len(plan.tasks))
             tasks = [
                 WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
+                for task in plan.tasks[:worker_count]
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -84,5 +120,5 @@ class Orchestrator:
             return True
         return False
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+    def _get_tasks(self) -> list[TaskModel]:
+        return self._current_plan.tasks if self._current_plan else []

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -41,6 +41,7 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onerror = (ev) => out.textContent += '\\nError: ' + ev.type + '\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -53,12 +54,23 @@ async def index() -> HTMLResponse:
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
+        await websocket.send_text(json.dumps({"type": "connected", "message": "WebSocket connected"}))
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        await websocket.send_text(json.dumps({"type": "cycle_start", "cycle": 0}))
+        try:
+            await orchestrator.run()
+        except Exception as e:
+            await websocket.send_text(json.dumps({"type": "error", "message": str(e)}))
+        await websocket.send_text(json.dumps({"type": "complete", "cycles": orchestrator.cycles}))
     except WebSocketDisconnect:
         pass
+    except json.JSONDecodeError:
+        try:
+            await websocket.send_text(json.dumps({"type": "error", "message": "Invalid JSON"}))
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

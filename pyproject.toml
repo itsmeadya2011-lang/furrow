@@ -20,8 +20,6 @@ dependencies = [
     "rich>=13.7",
     "python-dotenv>=1.0",
     "aiofiles>=24.1",
-    "tenacity>=8.2",
-    "structlog>=24.1",
 ]
 
 [project.optional-dependencies]
