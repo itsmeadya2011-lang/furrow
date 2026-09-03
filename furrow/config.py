@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    worker_max_steps: int = 10
+    tool_timeout_seconds: int = 120
+    retry_attempts: int = 3
 
 
 settings = Settings()
