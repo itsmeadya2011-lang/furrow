@@ -33,6 +33,13 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        """Run project tests using the first available test runner.
+
+        Tries common test runners in order (pytest, npm, pnpm, yarn, cargo, go).
+        Returns combined stdout and stderr from the first runner that executes
+        successfully within the timeout. If no runner is found, returns a
+        message indicating so.
+        """
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -53,6 +60,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError):
                 continue
         return "No test runner found."
