@@ -42,10 +42,14 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        workspace = str(self.client.settings.workspace)
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=workspace,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
