@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -21,10 +22,13 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
+            lint_typecheck_output = await self._run_lint_and_typecheck()
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        combined_output = f"--- Test Output ---\n{test_output}\n\n--- Lint & Typecheck Output ---\n{lint_typecheck_output}\n"
+
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nOutput:\n{combined_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -56,3 +60,28 @@ class TesterAgent:
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+    async def _run_lint_and_typecheck(self) -> str:
+        candidates = [
+            ("ruff", ["ruff", "check", "."]),
+            ("mypy", ["mypy", "."]),
+        ]
+        results: list[str] = []
+        for name, cmd in candidates:
+            if shutil.which(cmd[0]) is None:
+                results.append(f"{name}: not installed (skipped)")
+                continue
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=60)
+                    output = stdout.decode() + stderr.decode()
+                    results.append(f"--- {name} ---\n{output}")
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    results.append(f"--- {name} ---\nTimeout after 60 seconds")
+            except (FileNotFoundError, Exception) as e:
+                results.append(f"--- {name} ---\nError: {e}")
+        return "\n\n".join(results) if results else "No linters/type checkers found."

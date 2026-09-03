@@ -10,6 +10,11 @@ import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
+try:
+    from ollama import AsyncClient as OllamaAsyncClient
+except ImportError:  # pragma: no cover
+    OllamaAsyncClient = None
+
 from furrow.config import Provider, Settings, settings
 
 
@@ -18,6 +23,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: OllamaAsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,14 +43,38 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> OllamaAsyncClient:
+        if OllamaAsyncClient is None:
+            raise ImportError(
+                "The 'ollama' package is required to use the Ollama provider. "
+                "Install it with `pip install ollama`."
+            )
+        if self._ollama is None:
+            self._ollama = OllamaAsyncClient(host=self.settings.ollama_base_url)
+        return self._ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        try:
+            messages = [
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ]
+            response = await self.ollama.chat(model=model, messages=messages)
+            return response["message"]["content"]
+        except Exception as exc:
+            raise ValueError(f"Ollama request failed: {exc}") from exc
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
