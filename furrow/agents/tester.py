@@ -53,6 +53,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, asyncio.SubprocessError, OSError):
                 continue
         return "No test runner found."

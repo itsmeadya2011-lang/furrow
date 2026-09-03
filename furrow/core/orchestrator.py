@@ -26,10 +26,15 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.last_plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
+            max_cycles = self.client.settings.max_cycles
+            if max_cycles > 0 and self.cycles >= max_cycles:
+                console.print("[bold yellow]Max cycles reached. Halting.[/bold yellow]")
+                break
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
@@ -40,6 +45,7 @@ class Orchestrator:
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self.last_plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -76,13 +82,12 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
+        tasks = self._get_tasks()
+        if not tasks:
             return False
-        if completed >= len(self._get_tasks()):
-            return True
-        return False
+        if any(t.status == "failed" for t in tasks):
+            return False
+        return all(t.status == "completed" for t in tasks)
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.last_plan.tasks if self.last_plan else []

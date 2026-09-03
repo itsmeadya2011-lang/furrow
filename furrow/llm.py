@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+from functools import cached_property
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -37,12 +39,18 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @cached_property
+    def _httpx(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient()
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -64,6 +72,36 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        url = f"{self.settings.ollama_base_url}/api/chat"
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+        }
+        try:
+            response = await self._httpx.post(url, json=body, timeout=60.0)
+            response.raise_for_status()
+        except httpx.HTTPError as err:
+            resp = getattr(err, "response", None)
+            status_code = resp.status_code if resp is not None else "unknown"
+            excerpt = ""
+            if resp is not None:
+                try:
+                    excerpt = resp.text[:500]
+                except Exception:
+                    excerpt = str(err)[:500]
+            else:
+                excerpt = str(err)[:500]
+            raise RuntimeError(
+                f"Ollama request to {url} failed (status={status_code}): {excerpt}"
+            ) from err
+        data = response.json()
+        return data["message"]["content"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
