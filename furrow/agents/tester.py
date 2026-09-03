@@ -52,7 +52,8 @@ class TesterAgent:
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    await proc.wait()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+        return "No test runner found (tried: pytest, npm test, pnpm test, yarn test, cargo test, go test)."
