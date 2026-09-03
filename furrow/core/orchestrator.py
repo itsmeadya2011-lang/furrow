@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -14,22 +15,32 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TaskModel, TestResult, settings
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        callback: Callable[[dict], Awaitable[None]] | None = None,
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.callback = callback
+        self._current_tasks: list[TaskModel] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
+            if self.cycles >= settings.max_cycles and settings.max_cycles > 0:
+                console.print(f"[yellow]Reached max_cycles={settings.max_cycles}. Halting.[/yellow]")
+                break
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
@@ -37,14 +48,22 @@ class Orchestrator:
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
 
+    async def _emit(self, payload: dict) -> None:
+        if self.callback is not None:
+            await self.callback(payload)
+
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        await self._emit({"event": "plan", "tasks": [t.model_dump() for t in plan.tasks]})
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self._current_tasks = []
             return
+
+        self._current_tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -53,7 +72,7 @@ class Orchestrator:
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for task, result in zip(plan.tasks, results):
+        for i, (task, result) in enumerate(zip(plan.tasks, results)):
             if isinstance(result, Exception):
                 task.status = "failed"
                 task.result = str(result)
@@ -62,9 +81,11 @@ class Orchestrator:
                 task.status = "completed"
                 task.result = result
                 console.print(f"[green]Task {task.id} completed[/green]")
+        await self._emit({"event": "tasks_done", "results": [t.model_dump() for t in plan.tasks]})
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+        await self._emit({"event": "test", "passed": test_result.passed, "summary": test_result.summary})
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
@@ -85,4 +106,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._current_tasks

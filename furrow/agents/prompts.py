@@ -24,11 +24,24 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+Tools available:
+- Read existing files before changing them.
+- Use edit/write tools to make changes.
+- Run `pytest -q` after making changes to verify.
+- Use a shell to run commands.
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+At the end, return a JSON summary (no markdown, no extra text) with this shape:
+{
+  "status": "ok|failed",
+  "files_changed": ["src/auth.py", "tests/test_auth.py"],
+  "summary": "Brief explanation of what was done",
+  "tests": "passed|failed|n/a"
+}
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
