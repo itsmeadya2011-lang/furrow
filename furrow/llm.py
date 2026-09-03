@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
 import aiofiles
 import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
 
@@ -37,27 +38,45 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        max_tokens: Optional[int] = None,
+    ) -> str:
         model = model or self.settings.model
+        max_tokens = max_tokens if max_tokens is not None else self.settings.max_tokens
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_anthropic(prompt, system, model, max_tokens)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_openai(prompt, system, model, max_tokens)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+    @retry(
+        retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.AnthropicError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+    )
+    async def _complete_anthropic(self, prompt: str, system: str, model: str, max_tokens: int) -> str:
         response = await self.anthropic.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+    @retry(
+        retry=retry_if_exception_type((openai.RateLimitError, openai.OpenAIError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+    )
+    async def _complete_openai(self, prompt: str, system: str, model: str, max_tokens: int) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
+            max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},

@@ -54,7 +54,9 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
+## State Management
+The orchestrator saves state after each cycle to the file specified by `settings.state_file` (`.furrow_state.json` by default). Saved state includes the current goal, cycle count, task list, test results, and consecutive failure count. State is loaded automatically on startup, so a stopped session can pick up where it left off. The `resume` CLI command explicitly resumes from a previous state file.
+
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.

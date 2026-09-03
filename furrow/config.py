@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    state_file: Path = Field(default_factory=lambda: Path.cwd() / ".furrow_state.json")
+    max_tokens: int = 4096
+    max_consecutive_failures: int = 3
+
+
+class State(BaseModel):
+    goal: str
+    cycles: int
+    tasks: list[TaskModel]
+    last_test_passed: Optional[bool] = None
+    last_failures: list[str] = Field(default_factory=list)
+    consecutive_failures: int = 0
+    updated_at: str
 
 
 settings = Settings()
