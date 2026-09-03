@@ -17,4 +17,7 @@ class WorkerAgent:
 
     async def run(self) -> str:
         prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        try:
+            return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        except Exception as e:
+            return f"STATUS: failed\nCHANGED_FILES: \nSUMMARY: LLM request failed: {e}"

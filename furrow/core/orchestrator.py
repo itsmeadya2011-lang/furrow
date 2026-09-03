@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -26,11 +24,18 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._last_plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            max_cycles = self.client.settings.max_cycles
+            if max_cycles > 0 and self.cycles > max_cycles:
+                console.print(
+                    f"[yellow]max_cycles ({max_cycles}) reached. Halting.[/yellow]"
+                )
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
@@ -41,6 +46,7 @@ class Orchestrator:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        self._last_plan = plan
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
@@ -76,13 +82,18 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
+        tasks = self._get_tasks()
+        if not tasks:
             return False
-        if completed >= len(self._get_tasks()):
+        failed = [t for t in tasks if t.status == "failed"]
+        pending = [t for t in tasks if t.status not in ("completed", "failed")]
+        planner_says_complete = (
+            self._last_plan is not None
+            and "goal complete" in (self._last_plan.rationale or "").lower()
+        )
+        if not failed and not pending and planner_says_complete:
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return list(self._last_plan.tasks) if self._last_plan else []

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -30,7 +29,9 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "all tests passed" in response.lower() or "tests passed" in response.lower()
+            failures = [line.strip() for line in response.splitlines() if line.strip().startswith(("- ", "FAIL "))]
+            return TestResult(passed=passed, summary=response, failures=failures)
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -52,7 +53,8 @@ class TesterAgent:
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
-                    continue
+                    return f"Test runner timed out: {' '.join(cmd)}"
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        attempted = ", ".join(" ".join(cmd) for cmd in candidates)
+        return f"No test runner found. Attempted: {attempted}"
