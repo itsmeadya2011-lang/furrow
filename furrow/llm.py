@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
@@ -46,6 +46,12 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((anthropic.APIError, openai.APIError)),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +61,12 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((anthropic.APIError, openai.APIError)),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,

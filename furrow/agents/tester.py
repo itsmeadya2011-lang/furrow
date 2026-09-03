@@ -5,6 +5,7 @@ import json
 import os
 from typing import TYPE_CHECKING
 
+from furrow.agents.planner import MAX_JSON_RETRIES, _extract_json
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
@@ -27,10 +28,25 @@ class TesterAgent:
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
-            data = json.loads(response)
+            data = json.loads(_extract_json(response))
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            pass
+
+        for _ in range(MAX_JSON_RETRIES):
+            corrective = (
+                "Your previous response was not valid JSON. "
+                "Return ONLY valid JSON, no markdown.\n\n"
+                f"Prior response:\n{response}"
+            )
+            response = await self.client.complete(corrective, model=self.client.settings.tester_model)
+            try:
+                data = json.loads(_extract_json(response))
+                return TestResult(**data)
+            except (json.JSONDecodeError, ValueError):
+                continue
+
+        return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [

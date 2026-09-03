@@ -5,7 +5,7 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
 
-Return JSON only (no markdown, no explanation) with this shape:
+Return JSON only. Do NOT wrap the output in markdown code fences or any other formatting. Output must be a single valid JSON object with this shape:
 {
   "tasks": [
     {
@@ -24,6 +24,12 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+You have the following tools available: read_file, write_file, list_files,
+search_text, and run_shell. You may use the provided tools to read/write files,
+search the codebase, and run commands. Make the minimal targeted change needed
+to accomplish the task. When you finish, reply with a one-paragraph summary of
+what you changed and any issues, and make no further tool calls.
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
@@ -35,7 +41,7 @@ TESTER_PROMPT = """You are a tester agent in an autonomous coding system called 
 
 Given the goal and test output, determine if tests passed or failed.
 
-Return JSON only (no markdown) with this shape:
+Return JSON only. Do NOT wrap the output in markdown code fences or any other formatting. Output must be a single valid JSON object with this shape:
 {
   "passed": true,
   "summary": "All tests passed",
