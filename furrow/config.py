@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    state_file: Path = Path(".furrow/state.json")
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 

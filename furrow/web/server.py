@@ -4,6 +4,7 @@ import asyncio
 from typing import Optional
 
 import uvicorn
+from rich.console import Console
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -17,6 +18,25 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+class WebSocketWriter:
+    def __init__(self, websocket: WebSocket) -> None:
+        self._websocket = websocket
+        self._buffer = ""
+
+    def write(self, text: str) -> int:
+        self._buffer += text
+        return len(text)
+
+    def flush(self) -> None:
+        if self._buffer:
+            data = self._buffer
+            self._buffer = ""
+            asyncio.create_task(self._websocket.send_text(data))
+
+    def isatty(self) -> bool:
+        return False
 
 
 @app.get("/")
@@ -55,8 +75,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        ws_writer = WebSocketWriter(websocket)
+        ws_console = Console(file=ws_writer)
+        orchestrator = Orchestrator(goal=goal, console=ws_console)
         await orchestrator.run()
+        await websocket.send_text("DONE")
     except WebSocketDisconnect:
         pass
 
