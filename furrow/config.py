@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +50,23 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    request_timeout: float = 60.0
+
+    @model_validator(mode="after")
+    def validate_settings(self) -> "Settings":
+        level = logging.getLevelName(self.log_level)
+        if not isinstance(level, int) or level <= 0:
+            raise ValueError(f"Invalid log_level: {self.log_level}")
+        if self.max_parallel_tasks <= 0:
+            raise ValueError("max_parallel_tasks must be > 0")
+        if not self.workspace.exists():
+            try:
+                self.workspace.mkdir(parents=True, exist_ok=True)
+            except Exception as exc:
+                raise ValueError(
+                    f"Cannot create workspace directory: {self.workspace}"
+                ) from exc
+        return self
 
 
 settings = Settings()
