@@ -24,6 +24,13 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+Available tools:
+- read_file(path): Read the contents of a file at the given path.
+- write_file(path, content): Write content to a file at the given path (creating parent directories as needed).
+- list_files(directory): Recursively list all files under the given directory.
+
+Use these tools as needed to inspect code and apply your changes.
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
