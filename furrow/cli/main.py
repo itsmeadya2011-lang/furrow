@@ -38,5 +38,20 @@ def web() -> None:
     run()
 
 
+@main.command()
+@click.option("--state-file", default=".furrow_state.json", help="Path to state file")
+def resume(state_file: str) -> None:
+    from furrow.llm import LLMClient
+    loaded = Orchestrator.load_state(state_file, client=LLMClient())
+    if loaded is None:
+        console.print("[red]No saved state found. Run a goal first.[/red]")
+        sys.exit(1)
+    try:
+        asyncio.run(loaded.run())
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Furrow stopped by user.[/yellow]")
+        sys.exit(0)
+
+
 if __name__ == "__main__":
     main()

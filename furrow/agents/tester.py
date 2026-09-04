@@ -34,6 +34,8 @@ class TesterAgent:
 
     async def _run_tests(self) -> str:
         candidates = [
+            ["ruff", "check", "."],
+            ["mypy", "."],
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
             ["npm", "test", "--", "--silent"],
