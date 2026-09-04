@@ -29,7 +29,15 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Return a JSON object wrapped in ```json fences with this shape:
+{
+  "files_written": [{"path": "relative/path.py", "content": "..."}],
+  "summary": "Brief description of what was done"
+}
+
+If no files need writing, return a JSON object with an empty files_written list and a summary string.
+If you cannot produce JSON, return just a plain summary string as a fallback."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
