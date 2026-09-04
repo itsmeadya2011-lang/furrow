@@ -23,16 +23,25 @@ console = Console()
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None) -> None:
         self.goal = goal
+        self.original_goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
+        self.history: list[Any] = []
         self.cycles = 0
+        self._done = False
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            if 0 < self.client.settings.max_cycles < self.cycles:
+                console.print("[yellow]Max cycles reached. Halting.[/yellow]")
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
+            if self._done:
+                console.print("[bold green]Goal complete. Halting.[/bold green]")
+                break
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
@@ -42,8 +51,11 @@ class Orchestrator:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
+        self.history.append(plan.tasks)
+
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self._done = True
             return
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
@@ -76,13 +88,16 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if not self.history:
+            return False
+        tasks = self.history[-1]
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return [t for batch in self.history for t in batch]
