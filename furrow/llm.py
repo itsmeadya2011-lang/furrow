@@ -1,16 +1,39 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
+
+DEFAULT_LLM_TIMEOUT = 120.0
+
+
+def _llm_retry():
+    """Build a tenacity retry decorator suitable for async coroutine methods."""
+    return retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
 
 
 class LLMClient:
@@ -37,15 +60,43 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    def _timeout(self) -> float:
+        return getattr(self.settings, "llm_timeout", DEFAULT_LLM_TIMEOUT)
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        logger.info("llm.call.start", provider=self.settings.provider.value, model=model)
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                coro = self._complete_anthropic(prompt, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                coro = self._complete_openai(prompt, system, model)
+            elif self.settings.provider == Provider.OLLAMA:
+                coro = self._complete_ollama(prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+            result = await asyncio.wait_for(coro, timeout=self._timeout())
+            logger.info("llm.call.success", provider=self.settings.provider.value, model=model)
+            return result
+        except asyncio.TimeoutError:
+            logger.error(
+                "llm.call.timeout",
+                provider=self.settings.provider.value,
+                model=model,
+                timeout=self._timeout(),
+            )
+            raise
+        except Exception as exc:
+            logger.error(
+                "llm.call.failure",
+                provider=self.settings.provider.value,
+                model=model,
+                error=str(exc),
+            )
+            raise
+
+    @_llm_retry()
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +106,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @_llm_retry()
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +116,22 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @_llm_retry()
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages: list[dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        payload = {"model": model, "messages": messages, "stream": False}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.settings.ollama_base_url}/api/chat",
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+        return data["message"]["content"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
