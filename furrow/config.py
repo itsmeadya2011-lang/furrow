@@ -25,7 +25,7 @@ class TaskModel(BaseModel):
 
 class Plan(BaseModel):
     tasks: list[TaskModel]
-    rationale: str
+    rationale: str = ""
 
 
 class TestResult(BaseModel):
