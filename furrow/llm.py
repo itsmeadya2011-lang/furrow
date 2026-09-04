@@ -7,10 +7,14 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -18,6 +22,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._openai_ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,33 +42,132 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def openai_ollama(self) -> AsyncOpenAI:
+        if self._openai_ollama is None:
+            self._openai_ollama = AsyncOpenAI(
+                api_key="ollama",
+                base_url=self.settings.ollama_base_url,
+            )
+        return self._openai_ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
+        logger.info(
+            "llm_call_start",
+            provider="anthropic",
             model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
+            prompt_length=len(prompt),
         )
-        return response.content[0].text
+        try:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+                timeout=self.settings.request_timeout,
+            )
+            result = response.content[0].text
+            logger.info(
+                "llm_call_complete",
+                provider="anthropic",
+                model=model,
+                prompt_length=len(prompt),
+                response_length=len(result),
+            )
+            return result
+        except Exception as e:
+            logger.error(
+                "llm_call_error",
+                provider="anthropic",
+                model=model,
+                prompt_length=len(prompt),
+                error=str(e),
+            )
+            raise
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
+        logger.info(
+            "llm_call_start",
+            provider="openai",
             model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
+            prompt_length=len(prompt),
         )
-        return response.choices[0].message.content or ""
+        try:
+            response = await self.openai.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                timeout=self.settings.request_timeout,
+            )
+            result = response.choices[0].message.content or ""
+            logger.info(
+                "llm_call_complete",
+                provider="openai",
+                model=model,
+                prompt_length=len(prompt),
+                response_length=len(result),
+            )
+            return result
+        except Exception as e:
+            logger.error(
+                "llm_call_error",
+                provider="openai",
+                model=model,
+                prompt_length=len(prompt),
+                error=str(e),
+            )
+            raise
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        logger.info(
+            "llm_call_start",
+            provider="ollama",
+            model=model,
+            prompt_length=len(prompt),
+        )
+        try:
+            response = await self.openai_ollama.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                timeout=self.settings.request_timeout,
+            )
+            result = response.choices[0].message.content or ""
+            logger.info(
+                "llm_call_complete",
+                provider="ollama",
+                model=model,
+                prompt_length=len(prompt),
+                response_length=len(result),
+            )
+            return result
+        except Exception as e:
+            logger.error(
+                "llm_call_error",
+                provider="ollama",
+                model=model,
+                prompt_length=len(prompt),
+                error=str(e),
+            )
+            raise
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
