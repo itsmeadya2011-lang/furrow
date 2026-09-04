@@ -27,7 +27,13 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Read existing files before modifying them.
+- Use write_file to create or overwrite files, or append to existing files as needed.
+- Return a JSON object (no markdown, no explanation) with this shape:
+{
+  "changed_files": ["src/auth.py", "tests/test_auth.py"],
+  "summary": "Added JWT authentication endpoints and tests"
+}
 - Do not spawn subagents.
 """
 
