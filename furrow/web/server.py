@@ -7,8 +7,8 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from rich.console import Console
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -17,6 +17,25 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+class _WebSocketFile:
+    def __init__(self, websocket: WebSocket) -> None:
+        self._websocket = websocket
+
+    def write(self, text: str) -> int:
+        stripped = text.rstrip()
+        if stripped:
+            asyncio.create_task(self._websocket.send_text(stripped))
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+class WebSocketConsole(Console):
+    def __init__(self, websocket: WebSocket) -> None:
+        super().__init__(file=_WebSocketFile(websocket), force_terminal=False, color_system=None)
 
 
 @app.get("/")
@@ -39,7 +58,7 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => { out.textContent += ev.data + '\\n'; out.scrollTop = out.scrollHeight; };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,8 +74,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        console = WebSocketConsole(websocket)
+        orchestrator = Orchestrator(goal=goal, console=console)
         await orchestrator.run()
+        await websocket.send_text("[DONE]")
     except WebSocketDisconnect:
         pass
 
