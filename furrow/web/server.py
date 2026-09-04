@@ -37,9 +37,20 @@ async def index() -> HTMLResponse:
     const out = document.getElementById('out');
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
+      out.textContent = '';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => {
+        try {
+          const obj = JSON.parse(ev.data);
+          const ts = new Date().toLocaleTimeString();
+          const label = obj.type || 'event';
+          const msg = obj.message || '';
+          const data = obj.data ? ' | ' + JSON.stringify(obj.data) : '';
+          out.textContent += '[' + ts + '] [' + label + '] ' + msg + data + '\\n';
+        } catch {
+          out.textContent += ev.data + '\\n';
+        }
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,7 +66,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        def on_event(payload: dict[str, object]) -> None:
+            asyncio.get_running_loop().create_task(websocket.send_json(payload))
+
+        orchestrator = Orchestrator(goal=goal, on_event=on_event)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass

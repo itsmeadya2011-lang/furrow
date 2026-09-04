@@ -7,13 +7,16 @@ import click
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import configure_logging, get_logger
 
 console = Console()
+logger = get_logger("cli")
 
 
 @click.group()
 def main() -> None:
-    pass
+    configure_logging()
+    logger.debug("cli_started")
 
 
 @main.command()

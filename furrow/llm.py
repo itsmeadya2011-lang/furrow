@@ -9,8 +9,33 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from furrow.config import Provider, Settings, settings
+from furrow.logging import get_logger
+
+logger = get_logger("llm")
+
+
+def _is_retryable(exc: Exception) -> bool:
+    if isinstance(exc, (openai.RateLimitError, anthropic.RateLimitError)):
+        return True
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if isinstance(status, int) and status in (429, 500, 502, 503, 504):
+        return True
+    if hasattr(openai, "APIConnectionError") and isinstance(exc, openai.APIConnectionError):
+        return True
+    if hasattr(anthropic, "APIConnectionError") and isinstance(exc, anthropic.APIConnectionError):
+        return True
+    return False
+
+
+retry_decorator = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception(_is_retryable),
+    reraise=True,
+)
 
 
 class LLMClient:
@@ -18,6 +43,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._openai_ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,31 +63,62 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+    @property
+    def openai_ollama(self) -> AsyncOpenAI:
+        if self._openai_ollama is None:
+            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY") or "ollama"
+            self._openai_ollama = AsyncOpenAI(api_key=api_key, base_url=self.settings.ollama_base_url)
+        return self._openai_ollama
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+    async def complete(self, prompt: str, system: str = "", model: str | None = None, request_timeout: float = 120.0) -> str:
+        model = model or self.settings.model
+        provider = self.settings.provider
+        logger.debug("llm_request_started", provider=provider, model=model)
+        try:
+            if provider == Provider.ANTHROPIC:
+                return await self._complete_anthropic(prompt, system, model, request_timeout)
+            elif provider == Provider.OPENAI:
+                return await self._complete_openai(prompt, system, model, request_timeout)
+            elif provider == Provider.OLLAMA:
+                return await self._complete_ollama(prompt, system, model, request_timeout)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        except Exception as e:
+            logger.error("llm_request_failed", provider=provider, model=model, error=str(e))
+            raise
+
+    @retry_decorator
+    async def _complete_anthropic(self, prompt: str, system: str, model: str, request_timeout: float) -> str:
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=4096,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
+            timeout=request_timeout,
         )
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+    @retry_decorator
+    async def _complete_openai(self, prompt: str, system: str, model: str, request_timeout: float) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
+            timeout=request_timeout,
+        )
+        return response.choices[0].message.content or ""
+
+    @retry_decorator
+    async def _complete_ollama(self, prompt: str, system: str, model: str, request_timeout: float) -> str:
+        response = await self.openai_ollama.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            timeout=request_timeout,
         )
         return response.choices[0].message.content or ""
 
