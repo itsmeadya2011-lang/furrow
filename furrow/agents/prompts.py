@@ -1,4 +1,6 @@
-PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
+from __future__ import annotations
+
+PLANNER_SYSTEM = """You are a planning agent for an autonomous coding system called Furrow.
 
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Independent when possible
@@ -18,9 +20,16 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+If the goal appears already satisfied or there is nothing to do, return an empty tasks list."""
 
-WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
+PLANNER_PROMPT = """Below is the project context for your planning.
+
+{context}
+
+Now break the user's goal into tasks."""
+
+WORKER_SYSTEM = """You are a worker agent in an autonomous coding system called Furrow.
 
 Your job is to implement the assigned task completely and concisely.
 
@@ -29,7 +38,8 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Below is the existing file context to help you understand the codebase."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
