@@ -9,11 +9,13 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
 
 
 class LLMClient:
+    """Async client for interacting with LLM providers."""
     def __init__(self, settings: Settings = settings) -> None:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
@@ -37,15 +39,50 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    async def aclose(self) -> None:
+        """Close underlying provider clients."""
+        if self._anthropic is not None:
+            close = getattr(self._anthropic, "aclose", None)
+            if close is not None:
+                await close()
+        if self._openai is not None:
+            close = getattr(self._openai, "aclose", None)
+            if close is not None:
+                await close()
+
+    async def __aenter__(self) -> LLMClient:
+        return self
+
+    async def __aexit__(self, *exc: Any) -> None:
+        await self.aclose()
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+        """Send a completion request to the configured provider.
+
+        Args:
+            prompt: User message to send.
+            system: Optional system prompt override.
+            model: Optional model override.
+
+        Returns:
+            The generated completion text.
+        """
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
         else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            raise ValueError(
+                f"Unsupported provider: {self.settings.provider!r}. "
+                f"Currently supported: 'anthropic', 'openai'."
+            )
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(anthropic.APIStatusError),
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +92,11 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(openai.APIStatusError),
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -66,10 +108,24 @@ class LLMClient:
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
+        """Read text content from a file asynchronously.
+
+        Args:
+            path: Filesystem path to read.
+
+        Returns:
+            File contents as a string.
+        """
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        """Write text content to a file asynchronously, creating parents as needed.
+
+        Args:
+            path: Filesystem path to write.
+            content: Text content to write.
+        """
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:

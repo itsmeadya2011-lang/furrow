@@ -16,10 +16,18 @@ class PlannerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def plan(self, goal: str) -> Plan:
+        """Break the goal into a structured plan of tasks.
+
+        Args:
+            goal: High-level objective to achieve.
+
+        Returns:
+            A Plan containing ordered tasks and rationale.
+        """
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
             return Plan(**data)
         except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
+            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}") from e

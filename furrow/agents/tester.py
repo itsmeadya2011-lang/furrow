@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -18,6 +17,15 @@ class TesterAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        """Run tests and evaluate whether the goal is satisfied.
+
+        Args:
+            goal: High-level objective being validated.
+            tasks: Tasks produced by the planner.
+
+        Returns:
+            TestResult indicating pass/fail and any failures.
+        """
         test_output = ""
         try:
             test_output = await self._run_tests()
@@ -53,6 +61,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except Exception:  # noqa: BLE001 - test runner may not be installed
                 continue
         return "No test runner found."

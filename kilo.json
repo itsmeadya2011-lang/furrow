@@ -1,8 +1,14 @@
 {
+  "$schema": "https://app.kilo.ai/config.json",
   "default_agent": "furrow",
   "permission": {
-    "bash": "allow",
+    "bash": {
+      "*": "allow"
+    },
     "edit": "allow",
-    "read": "allow"
+    "read": "allow",
+    "external_directory": "allow",
+    "task": "allow",
+    "skill": "allow"
   }
 }

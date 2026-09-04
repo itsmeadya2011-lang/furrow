@@ -1,3 +1,6 @@
-from furrow.core.orchestrator import Orchestrator
+"""Core orchestration for the Furrow agent loop."""
 
-__all__ = ["Orchestrator"]
+from furrow.core.orchestrator import Orchestrator
+from furrow.core.state import StateStore
+
+__all__ = ["Orchestrator", "StateStore"]

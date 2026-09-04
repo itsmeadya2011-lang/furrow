@@ -16,5 +16,10 @@ class WorkerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
+        """Execute the assigned task and return a result string.
+
+        Returns:
+            Output describing what was implemented.
+        """
         prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
         return await self.client.complete(prompt, model=self.client.settings.worker_model)
