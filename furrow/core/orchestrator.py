@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -14,20 +11,44 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Settings
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    """Coordinates the plan-execute-test loop to accomplish a goal.
+
+    Repeatedly plans tasks, executes them in parallel via worker agents,
+    then runs a tester agent to verify the results. Halts when all tasks
+    complete without failures, or when ``max_cycles`` is reached.
+    """
+
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        """Initialize the orchestrator.
+
+        Args:
+            goal: The high-level objective to accomplish.
+            client: Optional pre-configured LLM client. A default
+                ``LLMClient`` is created if not provided.
+            settings: Optional application settings. Defaults to the
+                global ``settings`` instance from ``furrow.config``.
+        """
         self.goal = goal
-        self.client = client or LLMClient()
+        self.settings = settings or Settings()
+        self.client = client or LLMClient(settings=self.settings)
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._tasks: list[Any] = []
 
     async def run(self) -> None:
+        """Run the orchestrator loop until the goal is complete or cycles are exhausted."""
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
@@ -36,14 +57,21 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            if self.settings.max_cycles > 0 and self.cycles >= self.settings.max_cycles:
+                console.print(
+                    f"[bold yellow]Reached max_cycles={self.settings.max_cycles}. Halting.[/bold yellow]"
+                )
+                break
 
     async def _cycle(self) -> None:
+        """Execute a single plan-work-test cycle and update internal task state."""
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self._tasks = []
             return
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
@@ -75,14 +103,25 @@ class Orchestrator:
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
+        self._tasks = list(plan.tasks)
+
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        """Return True if all tasks are completed with no failures.
+
+        Returns False when there are no tasks (to allow re-planning)
+        or when any task has failed.
+        """
+        tasks = self._get_tasks()
+        if not tasks:
+            return False
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        """Return the list of tasks from the most recent plan."""
+        return self._tasks
