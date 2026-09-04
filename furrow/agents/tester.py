@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self._test_timeout = getattr(settings, "test_timeout", 120) if settings else 120
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -48,11 +49,14 @@ class TesterAgent:
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self._test_timeout)
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode != 0:
+                        output = f"[Process exited with code {proc.returncode}]\n" + output
+                    return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except OSError:
                 continue
         return "No test runner found."

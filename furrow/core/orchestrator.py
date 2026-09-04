@@ -21,11 +21,17 @@ console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        settings: "Settings | None" = None,
+    ) -> None:
         self.goal = goal
-        self.client = client or LLMClient()
+        self.client = client or LLMClient(settings=settings)
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._current_plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -36,6 +42,10 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            max_cycles = getattr(self.client.settings, "max_cycles", 0)
+            if max_cycles > 0 and self.cycles >= max_cycles:
+                console.print(f"[bold yellow]Reached max_cycles={max_cycles}. Halting.[/bold yellow]")
+                break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
@@ -44,7 +54,10 @@ class Orchestrator:
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self._current_plan = plan
             return
+
+        self._current_plan = plan
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -74,15 +87,23 @@ class Orchestrator:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            for task in plan.tasks:
+                task.status = "pending"
+                task.result = None
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        tasks = self._get_tasks()
+        if not tasks:
+            return False
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        if self._current_plan is None:
+            return []
+        return self._current_plan.tasks

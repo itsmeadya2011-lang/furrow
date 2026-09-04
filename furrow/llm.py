@@ -9,8 +9,26 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+
+_TRANSIENT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+    anthropic.InternalServerError,
+    openai.RateLimitError,
+    openai.APIConnectionError,
+    openai.APITimeoutError,
+    openai.InternalServerError,
+)
 
 
 class LLMClient:
@@ -37,32 +55,61 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        timeout: float = 120.0,
+    ) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                return await self._complete_anthropic(prompt, system, model, timeout)
+            elif self.settings.provider == Provider.OPENAI:
+                return await self._complete_openai(prompt, system, model, timeout)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        except Exception as e:
+            raise type(e)(f"[{model}] {e}") from e
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
+    async def _complete_anthropic(
+        self, prompt: str, system: str, model: str, timeout: float
+    ) -> str:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type(_TRANSIENT_EXCEPTIONS),
+            reraise=True,
+        ):
+            with attempt:
+                response = await self.anthropic.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    system=system or "You are a helpful coding assistant.",
+                    messages=[{"role": "user", "content": prompt}],
+                    timeout=timeout,
+                )
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
+    async def _complete_openai(
+        self, prompt: str, system: str, model: str, timeout: float
+    ) -> str:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type(_TRANSIENT_EXCEPTIONS),
+            reraise=True,
+        ):
+            with attempt:
+                response = await self.openai.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system or "You are a helpful coding assistant."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    timeout=timeout,
+                )
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
@@ -75,7 +122,7 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
+    async def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
