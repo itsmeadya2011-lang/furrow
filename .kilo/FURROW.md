@@ -54,7 +54,13 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
+## CLI
+```bash
+furrow start "goal" [--model MODEL] [--max-cycles N] [--workspace PATH]
+furrow web                                          # monitoring UI
+```
+
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
+- Desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
