@@ -1,22 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import Settings, configure_logging
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+logger = structlog.get_logger(__name__)
 
 
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    configure_logging()
 
 
 @app.get("/")

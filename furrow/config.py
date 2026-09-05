@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
+import sys
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -47,8 +50,34 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    max_retries: int = 3
+    retry_min_wait: float = 1.0
+    retry_max_wait: float = 10.0
+    timeout_seconds: float = 120.0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
 
 settings = Settings()
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Configure structlog for structured logging output."""
+    numeric_level = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(
+        level=numeric_level,
+        format="%(message)s",
+        stream=sys.stdout,
+        force=True,
+    )
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer() if level.upper() == "DEBUG" else structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(numeric_level),
+        logger_factory=structlog.PrintLoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
