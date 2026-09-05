@@ -2,15 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import TaskModel, TestResult, get_logger
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = get_logger("furrow.tester")
 
 
 class TesterAgent:
@@ -22,8 +23,13 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            logger.error("test_run_failed", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
+        if not test_output.strip():
+            test_output = "No tests found."
+
+        logger.info("test_output", output=test_output[:500])
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
@@ -52,7 +58,8 @@ class TesterAgent:
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    logger.warning("test_timeout", command=" ".join(cmd))
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
         return "No test runner found."

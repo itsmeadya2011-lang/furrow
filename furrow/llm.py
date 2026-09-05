@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings, get_logger, settings
+
+logger = get_logger("furrow.llm")
 
 
 class LLMClient:
@@ -39,6 +38,7 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.info("llm_complete", provider=self.settings.provider, model=model, prompt_len=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
