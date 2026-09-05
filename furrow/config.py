@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +50,42 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @model_validator(mode="after")
+    def _validate_provider_keys(self) -> "Settings":
+        # Defer strict validation to LLMClient.validate() to avoid import-time crashes
+        # when API keys are not set in the environment.
+        return self
+
+    @model_validator(mode="after")
+    def _validate_max_parallel_tasks(self) -> "Settings":
+        if not 1 <= self.max_parallel_tasks <= 10:
+            raise ValueError("max_parallel_tasks must be between 1 and 10")
+        return self
+
+    def detect_project_type(self) -> str:
+        ws = Path(self.workspace)
+        if (ws / "pyproject.toml").exists() or (ws / "setup.py").exists() or (ws / "requirements.txt").exists():
+            return "python"
+        if (ws / "package.json").exists():
+            return "node"
+        if (ws / "Cargo.toml").exists():
+            return "rust"
+        if (ws / "go.mod").exists():
+            return "go"
+        return "unknown"
+
+    def get_test_command(self) -> list[str]:
+        project_type = self.detect_project_type()
+        if project_type == "python":
+            return ["python", "-m", "pytest", "-q"]
+        if project_type == "node":
+            return ["npm", "test", "--", "--silent"]
+        if project_type == "rust":
+            return ["cargo", "test", "-q"]
+        if project_type == "go":
+            return ["go", "test", "./..."]
+        return ["pytest", "-q"]
 
 
 settings = Settings()
