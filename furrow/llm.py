@@ -6,11 +6,24 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+DEFAULT_TIMEOUT = 60.0
+
+_RETRY = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    retry=retry_if_exception_type(
+        (anthropic.APIError, openai.APIError, ConnectionError)
+    ),
+    reraise=True,
+)
 
 
 class LLMClient:
@@ -24,8 +37,11 @@ class LLMClient:
         if self._anthropic is None:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(api_key=api_key)
+                raise ValueError(
+                    "ANTHROPIC_API_KEY is not set. Set the ANTHROPIC_API_KEY "
+                    "environment variable or provide it via settings."
+                )
+            self._anthropic = AsyncAnthropic(api_key=api_key, timeout=DEFAULT_TIMEOUT)
         return self._anthropic
 
     @property
@@ -33,19 +49,29 @@ class LLMClient:
         if self._openai is None:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+                raise ValueError(
+                    "OPENAI_API_KEY is not set. Set the OPENAI_API_KEY "
+                    "environment variable or provide it via settings."
+                )
+            self._openai = AsyncOpenAI(api_key=api_key, timeout=DEFAULT_TIMEOUT)
         return self._openai
 
+    @_RETRY
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            raise ValueError(
+                f"Unsupported provider '{self.settings.provider}'. "
+                "Supported providers are 'anthropic', 'openai', and 'ollama'."
+            )
 
+    @_RETRY
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +81,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @_RETRY
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +91,25 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @_RETRY
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.post(
+                f"{base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system or "You are a helpful coding assistant."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("message", {}).get("content", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

@@ -34,8 +34,17 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class TestRunOutput(BaseModel):
+    stdout: str
+    stderr: str
+    returncode: int
+    command: str
+    runner: str
+    timed_out: bool
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
@@ -49,6 +58,7 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    test_timeout: int = 120
 
 
 settings = Settings()
