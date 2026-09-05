@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -19,14 +20,15 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
+@click.option("--workspace", type=click.Path(path_type=Path), default=None, help="Workspace directory")
+def start(goal: str | None, model: str | None, workspace: Path | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
         from furrow.config import settings
         settings.model = model
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, workspace=workspace).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)
