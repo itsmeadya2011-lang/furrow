@@ -24,7 +24,17 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        completed_tasks = [t for t in tasks if t.status == "completed"]
+        tasks_context = "\nCompleted tasks this cycle:\n"
+        for t in completed_tasks:
+            tasks_context += f"  - {t.id}: {t.result}\n"
+
+        prompt = (
+            f"{TESTER_PROMPT}\n\n"
+            f"Goal: {goal}"
+            f"{tasks_context}\n"
+            f"Test output:\n{test_output}\n"
+        )
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)

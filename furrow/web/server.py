@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
@@ -17,6 +18,7 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+    state_file: Optional[str] = None
 
 
 @app.get("/")
@@ -55,7 +57,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        state_file = data.get("state_file")
+        state_path = Path(state_file) if state_file else None
+        orchestrator = Orchestrator(goal=goal, state_path=state_path)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass

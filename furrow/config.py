@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-3-5-sonnet-20241022"
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
+    state_file: Path = Field(default_factory=lambda: Path(".furrow_state.json"))
     log_level: str = "INFO"
 
 
