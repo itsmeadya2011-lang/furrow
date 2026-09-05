@@ -1,20 +1,22 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import asyncio
 import json
 import os
-from typing import TYPE_CHECKING
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import Settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
-if TYPE_CHECKING:
-    from furrow.config import Settings
+logger = structlog.get_logger()
 
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings()
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
@@ -33,26 +35,57 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
-            ["cargo", "test", "-q"],
-            ["go", "test", "./..."],
-        ]
+        workspace = self.settings.workspace if self.settings else Path.cwd()
+        candidates: list[list[str]] = []
+
+        if (workspace / "pyproject.toml").exists():
+            candidates = [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+            ]
+        elif (workspace / "package.json").exists():
+            candidates = [
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+            ]
+        elif (workspace / "Cargo.toml").exists():
+            candidates = [["cargo", "test", "-q"]]
+        elif (workspace / "go.mod").exists():
+            candidates = [["go", "test", "./..."]]
+        else:
+            candidates = [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+                ["cargo", "test", "-q"],
+                ["go", "test", "./..."],
+            ]
+
+        timeout = getattr(self.settings, "test_timeout", 120)
+
         for cmd in candidates:
+            logger.info("running_test_command", command=" ".join(cmd))
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    output = stdout.decode() + stderr.decode()
+                    logger.info("test_command_completed", command=" ".join(cmd), returncode=proc.returncode)
+                    return output
                 except asyncio.TimeoutError:
                     proc.kill()
+                    logger.warning("test_command_timed_out", command=" ".join(cmd), timeout=timeout)
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                logger.debug("test_command_not_found", command=" ".join(cmd))
                 continue
+            except Exception as e:
+                logger.error("test_command_failed", command=" ".join(cmd), error=str(e))
+                continue
+        logger.warning("no_test_runner_found")
         return "No test runner found."

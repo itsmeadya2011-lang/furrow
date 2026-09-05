@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     tester_model: str = "claude-3-5-sonnet-20241022"
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
+    ollama_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
