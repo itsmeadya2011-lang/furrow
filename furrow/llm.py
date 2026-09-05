@@ -6,11 +6,39 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings, logger, settings
+
+TRANSIENT_ERRORS = (
+    anthropic.RateLimitError,
+    anthropic.APIConnectionError,
+    anthropic.APITimeoutError,
+    openai.RateLimitError,
+    openai.APIConnectionError,
+    openai.APITimeoutError,
+    TimeoutError,
+    ConnectionError,
+    httpx.HTTPError,
+)
+
+
+def transient_retry(fn):
+    return retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=2),
+        retry=retry_if_exception_type(TRANSIENT_ERRORS),
+        reraise=True,
+    )(fn)
 
 
 class LLMClient:
@@ -37,6 +65,7 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @transient_retry
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
@@ -46,6 +75,7 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @transient_retry
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +85,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @transient_retry
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
