@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -39,7 +40,14 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          out.textContent += msg.text + '\\n';
+        } catch {
+          out.textContent += ev.data + '\\n';
+        }
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,10 +63,44 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def on_status(event: str, payload: dict) -> None:
+            text = _format_event(event, payload)
+            await websocket.send_json({"event": event, "text": text})
+
+        orchestrator = Orchestrator(goal=goal, on_status=on_status)
         await orchestrator.run()
+        await websocket.send_json({"event": "done", "text": "Session ended."})
     except WebSocketDisconnect:
         pass
+
+
+def _format_event(event: str, payload: dict) -> str:
+    if event == "started":
+        return f"Goal: {payload.get('goal', '')}"
+    if event == "cycle_start":
+        return f"── Cycle {payload.get('cycle', '?')} ──"
+    if event == "plan_created":
+        return f"Plan: {payload.get('tasks', 0)} tasks. {payload.get('rationale', '')}"
+    if event == "no_tasks":
+        return "No tasks planned."
+    if event == "planning_failed":
+        return f"Planning failed: {payload.get('error', '')}"
+    if event == "task_completed":
+        return f"Task {payload.get('task_id', '?')} completed."
+    if event == "task_failed":
+        return f"Task {payload.get('task_id', '?')} failed: {payload.get('error', '')}"
+    if event == "tests_passed":
+        return f"Tests passed: {payload.get('summary', '')}"
+    if event == "tests_failed":
+        return f"Tests failed: {payload.get('summary', '')}"
+    if event == "testing_failed":
+        return f"Testing failed: {payload.get('error', '')}"
+    if event == "completed":
+        return f"Goal complete after {payload.get('cycles', '?')} cycles."
+    if event == "max_cycles":
+        return f"Stopped after {payload.get('cycles', '?')} cycles."
+    return f"[{event}]"
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

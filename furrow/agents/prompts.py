@@ -27,7 +27,12 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- After implementing, output the complete updated contents of every file you modified.
+- Wrap each file in a markdown code block with the relative file path as the language identifier, like:
+  ```src/auth.py
+  <complete file contents here>
+  ```
+- Do not include explanations or summaries outside the code blocks.
 - Do not spawn subagents.
 """
 

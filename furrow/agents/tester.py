@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -14,8 +15,14 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        workspace: Path | None = None,
+    ) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.workspace = workspace or self.client.settings.workspace
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -45,7 +52,10 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(self.workspace),
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
