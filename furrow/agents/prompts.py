@@ -1,3 +1,13 @@
+import re
+
+
+def _extract_json(text: str) -> str:
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if match:
+        return match.group(1).strip()
+    return text.strip()
+
+
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:

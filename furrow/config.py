@@ -4,8 +4,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+import dotenv
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+dotenv.load_dotenv()
 
 
 class Provider(str, Enum):
@@ -49,6 +52,25 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @field_validator("workspace", mode="before")
+    @classmethod
+    def validate_workspace_exists(cls, v: Path | str) -> Path:
+        path = Path(v)
+        if not path.exists() or not path.is_dir():
+            raise ValueError(f"workspace must be an existing directory, got: {path}")
+        return path
+
+    @field_validator("anthropic_api_key", "openai_api_key")
+    @classmethod
+    def validate_api_key_for_cloud_providers(cls, v: Optional[str], info) -> Optional[str]:
+        provider = info.data.get("provider")
+        if provider in (Provider.ANTHROPIC, Provider.OPENAI):
+            if not v:
+                raise ValueError(
+                    f"{provider.value} provider requires an API key to be set"
+                )
+        return v
 
 
 settings = Settings()

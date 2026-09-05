@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
-from furrow.agents.prompts import TESTER_PROMPT
+from furrow.agents.prompts import TESTER_PROMPT, _extract_json
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
 
@@ -27,7 +26,7 @@ class TesterAgent:
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
-            data = json.loads(response)
+            data = json.loads(_extract_json(response))
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
