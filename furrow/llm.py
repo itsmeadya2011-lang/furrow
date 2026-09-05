@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+logger = logging.getLogger(__name__)
 
 
 class LLMClient:
@@ -37,27 +41,42 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(self, prompt: str, system: str = "", model: str | None = None, max_tokens: int = 4096) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._retry(lambda: self._complete_anthropic(prompt, system, model, max_tokens))
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._retry(lambda: self._complete_openai(prompt, system, model, max_tokens))
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+    async def _retry(self, coro_factory):
+        attempts = self.settings.llm_retry_attempts
+        backoff = self.settings.llm_retry_backoff
+        last_exception = None
+        for attempt in range(attempts):
+            try:
+                return await coro_factory()
+            except Exception as exc:
+                last_exception = exc
+                logger.warning("LLM call failed (attempt %d/%d): %s", attempt + 1, attempts, exc)
+                if attempt < attempts - 1:
+                    await asyncio.sleep(backoff * (2 ** attempt))
+        raise last_exception
+
+    async def _complete_anthropic(self, prompt: str, system: str, model: str, max_tokens: int) -> str:
         response = await self.anthropic.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_openai(self, prompt: str, system: str, model: str, max_tokens: int) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
+            max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},

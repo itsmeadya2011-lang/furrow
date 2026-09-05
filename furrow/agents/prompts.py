@@ -29,6 +29,15 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+Output format:
+Wrap each file you create or modify in a fenced code block. Immediately before each code block, add a filename comment using this exact format:
+# File: path/to/file.py
+
+Example:
+# File: src/auth.py
+def login(username: str, password: str) -> bool:
+    ...
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.

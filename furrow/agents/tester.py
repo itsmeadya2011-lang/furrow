@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class TesterAgent:
@@ -30,29 +33,71 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            lowered = response.lower()
+            passed = (
+                "all tests passed" in lowered
+                or "passing" in lowered and "fail" not in lowered
+                or "passed" in lowered
+            )
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
-            ["cargo", "test", "-q"],
-            ["go", "test", "./..."],
-        ]
+        workspace = self.client.settings.workspace
+        timeout = self.client.settings.test_timeout
+
+        candidates = []
+
+        makefile = workspace / "Makefile"
+        if makefile.exists():
+            for line in makefile.read_text().splitlines():
+                stripped = line.strip()
+                if stripped.startswith("test:"):
+                    candidates.append(["make", "test"])
+                    break
+
+        pyproject = workspace / "pyproject.toml"
+        if pyproject.exists():
+            text = pyproject.read_text()
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("test = "):
+                    candidates.append(["python", "-m", "pytest", "-q"])
+                    break
+
+        candidates.extend(
+            [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+                ["cargo", "test", "-q"],
+                ["go", "test", "./..."],
+            ]
+        )
+
         for cmd in candidates:
             try:
+                logger.info("Attempting test command: %s", " ".join(cmd))
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    output = stdout.decode() + stderr.decode()
+                    logger.info("Test output (%s):\n%s", " ".join(cmd), output)
+                    return output
                 except asyncio.TimeoutError:
                     proc.kill()
+                    logger.warning("Test command timed out after %ds: %s", timeout, " ".join(cmd))
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, Exception) as exc:
+                logger.debug("Test command failed: %s (%s)", " ".join(cmd), exc)
                 continue
-        return "No test runner found."
+
+        message = (
+            "No test runner found. Ensure the project has a test suite and a supported "
+            "test command (pytest, npm, cargo, go, make test, etc.)."
+        )
+        logger.info(message)
+        return message
