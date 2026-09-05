@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,45 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+
+# Tool definitions shared across providers
+TOOL_DEFINITIONS = [
+    {
+        "name": "read_file",
+        "description": "Read the contents of a file at the given path.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative or absolute path to the file."}
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "write_file",
+        "description": "Write content to a file, creating parent directories if needed.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Relative or absolute path to the file."},
+                "content": {"type": "string", "description": "Content to write."},
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "list_files",
+        "description": "List all files in a directory recursively.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "description": "Directory to list."}
+            },
+            "required": ["directory"],
+        },
+    },
+]
 
 
 class LLMClient:
@@ -43,6 +83,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -64,6 +106,95 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        import httpx
+
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+            "stream": False,
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{base_url}/api/generate", json=payload, timeout=120.0)
+            response.raise_for_status()
+            data = response.json()
+        return data.get("response", "")
+
+    async def complete_with_tools(
+        self, prompt: str, system: str = "", model: str | None = None
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Run a tool-calling turn and return (assistant_text, tool_calls)."""
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            return await self._tool_call_anthropic(prompt, system, model)
+        elif self.settings.provider == Provider.OPENAI:
+            return await self._tool_call_openai(prompt, system, model)
+        else:
+            raise ValueError(
+                f"Tool calling not supported for provider: {self.settings.provider}"
+            )
+
+    async def _tool_call_anthropic(self, prompt: str, system: str, model: str) -> tuple[str, list[dict[str, Any]]]:
+        response = await self.anthropic.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system or "You are a helpful coding assistant.",
+            messages=[{"role": "user", "content": prompt}],
+            tools=TOOL_DEFINITIONS,
+        )
+        tool_calls: list[dict[str, Any]] = []
+        assistant_text = ""
+        for block in response.content:
+            if block.type == "text":
+                assistant_text += block.text
+            elif block.type == "tool_use":
+                tool_calls.append({"name": block.name, "input": block.input})
+        return assistant_text, tool_calls
+
+    async def _tool_call_openai(self, prompt: str, system: str, model: str) -> tuple[str, list[dict[str, Any]]]:
+        tools_schema = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in TOOL_DEFINITIONS
+        ]
+        response = await self.openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            tools=tools_schema,
+        )
+        tool_calls: list[dict[str, Any]] = []
+        assistant_text = ""
+        msg = response.choices[0].message
+        if msg.content:
+            assistant_text = msg.content
+        if msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_calls.append({"name": tc.function.name, "input": json.loads(tc.function.arguments)})
+        return assistant_text, tool_calls
+
+    async def execute_tool(self, name: str, arguments: dict[str, Any]) -> str:
+        if name == "read_file":
+            return await self.read_file(arguments["path"])
+        elif name == "write_file":
+            await self.write_file(arguments["path"], arguments["content"])
+            return f"Wrote file: {arguments['path']}"
+        elif name == "list_files":
+            files = self.list_files(arguments["directory"])
+            return "\n".join(files) if files else "(empty)"
+        else:
+            return f"Unknown tool: {name}"
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

@@ -26,10 +26,14 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
+            if self.client.settings.max_cycles > 0 and self.cycles >= self.client.settings.max_cycles:
+                console.print(f"[yellow]Reached max_cycles limit ({self.client.settings.max_cycles}). Halting.[/yellow]")
+                break
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
@@ -40,6 +44,7 @@ class Orchestrator:
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self.plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -85,4 +90,6 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        if self.plan is None:
+            return []
+        return self.plan.tasks
