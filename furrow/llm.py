@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -9,12 +8,18 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings, get_settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
+    def __init__(self, settings: Settings = get_settings()) -> None:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
@@ -22,27 +27,33 @@ class LLMClient:
     @property
     def anthropic(self) -> AsyncAnthropic:
         if self._anthropic is None:
-            api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
+            api_key = self.settings.anthropic_api_key
+            if api_key is None:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(api_key=api_key)
+            self._anthropic = AsyncAnthropic(api_key=api_key.get_secret_value())
         return self._anthropic
 
     @property
     def openai(self) -> AsyncOpenAI:
         if self._openai is None:
-            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
+            api_key = self.settings.openai_api_key
+            if api_key is None:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            self._openai = AsyncOpenAI(api_key=api_key.get_secret_value())
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((anthropic.APITimeoutError, openai.APITimeoutError, ConnectionError)),
+        reraise=True,
+    )
+    async def complete(self, prompt: str, system: str = "", model: str | None = None, timeout: float = 120.0) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await asyncio.wait_for(self._complete_anthropic(prompt, system, model), timeout=timeout)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await asyncio.wait_for(self._complete_openai(prompt, system, model), timeout=timeout)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,6 +64,8 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        if not response.content:
+            return ""
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
@@ -75,7 +88,7 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
+    async def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
