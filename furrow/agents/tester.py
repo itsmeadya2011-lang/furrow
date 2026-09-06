@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -30,7 +31,8 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "passed" in response.lower() and "fail" not in response.lower()
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -49,10 +51,28 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode == 0:
+                        return output
+                    if self._looks_like_real_test_output(output):
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+    def _looks_like_real_test_output(self, output: str) -> bool:
+        if not output.strip():
+            return False
+        fake_patterns = [
+            r"command not found",
+            r"is not recognized",
+            r"usage:",
+            r"unknown command",
+        ]
+        for pat in fake_patterns:
+            if re.search(pat, output, re.IGNORECASE):
+                return False
+        return True

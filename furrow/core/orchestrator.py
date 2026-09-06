@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -26,9 +27,13 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.plan: Plan | None = None
+        self.history: list[dict[str, Any]] = []
 
     async def run(self) -> None:
-        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        console.print(
+            Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow")
+        )
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
@@ -36,22 +41,29 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            if 0 < self.client.settings.max_cycles <= self.cycles:
+                console.print(
+                    f"[yellow]Reached max_cycles ({self.client.settings.max_cycles}). Halting.[/yellow]"
+                )
+                break
 
     async def _cycle(self) -> None:
+        previous_context = self._build_previous_context()
+
         with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
+            goal_for_planner = self.goal
+            if previous_context:
+                goal_for_planner = f"{self.goal}\n\nPrevious context:\n{previous_context}"
+            plan = await self.planner.plan(goal_for_planner)
+        self.plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        with Status("[bold yellow]Executing tasks (respecting dependencies)...", console=console):
+            results = await self._execute_with_dependencies(plan.tasks)
 
         for task, result in zip(plan.tasks, results):
             if isinstance(result, Exception):
@@ -75,14 +87,79 @@ class Orchestrator:
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
+        self._journal(test_result)
+
+    async def _execute_with_dependencies(self, tasks: list[Any]) -> list[Any]:
+        task_map = {task.id: task for task in tasks}
+        pending = {task.id for task in tasks}
+        results: dict[str, Any] = {}
+
+        while pending:
+            ready = [
+                task
+                for task in tasks
+                if task.id in pending
+                and all(dep in results for dep in task.dependencies)
+            ]
+            if not ready:
+                # Circular dependency or missing dependency; run remaining to surface errors
+                ready = [task for task in tasks if task.id in pending]
+
+            batch_tasks = [
+                WorkerAgent(task=task, client=self.client).run() for task in ready
+            ]
+            batch_futures = [asyncio.ensure_future(t) for t in batch_tasks]
+            batch_results = await asyncio.gather(*batch_futures, return_exceptions=True)
+
+            for task, result in zip(ready, batch_results):
+                results[task.id] = result
+                pending.discard(task.id)
+
+        return [results[task.id] for task in tasks]
+
+    def _build_previous_context(self) -> str:
+        if not self.history:
+            return ""
+        parts = []
+        for entry in self.history[-3:]:
+            parts.append(
+                f"- Cycle {entry['cycle']}: goal={entry['goal']}, "
+                f"tests={'passed' if entry['test_passed'] else 'failed'}"
+            )
+            if entry.get("failures"):
+                parts.append(f"  Failures: {', '.join(entry['failures'])}")
+        return "\n".join(parts)
+
+    def _journal(self, test_result: TestResult) -> None:
+        journal_path = self.client.settings.journal_path
+        if not journal_path:
+            return
+        p = Path(journal_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        entry = {
+            "cycle": self.cycles,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "goal": self.goal,
+            "plan": self.plan.model_dump() if self.plan else None,
+            "test_passed": test_result.passed,
+            "test_summary": test_result.summary,
+            "failures": test_result.failures,
+        }
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+        self.history.append(entry)
+
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        tasks = self._get_tasks()
+        if not tasks:
+            return False
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.plan.tasks if self.plan else []
