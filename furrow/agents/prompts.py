@@ -4,6 +4,7 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Independent when possible
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
+- Include specific file paths when known
 
 Return JSON only (no markdown, no explanation) with this shape:
 {
@@ -29,6 +30,7 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+- If context from existing files is provided, use it to inform your changes.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.

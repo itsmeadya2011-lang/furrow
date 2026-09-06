@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -23,23 +21,31 @@ console = Console()
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None) -> None:
         self.goal = goal
+        self.original_goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.current_plan: Plan | None = None
+        self.history: list[dict[str, Any]] = []
+        self.workspace = self.client.settings.workspace
 
     async def run(self) -> None:
-        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        console.print(
+            Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow")
+        )
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                self._print_summary()
                 break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
+            plan = await self.planner.plan(self.goal, workspace=self.workspace)
+        self.current_plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -48,7 +54,12 @@ class Orchestrator:
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
-                WorkerAgent(task=task, client=self.client).run()
+                WorkerAgent(
+                    task=task,
+                    client=self.client,
+                    goal=self.goal,
+                    workspace=self.workspace,
+                ).run()
                 for task in plan.tasks
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -66,8 +77,16 @@ class Orchestrator:
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
+        cycle_record = {
+            "cycle": self.cycles,
+            "plan": plan.model_dump(),
+            "test_result": test_result.model_dump(),
+        }
+        self.history.append(cycle_record)
+
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            self.goal = self.original_goal
         else:
             console.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
@@ -76,13 +95,24 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if self.current_plan is None:
+            return False
+        tasks = self.current_plan.tasks
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if len(tasks) == 0:
             return True
-        return False
+        return completed >= len(tasks)
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+    def _print_summary(self) -> None:
+        if not self.history:
+            return
+        last = self.history[-1]
+        console.print(f"\n[bold]Final Plan:[/bold]")
+        for task in last["plan"]["tasks"]:
+            status_icon = "✅" if task["status"] == "completed" else "❌"
+            console.print(f"  {status_icon} Task {task['id']}: {task['description']}")
+        console.print(f"\n[bold]Cycles:[/bold] {self.cycles}")
+        console.print(f"[bold]Original Goal:[/bold] {self.original_goal}")

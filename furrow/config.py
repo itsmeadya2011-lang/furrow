@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    llm_timeout: int = 120
+    llm_max_tokens: int = 4096
+    llm_retry_attempts: int = 3
 
 
 settings = Settings()

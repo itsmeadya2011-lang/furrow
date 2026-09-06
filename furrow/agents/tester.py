@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -24,18 +24,24 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        prompt = (
+            f"{TESTER_PROMPT}\n\n"
+            f"Goal: {goal}\n\n"
+            f"Test output:\n{test_output}\n"
+        )
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "passed" in response.lower() and "fail" not in response.lower()
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
+            ["python", "-m", "unittest", "discover", "-v"],
             ["npm", "test", "--", "--silent"],
             ["pnpm", "test", "--", "--silent"],
             ["yarn", "test", "--silent"],
@@ -45,11 +51,15 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode == 0 or output.strip():
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
