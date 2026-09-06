@@ -9,6 +9,7 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
 
@@ -37,6 +38,12 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
@@ -46,6 +53,12 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +68,12 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -65,17 +84,29 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True,
+    )
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((Exception,)),
+        reraise=True,
+    )
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
+    async def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []

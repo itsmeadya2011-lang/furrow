@@ -17,36 +17,40 @@ from furrow.agents.worker import WorkerAgent
 from furrow.config import Plan, TestResult
 from furrow.llm import LLMClient
 
-console = Console()
-
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(self, goal: str, client: LLMClient | None = None, console: Console | None = None) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._last_plan: Plan | None = None
+        self.console = console or Console()
 
     async def run(self) -> None:
-        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        self.console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
-            console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            if self.client.settings.max_cycles > 0 and self.cycles >= self.client.settings.max_cycles:
+                self.console.print("[yellow]Max cycles reached. Halting.[/yellow]")
+                break
+            self.console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
-                console.print("[bold green]Goal complete. Halting.[/bold green]")
+                self.console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
 
     async def _cycle(self) -> None:
-        with Status("[bold yellow]Planning...", console=console) as status:
+        with Status("[bold yellow]Planning...", console=self.console) as status:
             plan = await self.planner.plan(self.goal)
-        console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        self._last_plan = plan
+        self.console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
-            console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self.console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
+        with Status("[bold yellow]Executing tasks in parallel...", console=self.console):
             tasks = [
                 WorkerAgent(task=task, client=self.client).run()
                 for task in plan.tasks
@@ -57,32 +61,37 @@ class Orchestrator:
             if isinstance(result, Exception):
                 task.status = "failed"
                 task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                self.console.print(f"[red]Task {task.id} failed: {result}[/red]")
             else:
                 task.status = "completed"
                 task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+                self.console.print(f"[green]Task {task.id} completed[/green]")
 
-        with Status("[bold yellow]Testing...", console=console) as status:
+        with Status("[bold yellow]Testing...", console=self.console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
         if test_result.passed:
-            console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            self.console.print(f"[green]Tests passed: {test_result.summary}[/green]")
         else:
-            console.print(f"[red]Tests failed: {test_result.summary}[/red]")
+            self.console.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
-                console.print(f"  • {failure}")
-            console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
+                self.console.print(f"  • {failure}")
+            self.console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if not self._last_plan:
+            return False
+        tasks = self._last_plan.tasks
+        if not tasks:
+            return True
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
-            return True
-        return False
+        return completed >= len(tasks)
 
     def _get_tasks(self) -> list[Any]:
+        if self._last_plan:
+            return self._last_plan.tasks
         return []
