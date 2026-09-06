@@ -43,6 +43,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,7 +55,11 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        text_parts = []
+        for block in response.content:
+            if hasattr(block, "text"):
+                text_parts.append(block.text)
+        return "\n".join(text_parts) if text_parts else ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -65,15 +71,32 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        client = AsyncOpenAI(base_url=self.settings.ollama_base_url, api_key="ollama")
+        response = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
-            return await f.read()
+        try:
+            async with aiofiles.open(path, "r") as f:
+                return await f.read()
+        except OSError as e:
+            raise RuntimeError(f"Failed to read file {path}: {e}") from e
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
-            await f.write(content)
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(p, "w") as f:
+                await f.write(content)
+        except OSError as e:
+            raise RuntimeError(f"Failed to write file {path}: {e}") from e
 
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
