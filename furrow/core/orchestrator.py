@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TestResult, settings
 from furrow.llm import LLMClient
 
 console = Console()
@@ -26,11 +26,15 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._current_plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            if settings.max_cycles > 0 and self.cycles > settings.max_cycles:
+                console.print(f"[yellow]Reached max_cycles ({settings.max_cycles}). Halting.[/yellow]")
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
@@ -44,13 +48,19 @@ class Orchestrator:
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self._current_plan = plan
             return
 
+        self._current_plan = plan
+
+        semaphore = asyncio.Semaphore(settings.max_parallel_tasks)
+
+        async def _run_worker(task: Any) -> Any:
+            async with semaphore:
+                return await WorkerAgent(task=task, client=self.client).run()
+
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
+            tasks = [_run_worker(task) for task in plan.tasks]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for task, result in zip(plan.tasks, results):
@@ -85,4 +95,6 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        if self._current_plan is None:
+            return []
+        return list(self._current_plan.tasks)

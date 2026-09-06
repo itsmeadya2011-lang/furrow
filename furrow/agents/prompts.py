@@ -27,9 +27,16 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+You will be given existing file contents as context. Return a JSON object with this exact shape:
+{
+  "edits": [
+    {"path": "relative/path/to/file.py", "content": "... full file content ..."}
+  ]
+}
+
+Return ONLY the JSON object, no markdown, no explanation. Include the full updated content for each file."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
