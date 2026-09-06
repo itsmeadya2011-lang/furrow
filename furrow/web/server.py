@@ -21,6 +21,7 @@ class StartRequest(BaseModel):
 
 @app.get("/")
 async def index() -> HTMLResponse:
+    """Serve the Furrow web client HTML page."""
     return HTMLResponse(content="""
 <!DOCTYPE html>
 <html>
@@ -35,12 +36,40 @@ async def index() -> HTMLResponse:
   <script>
     const form = document.getElementById('form');
     const out = document.getElementById('out');
+    function append(type, message) {
+      const line = document.createElement('div');
+      if (type === 'error') {
+        line.style.color = '#f88';
+      } else if (type === 'status') {
+        line.style.color = '#8f8';
+      } else {
+        line.style.color = '#aaa';
+      }
+      line.textContent = `[${type}] ${message}`;
+      out.appendChild(line);
+    }
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
-      const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
-      ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      append('status', 'Connecting...');
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(protocol + '//' + location.host + '/ws');
+      ws.onopen = () => {
+        append('status', 'Connected. Starting orchestrator...');
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          append(msg.type, msg.message);
+        } catch {
+          append('system', ev.data);
+        }
+      };
+      ws.onerror = (ev) => {
+        append('error', 'WebSocket error');
+      };
+      ws.onclose = () => {
+        append('status', 'Disconnected.');
+      };
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -51,15 +80,27 @@ async def index() -> HTMLResponse:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    """Handle WebSocket connections and run the orchestrator for the provided goal."""
     await websocket.accept()
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        await websocket.send_json({"type": "status", "message": "Starting Furrow..."})
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
+        await websocket.send_json({"type": "status", "message": "Goal complete. Halting."})
     except WebSocketDisconnect:
-        pass
+        try:
+            await websocket.send_json({"type": "status", "message": "Disconnected by client."})
+        except Exception:
+            pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    """Start the Uvicorn server for the Furrow web app."""
     uvicorn.run(app, host=host, port=port)
