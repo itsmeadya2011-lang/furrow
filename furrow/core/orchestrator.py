@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 from pathlib import Path
 from typing import Any
@@ -14,18 +13,36 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, Settings, TestResult
+from furrow.core.state import SessionState
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        state_path: Path | None = None,
+        resume: bool = False,
+    ) -> None:
         self.goal = goal
-        self.client = client or LLMClient()
+        self.client = client or LLMClient(settings=settings)
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.current_plan: Plan | None = None
+        self.state_path = state_path or Path(".furrow/state.json")
+
+        if resume and self.state_path.exists():
+            loaded = SessionState.load(self.state_path)
+            if loaded is not None:
+                self.goal = loaded.goal
+                self.cycles = loaded.cycles
+                self.current_plan = loaded.current_plan
+                console.print(f"[dim]Resumed from state ({self.cycles} previous cycles)[/dim]")
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -33,6 +50,7 @@ class Orchestrator:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
+            self._save_state()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
@@ -40,6 +58,7 @@ class Orchestrator:
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self.current_plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -85,4 +104,17 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        if self.current_plan is None:
+            return []
+        return self.current_plan.tasks
+
+    def _save_state(self) -> None:
+        try:
+            state = SessionState(
+                goal=self.goal,
+                cycles=self.cycles,
+                current_plan=self.current_plan,
+            )
+            state.save(self.state_path)
+        except Exception:
+            pass  # Non-critical; don't crash the loop on state save failure
