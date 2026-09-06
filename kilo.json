@@ -1,8 +1,15 @@
 {
+  "$schema": "https://app.kilo.ai/config.json",
   "default_agent": "furrow",
   "permission": {
     "bash": "allow",
     "edit": "allow",
     "read": "allow"
+  },
+  "furrow": {
+    "state_file": ".furrow-state.json",
+    "max_cycles_without_input": 10,
+    "max_parallel_tasks": 5,
+    "auto_test_after_cycle": true
   }
 }
