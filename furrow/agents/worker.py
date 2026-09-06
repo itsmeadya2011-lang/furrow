@@ -16,5 +16,26 @@ class WorkerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
+        sections = [WORKER_PROMPT]
+        sections.append(f"Task: {self.task.description}")
+
+        file_entries = []
+        for file_path in self.task.files or []:
+            try:
+                content = await self.client.read_file(file_path)
+                file_entries.append(f"- {file_path}:\n```\n{content}\n```")
+            except Exception as e:
+                file_entries.append(f"- {file_path}: (unable to read: {e})")
+
+        if file_entries:
+            sections.append("Files to modify:\n" + "\n".join(file_entries))
+
+        try:
+            root_files = self.client.list_files(".")
+            if root_files:
+                sections.append("Project structure:\n" + "\n".join(f"- {f}" for f in root_files))
+        except Exception:
+            pass
+
+        prompt = "\n\n".join(sections)
         return await self.client.complete(prompt, model=self.client.settings.worker_model)
