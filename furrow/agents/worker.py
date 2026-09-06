@@ -16,5 +16,19 @@ class WorkerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        tools = self.client.get_file_tools()
+        files_str = ", ".join(self.task.files) if self.task.files else "any"
+        prompt = (
+            f"Implement the following task. You have access to file tools.\n\n"
+            f"Task: {self.task.description}\n"
+            f"Files to touch: {files_str}\n"
+            f"Workspace: {self.client.settings.workspace}\n\n"
+            f"Use the tools to read, modify, and write files. After completing the task, "
+            f"provide a concise summary of what was changed."
+        )
+        return await self.client.complete(
+            prompt,
+            system=WORKER_PROMPT,
+            model=self.client.settings.worker_model,
+            tools=tools,
+        )
