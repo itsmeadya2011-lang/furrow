@@ -6,11 +6,29 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    RetryCallState,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+LLM_TIMEOUT = 120.0
+LLM_MAX_RETRIES = 3
+
+
+def _log_retry(retry_state: RetryCallState) -> None:
+    if retry_state.outcome is not None and retry_state.outcome.failed:
+        exc = retry_state.outcome.exception()
+        attempt = retry_state.attempt_number
+        print(f"[yellow]LLM call attempt {attempt} failed: {exc}. Retrying...[/yellow]")
 
 
 class LLMClient:
@@ -25,7 +43,10 @@ class LLMClient:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(api_key=api_key)
+            self._anthropic = AsyncAnthropic(
+                api_key=api_key,
+                timeout=LLM_TIMEOUT,
+            )
         return self._anthropic
 
     @property
@@ -34,15 +55,26 @@ class LLMClient:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            self._openai = AsyncOpenAI(
+                api_key=api_key,
+                timeout=LLM_TIMEOUT,
+            )
         return self._openai
 
+    @retry(
+        retry=retry_if_exception_type((anthropic.APIStatusError, openai.APIStatusError, TimeoutError)),
+        stop=stop_after_attempt(LLM_MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        before_sleep=_log_retry,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -64,6 +96,22 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+        }
+        if system:
+            payload["system"] = system
+
+        async with httpx.AsyncClient(timeout=LLM_TIMEOUT) as client:
+            response = await client.post(f"{base_url}/api/generate", json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

@@ -55,6 +55,13 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
+
+## Recent Improvements
+- Fixed orchestrator task tracking so completion detection works correctly.
+- Added LLM timeout, retry logic, and Ollama provider support.
+- Added API key validation and structured logging via structlog.
+- Planner now includes project file context for better task breakdown.
+- CLI supports workspace, provider, and per-agent model overrides.
+- Web server includes error handling and session isolation.

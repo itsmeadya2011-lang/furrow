@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+import structlog
 
 
 class Provider(str, Enum):
@@ -50,5 +54,50 @@ class Settings(BaseSettings):
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
+    @model_validator(mode="after")
+    def validate_api_keys(self) -> Settings:
+        if self.provider == Provider.ANTHROPIC and not (
+            self.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+        ):
+            raise ValueError("ANTHROPIC_API_KEY is required when provider is 'anthropic'")
+        if self.provider == Provider.OPENAI and not (
+            self.openai_api_key or os.getenv("OPENAI_API_KEY")
+        ):
+            raise ValueError("OPENAI_API_KEY is required when provider is 'openai'")
+        return self
+
 
 settings = Settings()
+
+_structlog_configured = False
+
+
+def get_logger(name: str) -> structlog.stdlib.BoundLogger:
+    global _structlog_configured
+    if not _structlog_configured:
+        structlog.configure(
+            processors=[
+                structlog.stdlib.filter_by_level,
+                structlog.stdlib.add_logger_name,
+                structlog.stdlib.add_log_level,
+                structlog.stdlib.PositionalArgumentsFormatter(),
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.processors.StackInfoRenderer(),
+                structlog.processors.format_exc_info,
+                structlog.processors.UnicodeDecoder(),
+                structlog.dev.ConsoleRenderer()
+                if settings.log_level.upper() == "DEBUG"
+                else structlog.processors.JSONRenderer(),
+            ],
+            wrapper_class=structlog.stdlib.BoundLogger,
+            context_class=dict,
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
+        _structlog_configured = True
+    handler = logging.StreamHandler()
+    handler.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    root_logger = logging.getLogger(name)
+    root_logger.addHandler(handler)
+    root_logger.setLevel(getattr(logging, settings.log_level.upper(), logging.INFO))
+    return structlog.wrap_logger(root_logger)

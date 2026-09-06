@@ -16,7 +16,12 @@ class PlannerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+        workspace_files = self.client.list_files(self.client.settings.workspace)
+        files_context = "\n".join(workspace_files[:100])  # Limit to avoid token overflow
+        if len(workspace_files) > 100:
+            files_context += f"\n... and {len(workspace_files) - 100} more files"
+
+        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n\nProject files:\n{files_context}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
