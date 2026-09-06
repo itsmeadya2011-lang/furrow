@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -53,12 +54,25 @@ async def index() -> HTMLResponse:
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
-        data = await websocket.receive_json()
+        try:
+            data = await websocket.receive_json()
+        except json.JSONDecodeError:
+            await websocket.send_json({"status": "error", "message": "Invalid JSON payload"})
+            return
         goal = data.get("goal", "")
+        if not goal:
+            await websocket.send_json({"status": "error", "message": "Missing or empty 'goal' field"})
+            return
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
+        await websocket.send_json({"status": "completed"})
     except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        try:
+            await websocket.send_json({"status": "error", "message": str(exc)})
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
