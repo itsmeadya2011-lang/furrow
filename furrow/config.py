@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def setup_logging(level: str = "INFO") -> None:
+    logging.basicConfig(
+        level=getattr(logging, level.upper(), logging.INFO),
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
 
 
 class Provider(str, Enum):
@@ -26,6 +34,14 @@ class TaskModel(BaseModel):
 class Plan(BaseModel):
     tasks: list[TaskModel]
     rationale: str
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> "Plan":
+        if not self.tasks:
+            raise ValueError("Plan must have at least one task")
+        if not self.rationale.strip():
+            raise ValueError("Plan rationale cannot be empty")
+        return self
 
 
 class TestResult(BaseModel):

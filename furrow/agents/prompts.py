@@ -42,4 +42,6 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array.
+
+When no automated tests were run, evaluate whether the described work appears complete and correct based on the task descriptions and workspace context."""
