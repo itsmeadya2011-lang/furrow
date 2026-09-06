@@ -5,6 +5,8 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
 
+{context}
+
 Return JSON only (no markdown, no explanation) with this shape:
 {
   "tasks": [

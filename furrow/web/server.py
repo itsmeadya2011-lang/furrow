@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from rich.console import Console
+from rich.text import Text
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
@@ -17,6 +20,29 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+class WebSocketConsole(Console):
+    def __init__(self, websocket: WebSocket) -> None:
+        super().__init__(force_terminal=False, color_system="standard")
+        self._websocket = websocket
+        self._loop = asyncio.get_event_loop()
+
+    def print(self, *args, **kwargs) -> None:  # type: ignore[override]
+        sep = kwargs.get("sep", " ")
+        end = kwargs.get("end", "\n")
+        text = Text()
+        for arg in args:
+            text += Text(str(arg))
+            text += Text(sep)
+        message = text.plain + end
+        asyncio.create_task(self._send(message))
+
+    async def _send(self, message: str) -> None:
+        try:
+            await self._websocket.send_json({"type": "log", "content": message})
+        except Exception:
+            pass
 
 
 @app.get("/")
@@ -39,7 +65,14 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => {
+        const data = JSON.parse(ev.data);
+        if (data.type === 'log') {
+          out.textContent += data.content + '\\n';
+        } else {
+          out.textContent += ev.data + '\\n';
+        }
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,10 +88,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        console = WebSocketConsole(websocket)
+        orchestrator = Orchestrator(goal=goal, console=console)
         await orchestrator.run()
+        await websocket.send_json({"type": "done", "content": "Orchestration complete."})
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "content": str(e)})
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
