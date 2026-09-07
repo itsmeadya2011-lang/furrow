@@ -54,7 +54,37 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
+## Python Implementation
+
+Furrow also ships as a Python package (`furrow/`) with a full CLI and web server:
+
+```
+furrow/
+  config.py            # Data models + Settings (pydantic-settings, structlog)
+  llm.py               # LLMClient: async Anthropic/OpenAI + file/shell tools
+  core/orchestrator.py # Orchestrator: the infinite plan→execute→test loop
+  agents/
+    planner.py         # PlannerAgent: goal → Plan (JSON, with retry)
+    worker.py          # WorkerAgent: task → file changes (tool-use loop)
+    tester.py          # TesterAgent: runs tests + lint, returns TestResult
+  cli/main.py          # Click CLI: `furrow start`, `furrow web`
+  web/server.py        # FastAPI app + WebSocket streaming UI
+tests/                 # pytest test suite
+```
+
+### Configuration
+- `Settings` (pydantic-settings) reads from env vars (`FURROW_*`) and `.env`.
+- `max_cycles` caps the loop (default 20; set to 0 for unlimited).
+- `structlog` provides structured logging; `FurrowState` supports persistence.
+
+### Worker Tool-Use Loop
+Workers call the LLM, parse JSON tool-action blocks from the response, and execute them via `LLMClient.read_file`, `write_file`, `list_files`, and `run_shell`. The loop runs up to 15 rounds.
+
+### Web UI
+The `/ws` WebSocket endpoint streams orchestrator output in real time via an `on_output` callback and `asyncio.Queue`.
+
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
-- Web UI for monitoring parallel agent activity.
+- Desktop GUI wrapper for non-CLI interaction.
+- Native LLM function-calling (Anthropic tool_use / OpenAI function calling) instead of text-based JSON tool protocol.
+- Automatic context compaction for long-running sessions.
+- Provider-aware default model selection (e.g., GPT-4 when `provider=OPENAI`).

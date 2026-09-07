@@ -1,12 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -80,3 +78,27 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def run_shell(
+        self, command: str, cwd: str | Path | None = None, timeout: float = 120
+    ) -> tuple[int, str, str]:
+        cwd = cwd or self.settings.workspace
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+            return (proc.returncode or 0, stdout_bytes.decode(), stderr_bytes.decode())
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            return (124, "", "Command timed out")
+        except Exception as e:
+            return (127, "", str(e))

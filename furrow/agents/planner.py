@@ -4,7 +4,7 @@ import json
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import PLANNER_PROMPT
-from furrow.config import Plan
+from furrow.config import Plan, logger
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
@@ -17,9 +17,15 @@ class PlannerAgent:
 
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.planner_model)
-        try:
-            data = json.loads(response)
-            return Plan(**data)
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
+        last_response = ""
+        for attempt in range(3):
+            if attempt > 0:
+                prompt = f"{prompt}\nReturn only valid JSON, no explanation."
+            response = await self.client.complete(prompt, model=self.client.settings.planner_model)
+            last_response = response
+            try:
+                data = json.loads(response)
+                return Plan(**data)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Planner attempt %d failed to parse JSON response", attempt + 1)
+        raise ValueError(f"Failed to parse plan from LLM after 3 attempts\nLast response: {last_response}")

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import TaskModel, TestResult, logger
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
@@ -25,12 +24,19 @@ class TesterAgent:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
-        try:
-            data = json.loads(response)
-            return TestResult(**data)
-        except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+        last_response = ""
+        for attempt in range(3):
+            if attempt > 0:
+                prompt = f"{prompt}\nReturn only valid JSON, no explanation."
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+            last_response = response
+            try:
+                data = json.loads(response)
+                return TestResult(**data)
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("Tester attempt %d failed to parse JSON response", attempt + 1)
+        heuristic_passed = "passed" in last_response.lower() and "failed" not in last_response.lower()
+        return TestResult(passed=heuristic_passed, summary=last_response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -41,7 +47,10 @@ class TesterAgent:
             ["yarn", "test", "--silent"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
+            ["ruff", "check", "."],
+            ["python", "-m", "mypy", "furrow/"],
         ]
+        outputs: list[str] = []
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -49,10 +58,12 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    outputs.append(stdout.decode() + stderr.decode())
                 except asyncio.TimeoutError:
                     proc.kill()
-                    continue
+                    outputs.append(f"Command {' '.join(cmd)} timed out after 120 seconds\n")
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        if not outputs:
+            return "No test runner or lint tool found."
+        return "\n".join(outputs)

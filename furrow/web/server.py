@@ -8,7 +8,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -41,7 +40,7 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      ws.send(JSON.stringify({goal: document.getElementById('goal').value, model: null}));
     };
   </script>
 </body>
@@ -52,13 +51,45 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    orch_task: Optional[asyncio.Task] = None
+    consume_task: Optional[asyncio.Task] = None
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        queue: asyncio.Queue[str] = asyncio.Queue()
+
+        async def consume() -> None:
+            while True:
+                msg = await queue.get()
+                await websocket.send_text(msg)
+                queue.task_done()
+
+        orchestrator = Orchestrator(
+            goal=goal,
+            on_output=lambda msg: queue.put_nowait(msg),
+        )
+
+        orch_task = asyncio.ensure_future(orchestrator.run())
+        consume_task = asyncio.ensure_future(consume())
+
+        done, pending = await asyncio.wait(
+            {orch_task, consume_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for t in pending:
+            t.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await websocket.send_text("[Furrow] Run complete.")
     except WebSocketDisconnect:
-        pass
+        if orch_task and not orch_task.done():
+            orch_task.cancel()
+        if consume_task and not consume_task.done():
+            consume_task.cancel()
+    except Exception as e:
+        try:
+            await websocket.send_text(f"[Furrow] Error: {e}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
