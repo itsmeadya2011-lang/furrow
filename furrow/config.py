@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    state_file: Optional[Path] = None
+
+    @model_validator(mode="after")
+    def set_state_file(self) -> "Settings":
+        if self.state_file is None:
+            self.state_file = self.workspace / "furrow_state.json"
+        return self
+
+
+class ModelState(BaseModel):
+    goal: str
+    cycle: int
+    tasks: list[TaskModel]
 
 
 settings = Settings()
