@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -19,12 +20,33 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
+@click.option(
+    "--max-cycles",
+    default=None,
+    type=int,
+    help="Maximum number of cycles before halting (0 = infinite)",
+)
+@click.option(
+    "--state-dir",
+    default=None,
+    type=click.Path(),
+    help="Directory for state persistence (default: .furrow in workspace)",
+)
+def start(
+    goal: str | None,
+    model: str | None,
+    max_cycles: int | None,
+    state_dir: str | None,
+) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
+    from furrow.config import settings
     if model:
-        from furrow.config import settings
         settings.model = model
+    if max_cycles is not None:
+        settings.max_cycles = max_cycles
+    if state_dir:
+        settings.workspace = Path(state_dir)
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:
