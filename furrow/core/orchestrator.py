@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from rich.console import Console
 from rich.panel import Panel
@@ -21,11 +21,23 @@ console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._current_tasks: list[Any] = []
+        self.on_event = on_event
+
+    async def _emit(self, event: dict[str, Any]) -> None:
+        """Emit an event to the on_event callback if one is registered."""
+        if self.on_event is not None:
+            await self.on_event(event)
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -37,15 +49,27 @@ class Orchestrator:
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
 
+        await self._emit({"type": "done", "message": "Goal complete"})
+
     async def _cycle(self) -> None:
+        await self._emit({"type": "phase", "phase": "planning"})
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        await self._emit({
+            "type": "plan",
+            "tasks": [t.model_dump() for t in plan.tasks],
+            "rationale": plan.rationale,
+        })
 
         if not plan.tasks:
+            self._current_tasks = []
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
+        self._current_tasks = plan.tasks
+
+        await self._emit({"type": "phase", "phase": "executing"})
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
                 WorkerAgent(task=task, client=self.client).run()
@@ -62,9 +86,22 @@ class Orchestrator:
                 task.status = "completed"
                 task.result = result
                 console.print(f"[green]Task {task.id} completed[/green]")
+            await self._emit({
+                "type": "task_update",
+                "id": task.id,
+                "status": task.status,
+                "result": task.result,
+            })
 
+        await self._emit({"type": "phase", "phase": "testing"})
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+        await self._emit({
+            "type": "test",
+            "passed": test_result.passed,
+            "summary": test_result.summary,
+            "failures": test_result.failures,
+        })
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
@@ -76,13 +113,10 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
-            return False
-        if completed >= len(self._get_tasks()):
+        tasks = self._get_tasks()
+        if not tasks:
             return True
-        return False
+        return all(t.status == "completed" for t in tasks)
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._current_tasks
