@@ -33,8 +33,16 @@ class LLMClient:
         if self._openai is None:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+                if self.settings.provider == Provider.OLLAMA:
+                    api_key = "ollama"
+                else:
+                    raise ValueError("OPENAI_API_KEY is not set")
+            if self.settings.provider == Provider.OLLAMA:
+                self._openai = AsyncOpenAI(
+                    api_key=api_key, base_url=self.settings.ollama_base_url
+                )
+            else:
+                self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
@@ -43,6 +51,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -56,6 +66,16 @@ class LLMClient:
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+        response = await self.openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
