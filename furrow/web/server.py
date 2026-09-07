@@ -52,13 +52,46 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    task = None
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        async def send_text(text: str) -> None:
+            nonlocal task
+            try:
+                await websocket.send_text(text)
+            except Exception:
+                if task is not None:
+                    task.cancel()
+                raise
+        orchestrator = Orchestrator(goal=goal, output_callback=send_text)
+        task = asyncio.create_task(orchestrator.run())
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            try:
+                await websocket.send_json({"type": "error", "message": str(e)})
+            except Exception:
+                pass
+        else:
+            try:
+                await websocket.send_json({"type": "done"})
+            except Exception:
+                pass
     except WebSocketDisconnect:
-        pass
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

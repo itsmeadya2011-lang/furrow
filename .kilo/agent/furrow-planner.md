@@ -28,3 +28,6 @@ Return a JSON object (not wrapped in markdown) with this shape:
 - Tasks must be independent when possible.
 - Each task should be completable in 1-3 tool call rounds by a worker.
 - If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+
+## Error Handling
+If the LLM returns malformed JSON, retry up to 2 times with a short clarification nudge (e.g. "Respond with JSON only, matching the schema above.") before raising. Do not retry on schema-valid JSON that just has empty or unhelpful content — that is a planning quality issue, not a parse error.
