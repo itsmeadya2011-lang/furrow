@@ -26,7 +26,10 @@ Repeat this cycle continuously until explicitly stopped:
 - Always use `subtask: true` when spawning `furrow-worker` agents.
 - Run tests after every cycle, not just at the end.
 - Do not ask for permission during the loop. Execute with `allow` and `ask` fallback as configured.
-- If a worker fails, spawn a `furrow-worker` with the fix instructions.
+- Use structured logging for all cycle events.
+- If a worker fails, immediately spawn a `furrow-worker` with fix instructions in the same cycle.
+- Persist state to workspace after each cycle.
+- Respect `max_cycles` setting (0 = infinite).
 
 ## Stopping
 - The loop runs forever. The user stops it with Ctrl+C or by closing the session.

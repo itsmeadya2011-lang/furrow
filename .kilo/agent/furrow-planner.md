@@ -28,3 +28,5 @@ Return a JSON object (not wrapped in markdown) with this shape:
 - Tasks must be independent when possible.
 - Each task should be completable in 1-3 tool call rounds by a worker.
 - If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+- Consider project file structure when planning.
+- If a task requires new files, list them. If modifying existing files, provide exact paths.
