@@ -58,3 +58,14 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
+
+## Recent Improvements
+- **Fixed orchestrator task tracking**: `_get_tasks()` now returns the latest plan's tasks instead of `[]`, enabling correct completion detection.
+- **Cycle limits**: `max_cycles` setting is now enforced in the orchestrator loop.
+- **Parallel task limits**: `max_parallel_tasks` setting is now enforced via `asyncio.Semaphore`, preventing unbounded concurrency.
+- **LLM retry logic**: `@retry` with exponential backoff (tenacity) on Anthropic and OpenAI API calls for transient failures.
+- **Structured logging**: `structlog`-based logging throughout the orchestrator, planner, worker, tester, and LLM client.
+- **WebSocket streaming**: Web UI now streams orchestrator console output to the browser in real time; handles disconnections gracefully.
+- **Worker file writing**: Worker agents now parse structured JSON output from the LLM and write files to disk via `LLMClient.write_file`.
+- **Ollama provider**: `Provider.OLLAMA` is now fully implemented using httpx.
+- **Tester robustness**: Broad `except Exception` narrowed to `RuntimeError`; distinguishes "no test runner" from genuine failures; adds structured logging.
