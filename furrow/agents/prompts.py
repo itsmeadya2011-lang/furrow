@@ -27,8 +27,20 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+You MUST return a JSON object (and ONLY the JSON, no markdown fences, no explanation) with this shape:
+{
+  "files": {
+    "path/to/file.py": "complete file content here",
+    "another.py": "content"
+  },
+  "summary": "What was done"
+}
+
+Every file in the "files" dict must contain its complete final content, not just a diff or patch.
+If a file already exists, include its full updated content. If it is new, include its full content.
+If you cannot or should not modify a particular file, omit it from the dict.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
