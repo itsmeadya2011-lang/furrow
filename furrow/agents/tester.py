@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -33,15 +34,34 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
-            ["cargo", "test", "-q"],
-            ["go", "test", "./..."],
-        ]
+        root = Path.cwd()
+        if (root / "pyproject.toml").exists():
+            candidates = [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+                ["python", "-m", "unittest", "discover", "-v"],
+            ]
+        elif (root / "package.json").exists():
+            candidates = [
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+            ]
+        elif (root / "go.mod").exists():
+            candidates = [["go", "test", "./..."]]
+        elif (root / "Cargo.toml").exists():
+            candidates = [["cargo", "test", "-q"]]
+        else:
+            candidates = [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+                ["cargo", "test", "-q"],
+                ["go", "test", "./..."],
+            ]
+
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -49,10 +69,12 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if output.strip():
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return "No test runner found or no tests matched."

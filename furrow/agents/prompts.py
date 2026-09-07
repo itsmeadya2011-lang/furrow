@@ -18,7 +18,10 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+Rules for dependencies:
+- If a task depends on another task, reference its id in the dependencies array.
+- Keep dependencies minimal to maximize parallelism.
+- If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
@@ -29,7 +32,21 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Output format:
+Return JSON only (no markdown) with this shape:
+{
+  "files": {
+    "path/to/file.py": "file contents here..."
+  },
+  "summary": "Brief description of changes made"
+}
+
+If you only read files or made no changes, return:
+{
+  "files": {},
+  "summary": "No changes needed / task complete"
+}"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
