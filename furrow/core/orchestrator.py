@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-from pathlib import Path
-from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -14,7 +10,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, settings
 from furrow.llm import LLMClient
 
 console = Console()
@@ -26,6 +22,9 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.last_plan: Plan | None = None
+        self.completed_task_ids: set[str] = set()
+        self.failed_task_ids: set[str] = set()
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -36,10 +35,14 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            if settings.max_cycles > 0 and self.cycles >= settings.max_cycles:
+                console.print(f"[bold yellow]Reached max_cycles ({settings.max_cycles}). Halting.[/bold yellow]")
+                break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self.last_plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -57,10 +60,12 @@ class Orchestrator:
             if isinstance(result, Exception):
                 task.status = "failed"
                 task.result = str(result)
+                self.failed_task_ids.add(task.id)
                 console.print(f"[red]Task {task.id} failed: {result}[/red]")
             else:
                 task.status = "completed"
                 task.result = result
+                self.completed_task_ids.add(task.id)
                 console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
@@ -76,13 +81,20 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
-            return False
-        if completed >= len(self._get_tasks()):
+        if self.last_plan is not None and not self.last_plan.tasks:
             return True
-        return False
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+        if self.last_plan is not None and self.last_plan.tasks:
+            all_completed = all(t.status == "completed" for t in self.last_plan.tasks)
+            no_failures = len(self.failed_task_ids) == 0
+            llm_indicates_complete = (
+                "COMPLETE" in self.last_plan.rationale.upper()
+                or "DONE" in self.last_plan.rationale.upper()
+            )
+            if all_completed and no_failures and llm_indicates_complete:
+                return True
+
+        if settings.max_cycles > 0 and self.cycles >= settings.max_cycles:
+            return True
+
+        return False
