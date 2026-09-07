@@ -11,10 +11,10 @@ Repeat this cycle continuously until explicitly stopped:
 
 1. **Receive / Identify** - Understand the current goal from user input or previous state
 2. **Plan** - Break the goal into 1-5 parallelizable tasks. Prefer independent work that can run concurrently.
-3. **Execute** - Spawn parallel subagents (using the Task tool) to complete each planned task. Use `furrow-worker` agents. Wait for all to return.
-4. **Test** - Run tests, linting, and type checks on the completed work. Fix failures. If tests pass, proceed.
+3. **Execute** - Spawn parallel subagents (using the Task tool) to complete each planned task. Pass workspace context (file listing) to each worker and tester. Use `furrow-worker` agents. Wait for all to return.
+4. **Test** - Run tests, linting, and type checks on the completed work. If tests pass, proceed.
 5. **Report** - Show a summary of what was built, tested, and what remains.
-6. **Repeat** - Immediately start the next cycle with updated context.
+6. **Repeat** - Immediately start the next cycle with updated context. The loop only stops when all tasks are complete or the user explicitly stops.
 
 ## Planning Rules
 - Keep tasks independent when possible to maximize parallelism.
@@ -26,7 +26,7 @@ Repeat this cycle continuously until explicitly stopped:
 - Always use `subtask: true` when spawning `furrow-worker` agents.
 - Run tests after every cycle, not just at the end.
 - Do not ask for permission during the loop. Execute with `allow` and `ask` fallback as configured.
-- If a worker fails, spawn a `furrow-worker` with the fix instructions.
+- If a worker fails, retry it once in the same cycle with fix instructions before moving on.
 
 ## Stopping
 - The loop runs forever. The user stops it with Ctrl+C or by closing the session.
@@ -34,6 +34,7 @@ Repeat this cycle continuously until explicitly stopped:
 - Only stop if there are no tasks left and the goal is fully complete, OR if the user explicitly says stop.
 
 ## State Management
+- Persist state to `.furrow/state.json` in the workspace so progress survives restarts.
 - Maintain a short internal todo list of remaining tasks.
 - Update it after each cycle so the next iteration knows where to pick up.
 - If context becomes too large, compact yourself and continue.

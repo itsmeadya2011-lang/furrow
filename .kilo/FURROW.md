@@ -43,6 +43,8 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
     furrow-tester.md   # Tester subagent
   command/
     furrow.md          # /furrow slash command
+  furrow/
+    llm.py             # LLM provider abstraction with Ollama support
 kilo.json              # Project config (default agent = furrow, open permissions)
 ```
 
@@ -56,5 +58,4 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
