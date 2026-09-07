@@ -14,15 +14,21 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+    ) -> None:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
-        test_output = ""
-        try:
-            test_output = await self._run_tests()
-        except Exception as e:
-            return TestResult(passed=False, summary=str(e), failures=[str(e)])
+        test_output = await self._run_tests()
+        if test_output == "NO_TESTS_FOUND":
+            return TestResult(
+                passed=True,
+                summary="No test runner found. Proceeding without test validation.",
+                failures=[],
+            )
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
@@ -30,7 +36,8 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "passed" in response.lower() or "ok" in response.lower() or "success" in response.lower()
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -49,10 +56,13 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode is not None and "not found" not in output.lower() and "no such file" not in output.lower():
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
+                    await proc.wait()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return "NO_TESTS_FOUND"

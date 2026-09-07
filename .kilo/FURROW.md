@@ -55,6 +55,5 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
