@@ -6,11 +6,19 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
+import tenacity
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+_RETRY = tenacity.retry(
+    retry=tenacity.retry_if_exception_type((anthropic.RateLimitError, openai.RateLimitError, httpx.HTTPStatusError)),
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+)
 
 
 class LLMClient:
@@ -43,9 +51,12 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @_RETRY
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +66,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @_RETRY
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +76,25 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @_RETRY
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+        }
+        if system:
+            payload["system"] = system
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.settings.ollama_base_url}/api/generate",
+                json=payload,
+                timeout=httpx.Timeout(60.0),
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
