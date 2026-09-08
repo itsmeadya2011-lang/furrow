@@ -11,6 +11,7 @@ You receive a high-level goal and the current project state.
 
 ## Output
 Return a JSON object (not wrapped in markdown) with this shape:
+```json
 {
   "tasks": [
     {
@@ -22,9 +23,11 @@ Return a JSON object (not wrapped in markdown) with this shape:
   ],
   "rationale": "..."
 }
+```
 
 ## Rules
 - 1-5 tasks maximum per plan.
 - Tasks must be independent when possible.
 - Each task should be completable in 1-3 tool call rounds by a worker.
 - If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+- If the goal is already complete or no tasks are needed, return an empty tasks array.
