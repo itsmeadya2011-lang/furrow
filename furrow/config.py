@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
     planner_model: str = "claude-3-5-haiku-20241022"
-    worker_model: str = "claude-3-5-sonnet-20241022"
-    tester_model: str = "claude-3-5-sonnet-20241022"
+    worker_model: str = "claude-sonnet-4-20250514"
+    tester_model: str = "claude-sonnet-4-20250514"
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
