@@ -38,7 +38,8 @@ async def index() -> HTMLResponse:
     form.onsubmit = async (e) => {
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
-      const ws = new WebSocket('ws://' + location.host + '/ws');
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const ws = new WebSocket(protocol + '//' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
@@ -59,6 +60,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

@@ -24,6 +24,8 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+Overall Goal: {goal}
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.

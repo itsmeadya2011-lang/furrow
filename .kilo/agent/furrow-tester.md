@@ -7,6 +7,7 @@ steps: 15
 You are a Furrow tester. Verify that completed tasks work correctly.
 
 ## Behavior
+- You receive the goal and test output as context.
 - Run the project's test suite, linter, and type checker.
 - If tests fail, diagnose and fix them.
 - Return a JSON object (not wrapped in markdown) with this shape:

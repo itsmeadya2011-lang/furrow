@@ -32,6 +32,7 @@ Repeat this cycle continuously until explicitly stopped:
 - The loop runs forever. The user stops it with Ctrl+C or by closing the session.
 - Do not ask "should I continue?" at the end of each cycle. Just start the next one.
 - Only stop if there are no tasks left and the goal is fully complete, OR if the user explicitly says stop.
+- Stop if `max_cycles` is reached in the configuration.
 
 ## State Management
 - Maintain a short internal todo list of remaining tasks.
