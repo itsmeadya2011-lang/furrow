@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+from structlog import get_logger
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = get_logger()
 
 
 class TesterAgent:
@@ -25,6 +28,7 @@ class TesterAgent:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        logger.info("tester.run.start", goal=goal)
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)

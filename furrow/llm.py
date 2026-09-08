@@ -7,6 +7,7 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import tenacity
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -37,12 +38,20 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=10),
+        retry=tenacity.retry_if_exception_type((anthropic.APIStatusError, openai.APIStatusError)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,6 +74,26 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        import httpx
+
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(
+                f"{base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system or "You are a helpful coding assistant."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("message", {}).get("content", "")
+
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
             return await f.read()
@@ -79,4 +108,5 @@ class LLMClient:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        base = p.resolve()
+        return [str(f.resolve().relative_to(base)) for f in base.rglob("*") if f.is_file()]

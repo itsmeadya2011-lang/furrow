@@ -12,7 +12,7 @@ Repeat this cycle continuously until explicitly stopped:
 1. **Receive / Identify** - Understand the current goal from user input or previous state
 2. **Plan** - Break the goal into 1-5 parallelizable tasks. Prefer independent work that can run concurrently.
 3. **Execute** - Spawn parallel subagents (using the Task tool) to complete each planned task. Use `furrow-worker` agents. Wait for all to return.
-4. **Test** - Run tests, linting, and type checks on the completed work. Fix failures. If tests pass, proceed.
+4. **Test** - Run tests, lint, and type checks on the completed work. Fix failures. If tests pass, proceed.
 5. **Report** - Show a summary of what was built, tested, and what remains.
 6. **Repeat** - Immediately start the next cycle with updated context.
 
@@ -32,6 +32,7 @@ Repeat this cycle continuously until explicitly stopped:
 - The loop runs forever. The user stops it with Ctrl+C or by closing the session.
 - Do not ask "should I continue?" at the end of each cycle. Just start the next one.
 - Only stop if there are no tasks left and the goal is fully complete, OR if the user explicitly says stop.
+- Respect the `FURROW_MAX_CYCLES` setting if configured.
 
 ## State Management
 - Maintain a short internal todo list of remaining tasks.
