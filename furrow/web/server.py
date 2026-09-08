@@ -52,13 +52,36 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    queue: asyncio.Queue[str] = asyncio.Queue()
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        async def on_output(line: str) -> None:
+            await queue.put(line)
+
+        orchestrator = Orchestrator(goal=goal, on_output=on_output)
+        loop_task = asyncio.create_task(orchestrator.run())
+
+        while True:
+            if loop_task.done() and queue.empty():
+                break
+            try:
+                line = await asyncio.wait_for(queue.get(), timeout=0.5)
+                await websocket.send_text(line + "\n")
+            except asyncio.TimeoutError:
+                continue
+
+        while not queue.empty():
+            line = await queue.get()
+            await websocket.send_text(line + "\n")
+
+        await websocket.send_text("\nDone.\n")
     except WebSocketDisconnect:
         pass
+    finally:
+        if "loop_task" in locals() and not loop_task.done():
+            loop_task.cancel()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
