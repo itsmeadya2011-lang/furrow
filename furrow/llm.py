@@ -9,8 +9,27 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+
+def _is_retryable(error: BaseException) -> bool:
+    name = type(error).__name__
+    if "RateLimitError" in name or "APIStatusError" in name:
+        return True
+    if isinstance(error, (ConnectionError, TimeoutError)):
+        return True
+    if isinstance(error, Exception) and hasattr(error, "status_code"):
+        status = getattr(error, "status_code", None)
+        if isinstance(status, int) and status >= 500:
+            return True
+    return False
 
 
 class LLMClient:
@@ -37,6 +56,12 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        retry=retry_if_exception(_is_retryable),
+        wait=wait_exponential(multiplier=1, min=1, max=60),
+        stop=stop_after_attempt(4),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:

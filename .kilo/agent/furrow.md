@@ -16,6 +16,12 @@ Repeat this cycle continuously until explicitly stopped:
 5. **Report** - Show a summary of what was built, tested, and what remains.
 6. **Repeat** - Immediately start the next cycle with updated context.
 
+## State & Reliability
+- Goal and task state is persisted to `.furrow_state.json` after each cycle so the loop can resume after interruption.
+- `max_cycles` (default 0 = unlimited) bounds execution. Set via `FURROW_MAX_CYCLES`.
+- LLM calls use exponential backoff with up to 4 retries for transient errors (rate limits, 5xx, connection issues).
+- Logs are emitted at the configured `FURROW_LOG_LEVEL` (default `INFO`).
+
 ## Planning Rules
 - Keep tasks independent when possible to maximize parallelism.
 - Each task should be completable in 1-3 tool call rounds.

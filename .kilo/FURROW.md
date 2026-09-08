@@ -9,11 +9,11 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
 - **Type:** Primary agent (also usable as subagent)
 - **Role:** Runs the infinite loop. Receives goals, plans, delegates, tests, and repeats.
 - **Loop:**
-  1. Receive / Identify goal
-  2. Plan parallel tasks (1-5)
-  3. Execute via parallel `furrow-worker` subagents
-  4. Test via `furrow-tester` subagent
-  5. Report and repeat
+   1. Receive / Identify goal
+   2. Plan parallel tasks (1-5)
+   3. Execute via parallel `furrow-worker` subagents
+   4. Test via `furrow-tester` subagent
+   5. Report and repeat
 
 ### 2. Planner (`furrow-planner`)
 - **Type:** Subagent
@@ -54,7 +54,12 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
+## Implemented
+- Persistent state file (`.furrow_state.json`) for goal/task tracking across restarts.
+- `max_cycles` setting to bound loop execution.
+- Tenacity retry logic with exponential backoff for LLM calls.
+- Configurable `log_level` for debugging.
+
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
