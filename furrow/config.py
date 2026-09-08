@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import structlog
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = structlog.get_logger(__name__)
 
 
 class Provider(str, Enum):

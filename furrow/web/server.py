@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import structlog
 from typing import Optional
 
 import uvicorn
@@ -12,6 +13,7 @@ from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+logger = structlog.get_logger(__name__)
 
 
 class StartRequest(BaseModel):
@@ -54,11 +56,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         data = await websocket.receive_json()
-        goal = data.get("goal", "")
+        goal = data.get("goal", "").strip()
+        if not goal:
+            await websocket.send_json({"error": "Goal is required"})
+            await websocket.close()
+            return
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"error": str(e)})
+        except Exception:
+            pass
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

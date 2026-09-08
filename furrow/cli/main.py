@@ -4,14 +4,23 @@ import asyncio
 import sys
 
 import click
+import structlog
+from importlib.metadata import PackageNotFoundError, version
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator
 
+try:
+    __version__ = version("furrow")
+except PackageNotFoundError:
+    __version__ = "unknown"
+
 console = Console()
+logger = structlog.get_logger(__name__)
 
 
 @click.group()
+@click.version_option(version=__version__)
 def main() -> None:
     pass
 
@@ -28,7 +37,7 @@ def start(goal: str | None, model: str | None) -> None:
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:
-        console.print("\n[yellow]Furrow stopped by user.[/yellow]")
+        logger.info("Furrow stopped by user.")
         sys.exit(0)
 
 
