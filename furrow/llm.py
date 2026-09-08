@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import AsyncGenerator
 
 import aiofiles
 import anthropic
@@ -43,6 +44,22 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
+        else:
+            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def stream(self, prompt: str, system: str = "", model: str | None = None) -> AsyncGenerator[str, None]:
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            async for chunk in self._stream_anthropic(prompt, system, model):
+                yield chunk
+        elif self.settings.provider == Provider.OPENAI:
+            async for chunk in self._stream_openai(prompt, system, model):
+                yield chunk
+        elif self.settings.provider == Provider.OLLAMA:
+            async for chunk in self._stream_ollama(prompt, system, model):
+                yield chunk
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,8 +82,72 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        import httpx
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+            "stream": False,
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(f"{base_url}/api/generate", json=payload, timeout=120.0)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
+
+    async def _stream_anthropic(self, prompt: str, system: str, model: str) -> AsyncGenerator[str, None]:
+        async with self.anthropic.messages.stream(
+            model=model,
+            max_tokens=4096,
+            system=system or "You are a helpful coding assistant.",
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            async for text in stream.text_stream:
+                yield text
+
+    async def _stream_openai(self, prompt: str, system: str, model: str) -> AsyncGenerator[str, None]:
+        stream = await self.openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            stream=True,
+        )
+        async for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    async def _stream_ollama(self, prompt: str, system: str, model: str) -> AsyncGenerator[str, None]:
+        import httpx
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+            "stream": True,
+        }
+        async with httpx.AsyncClient() as client:
+            async with client.stream(
+                "POST", f"{base_url}/api/generate", json=payload, timeout=120.0
+            ) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            if "response" in data:
+                                yield data["response"]
+                        except json.JSONDecodeError:
+                            continue
+
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
+        p = Path(path)
+        if not p.exists():
+            raise FileNotFoundError(f"File not found: {p}")
+        async with aiofiles.open(p, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
