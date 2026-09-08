@@ -14,8 +14,8 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None, model: str | None = None) -> None:
+        self.client = client or LLMClient(settings=settings, model=model)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -36,6 +36,7 @@ class TesterAgent:
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
+            ["python", "-m", "unittest", "discover", "-q"],
             ["npm", "test", "--", "--silent"],
             ["pnpm", "test", "--", "--silent"],
             ["yarn", "test", "--silent"],
