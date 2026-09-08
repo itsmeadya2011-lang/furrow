@@ -26,6 +26,7 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -39,7 +40,18 @@ class Orchestrator:
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
+            try:
+                plan = await self.planner.plan(self.goal)
+            except Exception:
+                console.print("[red]Planner failed, retrying with corrected prompt...[/red]")
+                try:
+                    plan = await self.planner.plan(
+                        self.goal + "\n\nIMPORTANT: Return valid JSON only. No extra commentary."
+                    )
+                except Exception as e:
+                    console.print(f"[red]Planner failed again: {e}[/red]")
+                    return
+        self.plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -64,7 +76,11 @@ class Orchestrator:
                 console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            try:
+                test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            except Exception as e:
+                console.print(f"[red]Tester failed: {e}[/red]")
+                test_result = TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
@@ -76,6 +92,9 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
+        max_cycles = self.client.settings.max_cycles
+        if max_cycles > 0 and self.cycles >= max_cycles:
+            return True
         completed = sum(1 for t in self._get_tasks() if t.status == "completed")
         failed = sum(1 for t in self._get_tasks() if t.status == "failed")
         if failed > 0:
@@ -85,4 +104,6 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        if self.plan is None:
+            return []
+        return self.plan.tasks
