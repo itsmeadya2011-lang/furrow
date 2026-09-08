@@ -7,10 +7,19 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger()
 
 
 class LLMClient:
@@ -37,6 +46,11 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((anthropic.APIStatusError, openai.APIStatusError)),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
@@ -47,15 +61,18 @@ class LLMClient:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+        logger.info("llm_request", provider="anthropic", model=model)
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=4096,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        logger.info("llm_response", provider="anthropic", model=model)
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+        logger.info("llm_request", provider="openai", model=model)
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
@@ -63,13 +80,16 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
+        logger.info("llm_response", provider="openai", model=model)
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("read_file", path=str(path))
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("write_file", path=str(path))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
