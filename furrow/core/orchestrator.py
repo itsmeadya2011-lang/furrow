@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -26,6 +23,7 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._plan: Plan | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -36,32 +34,36 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            if 0 < self.client.settings.max_cycles <= self.cycles:
+                console.print(f"[yellow]Reached max cycles ({self.client.settings.max_cycles}). Halting.[/yellow]")
+                break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self._plan = plan
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
+        max_parallel = self.client.settings.max_parallel_tasks
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for i in range(0, len(plan.tasks), max_parallel):
+                batch = plan.tasks[i : i + max_parallel]
+                tasks = [WorkerAgent(task=task, client=self.client).run() for task in batch]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for task, result in zip(plan.tasks, results):
-            if isinstance(result, Exception):
-                task.status = "failed"
-                task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
-            else:
-                task.status = "completed"
-                task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+                for task, result in zip(batch, results):
+                    if isinstance(result, Exception):
+                        task.status = "failed"
+                        task.result = str(result)
+                        console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                    else:
+                        task.status = "completed"
+                        task.result = result
+                        console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
@@ -76,13 +78,16 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        tasks = self._get_tasks()
+        if not tasks:
+            return True
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._plan.tasks if self._plan else []

@@ -7,10 +7,14 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+log = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -37,14 +41,26 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        retry=retry_if_exception_type(
+            (anthropic.APIStatusError, openai.APIStatusError, Exception)
+        ),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        log.info("api.call", provider=self.settings.provider.value, model=model)
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                return await self._complete_anthropic(prompt, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                return await self._complete_openai(prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        except Exception as exc:
+            log.error("api.error", provider=self.settings.provider.value, model=model, error=str(exc))
+            raise
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
@@ -75,8 +91,9 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
-        p = Path(directory)
+    def list_files(self, directory: str | Path | None = None) -> list[str]:
+        base = Path(directory) if directory is not None else self.settings.workspace
+        p = base
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
