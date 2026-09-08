@@ -15,8 +15,12 @@ class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
-    async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+    async def plan(self, goal: str, original_goal: str | None = None) -> Plan:
+        file_tree = "\n".join(self.client.list_files(self.client.settings.workspace))
+        context = f"Goal: {goal}\n"
+        if original_goal and original_goal != goal:
+            context += f"Original goal: {original_goal}\n"
+        prompt = f"{PLANNER_PROMPT}\n\nWorkspace file tree:\n{file_tree}\n\n{context}"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)

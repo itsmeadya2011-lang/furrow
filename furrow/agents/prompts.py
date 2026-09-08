@@ -5,6 +5,8 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
 
+Consider the existing file structure of the workspace when planning tasks. Reference actual file paths that exist or will need to exist.
+
 Return JSON only (no markdown, no explanation) with this shape:
 {
   "tasks": [
@@ -29,7 +31,21 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Return a JSON object with the shape:
+{
+  "files": {
+    "path/to/file": "full updated file content here",
+    "another/file.py": "..."
+  },
+  "summary": "Brief description of what was done"
+}
+
+If no files need changes, return:
+{
+  "files": {},
+  "summary": "No changes needed"
+}"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
