@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+log = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -37,14 +41,46 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(
+            (
+                httpx.TransportError,
+                httpx.TimeoutException,
+                anthropic.APIError,
+                openai.APIError,
+                ConnectionError,
+                TimeoutError,
+            )
+        ),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        log.info(
+            "llm.complete.start",
+            provider=self.settings.provider.value,
+            model=model,
+        )
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                return await self._complete_anthropic(prompt, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                return await self._complete_openai(prompt, system, model)
+            elif self.settings.provider == Provider.OLLAMA:
+                return await self._complete_ollama(prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        except Exception as exc:
+            log.error(
+                "llm.complete.error",
+                provider=self.settings.provider.value,
+                model=model,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
@@ -64,6 +100,23 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        log.info("llm.ollama.request", model=model)
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.settings.ollama_base_url.rstrip('/')}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "system": system or "You are a helpful coding assistant.",
+                    "stream": False,
+                },
+                timeout=httpx.Timeout(300.0, connect=60.0),
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
