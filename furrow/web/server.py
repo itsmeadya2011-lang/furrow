@@ -1,22 +1,24 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
-
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
 
 
-class StartRequest(BaseModel):
-    goal: str
-    model: Optional[str] = None
+class WebSocketConsole:
+    def __init__(self, websocket: WebSocket) -> None:
+        self._websocket = websocket
+
+    def print(self, *args, **kwargs) -> None:
+        try:
+            message = "".join(str(a) for a in args)
+            self._websocket.send_text(message)
+        except Exception:
+            pass
 
 
 @app.get("/")
@@ -37,10 +39,14 @@ async def index() -> HTMLResponse:
     const out = document.getElementById('out');
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
+      out.textContent = '';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
-      ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onmessage = (ev) => {
+        out.textContent += ev.data + '\\n';
+      };
+      ws.onclose = () => {
+        out.textContent += '\\nClosed.\\n';
+      };
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -55,8 +61,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        model = data.get("model")
+        
+        if model:
+            from furrow.config import settings
+            settings.model = model
+        
+        ws_console = WebSocketConsole(websocket)
+        
+        # Temporarily replace the global console with our WebSocket console
+        import furrow.core.orchestrator as orchestrator_module
+        original_console = orchestrator_module.console
+        orchestrator_module.console = ws_console
+        
+        try:
+            orchestrator = Orchestrator(goal=goal)
+            await orchestrator.run()
+        finally:
+            orchestrator_module.console = original_console
+            
     except WebSocketDisconnect:
         pass
 

@@ -47,23 +47,33 @@ class LLMClient:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
+        try:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except anthropic.APIError as e:
+            raise RuntimeError(f"Anthropic API error: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during Anthropic completion: {e}") from e
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = await self.openai.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return response.choices[0].message.content or ""
+        except openai.APIError as e:
+            raise RuntimeError(f"OpenAI API error: {e}") from e
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error during OpenAI completion: {e}") from e
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
