@@ -26,6 +26,7 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._current_tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -45,6 +46,8 @@ class Orchestrator:
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
+
+        self._current_tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -73,9 +76,28 @@ class Orchestrator:
             for failure in test_result.failures:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
-            self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            self.goal = (
+                f"{self.goal}\n\nFix failing tests:\n"
+                + "\n".join(test_result.failures)
+            )
+
+        completed = sum(1 for t in self._current_tasks if t.status == "completed")
+        failed = sum(1 for t in self._current_tasks if t.status == "failed")
+        total = len(self._current_tasks)
+        console.print(
+            f"[bold]Cycle {self.cycles} summary:[/bold] "
+            f"[green]{completed} completed[/green], "
+            f"[red]{failed} failed[/red], "
+            f"[blue]{total} total[/blue]"
+        )
+        if total > 0 and failed == total:
+            console.print(
+                "[bold red]All tasks failed. The goal may be too complex or there are blocking issues.[/bold red]"
+            )
 
     def _is_done(self) -> bool:
+        if self.cycles >= self.client.settings.max_cycles > 0:
+            return True
         completed = sum(1 for t in self._get_tasks() if t.status == "completed")
         failed = sum(1 for t in self._get_tasks() if t.status == "failed")
         if failed > 0:
@@ -85,4 +107,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._current_tasks

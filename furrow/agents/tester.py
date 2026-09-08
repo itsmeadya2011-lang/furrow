@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class TesterAgent:
@@ -33,26 +36,47 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
-            ["cargo", "test", "-q"],
-            ["go", "test", "./..."],
-        ]
-        for cmd in candidates:
+        commands = self._detect_test_commands()
+        if not commands:
+            return "No test configuration found in project. Skipping tests."
+
+        for cmd in commands:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+                    return output.decode()
                 except asyncio.TimeoutError:
+                    logger.debug("Test command timed out: %s", cmd)
                     proc.kill()
+                    await proc.wait()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                logger.debug("Test runner not found on PATH: %s", cmd[0])
                 continue
         return "No test runner found."
+
+    def _detect_test_commands(self) -> list[list[str]]:
+        commands: list[list[str]] = []
+
+        if os.path.exists("pyproject.toml") or os.path.exists("setup.py") or os.path.exists("requirements.txt"):
+            commands.append(["pytest", "-q"])
+            commands.append(["python", "-m", "pytest", "-q"])
+
+        if os.path.exists("package.json"):
+            with open("package.json") as f:
+                pkg = json.load(f)
+            if isinstance(pkg, dict) and isinstance(pkg.get("scripts"), dict) and "test" in pkg["scripts"]:
+                commands.append(["npm", "test", "--", "--silent"])
+                commands.append(["pnpm", "test", "--", "--silent"])
+                commands.append(["yarn", "test", "--silent"])
+
+        if os.path.exists("Cargo.toml"):
+            commands.append(["cargo", "test", "-q"])
+
+        if os.path.exists("go.mod"):
+            commands.append(["go", "test", "./..."])
+
+        return commands
