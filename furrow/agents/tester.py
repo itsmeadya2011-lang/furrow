@@ -5,7 +5,7 @@ import json
 import os
 from typing import TYPE_CHECKING
 
-from furrow.agents.prompts import TESTER_PROMPT
+from furrow.agents.prompts import TESTER_PROMPT, TEST_FIXER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
 
@@ -31,6 +31,28 @@ class TesterAgent:
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+
+    async def fix_failures(self, goal: str, failures: list[str], tasks: list[TaskModel]) -> list[TaskModel]:
+        """Generate fix tasks for test failures."""
+        if not failures:
+            return []
+
+        prompt = f"{TEST_FIXER_PROMPT}\n\nGoal: {goal}\n\nTest failures:\n" + "\n".join(failures) + "\n"
+        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        try:
+            data = json.loads(response)
+            fix_tasks = []
+            for i, task_data in enumerate(data.get("tasks", [])):
+                fix_tasks.append(TaskModel(
+                    id=f"fix_{len(tasks) + i + 1}",
+                    description=task_data["description"],
+                    files=task_data.get("files", []),
+                    dependencies=task_data.get("dependencies", []),
+                    status="pending",
+                ))
+            return fix_tasks
+        except (json.JSONDecodeError, ValueError):
+            return []
 
     async def _run_tests(self) -> str:
         candidates = [

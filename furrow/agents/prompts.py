@@ -29,7 +29,32 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+OUTPUT FORMAT:
+Return JSON with this shape to perform file operations:
+{
+  "files": [
+    {
+      "path": "src/auth.py",
+      "operation": "write",
+      "content": "// full file content here"
+    }
+  ],
+  "summary": "Implemented JWT authentication"
+}
+
+Or for deletions:
+{
+  "files": [
+    {
+      "path": "src/old_file.py",
+      "operation": "delete"
+    }
+  ],
+  "summary": "Removed deprecated auth module"
+}
+
+If no file operations are needed, return a plain text summary."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
