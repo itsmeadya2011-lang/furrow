@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
@@ -16,6 +15,7 @@ from furrow.config import Provider, Settings, settings
 class LLMClient:
     def __init__(self, settings: Settings = settings) -> None:
         self.settings = settings
+        self.settings.validate_api_keys()
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -31,17 +31,16 @@ class LLMClient:
     @property
     def openai(self) -> AsyncOpenAI:
         if self._openai is None:
-            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY") or "ollama"
+            base_url = str(self.settings.ollama_base_url) if self.settings.provider == Provider.OLLAMA else None
+            self._openai = AsyncOpenAI(api_key=api_key, base_url=base_url)
         return self._openai
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
+        elif self.settings.provider in (Provider.OPENAI, Provider.OLLAMA):
             return await self._complete_openai(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")

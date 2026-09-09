@@ -8,7 +8,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -55,8 +54,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        queue: asyncio.Queue[str] = asyncio.Queue()
+
+        def on_event(msg: str) -> None:
+            queue.put_nowait(msg)
+
+        orchestrator = Orchestrator(goal=goal, on_event=on_event)
+        run_task = asyncio.create_task(orchestrator.run())
+
+        while not run_task.done() or not queue.empty():
+            try:
+                msg = await asyncio.wait_for(queue.get(), timeout=0.5)
+                await websocket.send_text(msg)
+            except asyncio.TimeoutError:
+                continue
     except WebSocketDisconnect:
         pass
 

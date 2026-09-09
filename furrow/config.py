@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -49,6 +49,19 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    def validate_api_keys(self) -> None:
+        if self.provider == Provider.ANTHROPIC and not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required when provider is 'anthropic'")
+        if self.provider == Provider.OPENAI and not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required when provider is 'openai'")
+
+    @field_validator("max_parallel_tasks")
+    @classmethod
+    def validate_max_parallel_tasks(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_parallel_tasks must be >= 1")
+        return v
 
 
 settings = Settings()
