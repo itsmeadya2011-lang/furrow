@@ -14,10 +14,13 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
+    """Agent responsible for running project tests and interpreting results."""
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        """Run tests and use an LLM to determine if they passed."""
         test_output = ""
         try:
             test_output = await self._run_tests()
@@ -33,6 +36,7 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        """Try common test runners in the workspace and return their output."""
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -42,17 +46,25 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        workspace = self.client.settings.workspace
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=workspace,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode == 0:
+                        return output
+                    # Non-zero exit but we still return output for LLM interpretation
+                    return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, PermissionError, OSError):
                 continue
         return "No test runner found."

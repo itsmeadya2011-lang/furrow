@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -10,6 +11,7 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from rich.console import Console
 
 app = FastAPI(title="Furrow")
 
@@ -17,6 +19,24 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+class WebSocketConsole:
+    """A file-like object that sends text to a WebSocket."""
+
+    def __init__(self, websocket: WebSocket) -> None:
+        self._websocket = websocket
+
+    def write(self, text: str) -> int:
+        if text.strip():
+            try:
+                asyncio.get_running_loop().create_task(self._websocket.send_text(text.rstrip()))
+            except RuntimeError:
+                pass
+        return len(text)
+
+    def flush(self) -> None:
+        pass
 
 
 @app.get("/")
@@ -29,6 +49,7 @@ async def index() -> HTMLResponse:
   <h1>Furrow</h1>
   <form id="form">
     <input id="goal" placeholder="Enter goal" required />
+    <input id="model" placeholder="Model (optional)" />
     <button type="submit">Start</button>
   </form>
   <pre id="out"></pre>
@@ -41,7 +62,11 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      const payload = {
+        goal: document.getElementById('goal').value,
+        model: document.getElementById('model').value || null
+      };
+      ws.send(JSON.stringify(payload));
     };
   </script>
 </body>
@@ -55,10 +80,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+        settings = Settings()
+        if model:
+            settings.model = model
+        ws_console = Console(file=WebSocketConsole(websocket), force_terminal=True)
+        orchestrator = Orchestrator(goal=goal, settings=settings, console=ws_console)
         await orchestrator.run()
+        await websocket.send_text("\n[bold green]Furrow session complete.[/bold green]\n")
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"\n[bold red]Error: {e}[/bold red]\n")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

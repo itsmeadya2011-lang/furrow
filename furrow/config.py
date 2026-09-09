@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -52,3 +54,34 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+# Configure structured logging
+_structlog_configured = False
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Configure structlog with the given log level."""
+    global _structlog_configured
+    if _structlog_configured:
+        return
+    logging.basicConfig(
+        format="%(message)s",
+        level=getattr(logging, level.upper(), logging.INFO),
+    )
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.stdlib.BoundLogger,
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+    )
+    _structlog_configured = True
+
+
+configure_logging(settings.log_level)
+logger = structlog.get_logger("furrow")
