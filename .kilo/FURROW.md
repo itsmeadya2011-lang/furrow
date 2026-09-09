@@ -54,7 +54,44 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
+## Implementation Notes
+
+### Orchestrator (`furrow/core/orchestrator.py`)
+- Tracks `self.tasks` across cycles so `_is_done()` can inspect them. The previous
+  `_get_tasks()` returned `[]` unconditionally, which made the loop halt after the
+  first cycle regardless of outcome.
+- `_is_done()` returns `False` while there are failed tasks (so fixes are attempted
+  in the next cycle) and `True` only when the planner produces no tasks or all
+  tracked tasks completed.
+- Accepts an optional `on_output: Callable[[str]]` callback. When set, every status
+  message is forwarded to it in addition to the console. This lets the web server
+  stream live output to WebSocket clients.
+- Preserves the original goal in `self.original_goal` for reporting.
+
+### Worker (`furrow/agents/worker.py`)
+- Workers no longer just echo LLM text. `run()` now:
+  1. Reads each file in `self.task.files` via `LLMClient.read_file()` for context.
+  2. Builds a prompt including the task, files to touch, and current file contents.
+  3. Asks the LLM to return JSON: `{"files": [{"path", "content"}], "summary"}`.
+  4. Writes each file via `LLMClient.write_file()`.
+  5. Falls back to `### filename` markdown sections if JSON parsing fails.
+- Returns the summary string (unchanged return type).
+
+### LLM Client (`furrow/llm.py`)
+- Added Ollama provider support. `Provider.OLLAMA` now routes to
+  `_complete_ollama()`, which uses an OpenAI-compatible `AsyncOpenAI` client
+  pointed at `ollama_base_url`. Anthropic and OpenAI paths are unchanged.
+
+### Web Server (`furrow/web/server.py`)
+- The `/ws` endpoint now runs the orchestrator in a background task and streams
+  its `on_output` messages to the browser, stripping rich markup tags.
+- The connection stays open until the orchestrator finishes or the client
+  disconnects.
+
+### CLI (`furrow/cli/`)
+- Added the missing `__init__.py` so `furrow.cli` is a proper package.
+
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
-- Web UI for monitoring parallel agent activity.
+- Desktop wrappers for non-TUI interaction.
+- Rate-limit awareness and retry handling in the LLM client.
