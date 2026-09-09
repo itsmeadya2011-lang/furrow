@@ -4,6 +4,7 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Independent when possible
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
+- Use the dependencies array to declare ordering constraints between tasks. Leave it empty for fully independent tasks.
 
 Return JSON only (no markdown, no explanation) with this shape:
 {
@@ -29,6 +30,10 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+Context:
+- You have access to the project files in the workspace. Make changes using edit/write tools.
+- Return a concise summary of changes made and any issues encountered.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.

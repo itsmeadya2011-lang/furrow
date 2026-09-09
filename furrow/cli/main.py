@@ -38,5 +38,11 @@ def web() -> None:
     run()
 
 
+@main.command()
+def version() -> None:
+    from furrow import __version__
+    console.print(f"furrow {__version__}")
+
+
 if __name__ == "__main__":
     main()

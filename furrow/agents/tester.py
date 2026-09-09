@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -14,13 +15,19 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        workspace: Path | None = None,
+    ) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.workspace = workspace
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
         try:
-            test_output = await self._run_tests()
+            test_output = await self._run_tests(workspace=self.workspace)
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
@@ -32,8 +39,19 @@ class TesterAgent:
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
-    async def _run_tests(self) -> str:
-        candidates = [
+    async def _run_tests(self, workspace: Path | None = None) -> str:
+        cwd = str(workspace) if workspace is not None else None
+        base = workspace or Path.cwd()
+        preferred = []
+        if (base / "pyproject.toml").exists():
+            preferred.append(["pytest", "-q"])
+        if (base / "package.json").exists():
+            preferred.append(["npm", "test", "--", "--silent"])
+        if (base / "Cargo.toml").exists():
+            preferred.append(["cargo", "test", "-q"])
+        if (base / "go.mod").exists():
+            preferred.append(["go", "test", "./..."])
+        candidates = preferred + [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
             ["npm", "test", "--", "--silent"],
@@ -45,7 +63,10 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)

@@ -7,10 +7,21 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic, RateLimitError, APIStatusError
+from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError, APIStatusError as OpenAIAPIStatusError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 from furrow.config import Provider, Settings, settings
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (RateLimitError, OpenAIRateLimitError)):
+        return True
+    if isinstance(exc, (APIStatusError, OpenAIAPIStatusError)):
+        return getattr(exc, "status_code", None) in (429, 500, 502, 503, 504)
+    if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    return False
 
 
 class LLMClient:
@@ -37,6 +48,12 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception(_is_retryable),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
