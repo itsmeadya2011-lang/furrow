@@ -32,6 +32,44 @@ class TesterAgent:
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
+    async def _run_ruff(self) -> str:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ruff", "check", ".",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            output = stdout.decode() + stderr.decode()
+            if proc.returncode == 0:
+                return "[ruff] PASSED\n"
+            return f"[ruff] FAILED (exit {proc.returncode})\n{output}"
+        except FileNotFoundError:
+            return "[ruff] SKIPPED (ruff not found)\n"
+        except asyncio.TimeoutError:
+            return "[ruff] FAILED (timeout after 120s)\n"
+        except Exception as e:
+            return f"[ruff] FAILED ({e})\n"
+
+    async def _run_mypy(self) -> str:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "mypy", "furrow",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            output = stdout.decode() + stderr.decode()
+            if proc.returncode == 0:
+                return "[mypy] PASSED\n"
+            return f"[mypy] FAILED (exit {proc.returncode})\n{output}"
+        except FileNotFoundError:
+            return "[mypy] SKIPPED (mypy not found)\n"
+        except asyncio.TimeoutError:
+            return "[mypy] FAILED (timeout after 120s)\n"
+        except Exception as e:
+            return f"[mypy] FAILED ({e})\n"
+
     async def _run_tests(self) -> str:
         candidates = [
             ["pytest", "-q"],
@@ -42,6 +80,7 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        test_output = ""
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -49,10 +88,23 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode == 0:
+                        test_output += f"[pytest] PASSED\n"
+                    else:
+                        test_output += f"[pytest] FAILED (exit {proc.returncode})\n{output}"
+                    break
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        else:
+            test_output += "[pytest] SKIPPED (no test runner found)\n"
+
+        test_output += "\n"
+        test_output += await self._run_ruff()
+        test_output += "\n"
+        test_output += await self._run_mypy()
+
+        return test_output

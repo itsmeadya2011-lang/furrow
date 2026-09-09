@@ -5,7 +5,7 @@ from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from furrow.config import Settings
@@ -49,6 +49,11 @@ async def index() -> HTMLResponse:
 """)
 
 
+@app.get("/health")
+async def health() -> JSONResponse:
+    return JSONResponse(content={"status": "ok"})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -59,6 +64,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        await websocket.send_text(f"Error: {exc}")
+    finally:
+        await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
