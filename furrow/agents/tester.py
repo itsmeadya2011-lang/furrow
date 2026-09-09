@@ -30,7 +30,7 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(passed="passed" in response.lower() and "failed" not in response.lower() and "not passed" not in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -49,10 +49,17 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    combined = stdout.decode() + stderr.decode()
+                    if proc.returncode != 0:
+                        raise RuntimeError(f"Test runner exited with code {proc.returncode}:\n{combined}")
+                    return combined
                 except asyncio.TimeoutError:
                     proc.kill()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=5)
+                    except asyncio.TimeoutError:
+                        pass
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError):
                 continue
         return "No test runner found."

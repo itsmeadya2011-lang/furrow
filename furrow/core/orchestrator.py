@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +27,17 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
-            await self._cycle()
+            try:
+                await self._cycle()
+            except Exception as e:
+                console.print(f"[red]Cycle failed: {e}[/red]")
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
@@ -42,13 +47,21 @@ class Orchestrator:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
+        self._tasks = plan.tasks
+
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
+            semaphore = asyncio.Semaphore(self.client.settings.max_parallel_tasks)
+
+            async def run_with_limit(worker):
+                async with semaphore:
+                    return await worker.run()
+
             tasks = [
-                WorkerAgent(task=task, client=self.client).run()
+                run_with_limit(WorkerAgent(task=task, client=self.client))
                 for task in plan.tasks
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -58,6 +71,7 @@ class Orchestrator:
                 task.status = "failed"
                 task.result = str(result)
                 console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                console.print(f"[red]Traceback:\n{''.join(traceback.format_exception(type(result), result, result.__traceback__))}[/red]")
             else:
                 task.status = "completed"
                 task.result = result
@@ -73,16 +87,17 @@ class Orchestrator:
             for failure in test_result.failures:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
-            self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            self.goal = f"{self.goal}\nFix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        tasks = self._get_tasks()
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._tasks

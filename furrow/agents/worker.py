@@ -1,3 +1,9 @@
+"""Worker agent for the Furrow autonomous coding system.
+
+This module defines :class:`WorkerAgent`, which executes a single task by
+building a prompt from the task description and delegating to an LLM client.
+"""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -11,6 +17,12 @@ if TYPE_CHECKING:
 
 
 class WorkerAgent:
+    """An agent that executes a single task using an LLM.
+
+    The worker agent is given a task description and a list of files to touch.
+    It builds a prompt from the task details and delegates the actual work to
+    an :class:`~furrow.llm.LLMClient`.
+    """
     def __init__(self, task: TaskModel, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.task = task
         self.client = client or LLMClient(settings=settings)

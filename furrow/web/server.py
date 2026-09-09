@@ -38,7 +38,7 @@ async def index() -> HTMLResponse:
     form.onsubmit = async (e) => {
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
-      const ws = new WebSocket('ws://' + location.host + '/ws');
+      const ws = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
@@ -55,11 +55,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        if not isinstance(goal, str):
+            await websocket.send_json({"error": "goal must be a string"})
+            await websocket.close()
+            return
+        if len(goal) > 10000:
+            await websocket.send_json({"error": "goal exceeds 10000 characters"})
+            await websocket.close()
+            return
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        await websocket.send_json({"error": str(e)})
+        await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
-    uvicorn.run(app, host=host, port=port)
+    try:
+        uvicorn.run(app, host=host, port=port)
+    except KeyboardInterrupt:
+        print("Server interrupted by user. Shutting down.")
+    except Exception as e:
+        print(f"Failed to start server: {e}")

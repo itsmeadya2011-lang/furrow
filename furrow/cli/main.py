@@ -6,7 +6,9 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 console = Console()
 
@@ -22,11 +24,14 @@ def main() -> None:
 def start(goal: str | None, model: str | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
+
+    start_settings = Settings()
     if model:
-        from furrow.config import settings
-        settings.model = model
+        start_settings.model = model
+    client = LLMClient(settings=start_settings)
+
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, client=client).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)
@@ -34,8 +39,12 @@ def start(goal: str | None, model: str | None) -> None:
 
 @main.command()
 def web() -> None:
-    from furrow.web.server import run
-    run()
+    try:
+        from furrow.web.server import run
+        run()
+    except Exception as exc:
+        console.print(f"[red]Failed to start web server: {exc}[/red]")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -1,3 +1,10 @@
+"""System prompts for the Furrow agent pipeline.
+
+This module contains the system prompts used by the planner, worker, and
+tester agents. Each prompt defines the role, rules, and expected output
+format for its respective agent.
+"""
+
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:
