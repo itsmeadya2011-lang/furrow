@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -41,7 +42,7 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      ws.onopen = () => ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
 </body>
@@ -55,10 +56,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def report(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator = Orchestrator(goal=goal, reporter=report)
         await orchestrator.run()
+        await websocket.close()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        await websocket.send_text(f"Error: {e}")
+        await websocket.close(code=1000)
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

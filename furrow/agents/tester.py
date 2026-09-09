@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from furrow.config import Settings
@@ -22,7 +25,11 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            logger.error("test_runner_error", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
+
+        if not test_output.strip():
+            test_output = "All tests passed (no output)."
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
@@ -30,7 +37,10 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            logger.warning("test_result_parse_failed", response_preview=response[:200])
+            return TestResult(
+                passed="passed" in response.lower(), summary=response, failures=[]
+            )
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -48,11 +58,17 @@ class TesterAgent:
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    timeout = self.client.settings.test_timeout
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout
+                    )
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    logger.warning("test_timeout", command=" ".join(cmd))
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                continue
+            except OSError:
                 continue
         return "No test runner found."
