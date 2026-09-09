@@ -14,9 +14,12 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TestResult, settings
 from furrow.llm import LLMClient
+from furrow.logging import get_logger, setup_logging
 
+setup_logging()
+logger = get_logger(__name__)
 console = Console()
 
 
@@ -26,14 +29,25 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.all_tasks: list[Any] = []
 
     async def run(self) -> None:
+        logger.info("orchestrator_start", goal=self.goal)
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            
+            # Check max cycles
+            if settings.max_cycles > 0 and self.cycles > settings.max_cycles:
+                logger.warning("max_cycles_reached", max_cycles=settings.max_cycles)
+                console.print(f"[yellow]Max cycles ({settings.max_cycles}) reached. Halting.[/yellow]")
+                break
+                
+            logger.info("cycle_start", cycle=self.cycles)
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
+                logger.info("orchestrator_complete", cycles=self.cycles)
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
 
@@ -45,6 +59,9 @@ class Orchestrator:
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
+
+        # Add new tasks to tracked list
+        self.all_tasks.extend(plan.tasks)
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -64,7 +81,7 @@ class Orchestrator:
                 console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            test_result = await TesterAgent(client=self.client).run(self.goal, self.all_tasks)
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
@@ -76,13 +93,20 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if not self.all_tasks:
+            return False
+            
+        completed = sum(1 for t in self.all_tasks if t.status == "completed")
+        failed = sum(1 for t in self.all_tasks if t.status == "failed")
+        pending = sum(1 for t in self.all_tasks if t.status == "pending")
+        
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if pending > 0:
+            return False
+        if completed >= len(self.all_tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.all_tasks

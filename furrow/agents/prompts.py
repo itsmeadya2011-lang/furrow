@@ -29,7 +29,21 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- You have access to tools: read_file, write_file, list_files, run_command
+- Use tools by returning JSON with "tool" and "args" fields
+- When done, return JSON with "done": true and "summary": "...""""
+
+WORKER_TOOL_PROMPT = """Available tools:
+- read_file: {"path": "path/to/file"} - Read a file
+- write_file: {"path": "path/to/file", "content": "file content"} - Write a file
+- list_files: {"directory": "path/to/dir"} - List files in directory (default: ".")
+- run_command: {"command": ["cmd", "arg1", "arg2"]} - Run a shell command
+
+To use a tool, return JSON only:
+{"tool": "read_file", "args": {"path": "src/main.py"}}
+
+When task is complete, return:
+{"done": true, "summary": "Implemented X by doing Y"}"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
