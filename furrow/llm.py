@@ -9,6 +9,12 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
 
@@ -34,14 +40,23 @@ class LLMClient:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            if self.settings.provider == Provider.OLLAMA:
+                self._openai = AsyncOpenAI(base_url=self.settings.ollama_base_url, api_key="ollama")
+            else:
+                self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
+        elif self.settings.provider in (Provider.OPENAI, Provider.OLLAMA):
             return await self._complete_openai(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
