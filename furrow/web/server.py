@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import re
 from typing import Optional
 
 import uvicorn
@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 app = FastAPI(title="Furrow")
 
@@ -52,13 +53,36 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+
+    async def stream_output(message: str) -> None:
+        """Send output to the websocket client, stripping rich markup for display."""
+        try:
+            plain = re.sub(r"\[/?[a-zA-Z0-9_-]*\]", "", message)
+            plain = re.sub(r"\x1b\[[0-9;]*[a-zA-Z]", "", plain)
+            await websocket.send_text(plain.strip())
+        except Exception:
+            pass
+
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+        settings = Settings()
+        if model:
+            settings.model = model
+        orchestrator = Orchestrator(
+            goal=goal,
+            client=LLMClient(settings=settings),
+            output_callback=stream_output,
+        )
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"Error: {e}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
