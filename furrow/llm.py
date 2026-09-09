@@ -6,6 +6,7 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -18,6 +19,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,19 +39,69 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> httpx.AsyncClient:
+        if self._ollama is None:
+            self._ollama = httpx.AsyncClient(base_url=self.settings.ollama_base_url)
+        return self._ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        try:
+            response = await self.ollama.post(
+                "/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "system": system,
+                    "stream": False,
+                },
+            )
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                try:
+                    error = response.json()
+                except ValueError:
+                    error = response.text.strip()
+                if isinstance(error, dict):
+                    detail = error.get("error") or error
+                else:
+                    detail = error
+                message = f"Ollama request failed with status {response.status_code}"
+                if detail:
+                    message = f"{message}: {detail}"
+                raise ValueError(message) from exc
+
+            try:
+                data = response.json()
+            except ValueError as exc:
+                raise ValueError("Ollama returned an invalid JSON response") from exc
+            if not isinstance(data, dict):
+                raise ValueError("Ollama returned an invalid response")
+            result = data.get("response")
+            if not isinstance(result, str):
+                raise ValueError("Ollama response is missing the 'response' field")
+            return result
+        except httpx.RequestError as exc:
+            raise ValueError(
+                f"Unable to connect to Ollama at {self.settings.ollama_base_url}: {exc}"
+            ) from exc
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=self.settings.max_tokens,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
@@ -80,3 +132,21 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def close(self) -> None:
+        """Close all underlying HTTP clients to release connections."""
+        if self._anthropic is not None:
+            await self._anthropic.close()
+            self._anthropic = None
+        if self._openai is not None:
+            await self._openai.close()
+            self._openai = None
+        if self._ollama is not None:
+            await self._ollama.aclose()
+            self._ollama = None
+
+    async def __aenter__(self) -> LLMClient:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        await self.close()

@@ -27,9 +27,29 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- File paths must be relative to the workspace. Do not use absolute paths or paths that
+  escape the workspace.
+- Return ONLY a valid JSON array of file operations. Do not include markdown, prose, or
+  a separate summary.
+
+Supported operations:
+- Write or replace a file:
+  {"action": "write", "path": "relative/path.py", "content": "full final file content"}
+- Read an additional existing file:
+  {"action": "read", "path": "relative/path.py"}
+
+The `content` for a write operation must contain the complete final file, not a fragment
+or a patch. Escape newlines and quotes as required by JSON. Include only the operations
+needed for this task. If no file changes are needed, return an empty array: [].
+
+Example:
+[
+  {"action": "read", "path": "src/existing.py"},
+  {"action": "write", "path": "src/auth.py", "content": "full file content"}
+]
+
+The worker will apply write operations and return the change summary."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
