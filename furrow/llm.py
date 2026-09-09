@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -40,11 +41,30 @@ class LLMClient:
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_with_retry(self._complete_anthropic, prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_with_retry(self._complete_openai, prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_with_retry(self, fn, prompt: str, system: str, model: str) -> str:
+        max_retries = 3
+        base_delay = 1.0
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                return await fn(prompt, system, model)
+            except (anthropic.APIStatusError, openai.APIStatusError) as e:
+                last_exception = e
+                if getattr(e, "status_code", None) in (429, 500, 502, 503, 504):
+                    await asyncio.sleep(base_delay * (2 ** attempt))
+                    continue
+                raise
+            except (anthropic.APIConnectionError, openai.APIConnectionError) as e:
+                last_exception = e
+                await asyncio.sleep(base_delay * (2 ** attempt))
+                continue
+        raise last_exception or RuntimeError("LLM request failed after retries")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(

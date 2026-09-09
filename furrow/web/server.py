@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import traceback
 from typing import Optional
 
 import uvicorn
@@ -41,6 +42,7 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onerror = (ev) => out.textContent += '\\nError: ' + ev.type + '\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -59,6 +61,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception:
+        error_text = traceback.format_exc()
+        try:
+            await websocket.send_text(f"\\n[red]Fatal error:[/red]\\n{error_text}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
