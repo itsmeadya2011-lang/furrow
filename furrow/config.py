@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -47,8 +47,19 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    max_retries: int = 3
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    max_tokens: int = 4096
+    test_commands: list[str] = Field(default_factory=list)
+
+    @field_validator("test_commands", mode="before")
+    @classmethod
+    def parse_test_commands(cls, v: Any) -> list[str]:
+        """Parse comma-separated string into a list for env var compatibility."""
+        if isinstance(v, str):
+            return [c.strip() for c in v.split(",") if c.strip()]
+        return v
 
 
 settings = Settings()
