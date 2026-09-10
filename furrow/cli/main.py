@@ -19,12 +19,16 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
+@click.option("--provider", type=click.Choice(["anthropic", "openai", "ollama"]), default=None, help="LLM provider")
+def start(goal: str | None, model: str | None, provider: str | None) -> None:
+    from furrow.config import settings
+
+    if provider:
+        settings.provider = provider
+    if model:
+        settings.model = model
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    if model:
-        from furrow.config import settings
-        settings.model = model
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:
@@ -35,6 +39,7 @@ def start(goal: str | None, model: str | None) -> None:
 @main.command()
 def web() -> None:
     from furrow.web.server import run
+
     run()
 
 
