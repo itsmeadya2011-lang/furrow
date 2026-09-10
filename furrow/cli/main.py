@@ -6,25 +6,30 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import configure_logging, settings
 from furrow.core.orchestrator import Orchestrator
 
 console = Console()
 
 
 @click.group()
-def main() -> None:
-    pass
+@click.option("--log-level", default=None, help="Log level (DEBUG, INFO, WARNING, ERROR)")
+def main(log_level: str | None) -> None:
+    level = log_level or settings.log_level
+    configure_logging(level)
 
 
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
+@click.option("--max-cycles", default=None, type=int, help="Maximum number of cycles")
+def start(goal: str | None, model: str | None, max_cycles: int | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
-        from furrow.config import settings
         settings.model = model
+    if max_cycles is not None:
+        settings.max_cycles = max_cycles
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:

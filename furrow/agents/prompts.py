@@ -27,9 +27,23 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return a JSON object with "actions" array to perform file operations.
 - Do not spawn subagents.
-"""
+
+Action types:
+- {"type": "read", "path": "relative/path/to/file"}
+- {"type": "write", "path": "relative/path/to/file", "content": "file content here"}
+- {"type": "list", "path": "relative/path/to/directory"}
+
+Example response:
+{
+  "actions": [
+    {"type": "write", "path": "src/auth.py", "content": "import jwt\n..."},
+    {"type": "write", "path": "tests/test_auth.py", "content": "def test_auth():\n..."}
+  ]
+}
+
+If you need to read existing files first, include read actions. The system will execute them and you can respond again."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

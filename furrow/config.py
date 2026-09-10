@@ -4,6 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -46,9 +47,34 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 10
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
 
 settings = Settings()
+
+
+def configure_logging(level: str = "INFO") -> None:
+    """Configure structlog for structured logging."""
+    structlog.configure(
+        processors=[
+            structlog.stdlib.filter_by_level,
+            structlog.stdlib.add_logger_name,
+            structlog.stdlib.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.processors.JSONRenderer(),
+        ],
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+    
+    # Set log level
+    import logging
+    logging.basicConfig(level=getattr(logging, level.upper(), logging.INFO))
