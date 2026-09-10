@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
@@ -45,7 +44,10 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(settings.workspace),
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
