@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
-from furrow.llm import LLMClient
+from furrow.llm import LLMClient, _is_transient_error
 
 if TYPE_CHECKING:
     from furrow.config import Settings
@@ -25,12 +31,22 @@ class TesterAgent:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        response = await self._complete_with_retry(
+            prompt, self.client.settings.tester_model
+        )
         try:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=60),
+        stop=stop_after_attempt(4),
+        retry=retry_if_exception(_is_transient_error),
+    )
+    async def _complete_with_retry(self, prompt: str, model: str) -> str:
+        return await self.client.complete(prompt, model=model)
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -53,6 +69,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except Exception:
                 continue
         return "No test runner found."

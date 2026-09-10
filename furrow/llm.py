@@ -6,11 +6,34 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.ConnectError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in (429, 500, 503)
+    if isinstance(exc, openai.RateLimitError):
+        return True
+    if isinstance(exc, openai.APIStatusError):
+        return exc.status_code in (429, 500, 503)
+    if isinstance(exc, anthropic.APIStatusError):
+        return exc.status_code in (429, 500, 503)
+    if isinstance(exc, openai.APIConnectionError):
+        return True
+    return False
 
 
 class LLMClient:
@@ -43,27 +66,77 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=60),
+        stop=stop_after_attempt(4),
+        retry=retry_if_exception(_is_transient_error),
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
+        try:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except anthropic.APIStatusError as exc:
+            if exc.status_code in (429, 500, 503):
+                raise
+            raise ValueError(f"Anthropic API error ({exc.status_code}): {exc.message}") from exc
+        except anthropic.APIConnectionError as exc:
+            raise ValueError(f"Anthropic connection error: {exc.message}") from exc
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=60),
+        stop=stop_after_attempt(4),
+        retry=retry_if_exception(_is_transient_error),
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = await self.openai.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            content = response.choices[0].message.content
+            return content or ""
+        except openai.RateLimitError as exc:
+            raise ValueError(f"OpenAI rate limit error: {exc.message}") from exc
+        except openai.APIStatusError as exc:
+            if exc.status_code in (429, 500, 503):
+                raise
+            raise ValueError(f"OpenAI API error ({exc.status_code}): {exc.message}") from exc
+        except openai.APIConnectionError as exc:
+            raise ValueError(f"OpenAI connection error: {exc.message}") from exc
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=1, max=60),
+        stop=stop_after_attempt(4),
+        retry=retry_if_exception(_is_transient_error),
+    )
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        url = f"{base_url}/api/generate"
+        body: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+        }
+        if system:
+            body["system"] = system
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0)) as client:
+            response = await client.post(url, json=body)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

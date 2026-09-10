@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Callable
+from inspect import isawaitable
 from pathlib import Path
 from typing import Any
 
@@ -19,70 +21,107 @@ from furrow.llm import LLMClient
 
 console = Console()
 
+OutputCallback = Callable[[str], Any]
+
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        output_callback: OutputCallback | None = None,
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
+        self.output_callback = output_callback
         self.cycles = 0
+        self.tasks: list[Any] = []
+
+    async def _emit(self, message: Any, output: str | None = None) -> None:
+        console.print(message)
+        if self.output_callback is None:
+            return
+
+        result = self.output_callback(output if output is not None else str(message))
+        if isawaitable(result):
+            await result
 
     async def run(self) -> None:
-        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        header = f"Furrow\nGoal: {self.goal}"
+        await self._emit(Panel.fit(header, title="Furrow"), header)
         while True:
             self.cycles += 1
-            console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            await self._emit(
+                f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]",
+                f"Cycle {self.cycles}",
+            )
             await self._cycle()
             if self._is_done():
-                console.print("[bold green]Goal complete. Halting.[/bold green]")
+                await self._emit("[bold green]Goal complete. Halting.[/bold green]", "Goal complete. Halting.")
+                break
+            if self.client.settings.max_cycles > 0 and self.cycles >= self.client.settings.max_cycles:
+                await self._emit(
+                    f"[yellow]Reached max cycles ({self.client.settings.max_cycles}). Halting.[/yellow]",
+                    f"Reached max cycles ({self.client.settings.max_cycles}). Halting.",
+                )
                 break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
-        console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        plan_data = plan.model_dump()
+        await self._emit(
+            Panel(Pretty(plan_data), title="Plan", border_style="blue"),
+            f"Plan:\n{json.dumps(plan_data, indent=2)}",
+        )
 
-        if not plan.tasks:
-            console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
-            return
+        self.tasks = list(plan.tasks)
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
+            semaphore = asyncio.Semaphore(self.client.settings.max_parallel_tasks)
+
+            async def run_task(task: Any) -> Any:
+                async with semaphore:
+                    return await WorkerAgent(task=task, client=self.client).run()
+
+            tasks = [run_task(task) for task in plan.tasks]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
         for task, result in zip(plan.tasks, results):
             if isinstance(result, Exception):
                 task.status = "failed"
                 task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                output = f"Task {task.id} failed: {result}"
+                await self._emit(f"[red]{output}[/red]", output)
             else:
                 task.status = "completed"
                 task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+                output = f"Task {task.id} completed"
+                await self._emit(f"[green]{output}[/green]", output)
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
         if test_result.passed:
-            console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            output = f"Tests passed: {test_result.summary}"
+            await self._emit(f"[green]{output}[/green]", output)
         else:
-            console.print(f"[red]Tests failed: {test_result.summary}[/red]")
+            output = f"Tests failed: {test_result.summary}"
+            await self._emit(f"[red]{output}[/red]", output)
             for failure in test_result.failures:
-                console.print(f"  • {failure}")
-            console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
+                await self._emit(f"  • {failure}")
+            await self._emit(
+                "[yellow]Will attempt fix in next cycle.[/yellow]",
+                "Will attempt fix in next cycle.",
+            )
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        completed = sum(1 for t in self.tasks if t.status == "completed")
+        failed = sum(1 for t in self.tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(self.tasks):
             return True
         return False
-
-    def _get_tasks(self) -> list[Any]:
-        return []
