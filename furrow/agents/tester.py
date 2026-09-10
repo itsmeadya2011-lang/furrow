@@ -14,8 +14,14 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        test_command: str | None = None,
+    ) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.test_command = test_command
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -24,7 +30,10 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        # Include task context for better test evaluation
+        task_summary = "\n".join([f"- {t.id}: {t.description} ({t.status})" for t in tasks])
+        
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTasks:\n{task_summary}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -33,6 +42,9 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        if self.test_command:
+            return await self._run_custom_test()
+
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -56,3 +68,18 @@ class TesterAgent:
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+    async def _run_custom_test(self) -> str:
+        import shlex
+        cmd = shlex.split(self.test_command)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            return stdout.decode() + stderr.decode()
+        except asyncio.TimeoutError:
+            proc.kill()
+            return "Test command timed out after 120 seconds"
+        except Exception as e:
+            return f"Error running test command: {e}"
