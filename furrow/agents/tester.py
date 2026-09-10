@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -24,7 +26,16 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        # Include task context in the prompt
+        task_context = ""
+        if tasks:
+            task_context = "\n\nTasks in this cycle:\n"
+            for task in tasks:
+                task_context += f"  - {task.id}: {task.description} (status: {task.status})\n"
+                if task.result:
+                    task_context += f"    Result: {task.result[:200]}...\n"
+
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}{task_context}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -33,15 +44,11 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
-            ["cargo", "test", "-q"],
-            ["go", "test", "./..."],
-        ]
+        # Detect project type and run appropriate tests
+        project_type = self._detect_project_type()
+        
+        candidates = self._get_test_commands(project_type)
+        
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -49,10 +56,65 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if output.strip():
+                        return output
+                    elif proc.returncode == 0:
+                        return "Tests passed (no output)"
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return f"No test runner found for {project_type} project."
+
+    def _detect_project_type(self) -> str:
+        """Detect the project type based on files in the workspace."""
+        cwd = Path.cwd()
+        if (cwd / "pyproject.toml").exists() or (cwd / "setup.py").exists() or (cwd / "requirements.txt").exists():
+            return "python"
+        elif (cwd / "package.json").exists():
+            return "javascript"
+        elif (cwd / "Cargo.toml").exists():
+            return "rust"
+        elif (cwd / "go.mod").exists():
+            return "go"
+        elif (cwd / "pom.xml").exists() or (cwd / "build.gradle").exists():
+            return "java"
+        return "unknown"
+
+    def _get_test_commands(self, project_type: str) -> list[list[str]]:
+        """Get test commands for the detected project type."""
+        commands = {
+            "python": [
+                ["python", "-m", "pytest", "-v", "--tb=short"],
+                ["pytest", "-v", "--tb=short"],
+                ["python", "-m", "unittest", "discover", "-v"],
+            ],
+            "javascript": [
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+            ],
+            "rust": [
+                ["cargo", "test", "--", "--nocapture"],
+            ],
+            "go": [
+                ["go", "test", "./...", "-v"],
+            ],
+            "java": [
+                ["./mvnw", "test", "-q"],
+                ["mvn", "test", "-q"],
+                ["./gradlew", "test", "--quiet"],
+                ["gradle", "test", "--quiet"],
+            ],
+        }
+        return commands.get(project_type, [
+            ["pytest", "-q"],
+            ["python", "-m", "pytest", "-q"],
+            ["npm", "test", "--", "--silent"],
+            ["pnpm", "test", "--", "--silent"],
+            ["yarn", "test", "--silent"],
+            ["cargo", "test", "-q"],
+            ["go", "test", "./..."],
+        ])
