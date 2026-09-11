@@ -29,7 +29,25 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+IMPORTANT: You must return JSON with file operations to actually write code. Use this format:
+{
+  "files": [
+    {
+      "path": "src/auth.py",
+      "operation": "write",
+      "content": "// full file content here"
+    }
+  ]
+}
+
+If you need to read existing files first, you can include read operations:
+{
+  "files": [
+    {"path": "src/auth.py", "operation": "read"},
+    {"path": "src/auth.py", "operation": "write", "content": "// new content"}
+  ]
+}"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

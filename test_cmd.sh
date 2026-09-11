@@ -1,0 +1,1 @@
+pip install -e ".[dev]" --quiet 2>&1 | tail -5 && python -m pytest tests/ -v
