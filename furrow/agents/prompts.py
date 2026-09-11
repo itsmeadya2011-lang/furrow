@@ -29,6 +29,16 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+## Output Format
+After implementing the task, return your changes using FILE: blocks:
+
+FILE: path/to/file
+```
+<full file content>
+```
+
+Use one FILE: block per file you modify or create. Include the complete file content, not just diffs.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
