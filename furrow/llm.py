@@ -9,6 +9,12 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
 
@@ -37,33 +43,94 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((anthropic.APIError, openai.APIError, Exception)),
+    )
+    async def complete(
+        self, prompt: str, system: str = "", model: str | None = None, timeout: float = 60.0
+    ) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                return await self._complete_anthropic(prompt, system, model, timeout)
+            elif self.settings.provider == Provider.OPENAI:
+                return await self._complete_openai(prompt, system, model, timeout)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        except anthropic.APIError as e:
+            raise RuntimeError(
+                f"Anthropic API error for model '{model}': {e}"
+            ) from e
+        except openai.APIError as e:
+            raise RuntimeError(
+                f"OpenAI API error for model '{model}': {e}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to complete request with provider "
+                f"{self.settings.provider} and model '{model}': {e}"
+            ) from e
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
+    async def _complete_anthropic(
+        self, prompt: str, system: str, model: str, timeout: float
+    ) -> str:
+        try:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+                timeout=timeout,
+            )
+        except anthropic.APIError:
+            raise
+        except Exception as e:
+            raise RuntimeError(
+                f"Anthropic request failed for model '{model}': {e}"
+            ) from e
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        if not response.content:
+            raise ValueError(
+                f"Anthropic returned an empty response for model '{model}'"
+            )
+        text = response.content[0].text
+        if not text or not text.strip():
+            raise ValueError(
+                f"Anthropic returned an empty text response for model '{model}'"
+            )
+        return text
+
+    async def _complete_openai(
+        self, prompt: str, system: str, model: str, timeout: float
+    ) -> str:
+        try:
+            response = await self.openai.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+                timeout=timeout,
+            )
+        except openai.APIError:
+            raise
+        except Exception as e:
+            raise RuntimeError(
+                f"OpenAI request failed for model '{model}': {e}"
+            ) from e
+
+        if not response.choices:
+            raise ValueError(
+                f"OpenAI returned an empty choices response for model '{model}'"
+            )
+        content = response.choices[0].message.content
+        if not content or not content.strip():
+            raise ValueError(
+                f"OpenAI returned an empty content response for model '{model}'"
+            )
+        return content
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
