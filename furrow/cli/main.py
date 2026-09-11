@@ -7,6 +7,7 @@ import click
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import configure_logging
 
 console = Console()
 
@@ -20,6 +21,7 @@ def main() -> None:
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
 def start(goal: str | None, model: str | None) -> None:
+    configure_logging()
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
@@ -34,6 +36,7 @@ def start(goal: str | None, model: str | None) -> None:
 
 @main.command()
 def web() -> None:
+    configure_logging()
     from furrow.web.server import run
     run()
 
