@@ -25,16 +25,22 @@ class Orchestrator:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
+        self.tasks = []
         self.cycles = 0
+        self.tests_passed: bool | None = None
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
-            self.cycles += 1
-            console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            cycle_number = self.cycles + 1
+            console.print(f"\n[bold cyan]═══ Cycle {cycle_number} ═══[/bold cyan]")
             await self._cycle()
+            self.cycles = cycle_number
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                break
+            if self.client.settings.max_cycles > 0 and self.cycles >= self.client.settings.max_cycles:
+                console.print("[bold yellow]Maximum cycles reached. Halting.[/bold yellow]")
                 break
 
     async def _cycle(self) -> None:
@@ -44,7 +50,11 @@ class Orchestrator:
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self.tasks = []
+            self.tests_passed = None
             return
+
+        self.tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -66,6 +76,8 @@ class Orchestrator:
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
+        self.tests_passed = test_result.passed
+
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
         else:
@@ -80,9 +92,15 @@ class Orchestrator:
         failed = sum(1 for t in self._get_tasks() if t.status == "failed")
         if failed > 0:
             return False
+        if not self._get_tasks():
+            return True
+        if self.tests_passed is None:
+            return False
+        if not self.tests_passed:
+            return False
         if completed >= len(self._get_tasks()):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
