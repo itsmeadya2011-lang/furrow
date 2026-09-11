@@ -21,6 +21,7 @@ class TaskModel(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
     result: Optional[str] = None
+    cycle: int = 0
 
 
 class Plan(BaseModel):
@@ -32,6 +33,15 @@ class TestResult(BaseModel):
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
+
+
+class State(BaseModel):
+    goal: str
+    tasks: list[TaskModel] = Field(default_factory=list)
+    current_cycle: int = 0
+    completed_cycles: int = 0
+    created_at: str = ""
+    updated_at: str = ""
 
 
 class Settings(BaseSettings):
@@ -49,6 +59,7 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    state_file: Path = Field(default_factory=lambda: Path.cwd() / ".furrow_state.json")
 
 
 settings = Settings()
