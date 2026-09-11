@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -12,6 +14,7 @@ from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+log = structlog.get_logger("furrow.web")
 
 
 class StartRequest(BaseModel):
@@ -40,6 +43,7 @@ async def index() -> HTMLResponse:
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onerror = (ev) => out.textContent += '\\nWebSocket error\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,11 +59,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        log.info("web_session_started", goal=goal)
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
+        log.info("web_session_completed", goal=goal)
     except WebSocketDisconnect:
-        pass
+        log.info("web_session_disconnected")
+    except Exception as e:
+        log.error("web_session_error", error=str(e))
+        try:
+            await websocket.send_json({"error": str(e)})
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    log.info("web_server_starting", host=host, port=port)
     uvicorn.run(app, host=host, port=port)
