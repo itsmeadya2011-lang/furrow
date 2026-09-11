@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,10 +35,10 @@ class TestResult(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env", extra="ignore")
 
     provider: Provider = Provider.ANTHROPIC
-    model: str = "claude-sonnet-4-20250514"
+    model: str = "claude-3-5-sonnet-20241022"
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
@@ -46,9 +46,27 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 10
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @field_validator("max_parallel_tasks")
+    @classmethod
+    def validate_max_parallel(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_parallel_tasks must be at least 1")
+        if v > 20:
+            raise ValueError("max_parallel_tasks must not exceed 20")
+        return v
+
+    @field_validator("max_cycles")
+    @classmethod
+    def validate_max_cycles(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("max_cycles must be non-negative")
+        if v > 100:
+            raise ValueError("max_cycles must not exceed 100")
+        return v
 
 
 settings = Settings()

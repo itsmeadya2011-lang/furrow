@@ -6,11 +6,21 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
+import tenacity
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+# Retry configuration for LLM calls
+retry_config = tenacity.retry(
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+    retry=tenacity.retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError, anthropic.RateLimitError, openai.RateLimitError)),
+    before_sleep=tenacity.before_sleep_log(None, 20),  # Will be set up with structlog
+)
 
 
 class LLMClient:
@@ -18,6 +28,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama_client: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,15 +48,28 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> httpx.AsyncClient:
+        if self._ollama_client is None:
+            self._ollama_client = httpx.AsyncClient(
+                base_url=self.settings.ollama_base_url,
+                timeout=httpx.Timeout(120.0),
+            )
+        return self._ollama_client
+
+    @retry_config
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry_config
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +79,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry_config
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +89,26 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @retry_config
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        response = await self.ollama.post(
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {"num_predict": 4096},
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
@@ -80,3 +125,9 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def close(self) -> None:
+        """Close any open HTTP clients."""
+        if self._ollama_client:
+            await self._ollama_client.aclose()
+            self._ollama_client = None

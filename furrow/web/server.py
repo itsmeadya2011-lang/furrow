@@ -8,8 +8,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import setup_logging
 
 app = FastAPI(title="Furrow")
 
@@ -17,6 +18,7 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+    max_cycles: Optional[int] = None
 
 
 @app.get("/")
@@ -55,11 +57,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        max_cycles = data.get("max_cycles", settings.max_cycles)
+        orchestrator = Orchestrator(goal=goal, max_cycles=max_cycles)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    setup_logging(settings.log_level)
     uvicorn.run(app, host=host, port=port)
