@@ -27,6 +27,7 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
+- Use the available tools (read_file, write_file, list_files, run_command) to inspect and modify files.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
 """
