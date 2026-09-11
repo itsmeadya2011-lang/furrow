@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import sys
 from typing import Optional
 
 import uvicorn
@@ -55,8 +57,58 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        model = data.get("model")
+        if model:
+            from furrow.config import settings
+            settings.model = model
+
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        # Stream console output back to client
+        original_console = orchestrator.client.__class__.__module__
+        import io
+        import contextlib
+
+        buffer = io.StringIO()
+        rich_console = Console(file=buffer, force_terminal=False)
+
+        # Monkey-patch console for this session to capture output
+        import furrow.core.orchestrator as orch_mod
+        original_orchestrator_console = orch_mod.console
+        orch_mod.console = rich_console
+
+        async def stream_output() -> None:
+            last_len = 0
+            while True:
+                if websocket.client_state.name == "DISCONNECTED":
+                    break
+                buffer.seek(last_len)
+                new_text = buffer.read()
+                last_len = buffer.tell()
+                if new_text:
+                    try:
+                        await websocket.send_text(new_text)
+                    except Exception:
+                        break
+                await asyncio.sleep(0.1)
+
+        stream_task = asyncio.create_task(stream_output())
+        try:
+            await orchestrator.run()
+        finally:
+            stream_task.cancel()
+            try:
+                await stream_task
+            except asyncio.CancelledError:
+                pass
+            orch_mod.console = original_orchestrator_console
+            buffer.seek(0)
+            remaining = buffer.read()
+            if remaining:
+                try:
+                    await websocket.send_text(remaining)
+                except Exception:
+                    pass
     except WebSocketDisconnect:
         pass
 
