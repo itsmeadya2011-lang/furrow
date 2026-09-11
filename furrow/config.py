@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,10 +45,26 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
+    llm_timeout: float = 120.0
+    max_attempts: int = 2
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @field_validator("llm_timeout")
+    @classmethod
+    def validate_llm_timeout(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("llm_timeout must be greater than zero")
+        return v
+
+    @field_validator("max_attempts")
+    @classmethod
+    def validate_max_attempts(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("max_attempts must be greater than zero")
+        return v
 
 
 settings = Settings()
