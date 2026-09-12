@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from contextlib import redirect_stdout, redirect_stderr
+from io import StringIO
 from typing import Optional
 
 import uvicorn
@@ -49,16 +52,54 @@ async def index() -> HTMLResponse:
 """)
 
 
+class WebSocketConsole:
+    """Capture console output and send to websocket."""
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+        self.buffer = StringIO()
+    
+    def write(self, text: str) -> None:
+        if text.strip():
+            asyncio.create_task(self.websocket.send_text(text))
+        self.buffer.write(text)
+    
+    def flush(self) -> None:
+        pass
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        
+        # Capture console output
+        ws_console = WebSocketConsole(websocket)
+        
+        # Save original stdout/stderr
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        
+        try:
+            # Redirect stdout/stderr to websocket
+            sys.stdout = ws_console
+            sys.stderr = ws_console
+            
+            orchestrator = Orchestrator(goal=goal)
+            await orchestrator.run()
+        finally:
+            # Restore stdout/stderr
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
+            
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"Error: {str(e)}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

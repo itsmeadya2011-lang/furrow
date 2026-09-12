@@ -11,6 +11,9 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+from furrow.logging import get_logger
+
+logger = get_logger("llm")
 
 
 class LLMClient:
@@ -39,6 +42,7 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.debug("llm_request", provider=self.settings.provider.value, model=model, prompt_length=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,7 +57,9 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        result = response.content[0].text
+        logger.debug("llm_response", provider="anthropic", model=model, response_length=len(result))
+        return result
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -63,7 +69,9 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        result = response.choices[0].message.content or ""
+        logger.debug("llm_response", provider="openai", model=model, response_length=len(result))
+        return result
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
