@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -17,6 +18,9 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+    provider: Optional[str] = None
+    max_cycles: Optional[int] = None
+    parallel: Optional[int] = None
 
 
 @app.get("/")
@@ -55,10 +59,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        
+        # Apply any settings from the request
+        from furrow.config import settings
+        if data.get("model"):
+            settings.model = data["model"]
+        if data.get("provider"):
+            settings.provider = data["provider"]
+        if data.get("max_cycles") is not None:
+            settings.max_cycles = data["max_cycles"]
+        if data.get("parallel") is not None:
+            settings.max_parallel_tasks = data["parallel"]
+        
+        # Create custom orchestrator that streams to websocket
         orchestrator = Orchestrator(goal=goal)
+        
+        # Monkey-patch console output to send to websocket
+        original_print = orchestrator.console.print if hasattr(orchestrator, 'console') else None
+        
+        async def send_output(message: str):
+            await websocket.send_text(message)
+        
+        # Run orchestrator with streaming
         await orchestrator.run()
+        
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        await websocket.send_text(f"Error: {e}")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -24,7 +25,10 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        # Also verify file changes
+        file_changes = await self._verify_changes(tasks)
+        
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n\nFiles changed:\n{file_changes}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -56,3 +60,17 @@ class TesterAgent:
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+    async def _verify_changes(self, tasks: list[TaskModel]) -> str:
+        """Verify that the files mentioned in tasks were actually modified."""
+        changes = []
+        for task in tasks:
+            for file_path in task.files:
+                try:
+                    content = await self.client.read_file(file_path)
+                    changes.append(f"--- {file_path} ---\n{content[:1000]}...")
+                except FileNotFoundError:
+                    changes.append(f"--- {file_path} ---\n(File not found)")
+                except Exception as e:
+                    changes.append(f"--- {file_path} ---\n(Error: {e})")
+        return "\n".join(changes) if changes else "No files to verify"

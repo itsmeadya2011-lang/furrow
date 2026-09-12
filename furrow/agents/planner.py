@@ -15,8 +15,9 @@ class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
-    async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+    async def plan(self, goal: str, context: str = "") -> Plan:
+        context_section = f"\n\nContext from previous cycles:\n{context}" if context else ""
+        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}{context_section}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)

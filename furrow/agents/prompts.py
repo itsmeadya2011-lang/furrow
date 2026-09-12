@@ -18,7 +18,9 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+
+Consider the context from previous cycles to avoid repeating work and build incrementally."""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
@@ -27,13 +29,22 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
+- Read existing files first to understand the codebase.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- Output MUST be valid JSON with this shape:
+{
+  "changes": [
+    {"file": "path/to/file.py", "content": "new file content"}
+  ],
+  "summary": "Brief summary of changes"
+}
+
+If a file doesn't exist, create it. If it exists, replace its entire content."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
-Given the goal and test output, determine if tests passed or failed.
+Given the goal, test output, and files changed, determine if tests passed or failed.
 
 Return JSON only (no markdown) with this shape:
 {
@@ -42,4 +53,5 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array.
+Consider both test output and whether the changed files actually address the goal."""
