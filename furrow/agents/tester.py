@@ -22,15 +22,31 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
-            return TestResult(passed=False, summary=str(e), failures=[str(e)])
+            return TestResult(
+                passed=False,
+                summary=f"Test execution failed: {e}",
+                failures=[f"Test execution error: {e}"],
+            )
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        try:
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        except Exception as e:
+            return TestResult(
+                passed=False,
+                summary=f"Test analysis failed: {e}",
+                failures=[f"Test analysis error: {e}"],
+            )
+
         try:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(
+                passed="passed" in response.lower(),
+                summary=response,
+                failures=[],
+            )
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -45,14 +61,21 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=os.getcwd(),
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    try:
+                        await proc.wait()
+                    except Exception:
+                        pass
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError):
                 continue
         return "No test runner found."
