@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,13 +14,29 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
 
 
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    def __str__(self) -> str:
+        return self.value
+
+
 class TaskModel(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
+
     id: str
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
+    status: TaskStatus = TaskStatus.PENDING
     result: Optional[str] = None
+
+    @field_serializer("status")
+    def serialize_status(self, status: TaskStatus) -> str:
+        return status.value
 
 
 class Plan(BaseModel):
@@ -45,9 +61,9 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
-    max_parallel_tasks: int = 5
-    max_cycles: int = 0
-    workspace: Path = Field(default_factory=Path.cwd)
+    max_parallel_tasks: int = Field(default=5, gt=0)
+    max_cycles: int = Field(default=0, ge=0)
+    workspace: Path = Field(default_factory=lambda: Path.cwd())
     log_level: str = "INFO"
 
 
