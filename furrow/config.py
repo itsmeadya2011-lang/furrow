@@ -21,6 +21,7 @@ class TaskModel(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
     result: Optional[str] = None
+    retry_count: int = 0
 
 
 class Plan(BaseModel):

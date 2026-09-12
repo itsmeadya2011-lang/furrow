@@ -7,10 +7,14 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger()
 
 
 class LLMClient:
@@ -37,8 +41,11 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.debug("llm_request", provider=self.settings.provider.value, model=model, prompt_length=len(prompt))
+        
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,7 +60,9 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        result = response.content[0].text
+        logger.debug("llm_response", provider="anthropic", model=model, response_length=len(result))
+        return result
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -63,7 +72,9 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        result = response.choices[0].message.content or ""
+        logger.debug("llm_response", provider="openai", model=model, response_length=len(result))
+        return result
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
