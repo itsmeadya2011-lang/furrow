@@ -55,7 +55,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def broadcast(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator = Orchestrator(goal=goal, broadcast=broadcast)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
