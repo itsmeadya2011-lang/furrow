@@ -18,7 +18,12 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+
+When given previous cycle context:
+- Do not re-plan tasks that are already completed
+- Prioritize fixing failed tasks and test failures
+- Build incrementally on previous work rather than starting from scratch"""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 

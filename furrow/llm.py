@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,11 @@ import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
+try:
+    from ollama import AsyncClient as OllamaAsyncClient
+except ImportError:
+    OllamaAsyncClient = None
+
 from furrow.config import Provider, Settings, settings
 
 
@@ -18,6 +24,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: OllamaAsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +44,24 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> OllamaAsyncClient:
+        if OllamaAsyncClient is None:
+            raise ImportError(
+                "Ollama support requires the 'ollama' package. Install it with: pip install ollama"
+            )
+        if self._ollama is None:
+            self._ollama = OllamaAsyncClient(host=self.settings.ollama_base_url)
+        return self._ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,6 +84,16 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        response = await self.ollama.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.message.content or ""
+
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
             return await f.read()
@@ -80,3 +109,22 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def run_command(self, cmd: str, args: list[str] | None = None) -> str:
+        cmd_args = [cmd] + (args or [])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                return stdout.decode() + stderr.decode()
+            except asyncio.TimeoutError:
+                proc.kill()
+                return "Command timed out after 120s"
+        except FileNotFoundError:
+            return f"Command not found: {cmd}"
+        except Exception as e:
+            return f"Error running command: {e}"
