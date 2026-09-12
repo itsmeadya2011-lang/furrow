@@ -25,12 +25,25 @@ class TesterAgent:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        try:
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        except Exception as e:
+            return TestResult(passed=False, summary=f"Tester LLM call failed: {e}", failures=[str(e)])
+
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            passed = bool(data.get("passed", False))
+            return TestResult(
+                passed=passed,
+                summary=data.get("summary", ""),
+                failures=data.get("failures", []),
+            )
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(
+                passed="passed" in response.lower(),
+                summary=response,
+                failures=[],
+            )
 
     async def _run_tests(self) -> str:
         candidates = [
