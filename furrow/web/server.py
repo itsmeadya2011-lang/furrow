@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 import uvicorn
@@ -8,8 +7,9 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import settings as default_settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 app = FastAPI(title="Furrow")
 
@@ -29,6 +29,7 @@ async def index() -> HTMLResponse:
   <h1>Furrow</h1>
   <form id="form">
     <input id="goal" placeholder="Enter goal" required />
+    <input id="model" placeholder="Model (optional)" />
     <button type="submit">Start</button>
   </form>
   <pre id="out"></pre>
@@ -41,7 +42,10 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      ws.send(JSON.stringify({
+        goal: document.getElementById('goal').value,
+        model: document.getElementById('model').value || undefined
+      }));
     };
   </script>
 </body>
@@ -55,7 +59,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        client_settings = default_settings.model_copy()
+        if model:
+            client_settings.model = model
+
+        client = LLMClient(settings=client_settings)
+        orchestrator = Orchestrator(goal=goal, client=client)
+
+        async def _on_output(text: str) -> None:
+            try:
+                await websocket.send_text(text)
+            except Exception:
+                pass
+
+        orchestrator._on_output = _on_output
         await orchestrator.run()
     except WebSocketDisconnect:
         pass

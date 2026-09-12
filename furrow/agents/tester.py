@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -33,26 +32,60 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
-            ["cargo", "test", "-q"],
-            ["go", "test", "./..."],
-        ]
+        outputs: list[str] = []
+
+        test_output = await self._try_run(
+            [
+                ["pytest", "-q"],
+                ["python", "-m", "pytest", "-q"],
+                ["npm", "test", "--", "--silent"],
+                ["pnpm", "test", "--", "--silent"],
+                ["yarn", "test", "--silent"],
+                ["cargo", "test", "-q"],
+                ["go", "test", "./..."],
+            ]
+        )
+        if test_output:
+            outputs.append("=== TEST OUTPUT ===\n" + test_output)
+
+        lint_output = await self._try_run(
+            [
+                ["ruff", "check", "."],
+                ["python", "-m", "ruff", "check", "."],
+                ["eslint", "."],
+            ]
+        )
+        if lint_output:
+            outputs.append("=== LINT OUTPUT ===\n" + lint_output)
+
+        type_output = await self._try_run(
+            [
+                ["mypy", "."],
+                ["python", "-m", "mypy", "."],
+                ["tsc", "--noEmit"],
+            ]
+        )
+        if type_output:
+            outputs.append("=== TYPECHECK OUTPUT ===\n" + type_output)
+
+        if not outputs:
+            return "No test runner found."
+        return "\n\n".join(outputs)
+
+    async def _try_run(self, candidates: list[list[str]]) -> str:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    return (stdout.decode() + stderr.decode()).strip()
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return ""
