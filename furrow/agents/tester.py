@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -33,7 +32,10 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
+        sections: list[str] = []
+
+        # Tests
+        test_result = await self._run_command(
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
             ["npm", "test", "--", "--silent"],
@@ -41,7 +43,31 @@ class TesterAgent:
             ["yarn", "test", "--silent"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
-        ]
+        )
+        if test_result:
+            sections.append(f"=== Tests ===\n{test_result}")
+
+        # Lint
+        lint_result = await self._run_command(
+            ["ruff", "check", "."],
+            ["flake8", "."],
+            ["npx", "eslint", "."],
+        )
+        if lint_result:
+            sections.append(f"=== Lint ===\n{lint_result}")
+
+        # Type check
+        typecheck_result = await self._run_command(
+            ["mypy", "."],
+            ["npx", "tsc", "--noEmit"],
+        )
+        if typecheck_result:
+            sections.append(f"=== Type Check ===\n{typecheck_result}")
+
+        return "\n\n".join(sections) if sections else "No test runner or tools found."
+
+    async def _run_command(self, *candidates: list[str]) -> str | None:
+        """Try each candidate command in order; return output of the first that succeeds."""
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -55,4 +81,4 @@ class TesterAgent:
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return None
