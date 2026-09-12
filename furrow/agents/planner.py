@@ -15,8 +15,10 @@ class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
-    async def plan(self, goal: str) -> Plan:
+    async def plan(self, goal: str, failures: list[str] | None = None) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+        if failures:
+            prompt += "\nFailures to address:\n" + "\n".join(f"- {failure}" for failure in failures) + "\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
