@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 import uvicorn
@@ -8,15 +7,21 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+
+active_orchestrators: list[Orchestrator] = []
 
 
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok", "active_cycles": str(len(active_orchestrators))}
 
 
 @app.get("/")
@@ -52,13 +57,26 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    orchestrator: Orchestrator | None = None
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        active_orchestrators.append(orchestrator)
+        try:
+            await orchestrator.run()
+        except Exception as e:
+            await websocket.send_json({"error": str(e)})
     except WebSocketDisconnect:
         pass
+    except Exception:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+    finally:
+        if orchestrator is not None and orchestrator in active_orchestrators:
+            active_orchestrators.remove(orchestrator)
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

@@ -25,6 +25,8 @@ Return a JSON object (not wrapped in markdown) with this shape:
 
 ## Rules
 - 1-5 tasks maximum per plan.
-- Tasks must be independent when possible.
+- Tasks must be independent when possible (no circular dependencies).
 - Each task should be completable in 1-3 tool call rounds by a worker.
 - If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+- Consider test files as task targets when planning.
+- Validate that planned tasks have no circular dependencies before returning.
