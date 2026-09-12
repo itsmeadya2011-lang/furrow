@@ -13,6 +13,8 @@ from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
 
+_active_orchestrators: list[Orchestrator] = []
+
 
 class StartRequest(BaseModel):
     goal: str
@@ -52,13 +54,25 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    orchestrator = Orchestrator(goal="")
+    _active_orchestrators.append(orchestrator)
     try:
         data = await websocket.receive_json()
-        goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        orchestrator.goal = data.get("goal", "")
+        run_task = asyncio.create_task(orchestrator.run())
+        try:
+            await run_task
+        except asyncio.CancelledError:
+            orchestrator.stop()
+            try:
+                await run_task
+            except asyncio.CancelledError:
+                pass
     except WebSocketDisconnect:
-        pass
+        orchestrator.stop()
+    finally:
+        if orchestrator in _active_orchestrators:
+            _active_orchestrators.remove(orchestrator)
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
