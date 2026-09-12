@@ -1,16 +1,63 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Return True if the exception is transient and should be retried."""
+    status_code = getattr(exc, "status_code", None)
+    if status_code is not None:
+        try:
+            status_code = int(status_code)
+        except (TypeError, ValueError):
+            return False
+        if status_code in (408, 429) or 500 <= status_code < 600:
+            return True
+        return False
+
+    if isinstance(
+        exc,
+        (asyncio.TimeoutError, httpx.TimeoutException, httpx.NetworkError),
+    ):
+        return True
+
+    transient_names = {
+        "APITimeoutError",
+        "APIConnectionError",
+        "RateLimitError",
+        "InternalServerError",
+        "ServiceUnavailableError",
+        "GatewayTimeoutError",
+    }
+    if type(exc).__name__ in transient_names:
+        return True
+
+    return False
+
+
+_retry_decorator = retry(
+    retry=retry_if_exception(_is_transient_error),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    reraise=True,
+)
 
 
 class LLMClient:
@@ -46,6 +93,7 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @_retry_decorator
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +103,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @_retry_decorator
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,

@@ -27,8 +27,16 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+- Use only the text-based JSON action protocol below. Do not use provider-native tool calling.
+- Each response must contain exactly one JSON object and no other text. The object must have exactly one of these shapes:
+  {"action":"read_file","path":"..."}
+  {"action":"write_file","path":"...","content":"..."}
+  {"action":"list_files","directory":"..."}
+  {"action":"done","summary":"..."}
+- Paths and directories are workspace-relative unless absolute, and must remain inside the workspace.
+- You may perform multiple actions across turns. Read each JSON tool result before choosing the next action.
+- Finish with exactly one done action and a concise summary of the completed work and any issues.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
