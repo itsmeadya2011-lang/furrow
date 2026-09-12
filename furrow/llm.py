@@ -9,6 +9,12 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
 
@@ -40,11 +46,24 @@ class LLMClient:
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_with_retry(lambda: self._complete_anthropic(prompt, system, model))
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_with_retry(lambda: self._complete_openai(prompt, system, model))
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_with_retry(self, fn: Any) -> str:
+        try:
+            async for attempt in AsyncRetrying(
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=2, max=30),
+                retry=retry_if_exception_type((anthropic.RateLimitError, openai.RateLimitError, ConnectionError)),
+                reraise=True,
+            ):
+                with attempt:
+                    return await fn()
+        except Exception as e:
+            raise RuntimeError(f"LLM request failed after retries: {e}") from e
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(

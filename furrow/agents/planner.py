@@ -17,7 +17,11 @@ class PlannerAgent:
 
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.planner_model)
+        response = await self.client.complete(
+            prompt,
+            system="You are a planning agent for an autonomous coding system called Furrow.",
+            model=self.client.settings.planner_model,
+        )
         try:
             data = json.loads(response)
             return Plan(**data)

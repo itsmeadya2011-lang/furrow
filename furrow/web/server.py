@@ -10,6 +10,9 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from structlog import get_logger
+
+logger = get_logger()
 
 app = FastAPI(title="Furrow")
 
@@ -55,10 +58,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        if not goal:
+            await websocket.send_json({"error": "Goal is required"})
+            return
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
+        await websocket.send_json({"status": "complete"})
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.error("websocket_error", error=str(e))
+        try:
+            await websocket.send_json({"error": str(e)})
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

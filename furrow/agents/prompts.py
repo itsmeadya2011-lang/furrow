@@ -42,4 +42,6 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array.
+
+Be thorough: check that the implemented changes actually satisfy the goal, not just that tests pass syntactically."""
