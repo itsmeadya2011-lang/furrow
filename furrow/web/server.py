@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import traceback
 from typing import Optional
 
 import uvicorn
@@ -8,7 +8,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -37,11 +36,17 @@ async def index() -> HTMLResponse:
     const out = document.getElementById('out');
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
+      out.textContent = '';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onopen = () => {
+        ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      };
+      ws.onmessage = (ev) => {
+        out.textContent += ev.data + '\\n';
+        out.scrollTop = out.scrollHeight;
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      ws.onerror = (err) => out.textContent += '\\nError: ' + err + '\\n';
     };
   </script>
 </body>
@@ -55,10 +60,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        async def send_output(message: str) -> None:
+            try:
+                await websocket.send_text(message + "\n")
+            except Exception:
+                pass
+
+        orchestrator = Orchestrator(goal=goal, on_output=send_output)
+        if model:
+            orchestrator.client.settings.model = model
+
         await orchestrator.run()
+        await websocket.send_text("[Furrow] Done.")
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"[Furrow] Error: {e}\n{traceback.format_exc()}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
