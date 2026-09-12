@@ -6,6 +6,7 @@ import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
+from furrow.agents.tool_loop import run_tool_loop
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
 
@@ -24,8 +25,19 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        response = await run_tool_loop(
+            client=self.client,
+            system_prompt=TESTER_PROMPT,
+            user_message=(
+                f"Goal: {goal}\n\nTest output:\n{test_output}\n\n"
+                "Determine if tests passed. If they failed, you may use read_file/run_command "
+                "to investigate. Return done with JSON "
+                '{"passed": true/false, "summary": "...", "failures": [...]}.'
+            ),
+            model=self.client.settings.tester_model,
+            max_rounds=8,
+            workspace=str(self.client.settings.workspace),
+        )
         try:
             data = json.loads(response)
             return TestResult(**data)

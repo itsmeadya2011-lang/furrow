@@ -55,8 +55,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        async def send(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator = Orchestrator(goal=goal, on_output=send)
+        try:
+            await orchestrator.run()
+        except Exception as e:
+            await websocket.send_text(f"\n[ERROR] {e}")
+            raise
+        await websocket.send_text("\n[Furrow] Session complete.")
     except WebSocketDisconnect:
         pass
 
