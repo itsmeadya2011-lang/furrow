@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import structlog
 from pathlib import Path
 from typing import Any
 
@@ -9,13 +10,22 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    RetryError,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings, settings as default_settings
+
+logger = structlog.get_logger()
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -39,12 +49,24 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        logger.info("llm_complete", provider=self.settings.provider.value, model=model, prompt_length=len(prompt))
+        try:
+            async for attempt in AsyncRetrying(
+                retry=retry_if_exception_type((ConnectionError, TimeoutError)),
+                stop=stop_after_attempt(3),
+                wait=wait_exponential(multiplier=1, min=1, max=10),
+                reraise=True,
+            ):
+                with attempt:
+                    if self.settings.provider == Provider.ANTHROPIC:
+                        return await self._complete_anthropic(prompt, system, model)
+                    elif self.settings.provider == Provider.OPENAI:
+                        return await self._complete_openai(prompt, system, model)
+                    else:
+                        raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        except RetryError as e:
+            logger.error("llm_retry_exhausted", error=str(e))
+            raise
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(

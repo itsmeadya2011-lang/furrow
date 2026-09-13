@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import structlog
 from typing import Optional
 
 import uvicorn
@@ -11,7 +12,10 @@ from pydantic import BaseModel
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
+logger = structlog.get_logger()
 app = FastAPI(title="Furrow")
+
+_active_tasks: dict[str, asyncio.Task] = {}
 
 
 class StartRequest(BaseModel):
@@ -52,14 +56,37 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    task_id = id(asyncio.current_task())
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        logger.info("websocket_start", goal=goal[:100], task_id=task_id)
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        asyncio_task = asyncio.create_task(orchestrator.run())
+        _active_tasks[task_id] = asyncio_task
+        try:
+            await asyncio_task
+        except asyncio.CancelledError:
+            logger.info("websocket_cancelled", task_id=task_id)
+            raise
+        finally:
+            _active_tasks.pop(task_id, None)
     except WebSocketDisconnect:
-        pass
+        logger.info("websocket_disconnect", task_id=task_id)
+    except Exception as e:
+        logger.error("websocket_error", task_id=task_id, error=str(e))
+
+
+@app.on_event("shutdown")
+async def shutdown() -> None:
+    logger.info("shutdown_start", active_tasks=len(_active_tasks))
+    for task_id, task in list(_active_tasks.items()):
+        task.cancel()
+    if _active_tasks:
+        await asyncio.gather(*_active_tasks.values(), return_exceptions=True)
+    logger.info("shutdown_complete")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    logger.info("server_start", host=host, port=port)
     uvicorn.run(app, host=host, port=port)

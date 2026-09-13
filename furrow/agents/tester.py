@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import structlog
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
+
+logger = structlog.get_logger()
 
 if TYPE_CHECKING:
     from furrow.config import Settings
@@ -28,9 +30,17 @@ class TesterAgent:
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            passed = bool(data.get("passed", False))
+            summary = str(data.get("summary", ""))
+            failures = list(data.get("failures", []))
+            return TestResult(passed=passed, summary=summary, failures=failures)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            logger.error("tester_json_parse_failed", response=response[:200])
+            return TestResult(
+                passed=False,
+                summary="Could not parse tester response as JSON",
+                failures=[f"Parser error: response was not valid JSON: {response[:200]}"],
+            )
 
     async def _run_tests(self) -> str:
         candidates = [
