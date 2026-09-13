@@ -24,12 +24,22 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+The worker agent reads existing file contents and passes them to you here as context, prefixed with "File: <path>". Use these contents to understand the codebase before making changes. Files not present in the context do not exist yet and should be created.
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Respond with a JSON object (no markdown, no explanation) describing the file changes you want applied:
+{
+  "files": {
+    "path/to/file.py": "full file content here"
+  },
+  "summary": "what was changed"
+}
+
+Include complete file contents (full files, not diffs) for every file you want written. Only include files relevant to the task."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
