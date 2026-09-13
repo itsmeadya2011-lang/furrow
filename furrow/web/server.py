@@ -29,6 +29,7 @@ async def index() -> HTMLResponse:
   <h1>Furrow</h1>
   <form id="form">
     <input id="goal" placeholder="Enter goal" required />
+    <input id="model" placeholder="Model (optional)" />
     <button type="submit">Start</button>
   </form>
   <pre id="out"></pre>
@@ -37,11 +38,18 @@ async def index() -> HTMLResponse:
     const out = document.getElementById('out');
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
+      out.textContent += '\nStarting...\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
-      ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      ws.onmessage = (ev) => {
+        const data = JSON.parse(ev.data);
+        if (data.error) out.textContent += '[red]Error: ' + data.error + '[/red]\n';
+        else out.textContent += ev.data + '\n';
+      };
+      ws.onclose = () => out.textContent += '\nClosed.\n';
+      ws.send(JSON.stringify({
+        goal: document.getElementById('goal').value,
+        model: document.getElementById('model').value || undefined,
+      }));
     };
   </script>
 </body>
@@ -55,10 +63,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+        if not goal:
+            await websocket.send_json({"error": "Goal is required"})
+            return
+        orchestrator = Orchestrator(goal=goal, model=model)
         await orchestrator.run()
+        await websocket.send_json({"status": "complete"})
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"error": str(e)})
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

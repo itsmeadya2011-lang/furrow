@@ -21,12 +21,12 @@ def main() -> None:
 @click.option("--model", default=None, help="Override LLM model")
 def start(goal: str | None, model: str | None) -> None:
     if not goal:
-        goal = click.prompt("Enter your goal for Furrow")
-    if model:
-        from furrow.config import settings
-        settings.model = model
+        goal = click.prompt("Enter your goal for Furrow").strip()
+    if not goal:
+        console.print("[red]Error: Goal cannot be empty.[/red]")
+        sys.exit(1)
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, model=model).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)

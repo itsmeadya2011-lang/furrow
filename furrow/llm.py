@@ -79,4 +79,14 @@ class LLMClient:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        results: list[str] = []
+        for f in p.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(p)
+            if "__pycache__" in rel.parts:
+                continue
+            if any(part.startswith(".") for part in rel.parts):
+                continue
+            results.append(str(rel))
+        return results

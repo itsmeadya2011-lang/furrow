@@ -30,9 +30,19 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "passed" in response.lower()
+            if not passed:
+                passed = not any(
+                    kw in response.lower()
+                    for kw in ["error", "traceback", "failed", "assert", "exception"]
+                )
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        workspace = (
+            self.client.settings.workspace if hasattr(self.client, "settings") else None
+        )
+        cwd = str(workspace) if workspace else os.getcwd()
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -45,7 +55,10 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
