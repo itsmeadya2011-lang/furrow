@@ -56,5 +56,4 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
