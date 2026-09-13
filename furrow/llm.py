@@ -7,10 +7,19 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -39,30 +48,51 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        logger.info("llm_complete_start", model=model, prompt_length=len(prompt))
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                result = await self._complete_anthropic(prompt, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                result = await self._complete_openai(prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            logger.info("llm_complete_success", model=model, response_length=len(result))
+            return result
+        except Exception as e:
+            logger.error("llm_complete_failed", model=model, error=str(e))
+            raise
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type((anthropic.APIError, openai.APITimeoutError)),
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=30),
+            reraise=True,
+        ):
+            with attempt:
+                response = await self.anthropic.messages.create(
+                    model=model,
+                    max_tokens=4096,
+                    system=system or "You are a helpful coding assistant.",
+                    messages=[{"role": "user", "content": prompt}],
+                )
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
+        async for attempt in AsyncRetrying(
+            retry=retry_if_exception_type((openai.APIError, openai.APITimeoutError)),
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=1, max=30),
+            reraise=True,
+        ):
+            with attempt:
+                response = await self.openai.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": system or "You are a helpful coding assistant."},
+                        {"role": "user", "content": prompt},
+                    ],
+                )
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:

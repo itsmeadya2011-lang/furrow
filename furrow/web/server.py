@@ -7,10 +7,11 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from structlog import get_logger
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
+logger = get_logger(__name__)
 app = FastAPI(title="Furrow")
 
 
@@ -39,7 +40,20 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data);
+          if (data.type === 'log') {
+            out.textContent += data.message + '\\n';
+          } else if (data.type === 'cycle') {
+            out.textContent += '\\n── Cycle ' + data.cycle + ' ──\\n';
+          } else {
+            out.textContent += ev.data + '\\n';
+          }
+        } catch {
+          out.textContent += ev.data + '\\n';
+        }
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
@@ -55,11 +69,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        logger.info("websocket_session_start", goal=goal)
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        try:
+            await orchestrator.run()
+        except Exception as e:
+            await websocket.send_json({"type": "error", "message": str(e)})
     except WebSocketDisconnect:
-        pass
+        logger.info("websocket_session_ended")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    logger.info("web_server_starting", host=host, port=port)
     uvicorn.run(app, host=host, port=port)

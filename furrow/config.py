@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
+import sys
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -49,6 +52,29 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    def __init__(self, **values: Any) -> None:
+        super().__init__(**values)
+        self._configure_logging()
+
+    def _configure_logging(self) -> None:
+        level = getattr(logging, self.log_level.upper(), logging.INFO)
+        logging.basicConfig(
+            level=level,
+            format="%(message)s",
+            stream=sys.stdout,
+        )
+        structlog.configure(
+            wrappers_count=1,
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stdout),
+            processors=[
+                structlog.contextvars.merge_contextvars,
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.processors.JSONRenderer(),
+            ],
+            event_prefix="log_",
+        )
 
 
 settings = Settings()
