@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -40,9 +41,11 @@ class LLMClient:
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await asyncio.wait_for(self._complete_anthropic(prompt, system, model), timeout=60)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await asyncio.wait_for(self._complete_openai(prompt, system, model), timeout=60)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await asyncio.wait_for(self._complete_ollama(prompt, system, model), timeout=60)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -57,6 +60,20 @@ class LLMClient:
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        client = AsyncOpenAI(
+            base_url=f"{self.settings.ollama_base_url}/v1/",
+            api_key="ollama",
+        )
+        response = await client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
