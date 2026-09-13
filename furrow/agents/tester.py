@@ -28,9 +28,18 @@ class TesterAgent:
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            passed = data.get("passed", False)
+            return TestResult(
+                passed=bool(passed),
+                summary=data.get("summary", ""),
+                failures=data.get("failures", []),
+            )
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(
+                passed=bool("passed" in response.lower()),
+                summary=response,
+                failures=[],
+            )
 
     async def _run_tests(self) -> str:
         candidates = [
