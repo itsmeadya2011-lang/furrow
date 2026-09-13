@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -28,6 +28,7 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
@@ -41,8 +42,15 @@ include = ["furrow*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+addopts = "-ra --tb=short --strict-markers"
 testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+select = ["I", "E", "W", "F", "UP", "B", "SIM", "S", "RET"]
+
+[tool.mypy]
+strict = true
+disallow_untyped_defs = true
+ignore_missing_imports = true

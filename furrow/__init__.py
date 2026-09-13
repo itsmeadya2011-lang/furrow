@@ -1,4 +1,4 @@
+from furrow.config import Provider, Settings
 from furrow.llm import LLMClient
-from furrow.config import Settings
 
-__all__ = ["LLMClient", "Settings"]
+__all__ = ["LLMClient", "Settings", "Provider"]

@@ -5,6 +5,8 @@ import json
 import os
 from typing import TYPE_CHECKING
 
+import structlog
+
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
@@ -12,25 +14,38 @@ from furrow.llm import LLMClient
 if TYPE_CHECKING:
     from furrow.config import Settings
 
+logger = structlog.get_logger()
+
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self._logger = logger.bind(component="tester")
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        self._logger.info("testing_start", goal=goal, task_count=len(tasks))
         test_output = ""
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            self._logger.error("test_runner_error", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
+
+        self._logger.info("test_output_received", output_length=len(test_output))
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            result = TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+
+        if result.passed:
+            self._logger.info("tests_passed", summary=result.summary)
+        else:
+            self._logger.info("tests_failed", summary=result.summary, failures=result.failures)
+        return result
 
     async def _run_tests(self) -> str:
         candidates = [
