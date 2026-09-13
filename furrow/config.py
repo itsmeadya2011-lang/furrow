@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logger = logging.getLogger("furrow")
 
 
 class Provider(str, Enum):
@@ -49,6 +52,14 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @field_validator("workspace", mode="after")
+    @classmethod
+    def validate_workspace(cls, v: Path) -> Path:
+        resolved = v.resolve()
+        if not resolved.exists():
+            resolved.mkdir(parents=True, exist_ok=True)
+        return resolved
 
 
 settings = Settings()
