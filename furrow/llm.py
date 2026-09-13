@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import structlog
 from pathlib import Path
 from typing import Any
 
@@ -9,8 +10,16 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger()
 
 
 class LLMClient:
@@ -37,14 +46,23 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type((anthropic.APIStatusError, openai.APIStatusError)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.info("llm_request", model=model, prompt_length=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            result = await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            result = await self._complete_openai(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        logger.info("llm_complete", model=model, response_length=len(result))
+        return result
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
