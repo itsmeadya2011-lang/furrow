@@ -28,7 +28,14 @@ class TesterAgent:
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            passed = data.get("passed", False)
+            if not isinstance(passed, bool):
+                passed = bool(passed)
+            return TestResult(
+                passed=passed,
+                summary=data.get("summary", ""),
+                failures=data.get("failures", []),
+            )
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
@@ -53,6 +60,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError, asyncio.TimeoutError):
                 continue
         return "No test runner found."
