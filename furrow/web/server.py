@@ -52,11 +52,27 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    messages: list[str] = []
+
+    def _stream(message: str) -> None:
+        messages.append(message)
+
+    async def _flush_continuous() -> None:
+        while True:
+            if messages:
+                await websocket.send_json({"type": "message", "data": messages.pop(0)})
+            else:
+                break
+
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        orchestrator = Orchestrator(goal=goal, stream_callback=_stream)
+        try:
+            await asyncio.wait_for(orchestrator.run(), timeout=3600)
+        except asyncio.TimeoutError:
+            await websocket.send_json({"type": "message", "data": "Execution timed out."})
+        await _flush_continuous()
     except WebSocketDisconnect:
         pass
 

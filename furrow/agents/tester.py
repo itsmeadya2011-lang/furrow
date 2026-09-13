@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = logging.getLogger("furrow.tester")
 
 
 class TesterAgent:
@@ -22,7 +25,12 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
-            return TestResult(passed=False, summary=str(e), failures=[str(e)])
+            logger.error("Test execution failed: %s", e)
+            return TestResult(
+                passed=False,
+                summary=str(e),
+                failures=[str(e)],
+            )
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
@@ -30,9 +38,15 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            logger.warning("Failed to parse tester response, using heuristic fallback")
+            return TestResult(
+                passed=False,
+                summary=response,
+                failures=[response] if response else ["No test output available"],
+            )
 
     async def _run_tests(self) -> str:
+        workspace = self.client.settings.workspace
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -45,11 +59,16 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(workspace),
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if output.strip():
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue

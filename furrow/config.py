@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -14,12 +15,19 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
 
 
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TaskModel(BaseModel):
     id: str
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
+    status: TaskStatus = TaskStatus.PENDING
     result: Optional[str] = None
 
 
@@ -50,5 +58,14 @@ class Settings(BaseSettings):
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
+    @property
+    def logger(self) -> logging.Logger:
+        return logging.getLogger("furrow")
+
 
 settings = Settings()
+
+logging.basicConfig(
+    level=getattr(logging, settings.log_level, logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
