@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import WORKER_PROMPT
@@ -17,4 +18,27 @@ class WorkerAgent:
 
     async def run(self) -> str:
         prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        response = await self.client.complete(prompt, model=self.client.settings.worker_model)
+        try:
+            data = json.loads(response)
+        except (json.JSONDecodeError, ValueError) as e:
+            raise ValueError(f"Worker returned invalid JSON: {e}\nResponse: {response}")
+
+        summary = data.get("summary", "No summary provided")
+        files = data.get("files", [])
+        for entry in files:
+            path = entry.get("path")
+            action = entry.get("action", "create")
+            content = entry.get("content")
+            if not path:
+                continue
+            if action == "delete":
+                from pathlib import Path
+
+                p = Path(path)
+                if p.exists():
+                    p.unlink()
+            elif content is not None:
+                await self.client.write_file(path, content)
+
+        return summary
