@@ -1,3 +1,4 @@
+"""FastAPI web server for monitoring Furrow runs."""
 from __future__ import annotations
 
 import asyncio
@@ -17,6 +18,30 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+class ConnectionManager:
+    """Manages active WebSocket connections and broadcasts messages."""
+
+    def __init__(self) -> None:
+        self.active_connections: list[WebSocket] = []
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self.active_connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+
+    async def send_text(self, message: str, websocket: WebSocket) -> None:
+        try:
+            await websocket.send_text(message)
+        except Exception:
+            self.disconnect(websocket)
+
+
+manager = ConnectionManager()
 
 
 @app.get("/")
@@ -51,14 +76,22 @@ async def index() -> HTMLResponse:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    await websocket.accept()
+    await manager.connect(websocket)
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        # Capture console output and forward to websocket
+        async def send_message(msg: str) -> None:
+            await manager.send_text(msg, websocket)
+
+        # Run orchestrator with output streaming
+        await orchestrator.run_with_stream(send_message)
     except WebSocketDisconnect:
         pass
+    finally:
+        manager.disconnect(websocket)
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
