@@ -52,11 +52,28 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    messages: asyncio.Queue[str] = asyncio.Queue()
+
+    def on_output(msg: str) -> None:
+        asyncio.create_task(messages.put(msg))
+
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        orchestrator = Orchestrator(goal=goal, on_output=on_output)
+
+        async def stream() -> None:
+            proc_task = asyncio.create_task(orchestrator.run())
+            while True:
+                if proc_task.done() and messages.empty():
+                    break
+                if not messages.empty():
+                    msg = await messages.get()
+                    await websocket.send_text(msg)
+                else:
+                    await asyncio.sleep(0.1)
+
+        await stream()
     except WebSocketDisconnect:
         pass
 
