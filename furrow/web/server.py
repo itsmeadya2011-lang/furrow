@@ -1,17 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Any, Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from rich.console import Console
+
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+
+
+class StreamingConsole(Console):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._messages = asyncio.Queue()
+
+    def print(self, *args: Any, **kwargs: Any) -> None:
+        with self.capture() as capture:
+            super().print(*args, **kwargs)
+        text = capture.get()
+        self._messages.put_nowait(text)
 
 
 class StartRequest(BaseModel):
@@ -55,8 +68,45 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        model = data.get("model")
+
+        if model:
+            from furrow.config import settings
+            settings.model = model
+
+        streaming_console = StreamingConsole()
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        orchestrator.console = streaming_console
+
+        task = asyncio.create_task(orchestrator.run())
+        try:
+            while not task.done() or not streaming_console._messages.empty():
+                try:
+                    message = await asyncio.wait_for(
+                        streaming_console._messages.get(), timeout=0.1
+                    )
+                    await websocket.send_text(message)
+                except asyncio.TimeoutError:
+                    if task.done():
+                        break
+
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                await websocket.send_text("cancelled")
+            except Exception as exc:
+                await websocket.send_text(f"failed: {exc}")
+            else:
+                await websocket.send_text("done")
+        finally:
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                pass
     except WebSocketDisconnect:
         pass
 
