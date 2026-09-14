@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -7,10 +9,33 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+# Configure structlog
+structlog.configure(
+    processors=[
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        structlog.processors.JSONRenderer(),
+    ],
+    context_class=dict,
+    logger_factory=structlog.stdlib.LoggerFactory(),
+    wrapper_class=structlog.stdlib.BoundLogger,
+    cache_logger_on_first_use=True,
+)
+
+# Set log level from settings
+logging.basicConfig(level=getattr(logging, settings.log_level.upper(), "INFO"))
 
 
 class LLMClient:
@@ -74,6 +99,22 @@ class LLMClient:
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
+
+    async def run_command(self, cmd: list[str], cwd: str | Path | None = None, timeout: int = 120) -> tuple[int, str, str]:
+        """Run a shell command and return (exit_code, stdout, stderr)."""
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=cwd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            return proc.returncode, stdout.decode(), stderr.decode()
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            raise
 
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
