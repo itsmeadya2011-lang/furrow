@@ -33,9 +33,23 @@ def start(goal: str | None, model: str | None) -> None:
 
 
 @main.command()
-def web() -> None:
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Host interface to bind",
+)
+@click.option(
+    "--port",
+    type=click.IntRange(1, 65535),
+    default=8000,
+    show_default=True,
+    help="Port to bind",
+)
+def web(host: str, port: int) -> None:
     from furrow.web.server import run
-    run()
+
+    run(host=host, port=port)
 
 
 if __name__ == "__main__":
