@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -45,10 +45,15 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
-    max_parallel_tasks: int = 5
-    max_cycles: int = 0
-    workspace: Path = Field(default_factory=Path.cwd)
+    max_parallel_tasks: int = Field(default=5, ge=1)
+    max_cycles: int = Field(default=0, ge=0)
+    workspace: Path = Field(default_factory=lambda: Path.cwd().resolve())
     log_level: str = "INFO"
+
+    @field_validator("workspace")
+    @classmethod
+    def normalize_workspace(cls, value: Path) -> Path:
+        return value.expanduser().resolve()
 
 
 settings = Settings()
