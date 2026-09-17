@@ -2,12 +2,10 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
+from anthropic.types import TextBlock
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
@@ -53,7 +51,10 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        for block in response.content:
+            if isinstance(block, TextBlock):
+                return block.text
+        return ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(

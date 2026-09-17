@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -15,13 +14,15 @@ if TYPE_CHECKING:
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+        self.client = client or (
+            LLMClient(settings=settings) if settings is not None else LLMClient()
+        )
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except OSError as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -47,12 +48,18 @@ class TesterAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
+            except OSError:
+                pass
+            else:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
-                continue
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                except OSError:
+                    pass
+                else:
+                    return stdout.decode() + stderr.decode()
         return "No test runner found."
