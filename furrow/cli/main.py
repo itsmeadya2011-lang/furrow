@@ -6,6 +6,7 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import settings as global_settings
 from furrow.core.orchestrator import Orchestrator
 
 console = Console()
@@ -22,11 +23,18 @@ def main() -> None:
 def start(goal: str | None, model: str | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
+    run_settings = global_settings
     if model:
-        from furrow.config import settings
-        settings.model = model
+        run_settings = global_settings.model_copy(
+            update={
+                "model": model,
+                "planner_model": model,
+                "worker_model": model,
+                "tester_model": model,
+            }
+        )
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, settings=run_settings).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)
