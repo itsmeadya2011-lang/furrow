@@ -5,7 +5,7 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
 
-Return JSON only (no markdown, no explanation) with this shape:
+Return exactly one valid JSON object and nothing else. Do not use Markdown fences, comments, prose, or trailing commas. Use this shape:
 {
   "tasks": [
     {
