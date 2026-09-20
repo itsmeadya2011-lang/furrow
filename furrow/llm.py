@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+from furrow.config import settings as default_settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings if settings is not None else default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -53,7 +51,24 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        return self._extract_anthropic_text(response)
+
+    @staticmethod
+    def _extract_anthropic_text(response: object) -> str:
+        content = getattr(response, "content", ()) or ()
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") != "text":
+                    continue
+                block_text = block.get("text")
+            else:
+                if getattr(block, "type", None) != "text":
+                    continue
+                block_text = getattr(block, "text", None)
+            if isinstance(block_text, str):
+                parts.append(block_text)
+        return "".join(parts)
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
