@@ -33,13 +33,13 @@ Rules:
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
-Given the goal and test output, determine if tests passed or failed.
+Given the goal and test output, summarize the verification and classify useful failures.
+The subprocess exit code is authoritative: exit code 0 means the verification passed, while a nonzero exit code, timeout, or missing runner means it failed. Do not decide pass/fail.
 
 Return JSON only (no markdown) with this shape:
 {
-  "passed": true,
-  "summary": "All tests passed",
+  "summary": "Concise verification summary",
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If verification failed, list each useful failure in the failures array."""
