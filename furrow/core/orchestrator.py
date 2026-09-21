@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -14,18 +11,39 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, Settings, TaskModel, TestResult, settings as default_settings
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+    ) -> None:
         self.goal = goal
-        self.client = client or LLMClient()
-        self.planner = PlannerAgent(client=self.client)
+        self.original_goal = goal
+        self.settings = settings or default_settings
+        self.client = client or LLMClient(settings=self.settings)
+        self.planner = PlannerAgent(client=self.client, settings=self.settings)
         self.cycles = 0
+        self._tasks: list[TaskModel] = []
+        self.tasks = self._tasks
+        self.latest_test_result: TestResult | None = None
+        self.stop_reason: str | None = None
+        self._last_plan_had_tasks = True
+        self._seen_retry_states: set[tuple[Any, ...]] = set()
+
+    @property
+    def tasks(self) -> list[TaskModel]:
+        return self._tasks
+
+    @tasks.setter
+    def tasks(self, value: list[TaskModel]) -> None:
+        self._tasks = value
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -34,37 +52,50 @@ class Orchestrator:
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
+                self.stop_reason = "completed"
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                break
+            if self.stop_reason:
+                console.print(f"[yellow]Stopping: {self.stop_reason}.[/yellow]")
+                break
+            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
+                self.stop_reason = "max_cycles"
+                console.print(f"[yellow]Maximum cycle count ({self.settings.max_cycles}) reached.[/yellow]")
                 break
 
     async def _cycle(self) -> None:
-        with Status("[bold yellow]Planning...", console=console) as status:
+        with Status("[bold yellow]Planning...", console=console):
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
+        self._tasks.extend(plan.tasks)
+        self._last_plan_had_tasks = bool(plan.tasks)
+        if plan.tasks:
+            with Status("[bold yellow]Executing tasks in parallel...", console=console):
+                results = await self._execute_tasks(plan.tasks)
+
+            for task, result in zip(plan.tasks, results):
+                if isinstance(result, BaseException):
+                    task.status = "failed"
+                    task.result = str(result)
+                    console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                else:
+                    task.status = "completed"
+                    task.result = result
+                    console.print(f"[green]Task {task.id} completed[/green]")
+
+        with Status("[bold yellow]Testing...", console=console):
+            try:
+                test_result = await TesterAgent(client=self.client, settings=self.settings).run(
+                    self.goal, self._tasks
+                )
+            except Exception as exc:
+                test_result = TestResult(passed=False, summary=str(exc), failures=[str(exc)])
+        self.latest_test_result = test_result
+
         if not plan.tasks:
-            console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self.stop_reason = "empty_plan"
             return
-
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for task, result in zip(plan.tasks, results):
-            if isinstance(result, Exception):
-                task.status = "failed"
-                task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
-            else:
-                task.status = "completed"
-                task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
-
-        with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
@@ -73,16 +104,46 @@ class Orchestrator:
             for failure in test_result.failures:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
-            self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+            retry_state = (
+                self.original_goal,
+                test_result.summary,
+                tuple(test_result.failures),
+            )
+            if retry_state in self._seen_retry_states:
+                self.stop_reason = "no_progress"
+                return
+            self._seen_retry_states.add(retry_state)
+            self.goal = self._build_retry_goal(test_result)
+
+    def _execute_tasks(self, tasks: list[TaskModel]) -> Any:
+        limit = max(1, self.settings.max_parallel_tasks)
+        semaphore = asyncio.Semaphore(limit)
+
+        async def execute(task: TaskModel) -> Any:
+            async with semaphore:
+                return await WorkerAgent(
+                    task=task, client=self.client, settings=self.settings
+                ).run()
+
+        return asyncio.gather(
+            *(execute(task) for task in tasks), return_exceptions=True
+        )
+
+    def _build_retry_goal(self, test_result: TestResult) -> str:
+        failures = "\n".join(test_result.failures) or test_result.summary
+        return (
+            f"{self.original_goal}\n\nLatest verification failed.\n"
+            f"Summary: {test_result.summary}\nFailures:\n{failures}"
+        )
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
-            return False
-        if completed >= len(self._get_tasks()):
-            return True
-        return False
+        return (
+            bool(self._tasks)
+            and self._last_plan_had_tasks
+            and all(task.status == "completed" for task in self._tasks)
+            and self.latest_test_result is not None
+            and self.latest_test_result.passed
+        )
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+    def _get_tasks(self) -> list[TaskModel]:
+        return self._tasks

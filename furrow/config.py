@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -48,7 +48,37 @@ class Settings(BaseSettings):
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
+    test_timeout: float = 120.0
+    max_test_output: int = 20_000
     log_level: str = "INFO"
+
+    @field_validator("max_parallel_tasks")
+    @classmethod
+    def validate_max_parallel_tasks(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_parallel_tasks must be at least 1")
+        return value
+
+    @field_validator("max_cycles")
+    @classmethod
+    def validate_max_cycles(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("max_cycles must be zero (unlimited) or greater")
+        return value
+
+    @field_validator("test_timeout")
+    @classmethod
+    def validate_test_timeout(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("test_timeout must be greater than zero")
+        return value
+
+    @field_validator("max_test_output")
+    @classmethod
+    def validate_max_test_output(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("max_test_output must be greater than zero")
+        return value
 
 
 settings = Settings()
