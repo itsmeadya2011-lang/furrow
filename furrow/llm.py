@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,20 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    async def complete_with_tools(
+        self,
+        messages: list[dict],
+        model: str | None = None,
+        tools: list[dict] | None = None
+    ) -> Any:
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            return await self._complete_anthropic_with_tools(messages, model, tools)
+        elif self.settings.provider == Provider.OPENAI:
+            return await self._complete_openai_with_tools(messages, model, tools)
+        else:
+            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -64,6 +80,89 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_anthropic_with_tools(
+        self,
+        messages: list[dict],
+        model: str,
+        tools: list[dict] | None
+    ) -> Any:
+        # Convert messages to Anthropic format
+        anthropic_messages = []
+        for msg in messages:
+            if msg["role"] == "system":
+                continue  # System is separate in Anthropic
+            elif msg["role"] == "tool":
+                anthropic_messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": msg["tool_call_id"],
+                            "content": msg["content"]
+                        }
+                    ]
+                })
+            elif msg["role"] == "assistant":
+                content = []
+                if msg.get("content"):
+                    content.append({"type": "text", "text": msg["content"]})
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        content.append({
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.function.name,
+                            "input": json.loads(tc.function.arguments)
+                        })
+                anthropic_messages.append({"role": "assistant", "content": content})
+            else:
+                anthropic_messages.append({"role": msg["role"], "content": msg["content"]})
+
+        system_prompt = next((m["content"] for m in messages if m["role"] == "system"), "You are a helpful coding assistant.")
+
+        response = await self.anthropic.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system_prompt,
+            messages=anthropic_messages,
+            tools=tools or []
+        )
+
+        # Convert to OpenAI-like format for consistency
+        class ToolCall:
+            def __init__(self, id: str, name: str, arguments: str):
+                self.id = id
+                self.function = type('Function', (), {'name': name, 'arguments': arguments})()
+
+        class Response:
+            def __init__(self, content: str, tool_calls: list = None):
+                self.content = content
+                self.tool_calls = tool_calls or []
+
+        tool_calls = []
+        text_content = ""
+        for block in response.content:
+            if block.type == "text":
+                text_content = block.text
+            elif block.type == "tool_use":
+                tool_calls.append(ToolCall(block.id, block.name, json.dumps(block.input)))
+
+        return Response(text_content, tool_calls)
+
+    async def _complete_openai_with_tools(
+        self,
+        messages: list[dict],
+        model: str,
+        tools: list[dict] | None
+    ) -> Any:
+        response = await self.openai.chat.completions.create(
+            model=model,
+            messages=messages,
+            tools=tools or [],
+            tool_choice="auto"
+        )
+        return response.choices[0].message
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
