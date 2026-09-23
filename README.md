@@ -15,4 +15,69 @@ furrow start "Add JWT auth to the API"
 furrow web
 ```
 
-Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in your environment.
+## Features
+
+- **Infinite Development Loop** - Runs cycles of planning, parallel execution, and testing until the goal is complete
+- **Parallel Task Execution** - Breaks goals into 1-5 independent tasks that run concurrently
+- **Multi-Provider LLM Support** - Works with Anthropic (Claude), OpenAI (GPT), and Ollama (local models)
+- **Web UI** - Browser-based interface for monitoring and controlling the agent
+- **Structured Logging** - JSON-structured logs with structlog for observability
+- **Persistent State** - Tracks tasks and history across cycles for context-aware planning
+- **Targeted Testing** - Automatically finds and runs tests relevant to changed files
+
+## Configuration
+
+Set environment variables:
+
+```bash
+# Required: Choose one provider
+export ANTHROPIC_API_KEY="your-key"     # For Anthropic/Claude
+export OPENAI_API_KEY="your-key"        # For OpenAI/GPT
+# Or use Ollama (no API key needed)
+export FURROW_PROVIDER="ollama"
+export FURROW_OLLAMA_BASE_URL="http://localhost:11434"
+```
+
+Optional settings:
+- `FURROW_MODEL` - Default model (default: claude-sonnet-4-20250514)
+- `FURROW_PLANNER_MODEL` - Model for planning (default: claude-3-5-haiku-20241022)
+- `FURROW_WORKER_MODEL` - Model for code generation (default: claude-3-5-sonnet-20241022)
+- `FURROW_TESTER_MODEL` - Model for test analysis (default: claude-3-5-sonnet-20241022)
+- `FURROW_MAX_PARALLEL_TASKS` - Max concurrent tasks (default: 5)
+- `FURROW_MAX_CYCLES` - Max development cycles (0 = unlimited, default: 0)
+- `FURROW_WORKSPACE` - Working directory (default: current directory)
+- `FURROW_LOG_LEVEL` - Log level (default: INFO)
+
+Or create a `.env` file in your project root.
+
+## CLI Options
+
+```bash
+furrow --log-level DEBUG start "Build a REST API"
+furrow --log-level INFO web
+```
+
+## Web UI
+
+Start the web server:
+```bash
+furrow web
+```
+
+Then open http://localhost:8000 in your browser to enter goals and watch the development loop in real-time.
+
+## Architecture
+
+Furrow uses a four-agent architecture:
+
+1. **Orchestrator** - Runs the infinite loop, coordinates all agents
+2. **Planner** - Breaks goals into parallelizable tasks
+3. **Worker** - Executes individual tasks with file operations
+4. **Tester** - Runs tests and verifies correctness
+
+Each cycle:
+1. Planner creates a plan based on the goal and previous cycle context
+2. Workers execute tasks in parallel (reading/writing files)
+3. Tester runs relevant tests and reports results
+4. If tests fail, the next cycle focuses on fixing them
+5. Loop continues until all tasks complete and tests pass
