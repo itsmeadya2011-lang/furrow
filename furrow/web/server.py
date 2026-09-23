@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import Settings, configure_logging
 from furrow.core.orchestrator import Orchestrator
+
+logger = structlog.get_logger()
 
 app = FastAPI(title="Furrow")
 
@@ -55,11 +59,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        model = data.get("model")
+        if model:
+            from furrow.config import settings
+            settings.model = model
+        
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        
+        # Override console output to send via websocket
+        original_print = print
+        def ws_print(*args, **kwargs):
+            msg = " ".join(str(a) for a in args)
+            asyncio.create_task(websocket.send_text(msg))
+            original_print(*args, **kwargs)
+        
+        # Monkey patch for this session
+        import builtins
+        builtins.print = ws_print
+        
+        try:
+            await orchestrator.run()
+        finally:
+            builtins.print = original_print
+            
     except WebSocketDisconnect:
+        logger.info("websocket_disconnected")
         pass
 
 
-def run(host: str = "0.0.0.0", port: int = 8000) -> None:
-    uvicorn.run(app, host=host, port=port)
+def run(host: str = "0.0.0.0", port: int = 8000, log_level: str = "INFO") -> None:
+    configure_logging(log_level)
+    uvicorn.run(app, host=host, port=port, log_level=log_level.lower())

@@ -6,6 +6,7 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import settings, configure_logging
 from furrow.core.orchestrator import Orchestrator
 
 console = Console()
@@ -19,11 +20,15 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
+@click.option("--max-cycles", default=0, help="Maximum number of cycles (0 = unlimited)")
+@click.option("--log-level", default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
+def start(goal: str | None, model: str | None, max_cycles: int, log_level: str) -> None:
+    configure_logging(log_level)
+    if max_cycles > 0:
+        settings.max_cycles = max_cycles
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
-        from furrow.config import settings
         settings.model = model
     try:
         asyncio.run(Orchestrator(goal=goal).run())
@@ -33,9 +38,13 @@ def start(goal: str | None, model: str | None) -> None:
 
 
 @main.command()
-def web() -> None:
+@click.option("--host", default="0.0.0.0", help="Host to bind")
+@click.option("--port", default=8000, help="Port to bind")
+@click.option("--log-level", default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
+def web(host: str, port: int, log_level: str) -> None:
+    configure_logging(log_level)
     from furrow.web.server import run
-    run()
+    run(host=host, port=port)
 
 
 if __name__ == "__main__":
