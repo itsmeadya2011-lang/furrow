@@ -17,3 +17,12 @@ You are a Furrow tester. Verify that completed tasks work correctly.
 }
 - Do not scope creep. Only fix what is needed to make tests pass.
 - Do not spawn further subagents.
+
+## Test Runners Supported
+- pytest (Python)
+- npm/yarn/pnpm test (JavaScript/TypeScript)
+- cargo test (Rust)
+- go test (Go)
+
+## Output Parsing
+The tester automatically parses test output to determine pass/fail before using LLM analysis.
