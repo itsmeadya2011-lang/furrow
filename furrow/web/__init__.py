@@ -1,3 +1,3 @@
-from furrow.web.server import app, run
+from furrow.web.server import run
 
-__all__ = ["app", "run"]
+__all__ = ["run"]

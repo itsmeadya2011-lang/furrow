@@ -10,6 +10,10 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import setup_logging
+
+# Initialize logging
+setup_logging()
 
 app = FastAPI(title="Furrow")
 
@@ -55,10 +59,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        
+        async def send_progress(message: str) -> None:
+            await websocket.send_text(message)
+        
+        orchestrator = Orchestrator(goal=goal, on_progress=send_progress)
         await orchestrator.run()
+        await websocket.send_text("\n[bold green]Done.[/bold green]")
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"\n[red]Error: {e}[/red]")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
