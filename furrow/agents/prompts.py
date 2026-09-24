@@ -27,8 +27,21 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return a JSON object with file operations (not plain text).
 - Do not spawn subagents.
+
+Return JSON only with this shape:
+{
+  "files": [
+    {
+      "path": "src/auth.py",
+      "operation": "write",
+      "content": "# implementation here"
+    }
+  ]
+}
+
+Operations: "write" (create or overwrite), "delete", "read"
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
