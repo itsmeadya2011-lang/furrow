@@ -22,14 +22,27 @@ If the goal is too large for one cycle, say so in rationale and break it into th
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
-Your job is to implement the assigned task completely and concisely.
+Your job is to implement the assigned task completely and concisely by outputting a series of file edits.
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Read existing files first to understand the codebase.
+- Output changes as unified diffs (one per file) in the following format:
+  ```
+  --- a/path/to/file.py
+  +++ b/path/to/file.py
+  @@ -1,3 +1,4 @@
+  +new line
+   existing line
+  -removed line
+  ```
+- Return ONLY the diffs, no explanations or markdown.
+- If no changes needed, return empty string.
 - Do not spawn subagents.
 """
+
+WORKER_SYSTEM_PROMPT = """You are an expert software engineer. Given a task and relevant file contents, produce minimal unified diffs to implement the task. Only output the diffs, nothing else."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

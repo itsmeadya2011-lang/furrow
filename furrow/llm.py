@@ -6,11 +6,23 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
+from furrow.logging import get_logger
+
+# Models that support streaming
+STREAMING_MODELS = {
+    Provider.ANTHROPIC: True,
+    Provider.OPENAI: True,
+    Provider.OLLAMA: True,
+}
+
+logger = get_logger(__name__)
 
 
 class LLMClient:
@@ -18,6 +30,10 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama_client: httpx.AsyncClient | None = None
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cost = 0.0
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +53,30 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> httpx.AsyncClient:
+        if self._ollama_client is None:
+            self._ollama_client = httpx.AsyncClient(
+                base_url=self.settings.ollama_base_url,
+                timeout=httpx.Timeout(120.0),
+            )
+        return self._ollama_client
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((anthropic.RateLimitError, openai.RateLimitError, httpx.TimeoutException, httpx.HTTPStatusError)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.debug("llm_request", provider=self.settings.provider.value, model=model, prompt_len=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,6 +87,8 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        self._track_usage(response.usage.input_tokens, response.usage.output_tokens, model, Provider.ANTHROPIC)
+        logger.debug("llm_response", provider="anthropic", model=model, input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens)
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
@@ -63,13 +99,59 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
+        usage = response.usage
+        if usage:
+            self._track_usage(usage.prompt_tokens, usage.completion_tokens, model, Provider.OPENAI)
+            logger.debug("llm_response", provider="openai", model=model, input_tokens=usage.prompt_tokens, output_tokens=usage.completion_tokens)
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        payload = {
+            "model": model,
+            "prompt": f"{system}\n\n{prompt}" if system else prompt,
+            "stream": False,
+            "options": {"temperature": 0.1},
+        }
+        response = await self.ollama.post("/api/generate", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        logger.debug("llm_response", provider="ollama", model=model)
+        return data.get("response", "")
+
+    def _track_usage(self, input_tokens: int, output_tokens: int, model: str, provider: Provider) -> None:
+        self._total_input_tokens += input_tokens
+        self._total_output_tokens += output_tokens
+        # Rough cost estimation (per 1M tokens)
+        cost_per_million = {
+            (Provider.ANTHROPIC, "claude-3-5-sonnet-20241022"): (3.00, 15.00),
+            (Provider.ANTHROPIC, "claude-3-5-haiku-20241022"): (0.25, 1.25),
+            (Provider.ANTHROPIC, "claude-sonnet-4-20250514"): (3.00, 15.00),
+            (Provider.OPENAI, "gpt-4o"): (5.00, 15.00),
+            (Provider.OPENAI, "gpt-4o-mini"): (0.15, 0.60),
+        }
+        input_cost, output_cost = cost_per_million.get((provider, model), (0, 0))
+        self._total_cost += (input_tokens / 1_000_000) * input_cost + (output_tokens / 1_000_000) * output_cost
+
+    @property
+    def total_cost(self) -> float:
+        return self._total_cost
+
+    @property
+    def total_tokens(self) -> tuple[int, int]:
+        return (self._total_input_tokens, self._total_output_tokens)
+
+    def reset_usage(self) -> None:
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cost = 0.0
+
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("file_read", path=str(path))
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("file_write", path=str(path), size=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
@@ -80,3 +162,8 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def close(self) -> None:
+        if self._ollama_client:
+            await self._ollama_client.aclose()
+            self._ollama_client = None
