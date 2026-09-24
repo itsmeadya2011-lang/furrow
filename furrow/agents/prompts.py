@@ -29,7 +29,13 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- When creating or modifying files, output them in this format:
+  ```python
+  # filepath: path/to/file.py
+  <file content>
+  ```
+  The system will automatically write these files.
+- Always include the filepath comment as the first line in the code block."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

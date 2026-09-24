@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -18,6 +16,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama_client: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +36,23 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> httpx.AsyncClient:
+        if self._ollama_client is None:
+            self._ollama_client = httpx.AsyncClient(
+                base_url=self.settings.ollama_base_url,
+                timeout=httpx.Timeout(120.0),
+            )
+        return self._ollama_client
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,7 +63,11 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # Handle different content block types
+        content_block = response.content[0]
+        if hasattr(content_block, "text"):
+            return content_block.text
+        return str(content_block)
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -64,6 +78,24 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        response = await self.ollama.post(
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+            },
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
@@ -80,3 +112,8 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def close(self) -> None:
+        if self._ollama_client:
+            await self._ollama_client.aclose()
+            self._ollama_client = None
