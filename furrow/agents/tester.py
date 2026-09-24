@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import Settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
@@ -16,6 +15,7 @@ if TYPE_CHECKING:
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.settings = settings or self.client.settings
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -28,9 +28,13 @@ class TesterAgent:
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            result = TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+
+        # If tests failed, we could optionally try to auto-fix
+        # For now, just return the result - the orchestrator will handle re-planning
+        return result
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -53,6 +57,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, Exception):  # noqa: BLE001
                 continue
         return "No test runner found."
