@@ -49,6 +49,46 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    log_format: str = "json"  # json or console
+    state_file: str = ".furrow_state.json"
 
 
 settings = Settings()
+
+
+def configure_logging() -> None:
+    """Configure structlog for structured logging."""
+    import structlog
+    
+    log_level = settings.log_level.upper()
+    
+    shared_processors = [
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.add_logger_name,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+    ]
+    
+    if settings.log_format == "json":
+        structlog.configure(
+            processors=shared_processors + [
+                structlog.processors.JSONRenderer(),
+            ],
+            wrapper_class=structlog.stdlib.BoundLogger,
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
+    else:
+        structlog.configure(
+            processors=shared_processors + [
+                structlog.dev.ConsoleRenderer(),
+            ],
+            wrapper_class=structlog.stdlib.BoundLogger,
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
+    
+    # Set stdlib logging level
+    import logging
+    logging.basicConfig(level=getattr(logging, log_level), format="%(message)s")
