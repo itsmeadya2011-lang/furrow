@@ -27,9 +27,18 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- Return a JSON object (no markdown) with this shape:
+{
+  "changes": [
+    {"path": "src/auth.py", "content": "full file content here"},
+    {"path": "tests/test_auth.py", "content": "full file content here"}
+  ],
+  "summary": "Brief summary of what was implemented",
+  "complete": true
+}
+- If the task requires multiple files, include all of them in the changes array.
+- If the task is complete, set "complete": true. If more work is needed, set "complete": false.
+- Do not spawn subagents."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
