@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,7 +14,7 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -55,10 +53,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        
+        # Custom console that sends output to websocket
+        class WebSocketConsole:
+            def __init__(self, ws: WebSocket):
+                self.ws = ws
+            
+            def print(self, *args, **kwargs):
+                msg = " ".join(str(a) for a in args)
+                asyncio.create_task(self.ws.send_text(msg))
+        
+        ws_console = WebSocketConsole(websocket)
+        
+        # Create orchestrator with custom console
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        # Monkey-patch the console for this orchestrator run
+        import furrow.core.orchestrator as orch_module
+        original_console = orch_module.console
+        orch_module.console = ws_console
+        
+        try:
+            await orchestrator.run()
+        finally:
+            orch_module.console = original_console
+            
     except WebSocketDisconnect:
         pass
+    except Exception as e:  # noqa: BLE001
+        await websocket.send_text(f"Error: {e}")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
