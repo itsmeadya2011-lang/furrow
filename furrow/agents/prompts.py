@@ -29,7 +29,20 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- You have access to read_file, write_file, and list_files tools via the LLM client.
+
+Return JSON only (no markdown) with this shape:
+{
+  "changes": [
+    {
+      "file": "path/to/file",
+      "content": "new file content"
+    }
+  ],
+  "summary": "What was done"
+}
+
+If no file changes are needed, return an empty changes array."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

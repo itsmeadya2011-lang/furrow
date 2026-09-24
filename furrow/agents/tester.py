@@ -6,7 +6,7 @@ import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import TaskModel, TestResult, Settings
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.settings = settings or self.client.settings
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -24,7 +25,14 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        # Build context from tasks
+        task_context = ""
+        if tasks:
+            task_context = "\n\nTasks:\n"
+            for task in tasks:
+                task_context += f"  - {task.id}: {task.description} (status: {task.status})\n"
+
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n{task_context}\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -45,7 +53,7 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=self.settings.workspace
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
