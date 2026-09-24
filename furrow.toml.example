@@ -1,0 +1,20 @@
+# Furrow Configuration
+# Place this file as furrow.toml in your project root
+# Or add [tool.furrow] section to pyproject.toml
+
+provider = "anthropic"  # anthropic, openai, ollama
+model = "claude-sonnet-4-20250514"
+planner_model = "claude-3-5-haiku-20241022"
+worker_model = "claude-3-5-sonnet-20241022"
+tester_model = "claude-3-5-sonnet-20241022"
+
+# API keys can also be set via environment variables:
+# ANTHROPIC_API_KEY, OPENAI_API_KEY
+# anthropic_api_key = "your_key_here"
+# openai_api_key = "your_key_here"
+
+ollama_base_url = "http://localhost:11434"
+max_parallel_tasks = 5
+max_cycles = 0  # 0 = unlimited
+workspace = "."  # relative to config file location
+log_level = "INFO"

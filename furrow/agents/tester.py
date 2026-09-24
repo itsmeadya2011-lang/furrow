@@ -30,7 +30,9 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            # Fallback: try to determine from response text
+            passed = "passed" in response.lower() and "failed" not in response.lower()
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -49,9 +51,12 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode == 0 or output.strip():
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
+                    await proc.wait()
                     continue
             except (FileNotFoundError, Exception):
                 continue

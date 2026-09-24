@@ -16,7 +16,19 @@ class PlannerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+        # Get workspace context
+        workspace_files = self.client.list_files(self.client.settings.workspace)
+        files_list = "\n".join(workspace_files[:100]) if workspace_files else "(empty)"
+
+        prompt = f"""{PLANNER_PROMPT}
+
+Goal: {goal}
+
+Current workspace files:
+{files_list}
+
+Consider the existing codebase when planning. Return JSON only."""
+
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)

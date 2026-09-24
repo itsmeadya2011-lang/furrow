@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, SettingsConfigDict, TomlConfigSettingsSource
 
 
 class Provider(str, Enum):
@@ -34,8 +34,22 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+def _find_config_file() -> Path | None:
+    """Find the config file in the current or parent directories."""
+    for path in [Path.cwd()] + list(Path.cwd().parents):
+        for name in ["furrow.toml", ".furrow.toml", "pyproject.toml"]:
+            config_path = path / name
+            if config_path.exists():
+                return config_path
+    return None
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+    model_config = SettingsConfigDict(
+        env_prefix="FURROW_",
+        env_file=".env",
+        extra="ignore",
+    )
 
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
@@ -49,6 +63,42 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: TomlConfigSettingsSource,
+        env_settings: TomlConfigSettingsSource,
+        dotenv_settings: TomlConfigSettingsSource,
+        file_secret_settings: TomlConfigSettingsSource,
+    ) -> tuple[TomlConfigSettingsSource, ...]:
+        config_file = _find_config_file()
+        if config_file and config_file.suffix == ".toml":
+            # If it's pyproject.toml, look for [tool.furrow] section
+            if config_file.name == "pyproject.toml":
+                try:
+                    return (
+                        TomlConfigSettingsSource(settings_cls, toml_file=config_file, toml_table_header=("tool", "furrow")),
+                        env_settings,
+                        dotenv_settings,
+                        file_secret_settings,
+                    )
+                except KeyError:
+                    # Section not found, fall back to env/dotenv settings
+                    pass
+            else:
+                return (
+                    TomlConfigSettingsSource(settings_cls, toml_file=config_file),
+                    env_settings,
+                    dotenv_settings,
+                    file_secret_settings,
+                )
+        return (
+            env_settings,
+            dotenv_settings,
+            file_secret_settings,
+        )
 
 
 settings = Settings()
