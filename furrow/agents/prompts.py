@@ -27,7 +27,15 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- You have access to file contents for context.
+- Return JSON only (no markdown) with this shape:
+{
+  "summary": "What you changed",
+  "changes": [
+    {"path": "src/auth.py", "content": "full file content here"}
+  ],
+  "complete": true
+}
 - Do not spawn subagents.
 """
 
