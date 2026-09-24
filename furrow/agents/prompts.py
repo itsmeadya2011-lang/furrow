@@ -29,7 +29,21 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+You must return JSON only (no markdown, no explanation) with this shape:
+{
+  "operations": [
+    {"op": "create", "path": "file.py", "content": "print('hello')"},
+    {"op": "edit", "path": "file.py", "content": "new content"},
+    {"op": "delete", "path": "file.py"}
+  ],
+  "summary": "Brief summary of changes"
+}
+
+Operations:
+- create: Create a new file with the given content
+- edit: Replace entire file content with new content
+- delete: Delete the file"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
