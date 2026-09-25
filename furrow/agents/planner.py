@@ -14,10 +14,12 @@ if TYPE_CHECKING:
 class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.settings = settings or self.client.settings
 
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.planner_model)
+        model = self.settings.get_model_for_agent("planner")
+        response = await self.client.complete(prompt, model=model)
         try:
             data = json.loads(response)
             return Plan(**data)

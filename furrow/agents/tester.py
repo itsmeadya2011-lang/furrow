@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.settings = settings or self.client.settings
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -25,7 +26,8 @@ class TesterAgent:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        model = self.settings.get_model_for_agent("tester")
+        response = await self.client.complete(prompt, model=model)
         try:
             data = json.loads(response)
             return TestResult(**data)
