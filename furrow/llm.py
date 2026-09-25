@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -37,8 +38,24 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        messages: list[dict] | None = None,
+    ) -> str:
         model = model or self.settings.model
+        if messages is not None:
+            # Use messages directly (for tool use)
+            if self.settings.provider == Provider.ANTHROPIC:
+                return await self._complete_anthropic_messages(messages, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                return await self._complete_openai_messages(messages, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+        # Legacy single-prompt mode
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -62,6 +79,24 @@ class LLMClient:
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
+        )
+        return response.choices[0].message.content or ""
+
+    async def _complete_anthropic_messages(self, messages: list[dict], system: str, model: str) -> str:
+        response = await self.anthropic.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system or "You are a helpful coding assistant.",
+            messages=messages,
+        )
+        return response.content[0].text
+
+    async def _complete_openai_messages(self, messages: list[dict], system: str, model: str) -> str:
+        # Prepend system message
+        all_messages = [{"role": "system", "content": system or "You are a helpful coding assistant."}] + messages
+        response = await self.openai.chat.completions.create(
+            model=model,
+            messages=all_messages,
         )
         return response.choices[0].message.content or ""
 
