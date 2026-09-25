@@ -29,6 +29,7 @@ class Plan(BaseModel):
 
 
 class TestResult(BaseModel):
+    __test__ = False  # Suppress pytest collection warning (starts with "Test")
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
@@ -47,6 +48,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    max_tokens: int = 4096
+    temperature: float = 0.7
+    state_file: str = "furrow_state.json"
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 

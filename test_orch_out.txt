@@ -1,0 +1,22 @@
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-9.1.1, pluggy-1.6.0 -- /usr/bin/python3
+rootdir: /workspace/64b5f2dc-1bcb-407e-b26a-0216ac2acba8/sessions/agent_166332f2-03d4-4a1c-bbe7-d33f7502de29
+configfile: pyproject.toml
+plugins: anyio-4.15.1, asyncio-1.4.0
+asyncio: mode=auto, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collecting ... collected 16 items
+
+tests/test_orchestrator.py::test_is_done_no_tasks_no_test_result PASSED  [  6%]
+tests/test_orchestrator.py::test_is_done_no_tasks_tests_passed PASSED    [ 12%]
+tests/test_orchestrator.py::test_is_done_no_tasks_tests_failed PASSED    [ 18%]
+tests/test_orchestrator.py::test_is_done_all_tasks_completed_tests_passed PASSED [ 25%]
+tests/test_orchestrator.py::test_is_done_task_failed PASSED              [ 31%]
+tests/test_orchestrator.py::test_is_done_all_tasks_completed_tests_failed PASSED [ 37%]
+tests/test_orchestrator.py::test_is_done_task_pending PASSED             [ 43%]
+tests/test_orchestrator.py::test_get_tasks_returns_stored_tasks PASSED   [ 50%]
+tests/test_orchestrator.py::test_get_tasks_empty_by_default PASSED       [ 56%]
+tests/test_orchestrator.py::test_max_cycles_enforced PASSED              [ 62%]
+tests/test_orchestrator.py::test_max_cycles_zero_is_infinite PASSED      [ 68%]
+tests/test_orchestrator.py::test_output_callback_receives_messages PASSED [ 75%]
+tests/test_orchestrator.py::test_no_callback_works PASSED                [ 81%]
+tests/test_orchestrator.py::test_cycle_stores_tasks_and_test_results 

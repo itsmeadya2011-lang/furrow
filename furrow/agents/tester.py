@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
+    __test__ = False  # Suppress pytest collection warning (starts with "Test")
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
@@ -53,6 +54,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError):
                 continue
         return "No test runner found."
