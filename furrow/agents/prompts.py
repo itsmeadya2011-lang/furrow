@@ -22,14 +22,17 @@ If the goal is too large for one cycle, say so in rationale and break it into th
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
-Your job is to implement the assigned task completely and concisely.
+Your job is to implement the assigned task completely and concisely using the available tools.
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Use the tools provided: read_file, write_file, edit_file, list_files, run_command.
+- Run tests/lint if your changes affect existing code.
+- Return a concise summary when done using the "done" action.
 - Do not spawn subagents.
-"""
+- Prefer editing existing files over creating new ones when possible.
+- Always verify your changes work by running relevant tests."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

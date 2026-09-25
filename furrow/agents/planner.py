@@ -15,8 +15,12 @@ class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
-    async def plan(self, goal: str) -> Plan:
-        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+    async def plan(self, goal: str, history: list[dict[str, Any]] | None = None) -> Plan:
+        history_str = ""
+        if history:
+            history_str = "\n\nPrevious cycles:\n" + json.dumps(history[-3:], indent=2)  # Last 3 cycles
+        
+        prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}{history_str}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
