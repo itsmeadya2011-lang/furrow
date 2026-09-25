@@ -29,7 +29,20 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+You will be given the current contents of relevant files. You must return a JSON object with your changes:
+{
+  "changes": [
+    {"file": "path/to/file.py", "content": "new complete file content"}
+  ],
+  "commands": [
+    {"cmd": ["pytest", "-q"], "description": "Run tests"}
+  ],
+  "summary": "Brief description of what was done"
+}
+
+Only include files that need to be changed. Provide the COMPLETE new content for each file.
+You can also run shell commands by including them in the "commands" array."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
@@ -43,3 +56,17 @@ Return JSON only (no markdown) with this shape:
 }
 
 If tests failed, list each failure in the failures array."""
+
+TESTER_FIX_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
+
+Tests have failed. Your job is to analyze the failures and generate fixes for the source code.
+
+Return JSON only (no markdown) with this shape:
+{
+  "fixes": [
+    {"file": "path/to/source.py", "content": "complete fixed file content"}
+  ],
+  "summary": "Description of what was fixed"
+}
+
+Only fix the specific issues causing test failures. Do not refactor unrelated code. Provide COMPLETE file contents for each fix."""
