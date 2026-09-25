@@ -27,9 +27,22 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return a JSON object with actions to perform.
 - Do not spawn subagents.
-"""
+
+Action format (return JSON only):
+{
+  "actions": [
+    {"type": "write_file", "path": "src/file.py", "content": "..."},
+    {"type": "read_file", "path": "src/file.py"},
+    {"type": "run_command", "command": ["pytest", "-q"]}
+  ]
+}
+
+Available actions:
+- write_file: Create or overwrite a file with content
+- read_file: Read a file's contents (already provided in context)
+- run_command: Execute a shell command (e.g., run tests, linting)"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
