@@ -35,20 +35,25 @@ class TestResult(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env", extra="ignore")
 
     provider: Provider = Provider.ANTHROPIC
-    model: str = "claude-sonnet-4-20250514"
+    # Default models (updated to real model names)
+    model: str = "claude-3-5-sonnet-20241022"
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
+    # Ollama model (used when provider=ollama)
+    ollama_model: str = "llama3.1"
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 0  # 0 = unlimited
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    # State persistence
+    state_file: str = ".furrow_state.json"
 
 
 settings = Settings()
