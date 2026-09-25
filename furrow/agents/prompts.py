@@ -18,22 +18,32 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+If the goal appears complete (no work remaining), return an empty tasks list."""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
-Your job is to implement the assigned task completely and concisely.
+Your job is to implement the assigned task by editing or creating files.
+The workspace path is provided contextually; file paths you return are relative
+to the workspace root. Provide the FULL file contents for any file you change
+or create (not diffs).
 
-Rules:
-- Work only on the assigned task. Do not refactor unrelated code.
-- Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+Return a JSON object only (no markdown, no explanation) with this exact shape:
+{
+  "summary": "One or two sentences describing what changed.",
+  "files": [
+    {"path": "src/auth.py", "content": "print('hello')"}
+  ]
+}
+
+Only include files you actually changed or created. If you cannot fully
+complete the task, still return JSON with whatever you can do and explain
+limitations in the summary."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
-Given the goal and test output, determine if tests passed or failed.
+Given the goal and the raw test/lint/type-check output below, determine whether
+the work passed verification.
 
 Return JSON only (no markdown) with this shape:
 {
@@ -42,4 +52,5 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If anything failed, list each failure in the failures array. Do not include
+code blocks or commentary."""

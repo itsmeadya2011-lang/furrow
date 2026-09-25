@@ -1,27 +1,28 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import contextlib
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.reporter import QueueReporter, drain_queue
 
 app = FastAPI(title="Furrow")
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
 async def index() -> HTMLResponse:
-    return HTMLResponse(content="""
+    return HTMLResponse(
+        content="""
 <!DOCTYPE html>
 <html>
 <head><title>Furrow</title></head>
@@ -37,7 +38,7 @@ async def index() -> HTMLResponse:
     const out = document.getElementById('out');
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
+      out.textContent = '';
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
@@ -46,7 +47,8 @@ async def index() -> HTMLResponse:
   </script>
 </body>
 </html>
-""")
+"""
+    )
 
 
 @app.websocket("/ws")
@@ -54,11 +56,32 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         data = await websocket.receive_json()
-        goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+    except WebSocketDisconnect:
+        return
+    goal = data.get("goal", "")
+    if not goal:
+        await websocket.send_text("Error: 'goal' is required")
+        await websocket.close()
+        return
+
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    reporter = QueueReporter(queue)
+    orchestrator = Orchestrator(goal=goal, reporter=reporter)
+    drain_task = asyncio.create_task(drain_queue(queue, websocket.send_text))
+
+    try:
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    finally:
+        # Flush anything still queued before tearing down the drain.
+        with contextlib.suppress(Exception):
+            while not queue.empty():
+                await websocket.send_text(queue.get_nowait())
+        drain_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain_task
+        await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
