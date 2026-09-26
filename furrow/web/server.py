@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from rich.console import Console
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,7 +15,22 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
+
+
+class WebSocketOutput:
+    def __init__(self, queue: asyncio.Queue) -> None:
+        self.queue = queue
+
+    def write(self, text: str) -> None:
+        if text.strip():
+            self.queue.put_nowait(text)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
 
 
 @app.get("/")
@@ -52,13 +66,28 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    sender_task: asyncio.Task | None = None
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        queue: asyncio.Queue = asyncio.Queue()
+        ws_console = Console(file=WebSocketOutput(queue), force_terminal=False)
+        orchestrator = Orchestrator(goal=goal, console=ws_console)
+
+        async def forward_to_websocket() -> None:
+            while True:
+                msg = await queue.get()
+                await websocket.send_text(msg)
+
+        sender_task = asyncio.create_task(forward_to_websocket())
         await orchestrator.run()
+        await websocket.send_text("Session complete.")
     except WebSocketDisconnect:
         pass
+    finally:
+        if sender_task is not None:
+            sender_task.cancel()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

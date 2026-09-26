@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -20,7 +21,7 @@ class TaskModel(BaseModel):
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
-    result: Optional[str] = None
+    result: str | None = None
 
 
 class Plan(BaseModel):
@@ -32,6 +33,7 @@ class TestResult(BaseModel):
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
+    __test__ = False
 
 
 class Settings(BaseSettings):
@@ -42,13 +44,27 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    llm_timeout: int = 60
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
 
 settings = Settings()
+
+
+def setup_logging(log_level: str = "INFO") -> None:
+    level = getattr(logging, str(log_level).upper(), logging.INFO)
+    logging.basicConfig(level=level)
+    structlog.configure(
+        processors=[
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.add_log_level,
+            structlog.dev.ConsoleRenderer(),
+        ],
+        cache_logger_on_first_use=True,
+    )
