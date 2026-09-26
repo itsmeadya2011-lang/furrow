@@ -5,7 +5,8 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
 
-Return JSON only (no markdown, no explanation) with this shape:
+Output ONLY valid JSON. Do not include any explanatory text, markdown, or code fences before or after the JSON. Keep task descriptions clear and specific.
+
 {
   "tasks": [
     {
@@ -35,7 +36,7 @@ TESTER_PROMPT = """You are a tester agent in an autonomous coding system called 
 
 Given the goal and test output, determine if tests passed or failed.
 
-Return JSON only (no markdown) with this shape:
+Output ONLY valid JSON, no markdown, no code fences.
 {
   "passed": true,
   "summary": "All tests passed",

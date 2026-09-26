@@ -45,9 +45,11 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
+    state_file: Path = Field(default_factory=lambda: Path.cwd() / ".furrow" / "state.json")
     log_level: str = "INFO"
 
 
