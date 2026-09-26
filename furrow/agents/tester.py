@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -12,19 +13,25 @@ from furrow.llm import LLMClient
 if TYPE_CHECKING:
     from furrow.config import Settings
 
+logger = structlog.get_logger("furrow.tester")
+
 
 class TesterAgent:
+    __test__ = False  # Not a pytest test class
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        logger.debug("running_tests", goal=goal)
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        logger.debug("analyzing_test_output")
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -53,6 +60,9 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
+            except OSError:
+                continue
+        logger.warning("no_test_runner_found")
         return "No test runner found."
