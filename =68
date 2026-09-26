@@ -1,0 +1,4 @@
+Requirement already satisfied: setuptools in /usr/local/lib/python3.10/dist-packages (84.0.0)
+Requirement already satisfied: wheel in /usr/local/lib/python3.10/dist-packages (0.48.0)
+Requirement already satisfied: packaging>=24.0 in /usr/local/lib/python3.10/dist-packages (from wheel) (26.3)
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
