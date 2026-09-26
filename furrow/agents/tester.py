@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -30,7 +29,28 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            # Fallback: infer pass/fail and extract failure lines from raw text
+            passed = "passed" in response.lower() and "fail" not in response.lower()
+            failures = self._extract_failures(response) if not passed else []
+            return TestResult(
+                passed=passed, summary=response[:500], failures=failures
+            )
+
+    @staticmethod
+    def _extract_failures(text: str) -> list[str]:
+        """Extract failure descriptions from raw LLM text when JSON parsing fails."""
+        lines = text.strip().splitlines() or [text.strip()]
+        failures: list[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if stripped and any(
+                keyword in stripped.lower()
+                for keyword in ("fail", "error", "traceback", "assert")
+            ):
+                failures.append(stripped)
+        if not failures and text.strip():
+            failures.append(text.strip()[:500])
+        return failures
 
     async def _run_tests(self) -> str:
         candidates = [
