@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
-
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -16,7 +13,8 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
+    max_cycles: int | None = None
 
 
 @app.get("/")
@@ -55,11 +53,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        settings = Settings()
+        if data.get("model"):
+            settings.model = data["model"]
+        if data.get("max_cycles"):
+            settings.max_cycles = data["max_cycles"]
+        orchestrator = Orchestrator(goal=goal, settings=settings)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
 
 
-def run(host: str = "0.0.0.0", port: int = 8000) -> None:
-    uvicorn.run(app, host=host, port=port)
+def run(host: str = "0.0.0.0", port: int = 8000, log_level: str = "info") -> None:
+    uvicorn.run(app, host=host, port=port, log_level=log_level)
