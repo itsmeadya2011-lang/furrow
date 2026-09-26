@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -11,6 +10,13 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+try:
+    import structlog
+
+    logger = structlog.get_logger(__name__)
+except ImportError:  # pragma: no cover
+    logger = None
 
 
 class TesterAgent:
@@ -22,15 +28,24 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            if logger:
+                logger.error("test_execution_error", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
+            if logger:
+                logger.info("test_result", passed=result.passed, summary=result.summary)
+            return result
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            # Fallback: try to infer pass/fail from the raw response text.
+            passed = "passed" in response.lower() and "fail" not in response.lower()
+            if logger:
+                logger.info("test_result_fallback", passed=passed)
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -53,6 +68,11 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                # Test runner binary not installed — try the next candidate.
+                continue
+            except Exception as e:
+                if logger:
+                    logger.warning("test_runner_error", command=cmd, error=str(e))
                 continue
         return "No test runner found."

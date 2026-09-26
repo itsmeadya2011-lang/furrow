@@ -1,11 +1,30 @@
 from __future__ import annotations
 
+import logging
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Configure structlog if available; otherwise fall back to stdlib logging.
+try:
+    import structlog
+
+    _log_level = os.getenv("FURROW_LOG_LEVEL", "INFO").upper()
+    structlog.configure(
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.dev.ConsoleRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(_log_level),
+        cache_logger_on_first_use=True,
+    )
+except ImportError:  # pragma: no cover
+    logging.basicConfig(level=os.getenv("FURROW_LOG_LEVEL", "INFO").upper())
 
 
 class Provider(str, Enum):
