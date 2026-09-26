@@ -41,6 +41,8 @@ class TesterAgent:
             ["yarn", "test", "--silent"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
+            ["ruff", "check", "."],
+            ["mypy", "furrow", "tests"],
         ]
         for cmd in candidates:
             try:
@@ -53,6 +55,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
         return "No test runner found."
