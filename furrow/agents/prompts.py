@@ -1,6 +1,6 @@
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
-Break the user's goal into 1-5 parallelizable tasks. Each task must be:
+Break the user's goal into parallelizable tasks (up to {max_parallel_tasks} tasks maximum per cycle). Each task must be:
 - Independent when possible
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
