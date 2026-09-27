@@ -29,6 +29,23 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+Return file operations as XML blocks. Use `<write>` for creating or fully
+replacing a file, and `<edit>` for targeted changes. Make sure paths are
+relative to the workspace root. Do not wrap the XML in markdown code fences.
+
+For example:
+<write path="src/utils.py">
+def hello():
+    print("hello")
+</write>
+
+<edit path="src/utils.py">
+<old>def hello():</old>
+<new>def hello(name: str = "world"):</new>
+</edit>
+
+Include a summary of what was done before the file operations.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
