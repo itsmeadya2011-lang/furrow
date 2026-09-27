@@ -1,4 +1,4 @@
+from furrow.config import Settings, get_logger
 from furrow.llm import LLMClient
-from furrow.config import Settings
 
-__all__ = ["LLMClient", "Settings"]
+__all__ = ["LLMClient", "Settings", "get_logger"]

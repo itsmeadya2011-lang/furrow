@@ -1,0 +1,6 @@
+#!/workspace/64b5f2dc-1bcb-407e-b26a-0216ac2acba8/sessions/agent_771b7fbb-c250-416c-b148-08e18e0282e6/.venv/bin/python
+import sys
+from _pytest.config import _console_main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(_console_main())
