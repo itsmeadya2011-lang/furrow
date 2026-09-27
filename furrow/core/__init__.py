@@ -1,3 +1,4 @@
 from furrow.core.orchestrator import Orchestrator
+from furrow.core.state import FurrowState
 
-__all__ = ["Orchestrator"]
+__all__ = ["FurrowState", "Orchestrator"]
