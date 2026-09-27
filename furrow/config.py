@@ -29,6 +29,7 @@ class Plan(BaseModel):
 
 
 class TestResult(BaseModel):
+    __test__ = False
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
@@ -48,6 +49,7 @@ class Settings(BaseSettings):
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
+    state_file: Path = Field(default_factory=lambda: Path.cwd() / ".furrow_state.json")
     log_level: str = "INFO"
 
 
