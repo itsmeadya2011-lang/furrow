@@ -2,20 +2,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
 from anthropic import AsyncAnthropic
+from anthropic.types import TextBlock
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+from furrow.config import settings as _default_settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or _default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -43,6 +43,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,7 +55,10 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        for block in response.content:
+            if isinstance(block, TextBlock):
+                return block.text
+        return ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -64,6 +69,21 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        async with httpx.AsyncClient() as http:
+            resp = await http.post(
+                f"{self.settings.ollama_base_url}/api/chat",
+                json={"model": model, "messages": messages, "stream": False},
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return data["message"]["content"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
