@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from typing import TYPE_CHECKING
 
+import structlog
+
+from furrow.agents.json_utils import parse_json_response
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = structlog.get_logger(__name__)
 
 
 class TesterAgent:
@@ -22,15 +25,20 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            logger.error("test_run_failed", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
-        try:
-            data = json.loads(response)
+        data = parse_json_response(response)
+        if data is not None:
             return TestResult(**data)
-        except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+        # Fallback: infer pass/fail from the response text.
+        return TestResult(
+            passed="passed" in response.lower(),
+            summary=response,
+            failures=[],
+        )
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -52,7 +60,8 @@ class TesterAgent:
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    await proc.wait()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
         return "No test runner found."
