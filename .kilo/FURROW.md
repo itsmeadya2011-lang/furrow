@@ -55,6 +55,7 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
-- Web UI for monitoring parallel agent activity.
+- [x] CLI and desktop wrappers for non-TUI interaction.
+- [x] Persistent state file for goal/task tracking across sessions (`furrow/core/state.py`).
+- [x] Web UI for monitoring parallel agent activity (`furrow/web/server.py`).
+- [ ] Retry logic with backoff for LLM calls and task execution.

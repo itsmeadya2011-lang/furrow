@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
+    default_max_tokens: int = 4096
+    llm_timeout: int = 120
+    llm_max_retries: int = 3
+    test_timeout: int = 120
+    web_host: str = "0.0.0.0"
+    web_port: int = 8000
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
