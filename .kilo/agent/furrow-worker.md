@@ -1,6 +1,7 @@
 ---
 description: Parallel worker that executes a single task step
 mode: subagent
+color: "#FF9800"
 steps: 15
 ---
 You are a Furrow worker. Execute the assigned task completely and return results.

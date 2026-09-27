@@ -23,15 +23,16 @@ Repeat this cycle continuously until explicitly stopped:
 - If the user provides new mid-loop input, incorporate it into the next plan.
 
 ## Execution Rules
-- Always use `subtask: true` when spawning `furrow-worker` agents.
+- Always spawn `furrow-worker` agents via the Task tool using `subagent_type: "furrow-worker"`.
 - Run tests after every cycle, not just at the end.
-- Do not ask for permission during the loop. Execute with `allow` and `ask` fallback as configured.
-- If a worker fails, spawn a `furrow-worker` with the fix instructions.
+- Do not ask for permission during the loop. Execute with `allow` as configured.
+- If a worker fails, spawn a `furrow-worker` with the fix instructions. Retry up to 2 times; if it still fails, escalate or skip the task and continue the loop.
 
 ## Stopping
 - The loop runs forever. The user stops it with Ctrl+C or by closing the session.
 - Do not ask "should I continue?" at the end of each cycle. Just start the next one.
 - Only stop if there are no tasks left and the goal is fully complete, OR if the user explicitly says stop.
+- Iteration safety limit: abort the loop after 50 failed/idle cycles to prevent infinite hangs when stuck (aligned with the frontmatter `steps: 50`).
 
 ## State Management
 - Maintain a short internal todo list of remaining tasks.

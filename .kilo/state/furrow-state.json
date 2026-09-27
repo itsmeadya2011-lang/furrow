@@ -1,0 +1,95 @@
+{
+  "_schema": "https://furrow.dev/schemas/furrow-state.1.json",
+  "_description": "Persistent state file for Furrow goal/task tracking across sessions. The orchestrator reads this on startup to resume a goal where a previous session left off. Located at .kilo/state/furrow-state.json. The six core fields are: currentGoal, cycleNumber, completedTasks, remainingTasks, lastUpdated, workerResults.",
+  "currentGoal": "Add JWT authentication to the API with password hashing, route protection, and unit tests",
+  "cycleNumber": 3,
+  "completedTasks": [
+    {
+      "id": "1",
+      "description": "Define JWT auth models and exception in src/auth/models.py",
+      "files": ["src/auth/models.py"],
+      "dependencies": [],
+      "priority": "high",
+      "status": "completed",
+      "result": "Created Token, TokenData models and JWTError exception. mypy and ruff pass.",
+      "cycle": 1
+    },
+    {
+      "id": "2",
+      "description": "Implement token create/verify service in src/auth/service.py",
+      "files": ["src/auth/service.py"],
+      "dependencies": ["1"],
+      "priority": "high",
+      "status": "completed",
+      "result": "Implemented create_access_token(), verify_token(), get_password_hash(), verify_password(). Tests pass.",
+      "cycle": 1
+    },
+    {
+      "id": "4",
+      "description": "Add password hashing utility in src/auth/hash.py",
+      "files": ["src/auth/hash.py"],
+      "dependencies": [],
+      "priority": "medium",
+      "status": "completed",
+      "result": "Created Hasher class wrapping passlib context. Covered by tests/test_auth_hash.py.",
+      "cycle": 2
+    }
+  ],
+  "remainingTasks": [
+    {
+      "id": "3",
+      "description": "Integrate auth dependency into FastAPI routes in src/api/deps.py and src/api/routes.py",
+      "files": ["src/api/deps.py", "src/api/routes.py"],
+      "dependencies": ["2"],
+      "priority": "high",
+      "status": "pending",
+      "result": null,
+      "cycle": 3
+    },
+    {
+      "id": "5",
+      "description": "Add unit tests for route protection and token flow in tests/test_api_auth.py",
+      "files": ["tests/test_api_auth.py"],
+      "dependencies": ["3"],
+      "priority": "medium",
+      "status": "pending",
+      "result": null,
+      "cycle": 3
+    }
+  ],
+  "lastUpdated": "2026-09-27T17:33:42Z",
+  "workerResults": [
+    {
+      "cycle": 1,
+      "taskId": "1",
+      "worker": "furrow-worker",
+      "status": "completed",
+      "summary": "Created JWT token models and exception class.",
+      "timestamp": "2026-09-27T17:10:30Z"
+    },
+    {
+      "cycle": 1,
+      "taskId": "2",
+      "worker": "furrow-worker",
+      "status": "completed",
+      "summary": "Implemented token service with create/verify and password hashing helpers.",
+      "timestamp": "2026-09-27T17:14:05Z"
+    },
+    {
+      "cycle": 2,
+      "taskId": "4",
+      "worker": "furrow-worker",
+      "status": "completed",
+      "summary": "Created password hashing utility; tests pass.",
+      "timestamp": "2026-09-27T17:22:18Z"
+    }
+  ],
+  "testResults": {
+    "cycle": 2,
+    "passed": true,
+    "summary": "8 passed, 0 failed",
+    "failures": [],
+    "lastRun": "2026-09-27T17:24:00Z"
+  },
+  "planRationale": "Cycle 3 fixes the route-protection integration (task 3) which depends on the auth service, then adds route-protection tests (task 5). Worker failed task 3 in the prior partial run with an ImportError on the service path; the import has been corrected in this plan."
+}
