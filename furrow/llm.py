@@ -2,15 +2,38 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
+import tenacity
+from anthropic import APIConnectionError as AnthropicAPIConnectionError
+from anthropic import APITimeoutError as AnthropicAPITimeoutError
 from anthropic import AsyncAnthropic
+from anthropic import InternalServerError as AnthropicInternalServerError
+from anthropic import OverloadedError as AnthropicOverloadedError
+from anthropic import RateLimitError as AnthropicRateLimitError
+from openai import APIConnectionError as OpenAIAPIConnectionError
+from openai import APITimeoutError as OpenAIAPITimeoutError
 from openai import AsyncOpenAI
+from openai import InternalServerError as OpenAIInternalServerError
+from openai import RateLimitError as OpenAIAPIRateLimitError
 
 from furrow.config import Provider, Settings, settings
+
+_RETRIABLE_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    httpx.HTTPError,
+    AnthropicAPIConnectionError,
+    AnthropicAPITimeoutError,
+    AnthropicInternalServerError,
+    AnthropicOverloadedError,
+    AnthropicRateLimitError,
+    OpenAIAPIConnectionError,
+    OpenAIAPITimeoutError,
+    OpenAIInternalServerError,
+    OpenAIAPIRateLimitError,
+    ConnectionError,
+    TimeoutError,
+)
 
 
 class LLMClient:
@@ -37,14 +60,42 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=1, max=10),
+        retry=tenacity.retry_if_exception_type(_RETRIABLE_EXCEPTIONS),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        payload = {"model": model, "messages": messages, "stream": False}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.settings.ollama_base_url}/api/chat",
+                json=payload,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+        message = data.get("message") or {}
+        content = message.get("content")
+        if content is None:
+            raise ValueError("Missing 'message.content' in Ollama response")
+        return content
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
