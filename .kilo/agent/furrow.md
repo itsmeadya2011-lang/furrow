@@ -35,5 +35,6 @@ Repeat this cycle continuously until explicitly stopped:
 
 ## State Management
 - Maintain a short internal todo list of remaining tasks.
+- Persist cycle state to `furrow-state.json` after each cycle for session recovery.
 - Update it after each cycle so the next iteration knows where to pick up.
 - If context becomes too large, compact yourself and continue.
