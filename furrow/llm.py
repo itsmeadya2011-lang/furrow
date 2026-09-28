@@ -1,16 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+# Exceptions that are transient and worth retrying.
+_RETRYABLE = (TimeoutError, asyncio.TimeoutError, ConnectionError)
 
 
 class LLMClient:
@@ -37,12 +46,27 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(_RETRYABLE),
+        reraise=True,
+    )
+    async def complete(
+        self, prompt: str, system: str = "", model: str | None = None
+    ) -> str:
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_anthropic(
+                prompt, system, model or self.settings.model
+            )
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_openai(
+                prompt, system, model or self.settings.model
+            )
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(
+                prompt, system, model or self.settings.ollama_model
+            )
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -59,11 +83,32 @@ class LLMClient:
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {
+                    "role": "system",
+                    "content": system or "You are a helpful coding assistant.",
+                },
                 {"role": "user", "content": prompt},
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        """Generate a completion via a local Ollama server."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+            "stream": False,
+        }
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{self.settings.ollama_base_url}/api/generate",
+                json=payload,
+                timeout=120,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        return data.get("response", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
