@@ -1,0 +1,11 @@
+# Python artifacts (Kilo scanner ignore list)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+
+# Kilo Agent Manager local state
+agent-manager.json
