@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
+import re
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,13 +14,18 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
-@app.get("/")
-async def index() -> HTMLResponse:
-    return HTMLResponse(content="""
-<!DOCTYPE html>
+_RICH_MARKUP_RE = re.compile(r"\[/?(?:[a-zA-Z0-9_ \-]|#[0-9a-fA-F]{3,8}){1,60}\]")
+
+
+def _to_plain(msg: str) -> str:
+    text = _RICH_MARKUP_RE.sub("", msg)
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+INDEX_HTML = """<!DOCTYPE html>
 <html>
 <head><title>Furrow</title></head>
 <body>
@@ -31,6 +34,7 @@ async def index() -> HTMLResponse:
     <input id="goal" placeholder="Enter goal" required />
     <button type="submit">Start</button>
   </form>
+  <p><a href="/health">health</a></p>
   <pre id="out"></pre>
   <script>
     const form = document.getElementById('form');
@@ -39,14 +43,24 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
-      ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onmessage = (ev) => out.textContent += ev.data;
+      ws.onclose = () => out.textContent += '\\n[closed]\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
 </body>
 </html>
-""")
+"""
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.get("/")
+async def index() -> HTMLResponse:
+    return HTMLResponse(content=INDEX_HTML)
 
 
 @app.websocket("/ws")
@@ -55,10 +69,27 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def ws_output(msg: str) -> None:
+            plain = _to_plain(msg) + "\n"
+            try:
+                await websocket.send_text(plain)
+            except Exception:  # noqa: BLE001,S110  # client may have disconnected
+                pass
+
+        orchestrator = Orchestrator(goal=goal, output=ws_output)
         await orchestrator.run()
+        try:
+            await websocket.send_text("\n[closed]\n")
+        except Exception:  # noqa: BLE001,S110  # client may have disconnected
+            pass
     except WebSocketDisconnect:
         pass
+    except Exception as e:  # noqa: BLE001
+        try:
+            await websocket.send_text(f"\n[error] {e}\n")
+        except Exception:  # noqa: BLE001,S110
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

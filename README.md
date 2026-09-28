@@ -1,18 +1,129 @@
 # Furrow
 
-Autonomous coding agent with an infinite parallel development loop.
+An autonomous coding agent with an infinite plan → parallel-execute → test → fix
+loop. A single goal is broken into parallelizable tasks, each executed by an
+LLM-powered worker that uses real tools (read/write/edit files, run commands),
+then a tester runs the project's test suite and an LLM judges the results. If
+tests fail, the goal is rewritten to "Fix failing tests" and the loop repeats
+until tests pass or the cycle budget is exhausted.
 
 ## Install
 
 ```bash
-pip install furrow
+pip install -e ".[dev]"
 ```
 
 ## Usage
 
+### CLI
+
 ```bash
-furrow start "Add JWT auth to the API"
-furrow web
+furrow start "Add JWT authentication to the API"
+furrow web        # serve the FastAPI web UI on http://localhost:8000
 ```
 
-Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in your environment.
+`start` runs the orchestrator directly in the terminal and prints a live
+trace. `web` serves a small web UI (form + live output) at `http://localhost:8000`.
+
+### Web UI
+
+Open `http://localhost:8000` in a browser, enter a goal, and watch the loop
+stream progress line-by-line over a WebSocket at `/ws`. A `GET /health`
+endpoint reports `200 {"status": "ok"}`.
+
+## Architecture
+
+```
+CLI / Web  -->  Orchestrator.run()
+                      |
+                 cycle N (plan -> parallel workers -> test)
+          +-------------+-------------+
+          |             |             |
+   PlannerAgent   WorkerAgent(s)  TesterAgent
+          |             |             |
+      LLMClient    LLMClient +   LLMClient +
+                   ToolRunner     pytest -> LLM judge
+```
+
+- **PlannerAgent** — receives the goal, asks the LLM to return a `Plan`
+  (a list of `TaskModel`s with `id`, `description`, `files`, `dependencies`),
+  parsed as strict JSON.
+- **WorkerAgent** — runs an LLM *tool-use loop*: each turn it calls
+  `LLMClient.complete_with_tools` using the shared `ToolRunner` to actually
+  read/write/edit files and run commands. It keeps going (up to `max_turns=20`)
+  until the model stops emitting tool calls, then returns a summary. Workers
+  run in parallel, bounded by `max_parallel_tasks`.
+- **TesterAgent** — detects and runs the project's test command (`pytest`,
+  `npm/pnpm/yarn test`, `cargo test`, `go test`), then asks the LLM to judge
+  pass/fail and return a `TestResult`.
+- **Orchestrator** — owns the loop:
+  1. `PlannerAgent.plan(goal)` → `Plan`
+  2. Run all `WorkerAgent`s in parallel (semaphore-bounded by
+     `max_parallel_tasks`)
+  3. `TesterAgent.run(goal, tasks)` → `TestResult`
+  4. If tests pass → done. If tests fail → rewrite goal to
+     `Fix failing tests:\n<failures>` and loop again.
+  5. Stops when tests pass, no tasks are planned, or `max_cycles` is reached.
+
+Every step logs through `structlog`; the LLM API calls are retried with
+`tenacity` (exponential backoff, 3 attempts).
+
+## Tools
+
+All file/command operations go through a single provider-agnostic
+`furrow/tools.py`:
+
+| Tool | Description |
+| --- | --- |
+| `read_file(path)` | Read a file's full contents. |
+| `write_file(path, content)` | Write/overwrite a file (creates parent dirs). |
+| `edit_file(path, old_string, new_string)` | Replace first occurrence of `old_string`. |
+| `list_files(path=".")` | JSON list of files under `path` (recursive). |
+| `run_command(command, timeout=60)` | Run a shell command in the workspace. |
+
+The worker is given these tool schemas and may call them in any order across
+turns.
+
+## Configuration
+
+All settings are read from environment variables with the `FURROW_` prefix.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `FURROW_PROVIDER` | `anthropic` | `anthropic` \| `openai` \| `ollama` |
+| `FURROW_MODEL` | `claude-sonnet-4-20250514` | Default model |
+| `FURROW_PLANNER_MODEL` | `claude-3-5-haiku-20241022` | Planner model |
+| `FURROW_WORKER_MODEL` | `claude-3-5-sonnet-20241022` | Worker model |
+| `FURROW_TESTER_MODEL` | `claude-3-5-sonnet-20241022` | Tester model |
+| `FURROW_ANTHROPIC_API_KEY` | env `ANTHROPIC_API_KEY` | Anthropic key |
+| `FURROW_OPENAI_API_KEY` | env `OPENAI_API_KEY` | OpenAI key |
+| `FURROW_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
+| `FURROW_MAX_PARALLEL_TASKS` | `5` | Parallel worker cap |
+| `FURROW_MAX_CYCLES` | `0` | Max plan/test cycles (`0` = unlimited) |
+| `FURROW_WORKSPACE` | current dir | Workspace root for the agents |
+| `FURROW_LOG_LEVEL` | `INFO` | Logging verbosity |
+
+Create a `.env` file in the workspace to set variables without exporting them.
+
+## Development
+
+```bash
+pytest            # run the test suite
+ruff check . && ruff format --check .   # lint + format
+mypy furrow       # type check
+```
+
+## Project layout
+
+```
+furrow/
+  __init__.py      # exports LLMClient, Settings
+  config.py        # Provider, TaskModel, Plan, TestResult, Settings
+  llm.py           # LLMClient (+ ToolCall, CompletionResult)
+  tools.py         # ToolRunner + TOOL_SCHEMAS
+  cli/main.py      # `furrow start` / `furrow web`
+  core/orchestrator.py
+  agents/          # planner.py, worker.py, tester.py, prompts.py
+  web/server.py    # FastAPI app, index, /ws, /health
+tests/             # pytest suite (no API keys required)
+```
