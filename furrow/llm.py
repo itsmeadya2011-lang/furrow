@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
@@ -18,6 +17,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +37,24 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        if self._ollama is None:
+            # Ollama exposes an OpenAI-compatible HTTP API; no real API key is required.
+            self._ollama = AsyncOpenAI(
+                base_url=f"{self.settings.ollama_base_url}/v1",
+                api_key="ollama",
+            )
+        return self._ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -56,7 +68,15 @@ class LLMClient:
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
+        return await self._chat_complete(self.openai, prompt, system, model)
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        return await self._chat_complete(self.ollama, prompt, system, model)
+
+    async def _chat_complete(
+        self, client: AsyncOpenAI, prompt: str, system: str, model: str
+    ) -> str:
+        response = await client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},

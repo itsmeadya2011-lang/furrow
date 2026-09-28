@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -14,8 +14,16 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        workspace: str | Path | None = None,
+    ) -> None:
         self.client = client or LLMClient(settings=settings)
+        if workspace is None:
+            workspace = self.client.settings.workspace
+        self.workspace = Path(workspace)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -42,10 +50,14 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        cwd = str(self.workspace)
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
@@ -53,6 +65,10 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                # Runner not installed; try the next candidate.
+                continue
+            except OSError:
+                # Other OS-level failure (e.g. permission) — try the next candidate.
                 continue
         return "No test runner found."

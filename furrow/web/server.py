@@ -55,7 +55,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def report(message: str) -> None:
+            try:
+                await websocket.send_json({"type": "log", "message": message})
+            except WebSocketDisconnect:
+                raise
+            except Exception:
+                # Any other send failure means the socket is no longer usable; stop the loop.
+                raise WebSocketDisconnect
+
+        orchestrator = Orchestrator(goal=goal, on_progress=report)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass

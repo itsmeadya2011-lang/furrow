@@ -24,7 +24,11 @@ def start(goal: str | None, model: str | None) -> None:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
         from furrow.config import settings
+        # Override every model field so the flag actually affects planning, working, and testing.
         settings.model = model
+        settings.planner_model = model
+        settings.worker_model = model
+        settings.tester_model = model
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:
