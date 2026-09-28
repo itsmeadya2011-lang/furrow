@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,7 +20,7 @@ class TaskModel(BaseModel):
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
-    result: Optional[str] = None
+    result: str | None = None
 
 
 class Plan(BaseModel):
@@ -42,13 +42,19 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
+    ollama_model: str = "llama3"
     ollama_base_url: str = "http://localhost:11434"
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 0  # 0 = unlimited
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+
+def get_log_level(level: str) -> int:
+    """Convert a log level string to a logging constant."""
+    return getattr(logging, level.upper(), logging.INFO)
 
 
 settings = Settings()
