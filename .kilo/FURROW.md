@@ -58,3 +58,33 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
+
+## Architecture Details
+
+### LLM Client (`furrow/llm.py`)
+- **Providers:** Anthropic, OpenAI, and Ollama (via HTTP API).
+- **Tool-calling:** `LLMClient` exposes a `run_tool_loop()` method that repeatedly
+  calls the LLM with a list of `Tool` objects until no more tool calls are requested.
+  Each `Tool` has a name, description, JSON-schema parameters, and an async function
+  backing implementation.
+- Built-in tools available to workers: `read_file`, `write_file`, `list_files`,
+  `run_command`.
+
+### Orchestrator (`furrow/core/orchestrator.py`)
+- **Cycle:** Plan → Execute (parallel workers) → Test → decide whether to continue.
+- **Termination:** The loop stops when the goal is complete (all tasks done and
+  tests pass) or when `max_cycles` is reached (0 = unlimited).
+- **State:** Tracks `current_plan` across cycles for introspection. Failed tests
+  trigger a focused retry cycle with an updated goal.
+
+### Worker (`furrow/agents/worker.py`)
+- Receives a single task and runs a tool-calling loop using the shared `LLMClient`.
+- Exposes file-system and command-execution tools backed by `LLMClient` methods.
+
+### Tester (`furrow/agents/tester.py`)
+- Runs the project's test suite (pytest, npm, cargo, go, etc.) in the workspace
+  directory and delegates pass/fail evaluation to the LLM.
+
+### Settings (`furrow/config.py`)
+- All configuration via environment variables with `FURROW_` prefix or `.env` file.
+- `max_cycles` controls the loop limit (0 = unlimited).

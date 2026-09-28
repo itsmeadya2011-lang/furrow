@@ -26,7 +26,7 @@ def start(goal: str | None, model: str | None) -> None:
         from furrow.config import settings
         settings.model = model
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, settings=settings).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)
