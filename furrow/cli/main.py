@@ -7,8 +7,10 @@ import click
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import configure, get_logger
 
 console = Console()
+logger = get_logger("furrow.cli")
 
 
 @click.group()
@@ -20,13 +22,16 @@ def main() -> None:
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
 def start(goal: str | None, model: str | None) -> None:
+    from furrow.config import settings
+
+    configure(settings.log_level)
+    logger.debug("furrow_start", goal=goal, model=model)
+    if model:
+        settings.model = model
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    if model:
-        from furrow.config import settings
-        settings.model = model
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, settings=settings).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)
@@ -34,7 +39,11 @@ def start(goal: str | None, model: str | None) -> None:
 
 @main.command()
 def web() -> None:
+    from furrow.config import settings
+
+    configure(settings.log_level)
     from furrow.web.server import run
+
     run()
 
 
