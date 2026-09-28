@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -14,6 +14,10 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
+    """Runs tests and evaluates whether they pass via the LLM."""
+
+    TEST_TIMEOUT = 120
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
@@ -21,16 +25,27 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        prompt = (
+            f"Goal: {goal}\n\n"
+            f"Completed tasks:\n"
+            + "\n".join(f"- [{t.id}] {t.description}: {t.result or ''}" for t in tasks)
+            + f"\n\nTest output:\n{test_output}\n"
+        )
+        response = await self.client.complete(
+            prompt, system=TESTER_PROMPT, model=self.client.settings.tester_model
+        )
         try:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(
+                passed="passed" in response.lower(),
+                summary=response,
+                failures=[],
+            )
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -43,16 +58,25 @@ class TesterAgent:
             ["go", "test", "./..."],
         ]
         for cmd in candidates:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
-                continue
+            output = await self._try_run(cmd)
+            if output is not None:
+                return output
         return "No test runner found."
+
+    async def _try_run(self, cmd: list[str]) -> str | None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError:
+            return None
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.TEST_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+                await asyncio.wait_for(proc.wait(), timeout=5)
+            return None
+        return stdout.decode() + stderr.decode()
