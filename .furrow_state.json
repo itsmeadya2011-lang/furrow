@@ -1,0 +1,16 @@
+{
+  "goal": "Fix failing tests:\nerr",
+  "cycles": 2,
+  "tasks": [
+    {
+      "id": "1",
+      "description": "Task",
+      "files": [],
+      "dependencies": [],
+      "status": "completed",
+      "result": "done"
+    }
+  ],
+  "last_test_passed": false,
+  "complete": false
+}

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
+import re
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,7 +14,7 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -52,13 +50,24 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+
+    async def broadcast(message: str) -> None:
+        clean = re.sub(r"\[/?[a-z]+(?:\[[^\]]*\][^\]]*)?\]", "", message).strip()
+        await websocket.send_text(clean)
+
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        orchestrator = Orchestrator(goal=goal, message_callback=broadcast)
         await orchestrator.run()
+        await websocket.send_json({"type": "done", "complete": True})
     except WebSocketDisconnect:
         pass
+    except Exception as e:  # noqa: BLE001 - surface unexpected websocket errors to the client
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:  # noqa: BLE001, S110 - best-effort: client likely already gone
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

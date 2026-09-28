@@ -5,10 +5,13 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+import httpx
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
 
@@ -16,12 +19,15 @@ from furrow.config import Provider, Settings, settings
 class LLMClient:
     def __init__(self, settings: Settings = settings) -> None:
         self.settings = settings
-        self._anthropic: AsyncAnthropic | None = None
-        self._openai: AsyncOpenAI | None = None
+        self._anthropic: Any = None
+        self._openai: Any = None
+        self._httpx: httpx.AsyncClient | None = None
 
     @property
-    def anthropic(self) -> AsyncAnthropic:
+    def anthropic(self) -> Any:
         if self._anthropic is None:
+            from anthropic import AsyncAnthropic
+
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
@@ -29,20 +35,35 @@ class LLMClient:
         return self._anthropic
 
     @property
-    def openai(self) -> AsyncOpenAI:
+    def openai(self) -> Any:
         if self._openai is None:
+            from openai import AsyncOpenAI
+
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def httpx_client(self) -> httpx.AsyncClient:
+        if self._httpx is None:
+            self._httpx = httpx.AsyncClient(timeout=60.0)
+        return self._httpx
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(Exception),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -64,6 +85,22 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        body = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+        }
+        response = await self.httpx_client.post(
+            f"{self.settings.ollama_base_url.rstrip('/')}/api/generate",
+            json=body,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if "response" in data:
+            return data["response"]
+        return data.get("choices", [{}])[0].get("text", "") if isinstance(data.get("choices"), list) else ""
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
