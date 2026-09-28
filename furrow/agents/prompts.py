@@ -24,10 +24,18 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+The contents of the files relevant to the task will be provided in this prompt
+as context, each marked with "--- File: path ---". Read these file contents
+carefully before making any changes. If a file does not exist,
+"[File does not exist]" will appear instead of its contents.
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return ONLY a JSON response (no markdown, no explanation) with these fields:
+  - "status": either "completed" or "failed"
+  - "summary": a concise description of what was done
+  - "changes": a list of objects, each with "file" and "description" keys
 - Do not spawn subagents.
 """
 

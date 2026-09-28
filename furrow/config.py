@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+import structlog
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -45,10 +47,36 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    host: str = "0.0.0.0"
+    port: int = 8000
 
 
 settings = Settings()
+
+
+def configure_logging() -> None:
+    level = logging.getLevelName(settings.log_level.upper())
+    if not isinstance(level, int):
+        level = logging.INFO
+    structlog.configure(
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.format_exc_info,
+            (
+                structlog.processors.ConsoleRenderer()
+                if level <= logging.DEBUG
+                else structlog.processors.JSONRenderer()
+            ),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(level),
+    )
+
+
+def setup_logging() -> Any:
+    return structlog.get_logger()
