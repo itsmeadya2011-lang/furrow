@@ -6,6 +6,7 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import Provider, settings
 from furrow.core.orchestrator import Orchestrator
 
 console = Console()
@@ -19,14 +20,23 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
+@click.option(
+    "--provider",
+    type=click.Choice([p.value for p in Provider], case_sensitive=False),
+    default=None,
+    help="LLM provider (anthropic, openai, ollama)",
+)
+@click.option("--max-cycles", type=int, default=None, help="Max development cycles (0 = unlimited)")
+def start(goal: str | None, model: str | None, provider: str | None, max_cycles: int | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
-        from furrow.config import settings
         settings.model = model
+    if provider:
+        settings.provider = Provider(provider)
+    cycles = max_cycles if max_cycles is not None else settings.max_cycles
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, max_cycles=cycles).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)

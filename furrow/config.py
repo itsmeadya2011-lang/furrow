@@ -28,6 +28,14 @@ class Plan(BaseModel):
     rationale: str
 
 
+class State(BaseModel):
+    goal: str
+    cycles: int = 0
+    max_cycles: int = 0
+    tasks: list[TaskModel] = Field(default_factory=list)
+    failures: list[str] = Field(default_factory=list)
+
+
 class TestResult(BaseModel):
     passed: bool
     summary: str
@@ -52,3 +60,32 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+DEFAULT_STATE_PATH: Path = Path.cwd() / ".furrow" / "state.json"
+
+
+def state_path(workspace: Path | None = None) -> Path:
+    ws = workspace if workspace is not None else Path.cwd()
+    path = ws / ".furrow" / "state.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def load_state(workspace: Path | None = None) -> State:
+    path = state_path(workspace)
+    try:
+        data = path.read_text()
+    except FileNotFoundError:
+        return State()
+    if not data.strip():
+        return State()
+    try:
+        return State.model_validate_json(data)
+    except (ValueError, TypeError):
+        return State()
+
+
+def save_state(state: State, workspace: Path | None = None) -> None:
+    path = state_path(workspace)
+    path.write_text(state.model_dump_json())

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 import uvicorn
@@ -55,10 +54,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        if not goal:
+            await websocket.send_json({"type": "error", "message": "No goal provided"})
+            return
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        async for update in orchestrator.run_stream():
+            await websocket.send_json(update)
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
