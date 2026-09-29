@@ -1,0 +1,6 @@
+#!/workspace/64b5f2dc-1bcb-407e-b26a-0216ac2acba8/sessions/agent_4cecc254-6a91-47a9-b5d1-8b24b69d73a2/.venv/bin/python3
+import sys
+from mypy.dmypy.client import console_entry
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(console_entry())

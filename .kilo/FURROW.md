@@ -58,3 +58,13 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
+
+## Python Library (`furrow/` package)
+A programmatic implementation of the loop for non-TUI use (`furrow start`, `furrow web`).
+It mirrors the agent loop in Python:
+
+- `furrow.core.orchestrator.Orchestrator` runs the plan → execute (parallel) → test cycle, honoring
+  `max_cycles`, `max_parallel_tasks`, and a test-passed gate before halting.
+- `furrow.llm.LLMClient` abstracts Anthropic / OpenAI / Ollama behind one `complete()` call, with
+  exponential backoff retries (`tenacity`) and configurable `max_tokens` / `request_timeout`.
+- Config is sourced from `FURROW_` env vars / `.env` (`furrow.config.Settings`).

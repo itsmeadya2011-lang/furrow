@@ -18,13 +18,17 @@ def main() -> None:
 
 @main.command()
 @click.argument("goal", required=False)
-@click.option("--model", default=None, help="Override LLM model")
+@click.option("--model", default=None, help="Override LLM model for all agents")
 def start(goal: str | None, model: str | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
         from furrow.config import settings
+
         settings.model = model
+        settings.planner_model = model
+        settings.worker_model = model
+        settings.tester_model = model
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:
