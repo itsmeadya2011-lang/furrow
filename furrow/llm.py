@@ -2,22 +2,26 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from anthropic import AnthropicError, AsyncAnthropic
+from openai import APIError, AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings if settings is not None else Settings()
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,27 +41,76 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        if self._ollama is None:
+            # Ollama exposes an OpenAI-compatible chat endpoint. No real API key
+            # is required, but the client still needs a non-empty token.
+            self._ollama = AsyncOpenAI(
+                base_url=self.settings.ollama_base_url, api_key="ollama"
+            )
+        return self._ollama
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((AnthropicError, APIError)),
+        reraise=True,
+    )
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        max_tokens: int | None = None,
+    ) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_anthropic(prompt, system, model, max_tokens)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_openai(prompt, system, model, max_tokens)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model, max_tokens)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_anthropic(
+        self, prompt: str, system: str, model: str, max_tokens: int | None
+    ) -> str:
         response = await self.anthropic.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=max_tokens or 4096,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # Anthropic returns a list of content blocks; the first is the text
+        # block for a plain message. Use getattr to satisfy type stubs that
+        # union non-text blocks (thinking/tool-use/etc.) here.
+        block = response.content[0]
+        text = getattr(block, "text", None)
+        if text is None:
+            text = str(block)
+        return text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_openai(
+        self, prompt: str, system: str, model: str, max_tokens: int | None
+    ) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
+            max_tokens=max_tokens,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
+    async def _complete_ollama(
+        self, prompt: str, system: str, model: str, max_tokens: int | None
+    ) -> str:
+        response = await self.ollama.chat.completions.create(
+            model=model,
+            max_tokens=max_tokens,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
