@@ -14,12 +14,19 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
 
 
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TaskModel(BaseModel):
     id: str
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
+    status: str = TaskStatus.PENDING
     result: Optional[str] = None
 
 
@@ -49,6 +56,12 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    # LLM retry configuration
+    retry_max_attempts: int = 3
+    retry_wait_min: float = 1.0
+    retry_wait_max: float = 10.0
+    # Optional override for the test command (empty = auto-detect)
+    test_command: Optional[str] = None
 
 
 settings = Settings()

@@ -9,8 +9,25 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+from furrow.logging import get_logger
+
+logger = get_logger("furrow.llm")
+
+# Exceptions that indicate transient failures worth retrying
+_RETRYABLE_EXC = (
+    anthropic.AnthropicError,
+    openai.APIError,
+    openai.APIConnectionError,
+    openai.RateLimitError,
+)
 
 
 class LLMClient:
@@ -39,6 +56,7 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.debug("LLM.complete", provider=self.settings.provider, model=model)
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -46,7 +64,30 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    def _retry_config(self):
+        """Build a tenacity retry config from settings."""
+        return list(
+            AsyncRetrying(
+                reraise=True,
+                retry=retry_if_exception_type(_RETRYABLE_EXC),
+                stop=stop_after_attempt(self.settings.retry_max_attempts),
+                wait=wait_exponential(
+                    multiplier=self.settings.retry_wait_min,
+                    max=self.settings.retry_wait_max,
+                ),
+            )
+        )
+
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+        retry_chain = self._retry_config()
+        retry_chain.append(self._do_anthropic(prompt, system, model))
+        async for attempt in retry_chain:
+            if isinstance(attempt, Exception):
+                logger.warning("Anthropic retry exhausted", error=str(attempt))
+                raise attempt
+            return attempt
+
+    async def _do_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=4096,
@@ -56,6 +97,15 @@ class LLMClient:
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+        retry_chain = self._retry_config()
+        retry_chain.append(self._do_openai(prompt, system, model))
+        async for attempt in retry_chain:
+            if isinstance(attempt, Exception):
+                logger.warning("OpenAI retry exhausted", error=str(attempt))
+                raise attempt
+            return attempt
+
+    async def _do_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
