@@ -7,10 +7,14 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -18,6 +22,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +42,27 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        if self._ollama is None:
+            self._ollama = AsyncOpenAI(api_key="ollama", base_url=f"{self.settings.ollama_base_url}/v1")
+        return self._ollama
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=4, max=10),
+        retry=retry_if_exception_type(Exception),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.info("complete", provider=self.settings.provider, model=model)
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,17 +85,30 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        response = await self.ollama.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("read_file", path=str(path))
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("write_file", path=str(path), content_len=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
+        logger.debug("list_files", directory=str(directory))
         p = Path(directory)
         if not p.exists():
             return []
