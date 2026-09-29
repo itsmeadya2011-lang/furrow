@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import structlog
+
 from furrow.agents.prompts import PLANNER_PROMPT
 from furrow.config import Plan
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = structlog.get_logger(__name__)
 
 
 class PlannerAgent:
@@ -22,4 +26,5 @@ class PlannerAgent:
             data = json.loads(response)
             return Plan(**data)
         except (json.JSONDecodeError, ValueError) as e:
+            logger.error("plan_parse_failed", error=str(e), response=response[:200])
             raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
