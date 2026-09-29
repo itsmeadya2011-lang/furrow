@@ -11,9 +11,17 @@ from furrow.core.orchestrator import Orchestrator
 console = Console()
 
 
+def _init_logging() -> None:
+    """Configure logging as early as possible, before any real work happens."""
+    from furrow.config import settings
+    from furrow.logging import setup_logging
+
+    setup_logging(settings.log_level)
+
+
 @click.group()
 def main() -> None:
-    pass
+    _init_logging()
 
 
 @main.command()

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -21,7 +20,7 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tester must stay robust to any failure
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -33,6 +32,9 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        output_parts: list[tuple[str, str]] = []
+
+        # Run tests
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -42,6 +44,7 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        test_output = None
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -49,10 +52,43 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    test_output = stdout.decode() + stderr.decode()
+                    break
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except Exception:  # noqa: BLE001, S112 — best-effort: try next runner
                 continue
-        return "No test runner found."
+        if test_output is None:
+            test_output = "No test runner found."
+        output_parts.append(("TESTS", test_output))
+
+        # Lint (ruff) — only if available
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ruff", "check", ".",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                output_parts.append(("LINT", stdout.decode() + stderr.decode()))
+            except asyncio.TimeoutError:
+                proc.kill()
+        except Exception:  # noqa: BLE001, S110 — ruff not available; skip
+            pass
+
+        # Type check (mypy) — only if available
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "mypy", "furrow/",
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                output_parts.append(("TYPE CHECK", stdout.decode() + stderr.decode()))
+            except asyncio.TimeoutError:
+                proc.kill()
+        except Exception:  # noqa: BLE001, S110 — mypy not available; skip
+            pass
+
+        return "\n\n".join(f"=== {name} ===\n{content}" for name, content in output_parts)

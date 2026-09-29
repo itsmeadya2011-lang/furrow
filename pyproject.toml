@@ -46,3 +46,9 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "BLE001", "S110", "S112"]
+
+[tool.mypy]
+ignore_missing_imports = true
