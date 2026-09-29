@@ -34,6 +34,15 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class CycleState(BaseModel):
+    """State tracked across orchestration cycles."""
+    cycle: int = 0
+    goal: str = ""
+    tasks: list[TaskModel] = Field(default_factory=list)
+    completed_goals: list[str] = Field(default_factory=list)
+    test_history: list[TestResult] = Field(default_factory=list)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
@@ -42,13 +51,17 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
+    ollama_model: str = "llama3.2:latest"
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 0  # 0 = unlimited
     workspace: Path = Field(default_factory=Path.cwd)
+    state_file: Path = Field(default_factory=lambda: Path(".furrow-state.json"))
     log_level: str = "INFO"
+    request_timeout: float = 120.0
+    max_retries: int = 3
 
 
 settings = Settings()
