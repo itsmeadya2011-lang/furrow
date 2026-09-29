@@ -49,6 +49,11 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    lint_command: list[str] = Field(default_factory=lambda: ["ruff", "check", "."])
+    type_check_command: list[str] = Field(default_factory=lambda: ["mypy", "."])
+    lint_enabled: bool = True
+    type_check_enabled: bool = True
+    test_timeout: int = 120
 
 
 settings = Settings()
