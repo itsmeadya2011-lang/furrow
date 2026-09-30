@@ -4,11 +4,13 @@ import asyncio
 import sys
 
 import click
+import structlog
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator
 
 console = Console()
+logger = structlog.get_logger()
 
 
 @click.group()
@@ -25,15 +27,18 @@ def start(goal: str | None, model: str | None) -> None:
     if model:
         from furrow.config import settings
         settings.model = model
+    logger.info("cli.start", goal=goal, model=model)
     try:
         asyncio.run(Orchestrator(goal=goal).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
+        logger.info("cli.stop", reason="keyboard")
         sys.exit(0)
 
 
 @main.command()
 def web() -> None:
+    logger.info("cli.web.start")
     from furrow.web.server import run
     run()
 
