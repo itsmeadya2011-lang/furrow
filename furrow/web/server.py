@@ -13,6 +13,8 @@ from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
 
+_STOP_SENTINEL = "__FURROW_STOP__"
+
 
 class StartRequest(BaseModel):
     goal: str
@@ -52,11 +54,53 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    queue: asyncio.Queue[str] = asyncio.Queue()
+    drain_task: Optional[asyncio.Task] = None
+
+    async def _drain() -> None:
+        while True:
+            msg = await queue.get()
+            if msg is _STOP_SENTINEL:
+                break
+            try:
+                await websocket.send_text(msg)
+            except WebSocketDisconnect:
+                break
+
+    drain_task = asyncio.create_task(_drain())
+
+    def on_output(msg: str) -> None:
+        queue.put_nowait(msg)
+
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        orch_settings = Settings()
+        if model:
+            orch_settings.model = model
+            orch_settings.planner_model = model
+            orch_settings.worker_model = model
+            orch_settings.tester_model = model
+
+        orchestrator = Orchestrator(
+            goal=goal, settings=orch_settings, output_callback=on_output
+        )
         await orchestrator.run()
+    except WebSocketDisconnect:
+        if drain_task is not None:
+            drain_task.cancel()
+            try:
+                await drain_task
+            except asyncio.CancelledError:
+                pass
+        return
+
+    queue.put_nowait(_STOP_SENTINEL)
+    await drain_task
+    try:
+        await websocket.close()
     except WebSocketDisconnect:
         pass
 
