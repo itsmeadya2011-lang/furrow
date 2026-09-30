@@ -27,7 +27,15 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- To write or modify a file, emit its FULL new contents inside a sentinel-block
+  using this exact format:
+    ===FURROW_FILE: <path>===
+    <full new file contents>
+    ===FURROW_END===
+  You may return as many of these blocks as you need, and you may include
+  explanatory text before, between, or after the blocks. Only file contents
+  wrapped in these sentinels are written to disk. Return the COMPLETE new
+  contents of each file (a full file, not a diff or a partial snippet).
 - Do not spawn subagents.
 """
 

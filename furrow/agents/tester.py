@@ -2,37 +2,46 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-from typing import TYPE_CHECKING
+import logging
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import Settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
-if TYPE_CHECKING:
-    from furrow.config import Settings
+logger = logging.getLogger("furrow")
 
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+        self.client = client or LLMClient(settings=settings or Settings())
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
+        returncode = 0
         try:
-            test_output = await self._run_tests()
-        except Exception as e:
+            test_output, returncode = await self._run_tests()
+        except Exception as e:  # noqa: BLE001 — defensive: test execution must never crash the loop
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+
+        passed = returncode == 0
+        failures: list[str] = []
+        if returncode != 0:
+            failures.append(f"Test runner exited with non-zero status: {returncode}")
+
+        summary = response
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            passed = passed and bool(data.get("passed", False))
+            summary = data.get("summary", response)
+            failures.extend(data.get("failures", []))
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = passed and ("passed" in response.lower())
+        return TestResult(passed=passed, summary=summary, failures=failures)
 
-    async def _run_tests(self) -> str:
+    async def _run_tests(self) -> tuple[str, int]:
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -47,12 +56,15 @@ class TesterAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+            except OSError as e:
+                logger.warning("Failed to launch test runner %s: %s", cmd[0], e)
+                continue
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+                return stdout.decode() + stderr.decode(), proc.returncode or 0
+            except asyncio.TimeoutError:
+                proc.kill()
+                continue
+        return "No test runner found.", -1
