@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -12,25 +13,50 @@ from furrow.llm import LLMClient
 if TYPE_CHECKING:
     from furrow.config import Settings
 
+logger = structlog.get_logger(__name__)
+
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        logger.info("starting_test_execution", goal=goal, num_tasks=len(tasks))
+
         test_output = ""
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            logger.error("test_execution_failed", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        task_descriptions = "\n".join(
+            f"  - Task {t.id}: {t.description}" for t in tasks
+        )
+        prompt = (
+            f"{TESTER_PROMPT}\n\nGoal: {goal}\n\n"
+            f"Tasks:\n{task_descriptions}\n\n"
+            f"Test output:\n{test_output}\n"
+        )
+        response = await self.client.complete(
+            prompt, model=self.client.settings.tester_model
+        )
+
+        result: TestResult
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            result = TestResult(
+                passed="passed" in response.lower(), summary=response, failures=[]
+            )
+
+        if not result.passed:
+            logger.warning("tests_failed", summary=result.summary, failures=result.failures)
+        else:
+            logger.info("tests_passed", summary=result.summary)
+
+        return result
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -53,6 +79,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
         return "No test runner found."
