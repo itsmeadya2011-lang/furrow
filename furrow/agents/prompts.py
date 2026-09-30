@@ -25,10 +25,15 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 Your job is to implement the assigned task completely and concisely.
 
 Rules:
-- Work only on the assigned task. Do not refactor unrelated code.
+- Work only on the files listed in the task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
+- Return ONLY valid JSON (you may wrap it in ```json ... ``` fences, which will be stripped). Do not include any other text.
+- The JSON must have this shape:
+  {"files": [{"path": "<relative file path>", "content": "<full new/updated file content>"}], "summary": "<concise summary of changes>"}
+- For each file you list, provide the FULL file content (not a diff or patch).
+- Only include files that belong to this task.
+
+If you cannot complete the task as described, still return valid JSON with a summary explaining the issue.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
