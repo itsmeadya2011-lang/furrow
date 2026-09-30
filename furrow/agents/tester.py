@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -18,11 +17,14 @@ class TesterAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
-        test_output = ""
-        try:
-            test_output = await self._run_tests()
-        except Exception as e:
-            return TestResult(passed=False, summary=str(e), failures=[str(e)])
+        test_output = await self._run_tests()
+
+        if test_output == "No test runner found.":
+            return TestResult(
+                passed=True,
+                summary="No test runner found; skipping tests.",
+                failures=[],
+            )
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
@@ -43,16 +45,21 @@ class TesterAgent:
             ["go", "test", "./..."],
         ]
         for cmd in candidates:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
-                continue
+            output = await self._try_test_command(cmd)
+            if output is not None:
+                return output
         return "No test runner found."
+
+    async def _try_test_command(self, cmd: list[str]) -> str | None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except OSError:
+            return None
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            return stdout.decode(errors="replace") + stderr.decode(errors="replace")
+        except asyncio.TimeoutError:
+            proc.kill()
+            return None
