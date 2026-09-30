@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -14,6 +13,13 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
+    """Subagent that runs tests and verifies results.
+
+    ``__test__ = False`` prevents pytest from collecting this as a test class.
+    """
+
+    __test__ = False
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
@@ -21,7 +27,9 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — safety net for unexpected errors
+            # _run_tests handles its own known errors, but guard against
+            # anything else so the loop can continue with a failure report.
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -53,6 +61,10 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                # The command (e.g. ``cargo``) isn't installed on this system.
+                continue
+            except OSError:
+                # Permissions, I/O, or other OS-level error – try next candidate.
                 continue
         return "No test runner found."

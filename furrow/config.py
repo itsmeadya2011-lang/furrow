@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,7 +19,7 @@ class TaskModel(BaseModel):
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
-    result: Optional[str] = None
+    result: str | None = None
 
 
 class Plan(BaseModel):
@@ -29,6 +28,14 @@ class Plan(BaseModel):
 
 
 class TestResult(BaseModel):
+    """Result of running the test suite.
+
+    ``__test__ = False`` prevents pytest from trying to collect this as a
+    test class (its name starts with ``Test``).
+    """
+
+    __test__ = False
+
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
@@ -42,8 +49,8 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
