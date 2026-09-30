@@ -1,4 +1,4 @@
+from furrow.config import FileEdit, Settings, WorkerResult
 from furrow.llm import LLMClient
-from furrow.config import Settings
 
-__all__ = ["LLMClient", "Settings"]
+__all__ = ["FileEdit", "LLMClient", "Settings", "WorkerResult"]
