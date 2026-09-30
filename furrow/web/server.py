@@ -1,27 +1,25 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
-
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import logger
 
 app = FastAPI(title="Furrow")
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
 async def index() -> HTMLResponse:
-    return HTMLResponse(content="""
+    return HTMLResponse(
+        content="""
 <!DOCTYPE html>
 <html>
 <head><title>Furrow</title></head>
@@ -46,19 +44,29 @@ async def index() -> HTMLResponse:
   </script>
 </body>
 </html>
-""")
+"""
+    )
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    log = logger.bind(client=websocket.client)
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        if not goal:
+            await websocket.send_text("Error: goal is required")
+            return
+        log.info("web_session_started", goal=goal)
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
+        log.info("web_session_completed")
     except WebSocketDisconnect:
-        pass
+        log.info("websocket_disconnected")
+    except Exception as e:
+        log.error("web_session_error", error=str(e))
+        await websocket.send_text(f"Error: {e}")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
