@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import structlog
+from anthropic import APIError as AnthropicAPIError
 from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, OpenAIError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger()
 
 
 class LLMClient:
@@ -18,6 +20,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +40,31 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        if self._ollama is None:
+            api_key = self.settings.openai_api_key or "ollama"
+            self._ollama = AsyncOpenAI(
+                base_url=self.settings.ollama_base_url + "/v1",
+                api_key=api_key,
+            )
+        return self._ollama
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((AnthropicAPIError, OpenAIError)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.info("completing", provider=self.settings.provider, model=model)
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,6 +75,7 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        logger.debug("response received", provider=Provider.ANTHROPIC)
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
@@ -63,6 +86,18 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
+        logger.debug("response received", provider=Provider.OPENAI)
+        return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        response = await self.ollama.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        logger.debug("response received", provider=Provider.OLLAMA)
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from rich.console import Console
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,13 +15,27 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
+
+
+class _WSOutputStream:
+    """File-like object that forwards writes to a WebSocket via an asyncio Queue."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
+
+    def write(self, text: str) -> int:
+        if text:
+            self.queue.put_nowait(text)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
 
 
 @app.get("/")
 async def index() -> HTMLResponse:
-    return HTMLResponse(content="""
-<!DOCTYPE html>
+    return HTMLResponse(content='''<!DOCTYPE html>
 <html>
 <head><title>Furrow</title></head>
 <body>
@@ -45,8 +58,7 @@ async def index() -> HTMLResponse:
     };
   </script>
 </body>
-</html>
-""")
+</html>''')
 
 
 @app.websocket("/ws")
@@ -55,10 +67,37 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        ws_stream = _WSOutputStream()
+        ws_console = Console(file=ws_stream, force_terminal=False, no_color=True, width=120)
+
+        async def _drain_output() -> None:
+            while True:
+                text = await ws_stream.queue.get()
+                await websocket.send_text(text)
+
+        async def _run_orchestrator() -> None:
+            orchestrator = Orchestrator(goal=goal, console=ws_console)
+            await orchestrator.run()
+
+        drain_task = asyncio.create_task(_drain_output())
+        orch_task = asyncio.create_task(_run_orchestrator())
+
+        try:
+            await asyncio.gather(orch_task, drain_task)
+        finally:
+            orch_task.cancel()
+            drain_task.cancel()
+            for t in (orch_task, drain_task):
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+
     except WebSocketDisconnect:
         pass
+    except Exception as e:  # noqa: BLE001
+        await websocket.send_text(f"\nError: {e}\n")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
