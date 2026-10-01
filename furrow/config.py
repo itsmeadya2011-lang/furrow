@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -34,6 +34,20 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class FileEdit(BaseModel):
+    file: str
+    operation: Literal["create", "edit", "delete"]
+    old: Optional[str] = None
+    new: Optional[str] = None
+    content: Optional[str] = None
+
+
+class TaskResult(BaseModel):
+    summary: str
+    edits: list[FileEdit] = Field(default_factory=list)
+    issues: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
@@ -47,6 +61,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    max_retries: int = 3
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 

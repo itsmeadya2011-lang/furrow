@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from starlette.websockets import WebSocketState
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -55,10 +54,32 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def send_progress(message: str) -> None:
+            try:
+                if websocket.application_state != WebSocketState.CONNECTED:
+                    return
+                await websocket.send_text(message)
+            except Exception:
+                pass
+
+        orchestrator = Orchestrator(goal=goal, on_progress=send_progress)
         await orchestrator.run()
+        await websocket.send_text("Furrow finished.")
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"[red]Error: {e}[/red]")
+        except Exception:
+            pass
+    finally:
+        await websocket.close()
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
