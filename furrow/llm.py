@@ -1,21 +1,51 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+
+logger = logging.getLogger(__name__)
+
+# Exception types that should trigger a retry on LLM calls.
+_RETRYABLE_ERRORS = (
+    anthropic.APIError,
+    openai.APIError,
+)
+
+# Retry configuration shared across all provider implementations.
+_RETRY_DECORATOR = retry(
+    retry=retry_if_exception_type(_RETRYABLE_ERRORS),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+)
+
+_OLLAMA_RETRY = retry(
+    retry=retry_if_exception_type((httpx.HTTPError, httpx.RequestError)),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+    stop=stop_after_attempt(3),
+)
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        from furrow.config import settings as default_settings
+
+        self.settings = settings or default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -43,9 +73,12 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @_RETRY_DECORATOR
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -53,8 +86,13 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # The first content block is typically a TextBlock with a .text attribute.
+        for block in response.content:
+            if block.type == "text":
+                return block.text
+        return response.content[0].text if hasattr(response.content[0], "text") else ""
 
+    @_RETRY_DECORATOR
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -65,9 +103,31 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    @_OLLAMA_RETRY
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        """Complete a prompt using an Ollama server.
+
+        Ollama does not require an API key. The base URL is configurable
+        via ``settings.ollama_base_url`` (default ``http://localhost:11434``).
+        """
+        model_name = model.replace("ollama/", "") if model.startswith("ollama/") else model
+        async with httpx.AsyncClient(
+            base_url=self.settings.ollama_base_url, timeout=120
+        ) as http:
+            payload = {
+                "model": model_name,
+                "prompt": prompt,
+                "system": system or "You are a helpful coding assistant.",
+                "stream": False,
+            }
+            resp = await http.post("/api/generate", json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            return str(data.get("response", ""))
+
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
-            return await f.read()
+            return str(await f.read())
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
