@@ -43,3 +43,26 @@ Return JSON only (no markdown) with this shape:
 }
 
 If tests failed, list each failure in the failures array."""
+
+EDIT_WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
+
+Your job is to implement the assigned task by producing structured file edits that will be applied directly to disk.
+
+Return JSON ONLY (no markdown, no explanation) with this exact shape:
+{
+  "edits": [
+    {
+      "file": "relative/path/to/file.py",
+      "content": "Full file content after editing"
+    }
+  ],
+  "summary": "Brief description of what changed and why"
+}
+
+Rules:
+- Include the FULL file content (not diffs) for each file you edit.
+- Only edit files that need changing. Do not create unnecessary files.
+- If a file does not exist yet, the content will be written as a new file.
+- Be conservative: only change files you are confident about.
+- If no edits are needed, return {"edits": [], "summary": "<explanation>"}.
+"""
