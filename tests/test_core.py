@@ -1,4 +1,4 @@
-import pytest
+"""Backward-compatible core tests (kept for existing API surface)."""
 from furrow.config import Plan, TaskModel, TestResult
 
 
