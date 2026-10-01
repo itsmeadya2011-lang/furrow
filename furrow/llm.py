@@ -37,11 +37,21 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        # Reuse the OpenAI client — Ollama exposes an OpenAI-compatible API.
+        if self._openai is None:
+            self._openai = AsyncOpenAI(
+                api_key="ollama",
+                base_url=self.settings.ollama_base_url.rstrip("/") + "/v1",
+            )
+        return self._openai
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
+        elif self.settings.provider in (Provider.OPENAI, Provider.OLLAMA):
             return await self._complete_openai(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
