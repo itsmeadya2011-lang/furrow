@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+log = structlog.get_logger(__name__)
 
 
 class TesterAgent:
@@ -21,7 +24,8 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
+            log.error("test_runner_error", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -30,7 +34,23 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            # Robust fallback: only treat as passed if the response explicitly
+            # says "passed": true / "false" rather than substring matching.
+            lowered = response.lower()
+            if '"passed"' in lowered:
+                passed = "true" in lowered.split('"passed"')[1][:20]
+            elif "all tests passed" in lowered:
+                passed = True
+            elif "tests failed" in lowered or "tests failed:" in lowered:
+                passed = False
+            else:
+                passed = False
+            log.warning(
+                "tester_json_parse_fallback",
+                passed=passed,
+                response_preview=response[:200],
+            )
+            return TestResult(passed=passed, summary=response[:500], failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -52,7 +72,11 @@ class TesterAgent:
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    log.warning("test_command_timeout", command=" ".join(cmd))
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                continue
+            except Exception as e:  # noqa: BLE001
+                log.warning("test_command_error", command=" ".join(cmd), error=str(e))
                 continue
         return "No test runner found."
