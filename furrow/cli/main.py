@@ -22,11 +22,10 @@ def main() -> None:
 def start(goal: str | None, model: str | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    if model:
-        from furrow.config import settings
-        settings.model = model
+    from furrow.config import Settings
+    local_settings = Settings(model=model) if model else Settings()
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, settings=local_settings).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)

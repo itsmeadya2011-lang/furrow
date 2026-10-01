@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-from pathlib import Path
-from typing import Any
 
 from rich.console import Console
 from rich.panel import Panel
@@ -14,23 +10,28 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, Settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(self, goal: str, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.goal = goal
         self.client = client or LLMClient()
+        self.settings = settings or Settings()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._tasks: list[TaskModel] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            if self.settings.max_cycles > 0 and self.cycles >= self.settings.max_cycles:
+                console.print(f"[bold cyan]Reached max_cycles ({self.settings.max_cycles}). Stopping.[/bold cyan]")
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
@@ -40,6 +41,7 @@ class Orchestrator:
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self._tasks = plan.tasks
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -84,5 +86,5 @@ class Orchestrator:
             return True
         return False
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+    def _get_tasks(self) -> list[TaskModel]:
+        return self._tasks
