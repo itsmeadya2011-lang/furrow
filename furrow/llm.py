@@ -7,10 +7,19 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -18,6 +27,8 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._max_tokens: int = 4096
+        self._max_retries: int = 3
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,32 +48,62 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        self._max_tokens = max_tokens or 4096
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
+        retry_exceptions = (anthropic.APIError, openai.APIError)
+
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(self._max_retries),
+            wait=wait_exponential(multiplier=2, min=1, max=30),
+            retry=retry_if_exception_type(retry_exceptions),
+            reraise=True,
+        ):
+            with attempt:
+                if self.settings.provider == Provider.ANTHROPIC:
+                    return await self._complete_anthropic(prompt, system, model, temperature)
+                elif self.settings.provider == Provider.OPENAI:
+                    return await self._complete_openai(prompt, system, model, temperature)
+                else:
+                    raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_anthropic(
+        self, prompt: str, system: str, model: str, temperature: float | None
+    ) -> str:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "max_tokens": self._max_tokens,
+            "system": system or "You are a helpful coding assistant.",
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        response = await self.anthropic.messages.create(**kwargs)
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
+    async def _complete_openai(
+        self, prompt: str, system: str, model: str, temperature: float | None
+    ) -> str:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
-        )
+        }
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+
+        response = await self.openai.chat.completions.create(**kwargs)
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:

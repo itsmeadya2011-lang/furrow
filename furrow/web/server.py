@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
+import logging
+from contextlib import suppress
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -11,12 +11,14 @@ from pydantic import BaseModel
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
+logger = logging.getLogger(__name__)
+
 app = FastAPI(title="Furrow")
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -55,10 +57,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        custom_settings: Settings | None = None
+        if model:
+            custom_settings = Settings()
+            custom_settings.model = model
+
+        async def send_to_client(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator = Orchestrator(
+            goal=goal,
+            settings=custom_settings,
+            output_sink=send_to_client,
+        )
         await orchestrator.run()
+        await websocket.send_text("\n[Connection closing...]")
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.exception("websocket_error")
+        try:
+            await websocket.send_text(f"\n[Error: {e}]")
+        except Exception:
+            logger.debug("failed_to_send_error_response", exc_info=True)
+    finally:
+        with suppress(Exception):
+            await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
