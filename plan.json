@@ -1,0 +1,35 @@
+{
+  "tasks": [
+    {
+      "id": "1",
+      "description": "Fix the broken infinite loop in Orchestrator: persist/accumulate TaskModel state across cycles so _get_tasks() returns real tasks and _is_done() works; enforce settings.max_cycles in run(); limit parallel workers with settings.max_parallel_tasks via asyncio.Semaphore; accept an injectable `console` parameter (defaulting to the module Console) so output can be redirected by the web layer.",
+      "files": ["furrow/core/orchestrator.py"],
+      "dependencies": []
+    },
+    {
+      "id": "2",
+      "description": "Add real tool-calling support to LLMClient: a new chat(tools=..., messages=...) method returning text plus tool_use calls (implemented for both Anthropic tool_use and OpenAI tool calling), keep complete() for backward compat, and implement the previously-unimplemented Provider.OLLAMA path using AsyncOpenAI with ollama_base_url.",
+      "files": ["furrow/llm.py"],
+      "dependencies": []
+    },
+    {
+      "id": "3",
+      "description": "Create furrow/tools.py with a ToolRegistry providing four JSON-schemas tools the LLM can invoke: read_file, write_file, list_files, and run_bash. Each tool exposes name, description, input_schema and an async execute(args) handler performing the real filesystem/shell action.",
+      "files": ["furrow/tools.py"],
+      "dependencies": []
+    },
+    {
+      "id": "4",
+      "description": "Upgrade WorkerAgent to an agentic loop: instead of a single complete() text summary, call client.chat(tools=tool_registry.schemas(), messages=...) repeatedly, execute any tool_use calls via ToolRegistry, append results back to the message list, and stop when the model emits a final answer summarizing the changes.",
+      "files": ["furrow/agents/worker.py"],
+      "dependencies": []
+    },
+    {
+      "id": "5",
+      "description": "Fix web WebSocket streaming (server.py): build a Rich Console writing to the websocket and pass it into Orchestrator so the browser receives live output instead of stdout-only Rich panels; clean up TesterAgent (tester.py) redundant except (FileNotFoundError, Exception) and improve test-runner detection; extend tests/test_core.py with tests for orchestrator task state/cycle logic, config provider/Ollama settings, and ToolRegistry schema dispatch.",
+      "files": ["furrow/web/server.py", "furrow/agents/tester.py", "tests/test_core.py"],
+      "dependencies": []
+    }
+  ],
+  "rationale": "The most critical defect is the orchestrator loop (task 1): _get_tasks() returns [] so _is_done() is always True and the agent halts after one cycle, with max_cycles/max_parallel_tasks dead. Tasks 2-4 deliver the core value prop (workers that can actually read/write files and run commands) via LLM tool-calling + a ToolRegistry, which is prerequisite for any real code implementation. Task 5 restores the broken web preview, tidies the tester, and adds meaningful test coverage. All five task file-sets are disjoint for parallel safety and each is implementable in 1-3 tool-call rounds. Two cross-task interface assumptions are safe because every referenced file is edited within the same planning cycle: worker.py imports ToolRegistry from furrow.tools and uses client.chat(...) (defined in tasks 3 and 2); server.py passes a console to Orchestrator (defined in task 1)."
+}

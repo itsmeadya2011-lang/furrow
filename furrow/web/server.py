@@ -7,8 +7,8 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from rich.console import Console
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -17,6 +17,28 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+class _WSWriter:
+    """File-like sink that forwards Rich console output to a WebSocket client."""
+
+    def __init__(self, websocket: WebSocket) -> None:
+        self._ws = websocket
+        self._loop = asyncio.get_running_loop()
+
+    def write(self, s: str) -> int:
+        if s:
+            self._loop.create_task(self._send(s))
+        return len(s)
+
+    def flush(self) -> None:
+        pass
+
+    async def _send(self, s: str) -> None:
+        try:
+            await self._ws.send_text(s)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 @app.get("/")
@@ -55,8 +77,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        ws_console = Console(
+            file=_WSWriter(websocket),
+            force_terminal=False,
+            highlight=False,
+            width=120,
+        )
+        orchestrator = Orchestrator(goal=goal, console=ws_console)
         await orchestrator.run()
+        await websocket.send_text("\n[stream ended]\n")
     except WebSocketDisconnect:
         pass
 
