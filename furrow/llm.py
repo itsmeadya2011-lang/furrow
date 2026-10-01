@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
+
+_API_KEY_RE = re.compile(r"sk-[A-Za-z0-9]{8,}|[A-Fa-f0-9]{32,}")
+
+
+def _sanitize(text: object) -> str:
+    return _API_KEY_RE.sub("[REDACTED]", str(text))
 
 
 class LLMClient:
@@ -18,6 +25,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -26,6 +34,7 @@ class LLMClient:
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
             self._anthropic = AsyncAnthropic(api_key=api_key)
+            logger.debug("anthropic_client_created")
         return self._anthropic
 
     @property
@@ -35,14 +44,34 @@ class LLMClient:
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
             self._openai = AsyncOpenAI(api_key=api_key)
+            logger.debug("openai_client_created")
         return self._openai
 
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        if self._ollama is None:
+            base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
+            self._ollama = AsyncOpenAI(base_url=base_url, api_key="ollama")
+            logger.debug("ollama_client_created", base_url=base_url)
+        return self._ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
+        if model is None:
+            if self.settings.provider == Provider.OLLAMA:
+                model = self.settings.ollama_model
+            else:
+                model = self.settings.model
+        logger.debug(
+            "complete",
+            provider=self.settings.provider,
+            model=_sanitize(model),
+        )
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,14 +94,25 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("complete_ollama", model=model)
+        response = await self.ollama.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response.choices[0].message.content or ""
+
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
+        async with aiofiles.open(path, "r", encoding="utf-8") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
+        async with aiofiles.open(p, "w", encoding="utf-8") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:

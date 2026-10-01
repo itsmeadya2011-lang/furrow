@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -11,6 +12,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = structlog.get_logger(__name__)
 
 
 class TesterAgent:
@@ -20,8 +23,10 @@ class TesterAgent:
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
         try:
+            logger.info("running_tests", goal=goal)
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
+            logger.error("test_run_failed", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -47,12 +52,15 @@ class TesterAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
+                timeout = self.client.settings.task_timeout
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    logger.info("test_command_completed", command=" ".join(cmd))
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
+                    logger.warning("test_timeout", command=" ".join(cmd), timeout=timeout)
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except Exception:  # noqa: S112, BLE001
                 continue
         return "No test runner found."
