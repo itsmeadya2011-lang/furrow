@@ -1,22 +1,25 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from furrow import configure_logging
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+
+logger = structlog.get_logger(__name__)
 
 app = FastAPI(title="Furrow")
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -41,6 +44,7 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onerror = (ev) => { out.textContent += '\\nError: ' + ev.message + '\\n'; };
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -55,11 +59,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        if not goal:
+            await websocket.send_json({"type": "error", "message": "No goal provided"})
+            return
+        settings = Settings()
+        if data.get("model"):
+            settings.model = data["model"]
+        orchestrator = Orchestrator(goal=goal, settings=settings)
         await orchestrator.run()
+        await websocket.send_json({"type": "complete", "message": "Furrow run finished"})
     except WebSocketDisconnect:
-        pass
+        logger.info("WebSocket disconnected")
+    except asyncio.CancelledError:
+        logger.info("WebSocket task cancelled")
+        raise
+    except Exception as e:  # noqa: BLE001 - top-level websocket handler reports errors to client
+        logger.error("WebSocket error", error=str(e))
+        await websocket.send_json({"type": "error", "message": str(e)})
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    configure_logging()
+    logger.info("Starting Furrow web server", host=host, port=port)
     uvicorn.run(app, host=host, port=port)

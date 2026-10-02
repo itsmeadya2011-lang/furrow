@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -12,33 +13,45 @@ from furrow.llm import LLMClient
 if TYPE_CHECKING:
     from furrow.config import Settings
 
+logger = structlog.get_logger(__name__)
+
 
 class TesterAgent:
+    """Agent that runs the test suite and reports results."""
+
+    __test__ = False
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        logger.info("Running tests", goal=goal, task_count=len(tasks))
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except (OSError, asyncio.TimeoutError) as e:
+            logger.error("Test runner error", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
+            logger.info("Test result parsed", passed=result.passed)
+            return result
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "passed" in response.lower()
+            logger.warning("Failed to parse test result JSON, using fallback", passed=passed)
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
-            ["npm", "test", "--", "--silent"],
-            ["pnpm", "test", "--", "--silent"],
-            ["yarn", "test", "--silent"],
+            ["npm", "test"],
+            ["pnpm", "test"],
+            ["yarn", "test"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
@@ -52,7 +65,10 @@ class TesterAgent:
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
+                    logger.warning("Test runner timed out", command=" ".join(cmd))
                     continue
-            except (FileNotFoundError, Exception):
+            except OSError:
+                logger.debug("Test runner not available", command=cmd[0])
                 continue
+        logger.warning("No test runner found")
         return "No test runner found."
