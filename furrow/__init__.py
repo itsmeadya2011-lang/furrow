@@ -1,4 +1,4 @@
-from furrow.llm import LLMClient
 from furrow.config import Settings
+from furrow.llm import CompletionResult, LLMClient, ToolCall
 
-__all__ = ["LLMClient", "Settings"]
+__all__ = ["CompletionResult", "LLMClient", "Settings", "ToolCall"]
