@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
 name = "furrow"
@@ -46,3 +46,44 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Stale copies of the package produced by `setup.py build` / `pip install .`;
+# they are build output, not source, and drift from the files under furrow/.
+extend-exclude = ["build"]
+
+[tool.ruff.lint]
+# Deliberate, opinionated-but-sane rule set. Without an explicit `select` here
+# plain `ruff check .` only ran the default E4,E7,E9,F, so different people
+# passed different ad-hoc `--select` flags and reported wildly different counts.
+#
+# S (bandit), BLE, TRY and N are intentionally NOT selected: this codebase uses
+# broad `except Exception` and `try/except/pass` as deliberate policy (a broken
+# observer or a failed test run must be reported, never raised or silently
+# skipped), and enforcing those families produces noise, not quality.
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RET", "ARG"]
+
+[tool.ruff.lint.per-file-ignores]
+# server.py embeds the whole single-page console (HTML + CSS + JS) in one raw
+# string literal. Those long lines are markup, not Python; reflowing them to
+# fit Python's line budget would only change what the browser renders. E501 is
+# ignored for this file only, every other rule still applies.
+"furrow/web/server.py" = ["E501"]
+# Test doubles must mirror production signatures exactly, so an unused parameter
+# there is structural rather than a defect. Renaming one to `_`-prefix to satisfy
+# ARG actively breaks the suite: production passes `model=` as a keyword argument,
+# so renaming `model` to `_model` breaks binding outright.
+"tests/*" = ["ARG"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["furrow"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+# The third-party SDKs this project calls (anthropic, openai, tenacity) ship no
+# type information, so their attribute access is unchecked rather than `Any`-ed
+# away by hand-written stubs that would drift.
+ignore_missing_imports = true
+exclude = ["^tests/"]
