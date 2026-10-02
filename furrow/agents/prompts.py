@@ -29,6 +29,8 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+- Use the provided file tools to read, write, and edit files in the workspace.
+- When the task is complete, emit a "done" tool call with a summary.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
@@ -42,4 +44,6 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure as a separate item in the failures array with
+enough detail to understand what went wrong and how to fix it.
+Be precise about which test cases failed and why."""

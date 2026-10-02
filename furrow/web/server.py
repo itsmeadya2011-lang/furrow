@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from contextlib import suppress
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,12 +15,13 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
 async def index() -> HTMLResponse:
-    return HTMLResponse(content="""
+    return HTMLResponse(
+        content="""
 <!DOCTYPE html>
 <html>
 <head><title>Furrow</title></head>
@@ -46,7 +46,8 @@ async def index() -> HTMLResponse:
   </script>
 </body>
 </html>
-""")
+"""
+    )
 
 
 @app.websocket("/ws")
@@ -55,10 +56,36 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        model = data.get("model")
+
+        if model:
+            from furrow.config import settings
+
+            settings.model = model
+
+        async def send_progress(message: str) -> None:
+            with suppress(WebSocketDisconnect):
+                await websocket.send_text(message)
+
+        orchestrator = Orchestrator(goal=goal, progress_callback=send_progress)
+
+        # Run the orchestrator, periodically flushing progress
+        task = asyncio.create_task(orchestrator.run())
+
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            await send_progress(f"[error] {e}")
+
+        await websocket.close()
     except WebSocketDisconnect:
         pass
+    except Exception as e:  # noqa: BLE001
+        with suppress(WebSocketDisconnect):
+            await websocket.send_text(f"[error] {e}")
+        await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
