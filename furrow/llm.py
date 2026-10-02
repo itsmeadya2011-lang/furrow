@@ -5,17 +5,35 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
+import structlog
 from anthropic import AsyncAnthropic
+from anthropic.types import TextBlock
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+from furrow.config import settings as _default_settings
+
+logger = structlog.get_logger()
+
+# Transient errors that warrant a retry (rate limits, timeouts, 5xx).
+_RETRYABLE_EXC = (
+    httpx.HTTPStatusError,
+    httpx.RequestError,  # connection refused, DNS failure, etc.
+    TimeoutError,
+)
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None, *, max_retries: int = 3) -> None:
+        self.settings = settings or _default_settings
+        self.max_retries = max_retries
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -39,12 +57,24 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+        provider = self.settings.provider
+        logger.debug("llm_complete", provider=provider.value, model=model)
+
+        retryer = AsyncRetrying(
+            stop=stop_after_attempt(self.max_retries),
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            retry=retry_if_exception_type(_RETRYABLE_EXC),
+            reraise=True,
+        )
+
+        if provider == Provider.ANTHROPIC:
+            return await retryer(self._complete_anthropic, prompt, system, model)
+        elif provider == Provider.OPENAI:
+            return await retryer(self._complete_openai, prompt, system, model)
+        elif provider == Provider.OLLAMA:
+            return await retryer(self._complete_ollama, prompt, system, model)
         else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            raise ValueError(f"Unsupported provider: {provider}")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
@@ -53,7 +83,10 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        content_block = response.content[0]
+        if isinstance(content_block, TextBlock):
+            return content_block.text
+        return ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -64,6 +97,30 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        """Call Ollama's native `/api/chat` endpoint.
+
+        Ollama is served on ``Settings.ollama_base_url`` (default
+        ``http://localhost:11434``).  Unlike Anthropic/OpenAI, Ollama returns
+        the full response in a single request (unless streaming is requested).
+        """
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=60) as http_client:
+            resp = await http_client.post(
+                f"{self.settings.ollama_base_url.rstrip('/')}/api/chat",
+                json=payload,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data["message"]["content"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

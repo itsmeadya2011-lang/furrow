@@ -27,6 +27,11 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
+- If you create or modify files, wrap each file's full content in blocks:
+  [[FILE: path/to/file.py]]
+  <full file content>
+  [[END]]
+  Place all file blocks before your summary.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
 """

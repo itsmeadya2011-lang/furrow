@@ -44,7 +44,25 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
   command/
     furrow.md          # /furrow slash command
 kilo.json              # Project config (default agent = furrow, open permissions)
+furrow/                # Python package (CLI + programmatic orchestrator)
+  cli/main.py          # CLI entry point
+  core/orchestrator.py # Python orchestrator (plan → execute → test → repeat)
+  core/state.py        # Persistent state save/load
+  agents/              # Planner, Worker, Tester Python agents
+  llm.py               # Async LLM client (Anthropic/OpenAI/Ollama + retry)
+  web/server.py        # FastAPI + WebSocket server
+  config.py            # Pydantic settings
 ```
+
+## Configuration
+Settings are configurable via environment variables (prefixed `FURROW_`) or a `.env` file:
+- `provider` — `anthropic` | `openai` | `ollama` (default: `anthropic`)
+- `model`, `planner_model`, `worker_model`, `tester_model`
+- `max_cycles` — max development cycles (0 = unlimited)
+- `max_parallel_tasks` — concurrent worker tasks (default: 5)
+- `ollama_base_url` — Ollama API URL
+- `state_file` — path to the JSON state file (default: `.furrow-state.json`)
+- `log_level` — logging verbosity
 
 ## Permissions
 Open by default: `bash: allow`, `edit: allow`, `read: allow`.
@@ -55,6 +73,5 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
-- Web UI for monitoring parallel agent activity.
+- Desktop wrapper for non-TUI interaction.
+- Web UI for monitoring parallel agent activity (web server is functional; richer dashboard planned).

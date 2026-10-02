@@ -1,27 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import json
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
+logger = structlog.get_logger()
 app = FastAPI(title="Furrow")
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
 async def index() -> HTMLResponse:
-    return HTMLResponse(content="""
+    return HTMLResponse(
+        content="""
 <!DOCTYPE html>
 <html>
 <head><title>Furrow</title></head>
@@ -46,19 +48,65 @@ async def index() -> HTMLResponse:
   </script>
 </body>
 </html>
-""")
+"""
+    )
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    logger.info("websocket_connected")
+
+    task: asyncio.Task | None = None
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+
+        if not goal:
+            await websocket.send_text(json.dumps({"error": "No goal provided"}))
+            await websocket.close()
+            return
+
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        async def ws_handler(line: str) -> None:
+            """Forward orchestrator output to the WebSocket client."""
+            try:
+                await websocket.send_text(line)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("websocket_send_failed", error=str(e))
+
+        orchestrator.set_output_handler(ws_handler)
+
+        # Run the orchestrator; cancel cleanly if the client disconnects.
+        task = asyncio.create_task(orchestrator.run())
+        await task
+
+        await websocket.send_text("[DONE]")
+        logger.info("orchestrator_finished")
     except WebSocketDisconnect:
-        pass
+        logger.info("websocket_disconnected")
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+    except Exception as e:  # noqa: BLE001
+        logger.error("websocket_error", error=str(e))
+        try:
+            await websocket.send_text(json.dumps({"error": str(e)}))
+        except Exception:  # noqa: S110, BLE001
+            pass
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        await websocket.close()
+        logger.info("websocket_closed")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
