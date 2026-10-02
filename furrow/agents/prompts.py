@@ -27,9 +27,12 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- Return a concise summary of what you changed and any issues. Do not spawn subagents.
+- If you are creating or modifying files, include the full file content for each file you changed, wrapped in code blocks with the file path as the language identifier, e.g.:
+  ```path/to/file.py
+  <full file content here>
+  ```
+- If you only read files for context, just report what you found."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

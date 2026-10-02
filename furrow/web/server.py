@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
+import logging
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -10,13 +9,16 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 app = FastAPI(title="Furrow")
+
+logger = logging.getLogger("furrow.web")
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -55,10 +57,29 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        settings = Settings()
+        if model:
+            settings.model = model
+
+        client = LLMClient(settings=settings)
+
+        async def send_message(msg: str) -> None:
+            await websocket.send_text(msg)
+
+        orchestrator = Orchestrator(goal=goal, client=client, on_message=send_message)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.exception("Orchestrator error in WebSocket session")
+        try:
+            await websocket.send_text(f"[error] {e}")
+        except WebSocketDisconnect:
+            pass
+    finally:
+        await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
