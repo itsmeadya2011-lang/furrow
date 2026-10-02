@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -14,6 +13,8 @@ if TYPE_CHECKING:
 
 
 class TesterAgent:
+    TEST_TIMEOUT = 300
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
@@ -21,7 +22,7 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - any test runner failure should be reported, not crash
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -45,14 +46,21 @@ class TesterAgent:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self.client.settings.workspace,
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=self.TEST_TIMEOUT
+                    )
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                continue
+            except OSError:
                 continue
         return "No test runner found."

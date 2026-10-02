@@ -1,16 +1,37 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+DEFAULT_TIMEOUT = 120.0
+DEFAULT_MAX_ATTEMPTS = 3
+
+# Exceptions that are worth retrying: transient network/timeout/SDK errors.
+RETRYABLE_EXCEPTIONS = (
+    anthropic.AnthropicError,
+    openai.OpenAIError,
+    httpx.HTTPError,
+    asyncio.TimeoutError,
+)
+
+# Reusable retry strategy with exponential backoff for all LLM completions.
+llm_retry = retry(
+    stop=stop_after_attempt(DEFAULT_MAX_ATTEMPTS),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    retry=retry_if_exception_type(RETRYABLE_EXCEPTIONS),
+    reraise=True,
+)
 
 
 class LLMClient:
@@ -37,33 +58,72 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        timeout: float | None = None,
+    ) -> str:
         model = model or self.settings.model
+        timeout = timeout or DEFAULT_TIMEOUT
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+             return await self._complete_anthropic(prompt, system, model, timeout=timeout)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_openai(prompt, system, model, timeout=timeout)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model, timeout=timeout)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
+    @llm_retry
+    async def _complete_anthropic(
+        self, prompt: str, system: str, model: str, timeout: float
+    ) -> str:
+        async def _request() -> str:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        return await asyncio.wait_for(_request(), timeout=timeout)
+
+    @llm_retry
+    async def _complete_openai(self, prompt: str, system: str, model: str, timeout: float) -> str:
+        async def _request() -> str:
+            response = await self.openai.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return response.choices[0].message.content or ""
+
+        return await asyncio.wait_for(_request(), timeout=timeout)
+
+    @llm_retry
+    async def _complete_ollama(self, prompt: str, system: str, model: str, timeout: float) -> str:
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        base_url = self.settings.ollama_base_url.rstrip("/")
+
+        async def _request() -> str:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{base_url}/api/chat",
+                    json={"model": model, "messages": messages, "stream": False},
+                )
+                response.raise_for_status()
+                data = response.json()
+            return data["message"]["content"]
+
+        return await asyncio.wait_for(_request(), timeout=timeout)
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
