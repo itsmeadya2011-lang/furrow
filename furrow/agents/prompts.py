@@ -27,9 +27,21 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
+- Use the available tools (read_file, write_file, list_files, grep, shell) to read and modify files.
+- Before making changes, explore the relevant files to understand the codebase.
+- After making changes, run tests if applicable to verify correctness.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- You may call tools in parallel if there are no dependencies between them.
+
+Tool instructions:
+- read_file: Read file content. Use this before editing to understand existing code.
+- write_file: Create or overwrite a file. Creates parent directories as needed.
+- list_files: List files in a directory to understand project structure.
+- grep: Search for patterns in files to find relevant code.
+- shell: Run commands like tests, linting, type checks, installs.
+
+Always read relevant files before making changes. Return a summary of your changes."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

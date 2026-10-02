@@ -22,20 +22,28 @@ def main() -> None:
 def start(goal: str | None, model: str | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
+    # Build settings without mutating the global singleton
+    from furrow.config import Settings
+
+    settings = Settings()
     if model:
-        from furrow.config import settings
         settings.model = model
+        settings.worker_model = model
+        settings.tester_model = model
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal, settings=settings).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)
 
 
 @main.command()
-def web() -> None:
+@click.option("--host", default="0.0.0.0", help="Host to bind")
+@click.option("--port", default=8000, help="Port to bind")
+def web(host: str, port: int) -> None:
     from furrow.web.server import run
-    run()
+
+    run(host=host, port=port)
 
 
 if __name__ == "__main__":

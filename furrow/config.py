@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 
 class Provider(str, Enum):
@@ -40,15 +46,21 @@ class Settings(BaseSettings):
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
     planner_model: str = "claude-3-5-haiku-20241022"
-    worker_model: str = "claude-3-5-sonnet-20241022"
-    tester_model: str = "claude-3-5-sonnet-20241022"
+    worker_model: str = "claude-3-5-sonnet-20250219"
+    tester_model: str = "claude-3-5-sonnet-20250219"
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 0  # 0 = unlimited
+    max_tool_rounds: int = 15
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
 
 settings = Settings()
+
+
+def get_logger(name: str = "furrow") -> logging.Logger:
+    return logging.getLogger(name)
