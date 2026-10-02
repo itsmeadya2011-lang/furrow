@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -30,6 +30,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
+    "types-aiofiles>=24.1",
 ]
 
 [project.scripts]
@@ -46,3 +47,10 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+# The `furrow` package remains fully type-checked (see `python -m mypy furrow`).
+# Test modules are lightly typed, so untyped-defs is relaxed for tests.* only.
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+
