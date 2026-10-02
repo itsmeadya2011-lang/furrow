@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    AsyncRetrying,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
 
@@ -40,11 +44,20 @@ class LLMClient:
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            coro = self._complete_anthropic
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            coro = self._complete_openai
+        elif self.settings.provider == Provider.OLLAMA:
+            coro = self._complete_ollama
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        retrying = AsyncRetrying(
+            wait=wait_exponential(multiplier=1, min=1, max=10),
+            stop=stop_after_attempt(3),
+            retry=retry_if_exception_type(Exception),
+            reraise=True,
+        )
+        return await retrying(coro, prompt, system, model)
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
@@ -64,6 +77,24 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        }
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.settings.ollama_base_url}/v1/chat/completions",
+                json=payload,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            data = response.json()
+        return data["choices"][0]["message"]["content"] or ""
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
