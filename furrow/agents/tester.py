@@ -2,12 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
+import structlog
+
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import TaskModel, TestResult, settings
 from furrow.llm import LLMClient
+
+_logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from furrow.config import Settings
@@ -42,17 +45,23 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        cwd = str(settings.workspace)
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=cwd,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+                    await proc.wait()
+                    _logger.warning("test.runner_timed_out", command=" ".join(cmd), cwd=cwd)
+                    return "Test execution timed out after 120 seconds."
+            except FileNotFoundError:
                 continue
         return "No test runner found."
