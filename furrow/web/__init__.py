@@ -1,3 +1,7 @@
-from furrow.web.server import app, run
+"""Web layer for Furrow: the FastAPI app and its entry point."""
 
-__all__ = ["app", "run"]
+from __future__ import annotations
+
+from furrow.web.server import RunManager, StartRequest, app, run
+
+__all__ = ["RunManager", "StartRequest", "app", "run"]
