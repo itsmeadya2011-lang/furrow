@@ -1,0 +1,30 @@
+# Byte-compiled Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+$VIRTUAL_ENV/
+.venv/
+venv/
+
+# Local secrets and env overrides (.env.example is committed on purpose)
+.env
+.env.*
+
+# Packaging / build output
+*.egg-info/
+build/
+dist/
+
+# Furrow worker backups
+.furrow/
+
+# Tool caches and coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# OS junk
+.DS_Store
