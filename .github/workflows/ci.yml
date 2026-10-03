@@ -1,0 +1,63 @@
+# Continuous integration for Furrow.
+#
+# Gating policy:
+#   ruff check .            -> blocking
+#   ruff format --check .   -> blocking
+#   pytest                  -> blocking
+#   mypy furrow             -> NOT blocking (`continue-on-error: true`).
+#     The library is not yet mypy-clean, so type errors must stay visible in the
+#     job log without failing the run or blocking merges. Once `mypy furrow`
+#     reports zero errors, delete the `continue-on-error: true` line below to
+#     promote mypy to a hard requirement.
+
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: lint, typecheck, test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Install project with dev extras
+        run: pip install -e ".[dev]"
+
+      - name: Lint (ruff check)
+        run: ruff check .
+
+      - name: Verify formatting (ruff format --check)
+        run: ruff format --check .
+
+      - name: Type check (mypy, non-blocking)
+        continue-on-error: true
+        run: mypy furrow
+
+      - name: Test (pytest)
+        run: pytest
