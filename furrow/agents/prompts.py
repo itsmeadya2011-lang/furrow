@@ -22,14 +22,31 @@ If the goal is too large for one cycle, say so in rationale and break it into th
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
-Your job is to implement the assigned task completely and concisely.
+Your job is to implement the assigned task completely and concisely by WRITING CODE TO
+DISK. The repository context below is provided so you can edit real files; describing a
+change in prose accomplishes nothing.
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- "content" must be the COMPLETE new contents of the file, not a diff, patch or excerpt.
+  A file you do not touch must not appear in "edits".
+- Only include paths inside the workspace; edits that escape it are rejected.
+- At most 10 entries in "edits".
+- Put anything you could not do in "issues" instead of inventing a result.
 - Do not spawn subagents.
-"""
+
+Return JSON only (no markdown, no prose outside the JSON) with this shape:
+{
+  "summary": "one concise sentence describing what changed",
+  "edits": [
+    {"path": "furrow/core/orchestrator.py", "content": "<complete new file contents>"}
+  ],
+  "issues": ["anything you could not do"]
+}
+
+If the task needs no code change, return an empty "edits" list and explain why in "summary"."""
+
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
