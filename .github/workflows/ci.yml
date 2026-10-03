@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint (ruff)
+        # Reads line-length, target-version and the explicit lint.select from
+        # pyproject.toml. The package is installed first so ruff sees the same
+        # interpreter the tests will use.
+        run: ruff check .
+
+      - name: Test (pytest)
+        # Must run from the repository root (the default working directory here).
+        # Some sandboxes hold a stale editable install that maps `furrow` onto a
+        # different checkout, so `import furrow` can resolve to foreign code
+        # depending on the cwd. Anchoring collection at the rootdir keeps the
+        # checked-out package winning. testpaths/asyncio_mode come from
+        # pyproject.toml.
+        run: pytest
+
+      - name: Type check (mypy, advisory)
+        # Advisory only, hence continue-on-error: the codebase is not annotated and
+        # the [tool.mypy] config was never executed against this tree, so a failure
+        # here is a signal, not a gate. Flip this to `false` (or delete the step)
+        # once `mypy` is clean on a machine where it can actually be run.
+        continue-on-error: true
+        run: mypy

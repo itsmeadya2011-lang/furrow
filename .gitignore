@@ -1,0 +1,46 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Test / type / lint caches and reports
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Editors and OS noise
+.idea/
+.vscode/
+.DS_Store
+
+# NOTE: these ignores do NOT untrack the __pycache__/*.pyc files that are already
+# committed. Git keeps serving tracked files regardless of .gitignore, so a fresh
+# clone still carries 10 stale .pyc blobs. Drop them from the index with:
+#
+#     git rm -r --cached --ignore-unmatch "*.py[cod]"
+#
+# and commit the deletions. Left unrun on purpose: the working tree currently has
+# other agents' in-flight changes, and the index churn should land in its own commit.

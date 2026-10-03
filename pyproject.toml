@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -13,15 +13,25 @@ dependencies = [
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
-    "anthropic>=0.34",
+    # floors track the public surface we import: AsyncAnthropic/AsyncOpenAI plus the
+    # named exception classes APIConnectionError, APITimeoutError, InternalServerError
+    # and RateLimitError. anthropic 0.40 and openai 1.40 both post-date the async
+    # clients and the top-level exception re-exports, so nothing we rely on is newer
+    # than the floor.
+    "anthropic>=0.40",
     "openai>=1.40",
+    # Not imported by furrow itself, but a hard runtime requirement of the anthropic
+    # and openai SDKs (httpx is their HTTP transport). Listed explicitly so the
+    # transport version is resolved from this file instead of inherited from the
+    # SDKs' own lower bounds.
     "httpx>=0.27",
     "click>=8.1",
     "rich>=13.7",
+    # Required by pydantic-settings for Settings.model_config env_file support.
     "python-dotenv>=1.0",
     "aiofiles>=24.1",
+    # Retry decorators around the SDK calls in furrow/llm.py.
     "tenacity>=8.2",
-    "structlog>=24.1",
 ]
 
 [project.optional-dependencies]
@@ -46,3 +56,33 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Explicit because ruff's default is only E4,E7,E9,F, which leaves the configured
+# 100-char limit inert. E+F = pycodestyle errors + pyflakes, I = import sorting,
+# B = bugbear, W = pycodestyle warnings (trailing whitespace, missing final newline,
+# invalid escape sequences).
+# "UP" (pyupgrade) is deliberately omitted for now: with target-version py310 and
+# `from __future__ import annotations` in every module, UP007/UP045 want to rewrite
+# every Optional[...] in furrow/config.py and furrow/web/server.py. Add "UP" back once
+# those annotations use `X | None`. Preview rules stay off (ruff default), so the
+# selected set is stable across ruff versions.
+select = ["E", "F", "I", "B", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["furrow"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+# Advisory only. The codebase is largely unannotated, so disallow_untyped_defs and
+# strict are intentionally NOT enabled: they would fail on almost every def and the
+# result could not be verified here. CI runs mypy with continue-on-error for the same
+# reason.
+
+[[tool.mypy.overrides]]
+# The SDKs ship partial or absent type information (tenacity and aiofiles have no
+# py.typed marker at all), so untyped-import noise is silenced per module instead of
+# globally, keeping real errors in our own code visible.
+module = ["anthropic.*", "openai.*", "aiofiles.*", "tenacity.*"]
+ignore_missing_imports = true
