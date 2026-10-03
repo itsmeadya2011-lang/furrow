@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -38,6 +38,10 @@ furrow = "furrow.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["furrow*"]
+# Only regular packages (those with an __init__.py) are collected. This makes a
+# missing __init__.py a visible packaging defect instead of silently shipping a
+# PEP 420 namespace portion (or dropping the subpackage from the wheel entirely).
+namespaces = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -46,3 +50,16 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# E/W: pycodestyle (E501, W292, ...); F: pyflakes (F401/F841); I: isort;
+# UP: pyupgrade (3.10 target); B: flake8-bugbear.
+select = ["E", "F", "I", "UP", "B", "W"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
