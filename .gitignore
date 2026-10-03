@@ -1,0 +1,35 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*$PYLINE
+*$PYCLASS
+*$PYTHONPATH
+
+# Packaging / build output
+build/
+dist/
+*.egg-info/
+.eggs/
+wheels/
+
+# Virtualenvs
+.venv/
+venv/
+env/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.tox/
+.coverage
+htmlcov/
+
+# Furrow runtime state (goal / task / cycle persistence)
+.furrow/
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
