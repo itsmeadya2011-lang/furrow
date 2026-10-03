@@ -55,9 +55,30 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        try:
+            orchestrator = Orchestrator(goal=goal)
+            await orchestrator.run()
+        except WebSocketDisconnect:
+            raise
+        except Exception as exc:
+            await _safe_send(websocket, f"Error: {exc}")
     except WebSocketDisconnect:
+        pass
+    finally:
+        await _safe_close(websocket)
+
+
+async def _safe_send(websocket: WebSocket, message: str) -> None:
+    try:
+        await websocket.send_text(message)
+    except Exception:
+        pass
+
+
+async def _safe_close(websocket: WebSocket) -> None:
+    try:
+        await websocket.close()
+    except Exception:
         pass
 
 

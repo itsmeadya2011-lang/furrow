@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+from tenacity import retry, retry_if_exception_type, stop_after_attempt
+
 from furrow.agents.prompts import PLANNER_PROMPT
 from furrow.config import Plan
 from furrow.llm import LLMClient
@@ -15,6 +17,10 @@ class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((json.JSONDecodeError, ValueError)),
+    )
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
