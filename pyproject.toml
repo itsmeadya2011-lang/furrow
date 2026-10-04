@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta:__legacy__"
 
 [project]
 name = "furrow"
@@ -12,16 +12,15 @@ dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
+    # Reads .env natively (SettingsConfigDict(env_file=".env")), and already
+    # requires python-dotenv itself, so python-dotenv is not declared here.
     "pydantic-settings>=2.2",
     "anthropic>=0.34",
     "openai>=1.40",
-    "httpx>=0.27",
     "click>=8.1",
     "rich>=13.7",
-    "python-dotenv>=1.0",
     "aiofiles>=24.1",
     "tenacity>=8.2",
-    "structlog>=24.1",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +29,13 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
+    # aiofiles ships no inline types and has no py.typed marker, so without these
+    # stubs `mypy furrow` fails on furrow/llm.py with import-untyped.
+    "types-aiofiles>=24.1",
+    # starlette's TestClient imports httpx. It is only a transitive dependency of the
+    # provider SDKs today, and relying on that would break the web tests with an
+    # unexplained ImportError the day anthropic/openai stop pulling it in.
+    "httpx>=0.27",
 ]
 
 [project.scripts]
@@ -38,6 +44,11 @@ furrow = "furrow.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["furrow*"]
+exclude = ["tests*"]
+# Every furrow subpackage ships an explicit __init__.py now (including furrow/cli/),
+# so regular package discovery is safe: namespaces = false keeps setuptools from
+# silently globbing unrelated directories into the distribution.
+namespaces = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -46,3 +57,14 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Explicit selection: ruff's default (E4,E7,E9,F) omits E501, W, I, B, UP, SIM
+# and RUF, which is how over-long lines and `except (SomeError, Exception)`
+# style bugs slipped through. B = bugbear, I = isort, UP = pyupgrade.
+# E501 is deliberately NOT ignored: line-length = 100 is the project rule and no
+# ruff formatter is configured, so there is no E501-vs-format conflict.
+# BLE is here because bugbear's B014 only catches literally duplicated exception
+# types, not blind `except Exception:`; the code already carries a
+# `# noqa: BLE001`, so BLE was the intended rule set all along.
+select = ["E", "F", "W", "I", "B", "UP", "C4", "SIM", "RUF", "BLE"]
