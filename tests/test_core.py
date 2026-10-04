@@ -1,5 +1,5 @@
-import pytest
-from furrow.config import Plan, TaskModel, TestResult
+from furrow.config import Plan, TaskModel
+from furrow.config import TestResult as ResultModel
 
 
 def test_plan_parse():
@@ -8,5 +8,5 @@ def test_plan_parse():
 
 
 def test_test_result():
-    t = TestResult(passed=True, summary="ok", failures=[])
+    t = ResultModel(passed=True, summary="ok", failures=[])
     assert t.passed is True
