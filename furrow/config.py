@@ -23,6 +23,16 @@ class TaskModel(BaseModel):
     result: Optional[str] = None
 
 
+class FileEdit(BaseModel):
+    path: str
+    content: str
+
+
+class WorkerResult(BaseModel):
+    summary: str
+    edits: list[FileEdit] = Field(default_factory=list)
+
+
 class Plan(BaseModel):
     tasks: list[TaskModel]
     rationale: str
@@ -46,7 +56,9 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
-    max_cycles: int = 0
+    max_cycles: int = 10
+    test_command: Optional[str] = None
+    test_timeout: int = 120
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
