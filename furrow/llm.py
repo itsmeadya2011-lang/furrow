@@ -2,20 +2,21 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+from furrow.config import settings as default_settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        # An explicit None must fall back to the singleton: the agents call
+        # ``LLMClient(settings=settings)`` with ``settings`` defaulting to None, and a
+        # stored None would make every ``self.settings.<field>`` access an AttributeError.
+        self.settings = settings if settings is not None else default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
