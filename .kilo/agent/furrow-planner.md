@@ -24,7 +24,7 @@ Return a JSON object (not wrapped in markdown) with this shape:
 }
 
 ## Rules
-- 1-5 tasks maximum per plan.
+- Aim for 1-5 tasks. This is guidance for the planner, not a cap the runtime enforces.
 - Tasks must be independent when possible.
 - Each task should be completable in 1-3 tool call rounds by a worker.
 - If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
