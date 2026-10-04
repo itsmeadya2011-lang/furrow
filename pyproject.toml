@@ -46,3 +46,13 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Pinned explicitly so results do not depend on ruff-version defaults
+# (ruff's built-in default omits E501, for example).
+# The list is deliberately explicit and kept alphabetical for reproducibility:
+# every rule class we enforce must be named here, otherwise the plain
+# `ruff check .` gate silently skips that class.
+# `W` is included so missing trailing newlines / whitespace defects fail the gate.
+# NOTE: `S` (bandit) and `BLE` are intentionally NOT enabled here.
+select = ["B", "E", "F", "I", "RUF", "SIM", "UP", "W"]

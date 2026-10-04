@@ -3,6 +3,9 @@
 ## Overview
 Furrow is an autonomous coding agent that runs an infinite development loop for web/CLI/desktop projects.
 
+The loop is unbounded by default. `FURROW_MAX_CYCLES` (`0` = unbounded) is the runaway guard, and
+`FURROW_MAX_PARALLEL_TASKS` (default `5`) caps concurrent workers per cycle.
+
 ## Components
 
 ### 1. Orchestrator (`furrow`)
@@ -14,6 +17,8 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
   3. Execute via parallel `furrow-worker` subagents
   4. Test via `furrow-tester` subagent
   5. Report and repeat
+- **Halts when:** the plan is non-empty, every task completed, and the tests passed. An empty plan
+  or a failing test means another cycle.
 
 ### 2. Planner (`furrow-planner`)
 - **Type:** Subagent
@@ -24,6 +29,8 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
 - **Type:** Subagent
 - **Role:** Executes a single assigned task. Minimal, targeted changes. No scope creep.
 - **Constraint:** 1-3 tool call rounds per task.
+- **Note:** the Python `WorkerAgent` returns a text summary and does not touch the filesystem. Edits
+  come from these `.kilo/` definitions, which have real tool access.
 
 ### 4. Tester (`furrow-tester`)
 - **Type:** Subagent
@@ -32,6 +39,13 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
 ### 5. Command (`/furrow`)
 - **Type:** Slash command
 - **Role:** Entry point. Invokes the `furrow` orchestrator with a goal from `$ARGUMENTS`.
+
+### 6. Event seam (`furrow/core/orchestrator.py`)
+- **Type:** Instrumentation point
+- **Role:** Every orchestrator message goes through `_emit`, which prints it and forwards a JSON
+  payload to an optional event sink. Terminal output and the sink cannot drift apart.
+- **Used by:** `furrow web`, which streams the sink over a `/ws` websocket to a browser page showing
+  the cycle counter, with a Stop button. A client disconnect cancels the run instead of leaking it.
 
 ## Files
 ```
@@ -51,10 +65,12 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 
 ## Usage
 - Run `/furrow <goal>` to start the loop.
-- The agent runs until the goal is complete or the user stops the session.
+- The agent runs until the goal is complete, `FURROW_MAX_CYCLES` cycles have run, or the user stops
+  the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
+- Non-TUI front-ends already exist: `furrow start "<goal>"` and `furrow web` (`--cycles`,
+  `--max-parallel`, plus `--model` on `start` and `--host` / `--port` on `web`).
 
 ## Future Work
-- CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
-- Web UI for monitoring parallel agent activity.
+- Desktop wrapper on top of the existing CLI and web front-ends.
