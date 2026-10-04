@@ -1,6 +1,6 @@
 # Furrow
 
-Autonomous coding agent with an infinite parallel development loop.
+Autonomous coding agent that runs a parallel development loop until a stop condition is met.
 
 ## Install
 
@@ -88,14 +88,14 @@ ruff check
 mypy furrow
 ```
 
-The suite currently runs **263 tests** across 8 files:
+The suite currently runs **311 tests** across 9 files:
 
+- `tests/test_agents.py`
 - `tests/test_cli.py`
 - `tests/test_config.py`
 - `tests/test_core.py`
 - `tests/test_jsonutil.py`
+- `tests/test_llm.py`
 - `tests/test_models.py`
 - `tests/test_orchestrator.py`
 - `tests/test_web.py`
-
-`tests/test_llm.py` and `tests/test_agents.py` do not exist yet (they are being written by other agents).
