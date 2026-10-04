@@ -1,21 +1,63 @@
 from __future__ import annotations
 
+import asyncio
+import fnmatch
 import os
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
+from anthropic.types import Message
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+from furrow.config import settings as default_settings
+
+MAX_TOKENS = 8192
+TEMPERATURE = 0.2
+
+RETRYABLE_ERRORS: tuple[type[BaseException], ...] = (
+    anthropic.APIConnectionError,
+    anthropic.APIStatusError,
+    openai.APIConnectionError,
+    openai.APIStatusError,
+    httpx.HTTPError,
+    asyncio.TimeoutError,
+)
+
+IGNORED_DIRECTORIES: frozenset[str] = frozenset(
+    {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        "dist",
+        "build",
+        ".tox",
+        ".eggs",
+        "*.egg-info",
+    }
+)
+
+
+def _is_ignored(relative_path: Path) -> bool:
+    return any(
+        fnmatch.fnmatch(part, pattern)
+        for part in relative_path.parts
+        for pattern in IGNORED_DIRECTORIES
+    )
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings if settings is not None else default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -37,6 +79,11 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        retry=retry_if_exception_type(RETRYABLE_ERRORS),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
@@ -47,27 +94,45 @@ class LLMClient:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
+        client: Any = self.anthropic.messages
+        response = await client.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        return self._extract_anthropic_text(response)
+
+    @staticmethod
+    def _extract_anthropic_text(response: Message) -> str:
+        text_parts: list[str] = []
+        for block in response.content:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                text_parts.append(text)
+        text = "".join(text_parts)
+        if not text and response.content:
+            first = getattr(response.content[0], "text", "")
+            return first if isinstance(first, str) else ""
+        return text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
+            temperature=TEMPERATURE,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        content = response.choices[0].message.content
+        return content if isinstance(content, str) else ""
 
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
-            return await f.read()
+        async with aiofiles.open(path) as f:
+            content = await f.read()
+            return content if isinstance(content, str) else ""
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
@@ -76,7 +141,15 @@ class LLMClient:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
-        p = Path(directory)
-        if not p.exists():
+        root = Path(directory)
+        if not root.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        files: list[str] = []
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative_path = path.relative_to(root)
+            if _is_ignored(relative_path):
+                continue
+            files.append(str(relative_path))
+        return files

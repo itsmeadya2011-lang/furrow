@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# Env files
+.env
+.env.*
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Node (this repo has node-oriented ignores copied in)
+node_modules/
+package*.json
+*.lock
