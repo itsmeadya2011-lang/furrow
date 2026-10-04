@@ -1,10 +1,10 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
-version = "0.1.0"
+version = "0.2.0"
 description = "Autonomous coding agent with infinite parallel development loop"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,7 +21,6 @@ dependencies = [
     "python-dotenv>=1.0",
     "aiofiles>=24.1",
     "tenacity>=8.2",
-    "structlog>=24.1",
 ]
 
 [project.optional-dependencies]
@@ -41,8 +40,27 @@ include = ["furrow*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Explicit selection. Rule families deliberately omitted: S (security),
+# D (docstrings), ANN (annotations), COM (comments), N (naming), EM (messages).
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+files = ["furrow"]
+warn_unused_configs = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+# Third-party packages that ship no type information (or are declared as
+# dependencies but may not be installed at type-check time).
+[[tool.mypy.overrides]]
+module = ["aiofiles.*"]
+ignore_missing_imports = true
