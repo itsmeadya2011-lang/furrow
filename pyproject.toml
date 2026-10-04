@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -8,6 +8,32 @@ version = "0.1.0"
 description = "Autonomous coding agent with infinite parallel development loop"
 readme = "README.md"
 requires-python = ">=3.10"
+# Derived from `git remote get-url origin` -> github.com/itsmeadya2011-lang/furrow.
+# Only a GitHub account handle is asserted; every commit in this repo is authored by
+# kiloconnect[bot], so no human name or e-mail address can be attributed honestly.
+authors = [
+    { name = "itsmeadya2011-lang" },
+]
+keywords = [
+    "ai",
+    "agents",
+    "llm",
+    "code-generation",
+    "cli",
+    "automation",
+    "anthropic",
+    "openai",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: Code Generators",
+]
 dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
@@ -18,10 +44,8 @@ dependencies = [
     "httpx>=0.27",
     "click>=8.1",
     "rich>=13.7",
-    "python-dotenv>=1.0",
     "aiofiles>=24.1",
     "tenacity>=8.2",
-    "structlog>=24.1",
 ]
 
 [project.optional-dependencies]
@@ -35,14 +59,33 @@ dev = [
 [project.scripts]
 furrow = "furrow.cli.main:main"
 
+# Derived from `git remote get-url origin` -> https://github.com/itsmeadya2011-lang/furrow.git
+[project.urls]
+Homepage = "https://github.com/itsmeadya2011-lang/furrow"
+Repository = "https://github.com/itsmeadya2011-lang/furrow"
+Issues = "https://github.com/itsmeadya2011-lang/furrow/issues"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["furrow*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+# Explicit selection so the line-length = 100 above is actually enforced: "E" pulls in
+# E501, which is NOT part of ruff 0.16's default rule set.
+select = ["E", "F", "I", "UP", "B"]
+
+# Non-strict on purpose: `strict = true` fails across modules outside this file's scope.
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+ignore_missing_imports = true
