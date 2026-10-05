@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 import uvicorn
@@ -55,7 +54,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def emit(text: str) -> None:
+            await websocket.send_text(text)
+
+        orchestrator = Orchestrator(goal=goal, callback=emit)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass

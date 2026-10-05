@@ -21,16 +21,16 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
+
+            prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+            try:
+                data = json.loads(response)
+                return TestResult(**data)
+            except (json.JSONDecodeError, ValueError):
+                return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
-
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
-        try:
-            data = json.loads(response)
-            return TestResult(**data)
-        except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -53,6 +53,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
         return "No test runner found."
