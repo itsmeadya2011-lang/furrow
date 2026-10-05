@@ -1,0 +1,16 @@
+# The sdist exists to install `furrow`; the test tree is a checkout-time concern
+# (README, "Development": pip install -e ".[dev]"; pytest).  setuptools derives
+# its sdist file list independently of [tool.setuptools.packages.find], so the
+# `exclude = ["tests*"]` there only governs `packages` and has no effect here.
+# Without this file the default sdist heuristics therefore pick up the
+# tests/test_*.py modules (their names match) while omitting tests/__init__.py
+# and tests/conftest.py (their names do not), leaving an sdist that advertises
+# a test tree nobody can collect: conftest.py holds the autouse
+# no_real_network, singleton-isolation and FURROW_* env guards, so the
+# omission is a partial safety story as well as a broken suite.
+#
+# `prune tests` drops the directory rather than enumerating files, so a newly
+# added tests/ file cannot slip back in, and it keeps the sdist consistent with
+# the wheel, which already ships only `furrow`.  setuptools always adds
+# MANIFEST.in to the sdist, so rebuilding from the sdist reproduces this list.
+prune tests

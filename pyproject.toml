@@ -1,6 +1,13 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+# setuptools.build_meta is the PEP 517 backend.  The previously declared
+# "setuptools.backends.legacy:build" does not exist, which broke every build
+# frontend (pip install ., pip wheel ., python -m build).
+#
+# floor is 70.1 rather than 68 on purpose: setuptools vendored bdist_wheel in
+# 70.1, so "wheel" is no longer needed in requires and only added build
+# isolation to download.
+requires = ["setuptools>=70.1"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -18,6 +25,10 @@ dependencies = [
     "httpx>=0.27",
     "click>=8.1",
     "rich>=13.7",
+    # Not imported by furrow itself: pydantic-settings imports it to implement
+    # SettingsConfigDict(env_file=".env"), so Settings reads FURROW_* from a .env
+    # file.  Declared explicitly rather than relied on transitively, because
+    # that .env support is a documented feature of the configuration layer.
     "python-dotenv>=1.0",
     "aiofiles>=24.1",
     "tenacity>=8.2",
@@ -27,8 +38,14 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.3",
-    "pytest-asyncio>=0.23",
-    "ruff>=0.5",
+    # 0.24 is the first release that knows asyncio_default_fixture_loop_scope,
+    # which is set below; 0.23 rejects it as an unknown ini option.
+    "pytest-asyncio>=0.24",
+    # 0.16 is the first release whose BLE001 does not flag the blind excepts at
+    # the websocket boundary in furrow/web/server.py, and the first release
+    # without the removed UP038, so it is the floor at which the lint.select
+    # below is clean across the whole package.
+    "ruff>=0.16",
     "mypy>=1.10",
 ]
 
@@ -38,11 +55,85 @@ furrow = "furrow.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["furrow*"]
+# Redundant with include, stated so the root "tests" package (which has an
+# __init__.py) is never shipped as an importable top level package.
+exclude = ["tests*"]
+# Pinned false rather than left implicit: setuptools' own default here is
+# namespaces = true (config/expand.py: find_packages(*, namespaces=True, ...)),
+# so omitting this key selects PEP 420 discovery, not find_packages().  Under
+# that default a subdirectory that loses its __init__.py is still discovered as
+# a namespace portion and still shipped, which would leave those __init__.py
+# files load-bearing in name only.  With namespaces = false all five packages
+# -- furrow and its agents/cli/core/web subpackages -- require an __init__.py,
+# which they all have, so the discovered set is those five regardless of the
+# setuptools release doing the build.  Implicit-namespace discovery was only
+# ever here to rescue furrow/cli before it gained an __init__.py, and it also
+# swept up non-package directories that merely sit under the include glob.
+namespaces = false
+
+[tool.setuptools.package-data]
+# PEP 561 marker for the inline annotations the package ships.  Listed
+# explicitly rather than left to include-package-data (which pyproject.toml
+# metadata defaults to True): that default only picks up whatever a VCS
+# file-finder plugin or the MANIFEST.in below happens to track, so relying on it
+# would make py.typed's presence in the wheel an accident of those two files.
+furrow = ["py.typed"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Explicit: pytest-asyncio warns when this is unset.  Every fixture in the suite
+# is function scoped, so the function loop is the right scope.
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+
+[tool.mypy]
+# Matches requires-python = ">=3.10"; run as `mypy` with no arguments.
+python_version = "3.10"
+files = ["furrow"]
+strict = true
+
+[[tool.mypy.overrides]]
+# aiofiles ships no type information and types-aiofiles is not a declared dev
+# dependency, so every aiofiles symbol resolves to Any.
+module = ["aiofiles", "aiofiles.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# LLMClient.read_file/write_file return straight out of an aiofiles handle, so
+# their bodies are Any under strict even with the override above.
+module = ["furrow.llm"]
+disable_error_code = ["no-any-return"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+# Pinned explicitly: an unselected set makes the result depend on whichever
+# ruff version resolves.  Each prefix below is resolvable at the ruff>=0.16
+# floor and reports zero findings across furrow/ as it stands.
+select = [
+    "E",    # pycodestyle errors (line length, whitespace)
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes: unused/undefined names, dead imports
+    "I",    # isort: import block ordering
+    "UP",   # pyupgrade: syntax that is outdated for py310
+    "C4",   # flake8-comprehensions
+    "SIM",  # flake8-simplify
+    "PIE",  # flake8-pie
+    "BLE",  # flake8-blind-except: the `# noqa: BLE001` markers in the tree
+    "T20",  # flake8-print: no stray prints in a library/CLI package
+    "TID",  # flake8-tidy-imports
+    "Q",    # flake8-quotes: double quotes, matching `ruff format`
+]
+# Deliberately not selected, because each one fires on code that this change
+# does not own and would otherwise mean editing furrow/agents/planner.py,
+# furrow/agents/worker.py or furrow/llm.py:
+#   B    - B904 at furrow/agents/planner.py:29
+#   RET  - RET504 at furrow/agents/planner.py:97
+#   ASYNC - ASYNC240 (blocking pathlib in async def) in worker.py and tester.py
+#   TRY  - TRY003 in planner.py, worker.py and config.py
+#   ARG  - ARG002 for TesterAgent.run's interface argument `tasks`
+#   RUF  - RUF100 would flag the stale `# noqa: TRY004` in planner.py
+#   N    - N818 wants the web layer's _Rejected/_ClientGone renamed to *Error
+#   D/ANN/EM/PL - large volume of stylistic noise the codebase does not follow
