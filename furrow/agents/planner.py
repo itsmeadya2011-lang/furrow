@@ -4,6 +4,7 @@ import json
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import PLANNER_PROMPT
+from furrow.agents.utils import clean_json_response
 from furrow.config import Plan
 from furrow.llm import LLMClient
 
@@ -19,7 +20,7 @@ class PlannerAgent:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
-            data = json.loads(response)
+            data = json.loads(clean_json_response(response))
             return Plan(**data)
         except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")

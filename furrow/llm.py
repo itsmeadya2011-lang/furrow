@@ -53,6 +53,8 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        if not response.content:
+            return ""
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
