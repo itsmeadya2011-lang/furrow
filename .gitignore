@@ -1,0 +1,33 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Test / type / lint caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS noise
+.idea/
+.vscode/
+.DS_Store
