@@ -1,11 +1,11 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
 version = "0.1.0"
-description = "Autonomous coding agent with infinite parallel development loop"
+description = "Autonomous coding agent with a parallel plan-execute-test development loop"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -46,3 +46,24 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["furrow"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+# anthropic/openai/rich/aiofiles ship no type information.
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Tests describe intent, not signatures, and are checked for behaviour only.
+module = ["tests", "tests.*"]
+disallow_untyped_defs = false

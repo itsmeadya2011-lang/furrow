@@ -1,5 +1,5 @@
 ---
-description: Start the infinite Furrow development loop
+description: Start the Furrow development loop
 agent: furrow
 subtask: false
 ---
