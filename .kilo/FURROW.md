@@ -46,6 +46,17 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
 kilo.json              # Project config (default agent = furrow, open permissions)
 ```
 
+Source layout:
+```
+furrow/
+  config.py            # Settings (FURROW_ env prefix), Plan/TaskModel/TestResult models
+  llm.py               # LLMClient: anthropic/openai/ollama, tenacity retries, structlog
+  core/orchestrator.py # Infinite plan -> execute -> test loop, event emission, state file
+  agents/              # planner / worker / tester agents, JSON extraction helper
+  cli/main.py          # furrow start / furrow web commands
+  web/server.py        # FastAPI web UI with live WebSocket event streaming
+```
+
 ## Permissions
 Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 
@@ -56,5 +67,4 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
 - Web UI for monitoring parallel agent activity.
