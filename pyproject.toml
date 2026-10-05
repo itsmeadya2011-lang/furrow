@@ -1,36 +1,87 @@
 [build-system]
+# setuptools.build_meta is the public, documented build entry point.
+# The previously-used "setuptools.backends.legacy:build" is an internal module
+# that can fail or warn depending on the installed setuptools version.
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
 version = "0.1.0"
-description = "Autonomous coding agent with infinite parallel development loop"
+description = "Autonomous coding agent with an infinite parallel development loop"
 readme = "README.md"
 requires-python = ">=3.10"
+# NOTE: the upstream GitHub repository (itsmeadya2011-lang/furrow) currently
+# reports license: null - there is no LICENSE file in the tree. "UNLICENSED"
+# is used here to honestly reflect that rather than inventing a permissive
+# license that does not exist. Add a LICENSE file + set the real SPDX id before
+# publishing as open source.
+license = {text = "UNLICENSED"}
+authors = [
+    {name = "itsmeadya2011-lang"},
+]
+keywords = [
+    "ai",
+    "agent",
+    "autonomous",
+    "coding-agent",
+    "llm",
+    "pydantic",
+    "anthropic",
+    "openai",
+    "ollama",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
-    "anthropic>=0.34",
-    "openai>=1.40",
+    # Upper-cap the fast-moving provider SDKs to guard against breaking 1.x releases.
+    "anthropic>=0.34,<1",
+    "openai>=1.40,<2",
     "httpx>=0.27",
     "click>=8.1",
     "rich>=13.7",
-    "python-dotenv>=1.0",
     "aiofiles>=24.1",
+    # Now genuinely used by furrow/llm.py and furrow/core/orchestrator.py.
     "tenacity>=8.2",
     "structlog>=24.1",
+    # python-dotenv is intentionally NOT declared: pydantic-settings already
+    # depends on it to provide the env_file=".env" support used in config.py.
 ]
 
 [project.optional-dependencies]
+# Full contributor setup: tests + coverage + static analysis.
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
     "ruff>=0.5",
     "mypy>=1.10",
 ]
+# Static analysis only - for CI jobs that lint/types without running tests.
+lint = [
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/itsmeadya2011-lang/furrow"
+Repository = "https://github.com/itsmeadya2011-lang/furrow"
+Issues = "https://github.com/itsmeadya2011-lang/furrow/issues"
 
 [project.scripts]
 furrow = "furrow.cli.main:main"
@@ -39,10 +90,91 @@ furrow = "furrow.cli.main:main"
 where = ["."]
 include = ["furrow*"]
 
+# Ship the PEP 561 marker so type checkers see furrow's inline annotations.
+[tool.setuptools.package-data]
+furrow = ["py.typed"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# pytest-asyncio >= 0.24 emits a warning unless a default loop scope is set.
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+addopts = "--strict-markers --strict-config -ra"
+filterwarnings = [
+    "default::DeprecationWarning",
+    "default::PendingDeprecationWarning",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["furrow"]
+# Lets `coverage run` (no args) execute the suite directly.
+command_line = "-m pytest tests"
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# 80% - pragmatic floor for an evolving async agent package: high enough to
+# catch meaningful regressions, low enough to stay achievable while coverage
+# matures. Not a claim of broad correctness.
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+    "@(abc\\.)?abstractmethod",
+]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "F",      # pyflakes: unused imports, undefined names, f-string issues
+    "I",      # isort: import sorting
+    "B",      # flake8-bugbear: common correctness pitfalls
+    "UP",     # pyupgrade: modernise syntax/declarations
+    "SIM",    # flake8-simplify
+    "C4",     # flake8-comprehensions
+    "RUF",    # ruff-specific rules
+    "TRY",    # tryceratops: exception-handling hygiene
+    "ASYNC",  # flake8-async: async/await correctness
+    "PT",     # flake8-pytest-style: test conventions
+]
+# Each ignore below is a deliberate, opinionated choice, not a dodge for the
+# unused-import / f-string / redundant-except violations this project shipped
+# before these rules were enabled (those are caught by F, F541, B904 etc. above).
+ignore = [
+    "E501",   # line length is advisory; long inline HTML templates and descriptive Field() docs exceed it and are not worth mangling
+    "TRY003", # inline exception messages are appropriate for a small CLI/agent; forcing a custom-exception-class policy everywhere is disproportionate
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use broader exception assertions and their own parametrize
+# style, which the global select would otherwise flag.
+"tests/*" = [
+    "B017",   # asserting on a broad base Exception is sometimes intentional in unit tests
+    "PT006",  # parametrize names/values style is a preference, not a correctness rule
+    "PT007",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unreachable = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+# strict is deliberately NOT enabled: the codebase is not strict-clean and we
+# cannot verify it from this environment (mypy is not installed here).
+
+[[tool.mypy.overrides]]
+module = [
+    "anthropic.*",
+    "openai.*",
+    "uvicorn.*",
+    "aiofiles.*",
+    "httpx.*",
+]
+ignore_missing_imports = true

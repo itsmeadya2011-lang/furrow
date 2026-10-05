@@ -1,20 +1,25 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from furrow.agents.base import BaseAgent, SupportsComplete
 from furrow.agents.prompts import WORKER_PROMPT
-from furrow.config import TaskModel
-from furrow.llm import LLMClient
-
-if TYPE_CHECKING:
-    from furrow.config import Settings
+from furrow.config import Settings, TaskModel
 
 
-class WorkerAgent:
-    def __init__(self, task: TaskModel, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+class WorkerAgent(BaseAgent):
+    """Implements a single task and returns the worker's raw report text."""
+
+    model_attr = "worker_model"
+
+    def __init__(
+        self,
+        task: TaskModel,
+        client: SupportsComplete | None = None,
+        settings: Settings | None = None,
+    ) -> None:
+        super().__init__(client=client, settings=settings)
         self.task = task
-        self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        files = ", ".join(self.task.files) if self.task.files else "any"
+        prompt = f"Task: {self.task.description}\nFiles to touch: {files}\n"
+        return await self.ask(prompt, system=WORKER_PROMPT)
