@@ -1,6 +1,7 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+# setuptools>=70.1 is the floor for the PEP 517 `build_meta` backend used below.
+requires = ["setuptools>=70.1", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -8,17 +9,25 @@ version = "0.1.0"
 description = "Autonomous coding agent with infinite parallel development loop"
 readme = "README.md"
 requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.7",
+    # Provides `.env` loading via `SettingsConfigDict(env_file=...)`, so python-dotenv
+    # is pulled in transitively and does not need to be a direct dependency.
     "pydantic-settings>=2.2",
     "anthropic>=0.34",
     "openai>=1.40",
     "httpx>=0.27",
     "click>=8.1",
     "rich>=13.7",
-    "python-dotenv>=1.0",
     "aiofiles>=24.1",
     "tenacity>=8.2",
     "structlog>=24.1",
@@ -38,11 +47,43 @@ furrow = "furrow.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["furrow*"]
+# `namespaces = false` makes discovery use `find_packages`, which only descends into
+# directories containing `__init__.py`. `furrow/cli/__init__.py` is therefore required:
+# without it the `furrow.cli` package (and the console script entry point above) would
+# be silently dropped from the built distribution.
+namespaces = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# `-q` only reduces verbosity; it never suppresses failure output or changes exit codes.
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "ASYNC"]
+# E501 is left to the formatter, which is the only tool that should wrap long lines.
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.10"
+files = ["furrow"]
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+disallow_any_generics = true
+no_implicit_reexport = true
+
+[[tool.mypy.overrides]]
+# Tests are not shipped, so full annotation is not required of them.
+module = ["tests.*"]
+disallow_untyped_defs = false

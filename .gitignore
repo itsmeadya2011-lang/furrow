@@ -1,0 +1,49 @@
+# --- Python bytecode ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyd
+
+# --- Packaging / build artifacts ---
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+.python-version
+
+# --- Tool caches ---
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.tox/
+.nox/
+.hypothesis/
+
+# --- Coverage ---
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# --- Secrets / local config (.env.example is tracked) ---
+.env
+.env.*
+!.env.example
+
+# --- Furrow run state (workspace + run store) ---
+.furrow/
+
+# --- Editor / OS noise ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
