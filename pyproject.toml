@@ -1,6 +1,8 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+# "setuptools.backends.legacy" does not exist in setuptools>=68; the PEP 517
+# backend module is setuptools.build_meta.
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -37,6 +39,8 @@ furrow = "furrow.cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
+# Requires every subpackage (furrow.cli included) to have an __init__.py;
+# namespace-only dirs are skipped by find(), so a wheel would ship no CLI.
 include = ["furrow*"]
 
 [tool.pytest.ini_options]
@@ -46,3 +50,25 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# The in-repo .venv/ holds thousands of site-packages files; without this every
+# `ruff check .` scans the entire installed dependency tree and floods output.
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+# Pin the rule set explicitly so findings are governed by a deliberate choice
+# instead of ruff's changing defaults: pycodestyle/pyflakes basics, import order,
+# pyupgrade, bugbear, comprehensions and simplifications.
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["furrow", "tests"]
+
+[tool.mypy]
+python_version = "3.10"
+# anthropic, openai and aiofiles ship no type information (py.typed is absent),
+# so imports of those SDKs would otherwise be hard errors.
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+exclude = ["^\\.venv/"]
