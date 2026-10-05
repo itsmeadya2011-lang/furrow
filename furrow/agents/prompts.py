@@ -24,10 +24,22 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+You will be given the current contents of the relevant files in the workspace. Read them carefully, then produce the file operations needed to complete the task.
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return JSON only (no markdown, no explanation) with this shape:
+{
+  "operations": [
+    {"action": "create", "path": "src/new_file.py", "content": "...full file content..."},
+    {"action": "update", "path": "src/existing.py", "content": "...full new file content..."},
+    {"action": "delete", "path": "src/old_file.py"}
+  ],
+  "summary": "Brief summary of what was changed"
+}
+- Use "create" for new files, "update" for existing files (provide the complete new content), and "delete" for removing files.
+- For updates, always provide the full new file content, not a diff.
 - Do not spawn subagents.
 """
 
