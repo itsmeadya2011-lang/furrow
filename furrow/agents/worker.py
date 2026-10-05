@@ -11,7 +11,9 @@ if TYPE_CHECKING:
 
 
 class WorkerAgent:
-    def __init__(self, task: TaskModel, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self, task: TaskModel, client: LLMClient | None = None, settings: Settings | None = None
+    ) -> None:
         self.task = task
         self.client = client or LLMClient(settings=settings)
 
