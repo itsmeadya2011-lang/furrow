@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -24,13 +25,37 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        # If tests passed, return success
+        if "passed" in test_output.lower() and "failed" not in test_output.lower():
+            return TestResult(passed=True, summary="All tests passed", failures=[])
+
+        # Tests failed - try to fix them
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n\nReturn JSON with fixes to apply:\n{{\n  \"fixes\": [\n    {{\n      \"file\": \"path/to/file.py\",\n      \"content\": \"fixed file content\"\n    }}\n  ],\n  \"summary\": \"Description of fixes applied\"\n}}"
+        
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            fixes = data.get("fixes", [])
+            summary = data.get("summary", "Applied fixes for test failures")
+            
+            # Apply fixes
+            for fix in fixes:
+                file_path = fix.get("file")
+                content = fix.get("content")
+                if file_path and content is not None:
+                    await self.client.write_file(file_path, content)
+            
+            # Re-run tests after fixes
+            test_output = await self._run_tests()
+            passed = "passed" in test_output.lower() and "failed" not in test_output.lower()
+            
+            if passed:
+                return TestResult(passed=True, summary=f"Fixed and tests now pass: {summary}", failures=[])
+            else:
+                return TestResult(passed=False, summary=f"Fixes applied but tests still fail: {summary}", failures=[test_output])
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(passed=False, summary="Failed to parse tester response", failures=[test_output])
 
     async def _run_tests(self) -> str:
         candidates = [
