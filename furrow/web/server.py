@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 app = FastAPI(title="Furrow")
 
@@ -52,13 +53,49 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    task: asyncio.Task | None = None
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        model = data.get("model")
+
+        queue: asyncio.Queue[object] = asyncio.Queue()
+        done = object()
+
+        def on_message(msg: str) -> None:
+            queue.put_nowait(msg)
+
+        client = LLMClient(settings=Settings(model=model)) if model else None
+        orchestrator = Orchestrator(goal=goal, client=client, on_message=on_message)
+
+        # Run the long-running orchestrator loop as a background task so it
+        # does not block the WebSocket; its output is streamed through the
+        # queue via the on_message callback.
+        task = asyncio.create_task(orchestrator.run())
+        task.add_done_callback(lambda _t: queue.put_nowait(done))
+
+        while True:
+            msg = await queue.get()
+            if msg is done:
+                break
+            await websocket.send_text(str(msg))
+
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            exc = None
+        if exc is not None:
+            await websocket.send_text(f"Error: {exc}")
+        await websocket.send_text("\nRun finished.")
     except WebSocketDisconnect:
         pass
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
