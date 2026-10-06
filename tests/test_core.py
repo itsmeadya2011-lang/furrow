@@ -1,5 +1,4 @@
-import pytest
-from furrow.config import Plan, TaskModel, TestResult
+from furrow.config import Plan, Provider, Settings, TaskModel, TestResult
 
 
 def test_plan_parse():
@@ -10,3 +9,30 @@ def test_plan_parse():
 def test_test_result():
     t = TestResult(passed=True, summary="ok", failures=[])
     assert t.passed is True
+
+
+def test_settings_defaults():
+    s = Settings()
+    assert s.provider == Provider.ANTHROPIC
+    assert s.max_parallel_tasks == 5
+    assert s.max_cycles == 0
+    assert s.ollama_base_url == "http://localhost:11434"
+
+
+def test_provider_enum_values():
+    assert Provider.ANTHROPIC.value == "anthropic"
+    assert Provider.OPENAI.value == "openai"
+    assert Provider.OLLAMA.value == "ollama"
+
+
+def test_task_default_status():
+    t = TaskModel(id="1", description="do thing")
+    assert t.status == "pending"
+    assert t.result is None
+    assert t.files == []
+    assert t.dependencies == []
+
+
+def test_plan_empty_tasks():
+    p = Plan(tasks=[], rationale="none")
+    assert p.tasks == []

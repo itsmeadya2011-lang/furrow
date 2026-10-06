@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -21,16 +20,24 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        try:
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        except Exception as e:  # noqa: BLE001
+            return TestResult(passed=False, summary=f"LLM call failed: {e}", failures=[str(e)])
+
         try:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(
+                passed="passed" in response.lower(),
+                summary=response,
+                failures=[],
+            )
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -53,6 +60,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, Exception):  # noqa: BLE001, S112
                 continue
         return "No test runner found."

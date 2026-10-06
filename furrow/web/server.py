@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
+import json
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,7 +15,12 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
+
+
+@app.get("/health")
+async def health() -> dict:
+    return {"status": "ok"}
 
 
 @app.get("/")
@@ -54,11 +58,33 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         data = await websocket.receive_json()
-        goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
     except WebSocketDisconnect:
+        return
+
+    goal = data.get("goal", "")
+    model = data.get("model")
+    ws_settings = settings
+    if model:
+        ws_settings = settings.model_copy(update={"model": model})
+
+    orch = Orchestrator(goal=goal, settings=ws_settings)
+
+    async def emit(event: str, payload: dict) -> None:
+        await websocket.send_text(json.dumps({"event": event, "data": payload}))
+
+    orch.on_event = emit
+    await websocket.send_text(json.dumps({"event": "start", "data": {"goal": goal}}))
+
+    try:
+        await orch.run()
+    except WebSocketDisconnect:
+        # Client disconnected mid-run; stop the orchestrator.
         pass
+    except Exception as e:  # noqa: BLE001
+        try:
+            await websocket.send_text(json.dumps({"event": "error", "data": {"error": str(e)}}))
+        except Exception:  # noqa: BLE001, S110
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
