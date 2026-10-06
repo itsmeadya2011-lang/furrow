@@ -2,15 +2,23 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger()
+
+_AnthropicAPIError = anthropic.APIError
+_AnthropicRateLimitError = anthropic.RateLimitError
+_OpenAIAPIError = openai.APIError
+_OpenAIRateLimitError = openai.RateLimitError
 
 
 class LLMClient:
@@ -46,7 +54,14 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((_AnthropicAPIError, _AnthropicRateLimitError, _OpenAIAPIError, _OpenAIRateLimitError)),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("Calling Anthropic", model=model, prompt_len=len(prompt))
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=4096,
@@ -55,7 +70,14 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((_OpenAIAPIError, _OpenAIRateLimitError)),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("Calling OpenAI", model=model, prompt_len=len(prompt))
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
@@ -66,14 +88,25 @@ class LLMClient:
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
-            return await f.read()
+        try:
+            async with aiofiles.open(path, "r") as f:
+                return await f.read()
+        except FileNotFoundError:
+            logger.warning("File not found", path=str(path))
+            raise
+        except Exception as e:
+            logger.error("Error reading file", path=str(path), error=str(e))
+            raise
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
-            await f.write(content)
+        try:
+            async with aiofiles.open(p, "w") as f:
+                await f.write(content)
+        except Exception as e:
+            logger.error("Error writing file", path=str(path), error=str(e))
+            raise
 
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
