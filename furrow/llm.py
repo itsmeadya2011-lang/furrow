@@ -7,6 +7,7 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -31,6 +32,12 @@ class LLMClient:
     @property
     def openai(self) -> AsyncOpenAI:
         if self._openai is None:
+            if self.settings.provider == Provider.OLLAMA:
+                self._openai = AsyncOpenAI(
+                    base_url=self.settings.ollama_base_url,
+                    api_key="ollama",
+                )
+                return self._openai
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
@@ -41,7 +48,7 @@ class LLMClient:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
+        elif self.settings.provider in (Provider.OPENAI, Provider.OLLAMA):
             return await self._complete_openai(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
