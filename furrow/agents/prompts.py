@@ -29,6 +29,24 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+You will be given the task description and the list of files to work on. You should:
+1. First, read the relevant files to understand the current state
+2. Then, output your changes in a structured format
+
+Return your response as JSON only (no markdown) with this shape:
+{
+  "changes": [
+    {
+      "file": "path/to/file.py",
+      "content": "full new file content",
+      "action": "write"
+    }
+  ],
+  "summary": "Brief summary of what was changed"
+}
+
+If a file doesn't exist yet, use action "create". If you're modifying an existing file, use action "write". If you need to read a file first, you can include it with action "read" but the system will read files automatically.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.

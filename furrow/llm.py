@@ -7,8 +7,10 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+import httpx
+from anthropic import AsyncAnthropic, RateLimitError as AnthropicRateLimitError
+from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
 
@@ -18,6 +20,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama_client: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -29,7 +32,7 @@ class LLMClient:
         return self._anthropic
 
     @property
-    def openai(self) -> AsyncOpenAI:
+    def openai_client(self) -> AsyncOpenAI:
         if self._openai is None:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
@@ -37,12 +40,28 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> httpx.AsyncClient:
+        if self._ollama_client is None:
+            self._ollama_client = httpx.AsyncClient(
+                base_url=self.settings.ollama_base_url,
+                timeout=httpx.Timeout(120.0)
+            )
+        return self._ollama_client
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((httpx.RequestError, httpx.TimeoutException, AnthropicRateLimitError, OpenAIRateLimitError))
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -56,7 +75,7 @@ class LLMClient:
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
+        response = await self.openai_client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
@@ -64,6 +83,28 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        
+        response = await self.ollama.post(
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {
+                    "num_predict": 4096,
+                    "temperature": 0.1,
+                }
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
