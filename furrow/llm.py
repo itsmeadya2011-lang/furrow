@@ -1,16 +1,25 @@
 from __future__ import annotations
 
 import os
+import structlog
 from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import anthropic as _anthropic
+import openai as _openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -37,8 +46,14 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((_anthropic.RateLimitError, _anthropic.APIError, _openai.RateLimitError, _openai.APIError)),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.debug("LLM request", provider=self.settings.provider.value, model=model, prompt_len=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
