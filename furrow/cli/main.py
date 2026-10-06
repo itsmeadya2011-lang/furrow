@@ -7,6 +7,7 @@ import click
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 console = Console()
 
@@ -19,14 +20,17 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
-    if not goal:
+@click.option("--resume", is_flag=True, help="Resume from last saved state")
+def start(goal: str | None, model: str | None, resume: bool) -> None:
+    if not goal and not resume:
         goal = click.prompt("Enter your goal for Furrow")
+    client = None
     if model:
-        from furrow.config import settings
-        settings.model = model
+        from furrow.config import Settings, settings
+        overridden = Settings(**{**settings.model_dump(), "model": model})
+        client = LLMClient(settings=overridden)
     try:
-        asyncio.run(Orchestrator(goal=goal).run())
+        asyncio.run(Orchestrator(goal=goal or "", client=client, resume=resume).run())
     except KeyboardInterrupt:
         console.print("\n[yellow]Furrow stopped by user.[/yellow]")
         sys.exit(0)

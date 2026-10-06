@@ -15,17 +15,49 @@ from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
 from furrow.config import Plan, TestResult
+from furrow.core.state import FurrowState, StateManager
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(self, goal: str, client: LLMClient | None = None, resume: bool = False) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.last_tasks: list[Any] = []
+        self.state_manager = StateManager(workspace=self.client.settings.workspace)
+        if resume:
+            self._load_state()
+
+    async def run(self) -> None:
+        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        while True:
+            self.cycles += 1
+            console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            await self._cycle()
+            self._save_state()
+            if self._is_done():
+                console.print("[bold green]Goal complete. Halting.[/bold green]")
+                break
+
+    def _load_state(self) -> None:
+        state = self.state_manager.load()
+        if state:
+            self.goal = state.goal
+            self.cycles = state.cycles
+            self.last_tasks = [TaskModel(**t) for t in state.last_tasks]
+            console.print(f"[dim]Resumed from saved state (cycle {self.cycles})[/dim]")
+
+    def _save_state(self) -> None:
+        state = FurrowState(
+            goal=self.goal,
+            cycles=self.cycles,
+            last_tasks=[t.model_dump() for t in self.last_tasks],
+        )
+        self.state_manager.save(state)
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -41,6 +73,7 @@ class Orchestrator:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        self.last_tasks = plan.tasks
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
@@ -76,13 +109,18 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if self.client.settings.max_cycles > 0 and self.cycles >= self.client.settings.max_cycles:
+            console.print(f"[yellow]Stopping: reached max_cycles ({self.client.settings.max_cycles})[/yellow]")
+            return True
+        if not self.last_tasks:
+            return True
+        completed = sum(1 for t in self.last_tasks if t.status == "completed")
+        failed = sum(1 for t in self.last_tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(self.last_tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.last_tasks

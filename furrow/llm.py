@@ -13,6 +13,9 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, settings
 
 
+from tenacity import retry, stop_after_attempt, wait_exponential_jitter
+
+
 class LLMClient:
     def __init__(self, settings: Settings = settings) -> None:
         self.settings = settings
@@ -37,6 +40,7 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(initial=1, max=10), reraise=True)
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
@@ -46,6 +50,7 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(initial=1, max=10), reraise=True)
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +60,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential_jitter(initial=1, max=10), reraise=True)
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
