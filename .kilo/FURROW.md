@@ -54,6 +54,16 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
 
+## Recent Improvements
+- Fixed orchestrator infinite loop (task storage, `_is_done` logic)
+- Added OLLAMA provider support
+- Added retry logic and timeouts to LLM calls
+- Enforced `max_cycles` and `max_parallel_tasks` settings
+- Workers now produce structured JSON output and can write files
+- Web UI streams output in real-time
+- CLI now supports `--cycles`, `--provider`, and `--model` flags
+- Narrowed exception handling in tester agent
+
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
 - Persistent state file for goal/task tracking across sessions.
