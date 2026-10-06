@@ -17,4 +17,8 @@ class WorkerAgent:
 
     async def run(self) -> str:
         prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        response = await self.client.complete(prompt, model=self.client.settings.worker_model)
+        if self.task.files:
+            for path in self.task.files:
+                await self.client.write_file(path, response)
+        return response

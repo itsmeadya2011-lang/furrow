@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from enum import Enum
-from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
@@ -47,8 +46,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
-    workspace: Path = Field(default_factory=Path.cwd)
-    log_level: str = "INFO"
+    max_tokens: int = 4096
 
 
 settings = Settings()
