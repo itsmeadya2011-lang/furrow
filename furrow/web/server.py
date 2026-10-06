@@ -55,8 +55,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        async def send_callback(message: str) -> None:
+            try:
+                await websocket.send_text(message)
+            except RuntimeError:
+                # WebSocket is closed
+                pass
+
+        orchestrator = Orchestrator(goal=goal, callback=send_callback)
+        run_task = asyncio.create_task(orchestrator.run())
+
+        try:
+            await run_task
+        except WebSocketDisconnect:
+            run_task.cancel()
+            try:
+                await run_task
+            except asyncio.CancelledError:
+                pass
     except WebSocketDisconnect:
         pass
 
