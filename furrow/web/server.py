@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Optional
+from io import StringIO
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
+from rich.console import Console
+from rich.panel import Panel
+from rich.pretty import Pretty
+from rich.status import Status
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
@@ -17,6 +23,28 @@ app = FastAPI(title="Furrow")
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+class WebSocketConsole(Console):
+    """A Rich console that writes to a WebSocket."""
+    
+    def __init__(self, websocket: WebSocket, *args, **kwargs):
+        super().__init__(*args, **kwargs, file=StringIO(), force_terminal=True, width=120)
+        self.websocket = websocket
+        self._buffer = StringIO()
+    
+    def print(self, *args, **kwargs) -> None:
+        # Capture the output
+        super().print(*args, **kwargs)
+        # Get the captured output and send to websocket
+        output = self.file.getvalue()
+        if output:
+            self.file = StringIO()  # Reset buffer
+            try:
+                asyncio.create_task(self.websocket.send_text(output))
+            except RuntimeError:
+                # No event loop, store for later
+                self._buffer.write(output)
 
 
 @app.get("/")
@@ -55,8 +83,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        
+        # Create a custom console that writes to websocket
+        ws_console = WebSocketConsole(websocket)
+        
+        # We need to monkey-patch the console in the orchestrator
+        import furrow.core.orchestrator as orchestrator_module
+        original_console = orchestrator_module.console
+        orchestrator_module.console = ws_console
+        
+        try:
+            orchestrator = Orchestrator(goal=goal)
+            await orchestrator.run()
+        finally:
+            orchestrator_module.console = original_console
+            
     except WebSocketDisconnect:
         pass
 
