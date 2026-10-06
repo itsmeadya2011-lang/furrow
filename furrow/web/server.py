@@ -8,15 +8,22 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import Settings, settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import get_logger, setup_logging
 
 app = FastAPI(title="Furrow")
+logger = get_logger(__name__)
 
 
 class StartRequest(BaseModel):
     goal: str
     model: Optional[str] = None
+
+
+@app.on_event("startup")
+async def startup() -> None:
+    setup_logging(settings.log_level)
 
 
 @app.get("/")
@@ -55,9 +62,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        model = data.get("model")
+        if model:
+            settings.model = model
+        logger.info("websocket_goal_received", goal=goal)
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
     except WebSocketDisconnect:
+        logger.info("websocket_disconnected")
         pass
 
 

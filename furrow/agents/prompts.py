@@ -29,7 +29,9 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- You will be given existing file contents for context. Use them to make appropriate changes.
+- If files don't exist, create them.
+- Write complete, working code - not pseudocode or snippets."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
@@ -42,4 +44,4 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array. Be specific about what failed and why."""
