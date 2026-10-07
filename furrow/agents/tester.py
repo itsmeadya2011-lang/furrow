@@ -33,7 +33,10 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
+        output_parts = []
+        
+        # Run tests
+        test_output = await self._run_command([
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
             ["npm", "test", "--", "--silent"],
@@ -41,7 +44,33 @@ class TesterAgent:
             ["yarn", "test", "--silent"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
-        ]
+        ])
+        if test_output:
+            output_parts.append(f"=== Tests ===\n{test_output}")
+        
+        # Run linting
+        lint_output = await self._run_command([
+            ["ruff", "check", "."],
+            ["flake8", "."],
+            ["eslint", "."],
+            ["golangci-lint", "run"],
+        ])
+        if lint_output:
+            output_parts.append(f"=== Lint ===\n{lint_output}")
+        
+        # Run type checking
+        type_output = await self._run_command([
+            ["mypy", "."],
+            ["pyright", "."],
+            ["tsc", "--noEmit"],
+            ["go", "vet", "./..."],
+        ])
+        if type_output:
+            output_parts.append(f"=== Type Check ===\n{type_output}")
+        
+        return "\n\n".join(output_parts) if output_parts else "No test/lint/type check runners found."
+
+    async def _run_command(self, candidates: list[list[str]]) -> str:
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
@@ -49,10 +78,12 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    result = stdout.decode() + stderr.decode()
+                    if result.strip():
+                        return result
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return ""
