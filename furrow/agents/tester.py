@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import logging
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -11,6 +11,8 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class TesterAgent:
@@ -21,7 +23,7 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -47,12 +49,22 @@ class TesterAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                logger.debug("Test runner not found: %s", " ".join(cmd))
                 continue
-        return "No test runner found."
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            except asyncio.TimeoutError:
+                logger.warning("Test runner timed out: %s", " ".join(cmd))
+                proc.kill()
+                await proc.wait()
+                continue
+
+            output = stdout.decode() + stderr.decode()
+            exit_code = proc.returncode
+            if exit_code != 0:
+                output += f"\n[exit code: {exit_code}]"
+            logger.info("Test runner %s completed with exit code %s", " ".join(cmd), exit_code)
+            return output
+
+        return "No test runner found. No pytest, npm, pnpm, yarn, cargo, or go detected."
