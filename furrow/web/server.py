@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+import re
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -10,13 +10,18 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 app = FastAPI(title="Furrow")
+
+# Regex to strip ANSI escape codes from terminal output
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
+    provider: str | None = None
 
 
 @app.get("/")
@@ -55,10 +60,35 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+        provider = data.get("provider")
+
+        settings = Settings()
+        if model:
+            settings.model = model
+        if provider:
+            settings.provider = provider
+
+        client = LLMClient(settings=settings)
+
+        def _send_output(text: str) -> None:
+            """Relay orchestrator output to the WebSocket client."""
+            clean = _ANSI_RE.sub('', text).strip()
+            if clean:
+                asyncio.create_task(websocket.send_text(clean))
+
+        orchestrator = Orchestrator(
+            goal=goal,
+            client=client,
+            on_output=_send_output,
+        )
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        await websocket.send_text(f"Error: {e}")
+    finally:
+        await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

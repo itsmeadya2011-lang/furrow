@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -14,10 +12,13 @@ from furrow.config import Provider, Settings, settings
 
 
 class LLMClient:
+    """Async LLM client supporting Anthropic, OpenAI, and Ollama providers."""
+
     def __init__(self, settings: Settings = settings) -> None:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._http_client: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -43,6 +44,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,6 +68,18 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        if self._http_client is None:
+            self._http_client = httpx.AsyncClient(base_url=self.settings.ollama_base_url)
+        response = await self._http_client.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        return response["message"]["content"]
+
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
             return await f.read()
@@ -80,3 +95,9 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def close(self) -> None:
+        """Close any open HTTP connections."""
+        if self._http_client is not None:
+            await self._http_client.aclose()
+            self._http_client = None
