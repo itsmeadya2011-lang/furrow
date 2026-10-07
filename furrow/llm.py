@@ -66,11 +66,16 @@ class LLMClient:
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
+        p = Path(path)
+        if not p.is_absolute():
+            p = self.settings.workspace / p
+        async with aiofiles.open(p, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
+        if not p.is_absolute():
+            p = self.settings.workspace / p
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
