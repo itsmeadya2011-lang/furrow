@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -14,27 +13,36 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self, goal: str, client: LLMClient | None = None, state_path: str | Path = ".furrow_state.json"
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[TaskModel] = []
+        self.state_path = Path(state_path)
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        max_cycles = self.client.settings.max_cycles
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
+            self.auto_save()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                break
+            if max_cycles > 0 and self.cycles >= max_cycles:
+                console.print(f"[bold yellow]Reached max cycles limit ({max_cycles}). Stopping.[/bold yellow]")
                 break
 
     async def _cycle(self) -> None:
@@ -46,12 +54,25 @@ class Orchestrator:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
+        # Merge new tasks into self.tasks, avoiding duplicates by id
+        existing_ids = {t.id for t in self.tasks}
+        for task in plan.tasks:
+            if task.id not in existing_ids:
+                self.tasks.append(task)
+                existing_ids.add(task.id)
+
+        # Reset any previously failed tasks to pending so they can be retried
+        for task in self.tasks:
+            if task.status == "failed":
+                task.status = "pending"
+                task.result = None
+
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
+            task_coros = [
                 WorkerAgent(task=task, client=self.client).run()
                 for task in plan.tasks
             ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            results = await asyncio.gather(*task_coros, return_exceptions=True)
 
         for task, result in zip(plan.tasks, results):
             if isinstance(result, Exception):
@@ -76,13 +97,46 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if not self.tasks:
+            return False
+        completed = sum(1 for t in self.tasks if t.status == "completed")
+        failed = sum(1 for t in self.tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(self.tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
+
+    def save_state(self, path: str | Path | None = None) -> None:
+        """Save current orchestrator state to a JSON file."""
+        path = Path(path) if path else self.state_path
+        data = {
+            "goal": self.goal,
+            "cycles": self.cycles,
+            "tasks": [t.model_dump() for t in self.tasks],
+        }
+        path.write_text(json.dumps(data, indent=2, default=str))
+
+    def load_state(self, path: str | Path | None = None) -> bool:
+        """Load state from a JSON file. Returns True if loaded successfully."""
+        path = Path(path) if path else self.state_path
+        if not path.exists():
+            return False
+        try:
+            data = json.loads(path.read_text())
+            self.goal = data.get("goal", self.goal)
+            self.cycles = data.get("cycles", 0)
+            self.tasks = [TaskModel(**t) for t in data.get("tasks", [])]
+            return True
+        except Exception:
+            return False
+
+    def auto_save(self) -> None:
+        """Save state to the default path."""
+        try:
+            self.save_state()
+        except Exception:
+            pass
