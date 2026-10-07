@@ -8,9 +8,12 @@ from typing import TYPE_CHECKING
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = get_logger(__name__)
 
 
 class TesterAgent:
@@ -22,14 +25,19 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            logger.error("test_run_failed", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        logger.info("tester_request", tasks=len(tasks))
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
+            logger.info("tester_response", passed=result.passed)
+            return result
         except (json.JSONDecodeError, ValueError):
+            logger.warning("tester_parse_failed", response=response[:200])
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:

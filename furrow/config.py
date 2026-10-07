@@ -32,6 +32,7 @@ class TestResult(BaseModel):
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
+    __test__ = False
 
 
 class Settings(BaseSettings):
