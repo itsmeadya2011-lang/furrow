@@ -6,7 +6,7 @@ import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import TaskModel, TestResult, Settings
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.settings = settings or Settings()
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
@@ -24,7 +25,13 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        # Build task summary for context
+        task_summary = "\n".join(
+            f"- {t.id}: {t.description} ({t.status})" + (f" - {t.result}" if t.result else "")
+            for t in tasks
+        )
+
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTasks:\n{task_summary}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -34,8 +41,8 @@ class TesterAgent:
 
     async def _run_tests(self) -> str:
         candidates = [
-            ["pytest", "-q"],
-            ["python", "-m", "pytest", "-q"],
+            ["pytest", "-q", "--tb=short"],
+            ["python", "-m", "pytest", "-q", "--tb=short"],
             ["npm", "test", "--", "--silent"],
             ["pnpm", "test", "--", "--silent"],
             ["yarn", "test", "--silent"],
@@ -49,10 +56,12 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    if output.strip():
+                        return output
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return "No test runner found or tests produced no output."
