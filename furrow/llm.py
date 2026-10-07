@@ -7,6 +7,7 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -18,6 +19,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._httpx_client: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +39,20 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def httpx_client(self) -> httpx.AsyncClient:
+        if self._httpx_client is None:
+            self._httpx_client = httpx.AsyncClient(timeout=120.0)
+        return self._httpx_client
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,6 +75,89 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        url = f"{self.settings.ollama_base_url}/api/chat"
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        response = await self.httpx_client.post(
+            url,
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {"num_predict": 4096}
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
+
+    async def complete_stream(self, prompt: str, system: str = "", model: str | None = None):
+        """Stream LLM responses token by token."""
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            async for chunk in self._complete_anthropic_stream(prompt, system, model):
+                yield chunk
+        elif self.settings.provider == Provider.OPENAI:
+            async for chunk in self._complete_openai_stream(prompt, system, model):
+                yield chunk
+        elif self.settings.provider == Provider.OLLAMA:
+            async for chunk in self._complete_ollama_stream(prompt, system, model):
+                yield chunk
+        else:
+            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_anthropic_stream(self, prompt: str, system: str, model: str):
+        async with self.anthropic.messages.stream(
+            model=model,
+            max_tokens=4096,
+            system=system or "You are a helpful coding assistant.",
+            messages=[{"role": "user", "content": prompt}],
+        ) as stream:
+            async for text in stream.text_stream:
+                yield text
+
+    async def _complete_openai_stream(self, prompt: str, system: str, model: str):
+        stream = await self.openai.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+            stream=True,
+        )
+        async for chunk in stream:
+            if chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+
+    async def _complete_ollama_stream(self, prompt: str, system: str, model: str):
+        url = f"{self.settings.ollama_base_url}/api/chat"
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        async with self.httpx_client.stream(
+            "POST",
+            url,
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": True,
+                "options": {"num_predict": 4096}
+            }
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if line.strip():
+                    import json
+                    data = json.loads(line)
+                    if "message" in data and "content" in data["message"]:
+                        yield data["message"]["content"]
+
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
             return await f.read()
@@ -80,3 +173,9 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def close(self) -> None:
+        """Close HTTP clients."""
+        if self._httpx_client:
+            await self._httpx_client.aclose()
+            self._httpx_client = None
