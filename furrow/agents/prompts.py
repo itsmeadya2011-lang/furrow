@@ -24,10 +24,19 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+You MUST output your changes as file edits using this exact format:
+
+```file:path/to/file.py
+<full file content here>
+```
+
 Rules:
+- Output one or more file blocks. Each block starts with ```file:<path> and ends with ```.
+- Include the COMPLETE file content, not just a diff.
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- If a file doesn't exist yet, create it with the full content.
+- After the file blocks, write a one-line summary starting with "SUMMARY:".
 - Do not spawn subagents.
 """
 

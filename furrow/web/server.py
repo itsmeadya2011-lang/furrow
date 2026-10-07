@@ -37,11 +37,16 @@ async def index() -> HTMLResponse:
     const out = document.getElementById('out');
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
+      out.textContent = '';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onopen = () => {
+        ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      };
+      ws.onmessage = (ev) => {
+        out.textContent += ev.data + '\\n';
+        out.scrollTop = out.scrollHeight;
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
 </body>
@@ -55,7 +60,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        orchestrator = Orchestrator(goal=goal, on_event=lambda evt: websocket.send_text(evt.get("type", "event")))
+
+        async def _send(event: dict) -> None:
+            try:
+                await websocket.send_text(str(event.get("type", "event")))
+            except Exception:
+                pass
+
+        orchestrator._on_event = _send  # type: ignore[assignment]
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
