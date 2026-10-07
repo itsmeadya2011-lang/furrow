@@ -29,7 +29,21 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+You MUST return JSON only with this shape:
+{
+  "files": [
+    {
+      "path": "src/auth.py",
+      "content": "full file content here",
+      "action": "write"
+    }
+  ],
+  "summary": "Brief summary of changes"
+}
+
+Actions: "write" (create or overwrite), "delete" (remove file).
+Provide the COMPLETE file content for write actions."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
