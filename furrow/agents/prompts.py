@@ -29,7 +29,21 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- Use the provided tools to read, write, and edit files.
+- Always explore the codebase first to understand the context before making changes."""
+
+WORKER_TOOL_PROMPT = """You have access to the following tools:
+
+**read_file(path)** - Read the contents of a file
+**write_file(path, content)** - Write content to a file (creates directories as needed)
+**edit_file(path, old_string, new_string)** - Make targeted edits using exact string replacement
+**list_files(path, pattern)** - List files in a directory
+**run_command(command, cwd, timeout)** - Run a shell command and return output
+**glob(pattern, path)** - Find files matching a glob pattern
+**grep(pattern, path, include)** - Search for text in files
+
+When you need to use a tool, respond with a tool call. The system will execute it and return the result.
+Continue using tools until the task is complete, then provide a final summary."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
