@@ -18,7 +18,9 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break
+it into the most critical first slice.
+If the goal is already fully achieved, return an empty tasks array."""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
