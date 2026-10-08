@@ -27,13 +27,23 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return a JSON object with your changes and a summary.
 - Do not spawn subagents.
-"""
+
+Output format (JSON only, no markdown):
+{
+  "changes": [
+    {
+      "file": "path/to/file.py",
+      "content": "new file content here"
+    }
+  ],
+  "summary": "Brief description of what you changed"
+}"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
-Given the goal and test output, determine if tests passed or failed.
+Given the goal and test output, determine if tests passed or failed. If they failed, analyze and fix them.
 
 Return JSON only (no markdown) with this shape:
 {
@@ -42,4 +52,14 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, return fixes to apply:
+{
+  "fixes": [
+    {
+      "file": "path/to/file.py",
+      "content": "fixed file content"
+    }
+  ],
+  "summary": "Description of fixes applied",
+  "passed": false
+}"""
