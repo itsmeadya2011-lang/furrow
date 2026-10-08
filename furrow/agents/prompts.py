@@ -43,3 +43,10 @@ Return JSON only (no markdown) with this shape:
 }
 
 If tests failed, list each failure in the failures array."""
+
+TESTER_FIX_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
+
+Given test failures and relevant project files, determine the fix needed to make tests pass.
+
+Analyze the failures and the code to identify the root cause. Return specific file changes that will fix the issues.
+"""
