@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+from anthropic import APIError as AnthropicAPIError
 from anthropic import AsyncAnthropic
+from anthropic import RateLimitError as AnthropicRateLimitError
+from openai import APIError as OpenAIAPIError
 from openai import AsyncOpenAI
+from openai import RateLimitError as OpenAIRateLimitError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
@@ -18,6 +20,8 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,6 +41,11 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((AnthropicRateLimitError, AnthropicAPIError, OpenAIRateLimitError, OpenAIAPIError)),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
@@ -53,6 +62,8 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        self.total_input_tokens += response.usage.input_tokens
+        self.total_output_tokens += response.usage.output_tokens
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
@@ -63,7 +74,17 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
+        if response.usage:
+            self.total_input_tokens += response.usage.prompt_tokens
+            self.total_output_tokens += response.usage.completion_tokens
         return response.choices[0].message.content or ""
+
+    def get_token_usage(self) -> dict[str, int]:
+        return {
+            "input_tokens": self.total_input_tokens,
+            "output_tokens": self.total_output_tokens,
+            "total_tokens": self.total_input_tokens + self.total_output_tokens,
+        }
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
