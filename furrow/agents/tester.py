@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
+
+import structlog
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
@@ -12,25 +13,31 @@ from furrow.llm import LLMClient
 if TYPE_CHECKING:
     from furrow.config import Settings
 
+log = structlog.get_logger(__name__)
+
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        log.info("tester.run.start", goal=goal, num_tasks=len(tasks))
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            test_result = TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            test_result = TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+
+        log.info("tester.run.result", passed=test_result.passed, summary=test_result.summary)
+        return test_result
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -43,6 +50,7 @@ class TesterAgent:
             ["go", "test", "./..."],
         ]
         for cmd in candidates:
+            log.debug("tester._run_tests.try", command=" ".join(cmd))
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
@@ -53,6 +61,7 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except Exception:  # noqa: BLE001
+                log.debug("tester._run_tests.skip", command=" ".join(cmd))
                 continue
         return "No test runner found."
