@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:
@@ -27,7 +29,15 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Read files first using a READ_FILE tool call format to understand context.
+- Return changes as a JSON object with this exact structure:
+  {
+    "files": {
+      "path/to/file.py": "full new file content"
+    },
+    "summary": "brief description of changes"
+  }
+- Return ONLY the JSON, no markdown wrapping (no ```json fences).
 - Do not spawn subagents.
 """
 
@@ -42,4 +52,18 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array AND include a "fixes" array with file changes to apply.
+
+If tests failed, use this structure:
+{
+  "passed": false,
+  "summary": "Brief description of failures",
+  "failures": ["failure message 1", "failure message 2"],
+  "fixes": [
+    {
+      "path": "path/to/file.py",
+      "content": "full new file content"
+    }
+  ]
+}
+"""
