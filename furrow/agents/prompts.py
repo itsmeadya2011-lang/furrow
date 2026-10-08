@@ -26,10 +26,21 @@ Your job is to implement the assigned task completely and concisely.
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
-- Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Make minimal, targeted changes. When editing an existing file, use its current contents (provided below) as the base and return the complete new file content.
 - Do not spawn subagents.
-"""
+
+Return JSON only (no markdown, no explanation) with this shape:
+{
+  "operations": [
+    {"action": "write", "path": "src/foo.py", "content": "complete new file contents"},
+    {"action": "delete", "path": "src/old.py"}
+  ],
+  "summary": "Brief description of what changed"
+}
+
+- For "write" operations, "content" must hold the full new file contents (never a diff or patch).
+- For "delete" operations, omit "content".
+- Only include files relevant to the assigned task."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

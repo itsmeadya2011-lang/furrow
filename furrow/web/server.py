@@ -13,6 +13,16 @@ from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
 
+active_connections: list[WebSocket] = []
+
+
+async def broadcast(message: str) -> None:
+    for connection in list(active_connections):
+        try:
+            await connection.send_text(message)
+        except Exception:
+            active_connections.remove(connection)
+
 
 class StartRequest(BaseModel):
     goal: str
@@ -52,13 +62,17 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    active_connections.append(websocket)
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        orchestrator = Orchestrator(goal=goal, on_line=broadcast)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    finally:
+        if websocket in active_connections:
+            active_connections.remove(websocket)
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
