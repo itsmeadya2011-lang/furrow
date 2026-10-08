@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
+from furrow.logging import logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
@@ -28,9 +29,13 @@ class TesterAgent:
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
+            logger.info("Test results", passed=result.passed, summary=result.summary)
+            return result
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            result = TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            logger.info("Test results", passed=result.passed, summary=result.summary)
+            return result
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -49,10 +54,12 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    return_code = proc.returncode
+                    output = stdout.decode() + stderr.decode()
+                    return f"EXIT CODE: {return_code}\n{output}"
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return "No test runner found. Tried: pytest, npm test, pnpm test, yarn test, cargo test, go test."

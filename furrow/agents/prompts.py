@@ -27,7 +27,18 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return ONLY valid JSON (no markdown, no explanation) with this shape:
+  {
+    "changes": [
+      {
+        "file": "path/to/file.py",
+        "action": "create" | "modify",
+        "content": "full file content here"
+      }
+    ]
+  }
+- For "create", the file does not exist yet. For "modify", the file exists and you provide the new full content.
+- If no changes are needed, return {"changes": []}.
 - Do not spawn subagents.
 """
 

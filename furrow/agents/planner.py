@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from furrow.agents.prompts import PLANNER_PROMPT
 from furrow.config import Plan
 from furrow.llm import LLMClient
+from furrow.logging import logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
@@ -18,6 +19,7 @@ class PlannerAgent:
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
+        logger.debug("Parsing plan response", goal=goal)
         try:
             data = json.loads(response)
             return Plan(**data)
