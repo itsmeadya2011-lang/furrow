@@ -14,12 +14,19 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
 
 
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TaskModel(BaseModel):
     id: str
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
+    status: TaskStatus = TaskStatus.PENDING
     result: Optional[str] = None
 
 
@@ -35,6 +42,14 @@ class TestResult(BaseModel):
 
 
 class Settings(BaseSettings):
+    """Runtime settings loaded from FURROW_* environment variables and .env.
+
+    max_cycles bounds the orchestrator run loop; a value of 0 means unlimited.
+    use_file_tools controls whether the worker may call read_file/write_file.
+    max_tool_rounds caps the worker coding loop iterations per task.
+    test_timeout caps the seconds a test runner subprocess may run.
+    """
+
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC
@@ -47,6 +62,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    use_file_tools: bool = True
+    max_tool_rounds: int = 10
+    test_timeout: int = 120
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 

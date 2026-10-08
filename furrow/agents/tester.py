@@ -32,7 +32,7 @@ class TesterAgent:
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
-    async def _run_tests(self) -> str:
+    async def _run_tests(self, timeout: float | None = None) -> str:
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -42,17 +42,34 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        if timeout is None:
+            timeout = self.client.settings.test_timeout
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+            except Exception:
+                continue
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(), timeout=timeout
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                continue
+            stdout_text = stdout.decode(errors="replace") if stdout else ""
+            stderr_text = stderr.decode(errors="replace") if stderr else ""
+            parts = []
+            if stdout_text.strip():
+                parts.append(f"[stdout]\n{stdout_text}")
+            if stderr_text.strip():
+                parts.append(f"[stderr]\n{stderr_text}")
+            output = "\n".join(parts)
+            if proc.returncode == 0:
+                return output if output.strip() else "Tests completed successfully (no output)."
+            return f"[exit code {proc.returncode} - tests failed]\n{output}"
+        return "No supported test runner found in PATH."
