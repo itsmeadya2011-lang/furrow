@@ -24,11 +24,38 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+You work in two phases:
+
+Phase 1 — Plan the file operations needed for this task.
+Return a JSON object with an `actions` array. Each action is one of:
+  {"action": "read", "path": "relative/path/to/file"}
+  {"action": "write", "path": "relative/path/to/file", "content": "full file content"}
+
 Rules:
-- Work only on the assigned task. Do not refactor unrelated code.
-- Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
+- Always read files before writing them, so you can see existing code.
+- For new files, no read is needed — just write.
+- For modifying files, read first, then write the full updated content.
+- Return ONLY the JSON object, no markdown fences, no explanation.
+"""
+
+WORKER_WRITE_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
+
+You have already decided which files to read and write. Below are the contents
+of the files you chose to read. Now produce the final write actions.
+
+Task: {task_description}
+
+Files to touch: {files_list}
+
+Read file contents:
+{file_contents}
+
+Return a JSON object with an `actions` array. Each action is one of:
+  {{"action": "write", "path": "relative/path/to/file", "content": "full file content"}}
+
+Rules:
+- Write the COMPLETE updated content for each file you need to change or create.
+- Return ONLY the JSON object, no markdown fences, no explanation.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
