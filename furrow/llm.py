@@ -1,23 +1,35 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import anthropic as anthropic_lib
+import openai as openai_lib
+import structlog
+import tenacity
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+from furrow.config import settings as default_settings
+
+logger = structlog.get_logger()
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        structlog.configure(
+            processors=[
+                structlog.processors.add_log_level,
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.dev.ConsoleRenderer(),
+            ]
+        )
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,8 +49,15 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
+        retry=tenacity.retry_if_exception_type((anthropic_lib.RateLimitError, openai_lib.RateLimitError, Exception)),
+        before_sleep=tenacity.before_sleep_log(logger, logging.WARNING),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.info("LLM request", provider=self.settings.provider.value, model=model)
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,7 +72,10 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        for block in response.content:
+            if isinstance(block, anthropic_lib.types.TextBlock):
+                return block.text
+        return ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
