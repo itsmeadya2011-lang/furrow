@@ -26,6 +26,7 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -46,22 +47,10 @@ class Orchestrator:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.tasks = plan.tasks
 
-        for task, result in zip(plan.tasks, results):
-            if isinstance(result, Exception):
-                task.status = "failed"
-                task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
-            else:
-                task.status = "completed"
-                task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+        with Status("[bold yellow]Executing tasks with dependency ordering...", console=console):
+            await self._execute_tasks(plan.tasks)
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
@@ -76,13 +65,62 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        tasks = self._get_tasks()
+        if not tasks:
+            return False  # No tasks planned yet, keep going
+        completed = sum(1 for t in tasks if t.status == "completed")
+        failed = sum(1 for t in tasks if t.status == "failed")
+        blocked = sum(1 for t in tasks if t.status == "blocked")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
-            return True
-        return False
+        # Done when all tasks are completed (and none pending/blocked)
+        return completed == len(tasks) and (blocked == 0)
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
+
+    async def _execute_tasks(self, tasks: list[Any]) -> None:
+        """Execute tasks respecting dependencies. Runs independent tasks in parallel."""
+        task_map = {t.id: t for t in tasks}
+        completed_ids: set[str] = set()
+        failed_ids: set[str] = set()
+
+        def is_ready(task: Any) -> bool:
+            return all(
+                dep in completed_ids or dep in failed_ids
+                for dep in task.dependencies
+                if dep in task_map
+            )
+
+        pending = [t for t in tasks if is_ready(t)]
+        # Also include tasks with no deps in the workspace
+        while pending:
+            # Run ready tasks in parallel
+            running = []
+            for task in pending:
+                worker = WorkerAgent(task=task, client=self.client)
+                running.append((task, worker.run()))
+
+            for task, coro in running:
+                try:
+                    result = await coro
+                    task.status = "completed"
+                    task.result = result
+                    completed_ids.add(task.id)
+                    console.print(f"[green]Task {task.id} completed[/green]")
+                except Exception as e:
+                    task.status = "failed"
+                    task.result = str(e)
+                    failed_ids.add(task.id)
+                    console.print(f"[red]Task {task.id} failed: {e}[/red]")
+
+            # Find newly ready tasks
+            remaining = [t for t in tasks if t.status == "pending" and t.id not in completed_ids and t.id not in failed_ids]
+            pending = [t for t in remaining if is_ready(t)]
+
+            if not pending and remaining:
+                # Deadlock: remaining tasks have deps on each other or on non-existent tasks
+                console.print("[yellow]Warning: some tasks cannot run due to unmet dependencies.[/yellow]")
+                for t in remaining:
+                    t.status = "blocked"
+                break
