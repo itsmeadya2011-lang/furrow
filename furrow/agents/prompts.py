@@ -22,14 +22,22 @@ If the goal is too large for one cycle, say so in rationale and break it into th
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
-Your job is to implement the assigned task completely and concisely.
+Your job is to implement the assigned task completely by writing code to files.
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- You have access to read and write files. Implement the task completely.
+- Return JSON only (no markdown, no explanation) with this shape:
+{
+  "files": [
+    {"path": "src/auth.py", "content": "...full file content..."}
+  ],
+  "summary": "Brief description of changes"
+}
+- Each file entry must contain the complete file content, not a diff.
+- Include all files that need to be created or modified.
+- If a file should be deleted, omit it from the files array (deletion not supported yet)."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
