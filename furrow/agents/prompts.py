@@ -29,6 +29,11 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+- To make file changes, output them in this format:
+  ---FILE: path/to/file.py---
+  <full file content>
+  ---END FILE---
+  Include one block per file you want to write.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
