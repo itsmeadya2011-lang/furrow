@@ -5,6 +5,10 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
 
+Return ONLY a raw JSON object. Do NOT wrap it in markdown code fences, do NOT add any commentary before or after.
+The `rationale` field is REQUIRED.
+Task `id` values must be strings (e.g. "1", "2").
+
 Return JSON only (no markdown, no explanation) with this shape:
 {
   "tasks": [
@@ -29,11 +33,16 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+- If you cannot complete the task, explain exactly what is missing or blocking in your summary.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
 Given the goal and test output, determine if tests passed or failed.
+
+Return ONLY a raw JSON object. Do NOT wrap it in markdown code fences.
+In the `failures` array, include the test name and file/line when available.
+If the test output shows no failures, `passed` must be true.
 
 Return JSON only (no markdown) with this shape:
 {
