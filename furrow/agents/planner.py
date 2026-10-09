@@ -20,6 +20,20 @@ class PlannerAgent:
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
-            return Plan(**data)
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
+        except json.JSONDecodeError:
+            start = response.find("{")
+            end = response.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                try:
+                    data = json.loads(response[start : end + 1])
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
+            else:
+                raise ValueError(f"Failed to parse plan from LLM: no JSON object found\nResponse: {response}")
+        if isinstance(data, dict) and "tasks" in data:
+            plan = Plan(**data)
+        else:
+            raise ValueError(f"Failed to parse plan from LLM: missing 'tasks' key\nResponse: {response}")
+        limit = max(1, self.client.settings.max_parallel_tasks)
+        plan.tasks = plan.tasks[:limit]
+        return plan

@@ -18,16 +18,25 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+Return at most 5 tasks; the planner may further cap the count."""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
 Your job is to implement the assigned task completely and concisely.
 
+You have access to these tools:
+- read_file(path): read a file's contents
+- write_file(path, content): create or overwrite a file
+- list_files(directory): list files recursively under a directory
+- run_command(command, timeout): run a shell command (tests, lint, git, etc.)
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Use the tools to inspect the current code before editing, then apply your changes with write_file.
+- Run the relevant tests or linter with run_command if your changes affect existing code.
+- Return a concise summary of what you changed and any issues as your final message.
 - Do not spawn subagents.
 """
 
