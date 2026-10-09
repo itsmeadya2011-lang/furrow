@@ -27,9 +27,30 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- You may touch only the files listed in "Files to touch".
+- You can read files to understand context, write files to make changes,
+  and run bash commands to verify (lint, typecheck, tests).
 - Do not spawn subagents.
-"""
+
+For each step, take the actions needed to make progress. You will receive
+the results of those actions and can continue in subsequent rounds until the
+task is done.
+
+Return JSON only (no markdown, no explanation) with this shape:
+{
+  "actions": [
+    {"type": "read", "path": "src/foo.py"}
+  ],
+  "summary": "Brief note on what these actions accomplish this round"
+}
+
+The three action types:
+- {"type": "read", "path": "..."}           - read a file's current contents
+- {"type": "write", "path": "...", "content": "..."} - write/replace a file
+- {"type": "bash", "command": "..."}        - run a shell command
+
+When you are finished making changes, return an empty "actions" array and put
+your final summary in the summary field."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
