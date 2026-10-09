@@ -3,14 +3,37 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Any
+from dataclasses import dataclass, field
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
+
+_RETRY_EXCEPTIONS = (
+    anthropic.RateLimitError,
+    anthropic.APIError,
+    openai.RateLimitError,
+    openai.APIError,
+    httpx.RequestError,
+)
+
+
+@dataclass
+class TokenUsage:
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_cost: float = 0.0
+    
+    def add(self, input_tokens: int, output_tokens: int, cost: float = 0.0) -> None:
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.total_cost += cost
 
 
 class LLMClient:
@@ -18,6 +41,9 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama_client: httpx.AsyncClient | None = None
+        self.token_usage = TokenUsage()
+        self.call_count = 0
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +63,36 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> httpx.AsyncClient:
+        if self._ollama_client is None:
+            self._ollama_client = httpx.AsyncClient(
+                base_url=self.settings.ollama_base_url,
+                timeout=300.0
+            )
+        return self._ollama_client
+
+    async def close(self) -> None:
+        """Close any open HTTP clients."""
+        if self._ollama_client:
+            await self._ollama_client.aclose()
+            self._ollama_client = None
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type(_RETRY_EXCEPTIONS)
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        self.call_count += 1
+        
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,6 +103,12 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        # Track token usage
+        if response.usage:
+            self.token_usage.add(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+            )
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
@@ -63,7 +119,35 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
+        # Track token usage
+        if response.usage:
+            self.token_usage.add(
+                input_tokens=response.usage.prompt_tokens,
+                output_tokens=response.usage.completion_tokens,
+            )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        
+        response = await self.ollama.post(
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "options": {"temperature": 0.7}
+            }
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data.get("message", {}).get("content", "")
+
+    def get_usage_summary(self) -> str:
+        return f"Calls: {self.call_count}, Input tokens: {self.token_usage.input_tokens}, Output tokens: {self.token_usage.output_tokens}, Est. cost: ${self.token_usage.total_cost:.4f}"
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
