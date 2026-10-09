@@ -1,0 +1,11 @@
+{
+  "$schema": "https://furrow.ai/schema/config.json",
+  "name": "furrow",
+  "description": "Autonomous coding agent with infinite parallel development loop",
+  "version": "0.1.0",
+  "settings": {
+    "max_parallel_tasks": 5,
+    "max_cycles": 0,
+    "workspace": "."
+  }
+}
