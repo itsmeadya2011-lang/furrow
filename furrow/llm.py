@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+import structlog
+import tenacity
+from anthropic import AsyncAnthropic, RateLimitError as AnthropicRateLimitError, APITimeoutError as AnthropicAPITimeoutError
+from openai import AsyncOpenAI, RateLimitError as OpenAIRateLimitError, APITimeoutError as OpenAIAPITimeoutError
 
 from furrow.config import Provider, Settings, settings
+
+log = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -37,8 +39,15 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=30),
+        retry=tenacity.retry_if_exception_type((AnthropicRateLimitError, AnthropicAPITimeoutError, OpenAIRateLimitError, OpenAIAPITimeoutError)),
+        before_sleep=tenacity.before_sleep_log(log, "WARNING"),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        log.debug("llm_request", provider=self.settings.provider.value, model=model, prompt_length=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,6 +62,7 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        log.debug("llm_response", model=model, output_length=len(response.content[0].text))
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
@@ -63,7 +73,9 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        content = response.choices[0].message.content or ""
+        log.debug("llm_response", model=model, output_length=len(content))
+        return content
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

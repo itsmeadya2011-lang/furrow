@@ -25,11 +25,20 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 Your job is to implement the assigned task completely and concisely.
 
 Rules:
-- Work only on the assigned task. Do not refactor unrelated code.
+- Work only on the assigned task. Do not scope creep.
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- Do not spawn subagents."""
+
+WORKER_TOOLS_PROMPT = """You have access to the following tools. Use them to complete the task:
+
+1. **read** - Read a file: {"tool": "read", "args": {"path": "path/to/file.py"}}
+2. **write** - Write a file: {"tool": "write", "args": {"path": "path/to/file.py", "content": "file content"}}
+3. **list** - List files: {"tool": "list", "args": {"path": "."}}
+4. **bash** - Run shell command: {"tool": "bash", "args": {"command": "pytest -q"}}
+
+Respond with ONE tool call at a time as JSON. When the task is complete, respond with:
+{"done": true, "summary": "Concise summary of changes"}"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

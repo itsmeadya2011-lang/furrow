@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,10 +22,25 @@ class TaskModel(BaseModel):
     status: str = "pending"
     result: Optional[str] = None
 
+    @field_validator("status")
+    @classmethod
+    def validate_status(cls, v: str) -> str:
+        valid = {"pending", "completed", "failed", "in_progress"}
+        if v not in valid:
+            raise ValueError(f"Invalid status: {v}. Must be one of {valid}")
+        return v
+
 
 class Plan(BaseModel):
     tasks: list[TaskModel]
     rationale: str
+
+    @field_validator("tasks")
+    @classmethod
+    def validate_tasks(cls, v: list[TaskModel]) -> list[TaskModel]:
+        if len(v) > 5:
+            raise ValueError("Maximum 5 tasks per plan")
+        return v
 
 
 class TestResult(BaseModel):
@@ -49,6 +64,23 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    @field_validator("max_parallel_tasks")
+    @classmethod
+    def validate_max_parallel(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_parallel_tasks must be at least 1")
+        if v > 20:
+            raise ValueError("max_parallel_tasks must not exceed 20")
+        return v
+
+    @field_validator("log_level")
+    @classmethod
+    def validate_log_level(cls, v: str) -> str:
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if v.upper() not in valid:
+            raise ValueError(f"Invalid log_level: {v}. Must be one of {valid}")
+        return v.upper()
 
 
 settings = Settings()

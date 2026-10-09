@@ -4,7 +4,7 @@ import json
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import PLANNER_PROMPT
-from furrow.config import Plan
+from furrow.config import Plan, Settings
 from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
