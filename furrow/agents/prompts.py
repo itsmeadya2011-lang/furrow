@@ -29,7 +29,18 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+When implementing code, use this format for file changes:
+
+```file:path/to/file.py
+<full file content here>
+```
+
+You may output multiple file blocks. Each block should contain the COMPLETE new content of the file.
+If a file already exists and you only need to modify part of it, output the complete modified file.
+If creating a new file, just output the full content.
+
+After all file blocks, write a brief summary line starting with "SUMMARY:"."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
