@@ -18,7 +18,13 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+
+Context from previous cycles:
+{history}
+
+Existing tasks:
+{tasks}"""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
@@ -29,7 +35,17 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+To make file changes, output JSON blocks in this format:
+```json
+[
+  {"action": "write", "path": "src/file.py", "content": "file contents"},
+  {"action": "append", "path": "src/file.py", "content": "additional content"},
+  {"action": "delete", "path": "src/old_file.py"}
+]
+```
+
+The system will automatically apply these changes."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
