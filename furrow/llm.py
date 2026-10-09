@@ -11,6 +11,9 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+from furrow import logger
+
+log = logger.bind(component="llm")
 
 
 class LLMClient:
@@ -39,6 +42,7 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        log.debug("llm_request", provider=self.settings.provider.value, model=model, prompt_len=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,7 +57,9 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        text = response.content[0].text
+        log.debug("llm_response", provider="anthropic", model=model, response_len=len(text))
+        return text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -63,13 +69,17 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        text = response.choices[0].message.content or ""
+        log.debug("llm_response", provider="openai", model=model, response_len=len(text))
+        return text
 
     async def read_file(self, path: str | Path) -> str:
+        log.debug("read_file", path=str(path))
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        log.debug("write_file", path=str(path), content_len=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
@@ -79,4 +89,6 @@ class LLMClient:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        files = [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        log.debug("list_files", directory=str(directory), count=len(files))
+        return files
