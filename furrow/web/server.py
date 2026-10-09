@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
+from typing import Callable, Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -55,8 +55,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        model_override = data.get("model")
+
+        if model_override:
+            from furrow.config import settings
+            settings.model = model_override
+
+        async def send(text: str) -> None:
+            try:
+                await websocket.send_text(text)
+            except Exception:
+                pass
+
+        orchestrator = Orchestrator(goal=goal, on_output=send)
+        try:
+            await orchestrator.run()
+            await send("DONE")
+        except Exception as e:
+            await send(f"ERROR: {e}")
     except WebSocketDisconnect:
         pass
 
