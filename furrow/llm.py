@@ -11,6 +11,9 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class LLMClient:
@@ -39,6 +42,7 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.debug("llm_complete", provider=self.settings.provider.value, model=model, prompt_len=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,7 +57,9 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        result = response.content[0].text
+        logger.debug("llm_response", provider="anthropic", model=model, response_len=len(result))
+        return result
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -63,20 +69,29 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        result = response.choices[0].message.content or ""
+        logger.debug("llm_response", provider="openai", model=model, response_len=len(result))
+        return result
 
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("file_read", path=str(path))
         async with aiofiles.open(path, "r") as f:
-            return await f.read()
+            content = await f.read()
+        logger.debug("file_read_complete", path=str(path), size=len(content))
+        return content
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("file_write", path=str(path), size=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
+        logger.info("file_written", path=str(path), size=len(content))
 
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        files = [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        logger.debug("files_listed", directory=str(directory), count=len(files))
+        return files

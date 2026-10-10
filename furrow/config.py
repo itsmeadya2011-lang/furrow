@@ -52,3 +52,9 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+# Initialize logging
+def init_logging() -> None:
+    from furrow.logging import setup_logging
+    setup_logging(settings.log_level)

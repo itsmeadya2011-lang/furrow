@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import sys
+from contextlib import redirect_stdout
+from io import StringIO
 from typing import Optional
 
 import uvicorn
@@ -49,16 +52,61 @@ async def index() -> HTMLResponse:
 """)
 
 
+class WebSocketStream:
+    """Stream stdout/stderr to a WebSocket."""
+    
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+        self.buffer = StringIO()
+    
+    def write(self, data: str) -> int:
+        self.buffer.write(data)
+        # Send complete lines
+        value = self.buffer.getvalue()
+        lines = value.split('\n')
+        # Keep the last incomplete line in buffer
+        self.buffer = StringIO(lines[-1])
+        # Send complete lines
+        for line in lines[:-1]:
+            if line:
+                asyncio.create_task(self.websocket.send_text(line))
+        return len(data)
+    
+    def flush(self) -> None:
+        # Send any remaining buffer content
+        value = self.buffer.getvalue()
+        if value:
+            asyncio.create_task(self.websocket.send_text(value))
+            self.buffer = StringIO()
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    stream = WebSocketStream(websocket)
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        
+        # Create orchestrator with custom console that writes to websocket
+        from rich.console import Console
+        ws_console = Console(file=stream, force_terminal=False, force_jupyter=False)
+        
+        # Monkey-patch the console in orchestrator module
+        import furrow.core.orchestrator as orchestrator_module
+        original_console = orchestrator_module.console
+        orchestrator_module.console = ws_console
+        
+        try:
+            orchestrator = Orchestrator(goal=goal)
+            await orchestrator.run()
+        finally:
+            orchestrator_module.console = original_console
+            stream.flush()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        await websocket.send_text(f"Error: {e}")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
