@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from typing import TYPE_CHECKING
 
+from furrow.agents.json_utils import parse_json_from_llm
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
@@ -21,16 +20,16 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - catch any test runner error
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
-            data = json.loads(response)
+            data = parse_json_from_llm(response)
             return TestResult(**data)
-        except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+        except ValueError:
+            return TestResult(passed=False, summary="Failed to parse tester response: " + response, failures=["Invalid JSON from tester"])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -53,6 +52,6 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, Exception):  # noqa: BLE001 S112 - skip unavailable test runners
                 continue
         return "No test runner found."
