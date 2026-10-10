@@ -4,13 +4,14 @@ import os
 from pathlib import Path
 from typing import Any
 
-import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+from furrow.files import list_files, read_file, write_file
 
 
 class LLMClient:
@@ -18,6 +19,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -43,6 +45,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -65,18 +69,26 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        if self._ollama is None:
+            self._ollama = httpx.AsyncClient(base_url=self.settings.ollama_base_url)
+        response = await self._ollama.post(
+            "/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "system": system,
+                "stream": False,
+            },
+        )
+        response.raise_for_status()
+        return response.json()["response"]
+
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
-            return await f.read()
+        return await read_file(path)
 
     async def write_file(self, path: str | Path, content: str) -> None:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
-            await f.write(content)
+        await write_file(path, content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
-        p = Path(directory)
-        if not p.exists():
-            return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+    async def list_files(self, directory: str | Path) -> list[str]:
+        return await list_files(directory)

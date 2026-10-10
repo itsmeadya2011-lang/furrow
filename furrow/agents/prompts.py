@@ -27,7 +27,10 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Output file changes as fenced code blocks with the file path as the info-string.
+  Example: ```python\nsrc/app.py\n<full file content>\n```
+- Include the FULL file content, not diffs. The system will write the entire file.
+- Read relevant existing files first using the provided context.
 - Do not spawn subagents.
 """
 
