@@ -27,9 +27,10 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- You have access to file tools: read_file, write_file, list_files
+- To use a tool, respond with JSON: {"tool": "tool_name", "path": "...", "content": "..."}
+- When task is complete, respond with: {"action": "done", "summary": "What you changed"}
+- Do not spawn subagents."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
