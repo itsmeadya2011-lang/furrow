@@ -29,7 +29,14 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Output format:
+When you need to modify files, wrap each file's complete content in a fenced code block with the format:
+```file:filename.py
+<complete file content>
+```
+
+Multiple files can be edited in one response. The system will parse these blocks and write them to disk. Return the full file contents (not diffs) in the blocks."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
