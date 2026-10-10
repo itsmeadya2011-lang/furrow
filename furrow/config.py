@@ -21,6 +21,7 @@ class TaskModel(BaseModel):
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
     result: Optional[str] = None
+    retry_count: int = 0
 
 
 class Plan(BaseModel):
@@ -47,6 +48,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    max_task_retries: int = 2
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
 
