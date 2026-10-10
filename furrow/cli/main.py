@@ -6,14 +6,18 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import configure_logging
 
 console = Console()
 
 
 @click.group()
-def main() -> None:
-    pass
+@click.option("--log-level", default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
+def main(log_level: str) -> None:
+    configure_logging(log_level)
+    settings.log_level = log_level
 
 
 @main.command()
@@ -23,7 +27,6 @@ def start(goal: str | None, model: str | None) -> None:
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
-        from furrow.config import settings
         settings.model = model
     try:
         asyncio.run(Orchestrator(goal=goal).run())
