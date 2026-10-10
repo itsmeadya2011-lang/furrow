@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 import uvicorn
@@ -10,6 +9,7 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
 
 app = FastAPI(title="Furrow")
 
@@ -55,10 +55,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        if not goal:
+            await websocket.send_json({"type": "error", "message": "No goal provided"})
+            return
+
+        settings = Settings()
+        if "model" in data and data["model"]:
+            settings = settings.model_copy(update={"model": data["model"]})
+
+        async def emit(msg: str) -> None:
+            await websocket.send_text(msg)
+
+        orchestrator = Orchestrator(
+            goal=goal, client=LLMClient(settings=settings), output_callback=emit
+        )
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        await websocket.send_json({"type": "error", "message": str(e)})
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
