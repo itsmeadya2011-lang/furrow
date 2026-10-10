@@ -7,8 +7,9 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic, APIError as AnthropicAPIError, RateLimitError as AnthropicRateLimitError, APIConnectionError as AnthropicAPIConnectionError
+from openai import AsyncOpenAI, APIError as OpenAIAPIError, RateLimitError as OpenAIRateLimitError, APIConnectionError as OpenAIAPIConnectionError
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
 
@@ -46,34 +47,74 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((
+            AnthropicAPIConnectionError,
+            AnthropicRateLimitError,
+            OpenAIAPIConnectionError,
+            OpenAIRateLimitError,
+        )),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return response.content[0].text
+        try:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return response.content[0].text
+        except AnthropicAPIError as e:
+            raise RuntimeError(f"Anthropic API error: {e}") from e
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((
+            AnthropicAPIConnectionError,
+            AnthropicRateLimitError,
+            OpenAIAPIConnectionError,
+            OpenAIRateLimitError,
+        )),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
-        return response.choices[0].message.content or ""
+        try:
+            response = await self.openai.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+            return response.choices[0].message.content or ""
+        except OpenAIAPIError as e:
+            raise RuntimeError(f"OpenAI API error: {e}") from e
 
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
-            return await f.read()
+        try:
+            async with aiofiles.open(path, "r") as f:
+                return await f.read()
+        except FileNotFoundError:
+            raise FileNotFoundError(f"File not found: {path}")
+        except PermissionError:
+            raise PermissionError(f"Permission denied reading file: {path}")
+        except OSError as e:
+            raise RuntimeError(f"Error reading file {path}: {e}") from e
 
     async def write_file(self, path: str | Path, content: str) -> None:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
-            await f.write(content)
+        try:
+            p = Path(path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            async with aiofiles.open(p, "w") as f:
+                await f.write(content)
+        except PermissionError:
+            raise PermissionError(f"Permission denied writing file: {path}")
+        except OSError as e:
+            raise RuntimeError(f"Error writing file {path}: {e}") from e
 
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)

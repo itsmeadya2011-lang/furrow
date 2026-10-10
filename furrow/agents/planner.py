@@ -15,8 +15,12 @@ class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
 
-    async def plan(self, goal: str) -> Plan:
+    async def plan(self, goal: str, failed_task_descriptions: list[str] | None = None) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
+        if failed_task_descriptions:
+            prompt += "\nPrevious test failures to fix:\n"
+            for i, failure in enumerate(failed_task_descriptions, 1):
+                prompt += f"  {i}. {failure}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)

@@ -22,10 +22,13 @@ class TesterAgent:
         try:
             test_output = await self._run_tests()
         except Exception as e:
-            return TestResult(passed=False, summary=str(e), failures=[str(e)])
+            return TestResult(passed=False, summary=f"Test execution failed: {e}", failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        try:
+            response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        except Exception as e:
+            return TestResult(passed=False, summary=f"LLM evaluation failed: {e}", failures=[str(e)])
         try:
             data = json.loads(response)
             return TestResult(**data)
@@ -33,6 +36,7 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        timeout = self.client.settings.test_timeout
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -42,17 +46,36 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        last_error = None
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    output = stdout.decode() + stderr.decode()
+                    if proc.returncode == 0 or output.strip():
+                        return output
+                    last_error = f"Command {' '.join(cmd)} exited with code {proc.returncode} and no output"
                 except asyncio.TimeoutError:
                     proc.kill()
+                    try:
+                        await proc.wait()
+                    except Exception:
+                        pass
+                    last_error = f"Command {' '.join(cmd)} timed out after {timeout}s"
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                last_error = f"Command not found: {cmd[0]}"
                 continue
-        return "No test runner found."
+            except PermissionError:
+                last_error = f"Permission denied executing: {cmd[0]}"
+                continue
+            except OSError as e:
+                last_error = f"OS error running {' '.join(cmd)}: {e}"
+                continue
+            except Exception as e:
+                last_error = f"Unexpected error running {' '.join(cmd)}: {e}"
+                continue
+        return last_error or "No test runner found."
