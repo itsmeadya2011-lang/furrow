@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+
+class LLMRateLimitError(Exception):
+    """Raised when the LLM provider rate-limits the request."""
 
 
 class LLMClient:
@@ -18,6 +22,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,32 +42,62 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> AsyncOpenAI:
+        if self._ollama is None:
+            self._ollama = AsyncOpenAI(
+                base_url=self.settings.ollama_base_url,
+                api_key="ollama",
+            )
+        return self._ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_openai(prompt, system, model, client=self.ollama)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        retry=retry_if_exception_type(LLMRateLimitError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=4096,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
+        try:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except anthropic.RateLimitError as e:
+            raise LLMRateLimitError(str(e)) from e
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
+    @retry(
+        retry=retry_if_exception_type(LLMRateLimitError),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+    )
+    async def _complete_openai(
+        self, prompt: str, system: str, model: str, client: AsyncOpenAI | None = None
+    ) -> str:
+        client = client or self.openai
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except openai.RateLimitError as e:
+            raise LLMRateLimitError(str(e)) from e
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:

@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from rich.console import Console
 from rich.panel import Panel
@@ -14,39 +11,58 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
 
 
+class _Output(Protocol):
+    def print(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def log(self, message: str, *args: Any, **kwargs: Any) -> None: ...
+
+
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        max_cycles: int = 0,
+        output: _Output | None = None,
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.max_cycles = max_cycles
+        self.tasks: list[Any] = []
+        self.output: _Output = output or console
 
     async def run(self) -> None:
-        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        self.output.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
-            console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            self.output.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
-                console.print("[bold green]Goal complete. Halting.[/bold green]")
+                self.output.print("[bold green]Goal complete. Halting.[/bold green]")
+                break
+            if self.max_cycles and self.cycles >= self.max_cycles:
+                self.output.print(f"[bold yellow]Reached max cycles ({self.max_cycles}). Stopping.[/bold yellow]")
                 break
 
     async def _cycle(self) -> None:
-        with Status("[bold yellow]Planning...", console=console) as status:
+        with Status("[bold yellow]Planning...", console=self.output):
             plan = await self.planner.plan(self.goal)
-        console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        self.output.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
-            console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self.output.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
+        self.tasks = plan.tasks
+
+        with Status("[bold yellow]Executing tasks in parallel...", console=self.output):
             tasks = [
                 WorkerAgent(task=task, client=self.client).run()
                 for task in plan.tasks
@@ -57,32 +73,30 @@ class Orchestrator:
             if isinstance(result, Exception):
                 task.status = "failed"
                 task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                self.output.print(f"[red]Task {task.id} failed: {result}[/red]")
             else:
                 task.status = "completed"
                 task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+                self.output.print(f"[green]Task {task.id} completed[/green]")
 
-        with Status("[bold yellow]Testing...", console=console) as status:
+        with Status("[bold yellow]Testing...", console=self.output):
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
         if test_result.passed:
-            console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            self.output.print(f"[green]Tests passed: {test_result.summary}[/green]")
         else:
-            console.print(f"[red]Tests failed: {test_result.summary}[/red]")
+            self.output.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
-                console.print(f"  • {failure}")
-            console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
-            self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+                self.output.print(f"  • {failure}")
+            self.output.print("[yellow]Will attempt fix in next cycle.[/yellow]")
+            self.goal = "Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
+        if not self.tasks:
             return False
-        if completed >= len(self._get_tasks()):
-            return True
-        return False
+        completed = sum(1 for t in self.tasks if t.status == "completed")
+        failed = sum(1 for t in self.tasks if t.status == "failed")
+        return failed == 0 and completed >= len(self.tasks)
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
