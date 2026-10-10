@@ -1,16 +1,66 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    RetryCallState,
+    retry,
+    retry_if_exception,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = logging.getLogger(__name__)
+
+_TRANSIENT_EXCEPTIONS: tuple[type[BaseException], ...] = (
+    asyncio.TimeoutError,
+    ConnectionError,
+    anthropic.APIStatusError,
+    anthropic.APIConnectionError,
+    openai.APIStatusError,
+    openai.APIConnectionError,
+)
+
+
+def _is_transient(exception: BaseException) -> bool:
+    if isinstance(exception, (anthropic.AuthenticationError, openai.AuthenticationError)):
+        return False
+    return isinstance(exception, _TRANSIENT_EXCEPTIONS)
+
+
+def _log_retry(retry_state: RetryCallState) -> None:
+    exc = retry_state.outcome.exception() if retry_state.outcome else None
+    logger.warning(
+        "LLM call failed with %s; retrying (attempt %d)",
+        exc,
+        retry_state.attempt_number,
+    )
+
+
+def extract_json(text: str) -> str:
+    """Extract a JSON object from an LLM response, stripping markdown code fences and surrounding prose."""
+    text = text.strip()
+    lines = text.splitlines()
+    if lines and lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+        if lines and lines[-1].lstrip().startswith("```"):
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end >= start:
+        return text[start : end + 1]
+    return text
 
 
 class LLMClient:
@@ -39,6 +89,16 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        return await self._dispatch(prompt, system, model)
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception(_is_transient),
+        reraise=True,
+        before_sleep=_log_retry,
+    )
+    async def _dispatch(self, prompt: str, system: str, model: str) -> str:
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,6 +113,8 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        if not response.content:
+            return ""
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
@@ -63,6 +125,8 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
+        if not response.choices:
+            return ""
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
