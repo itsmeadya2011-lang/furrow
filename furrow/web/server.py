@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import sys
 from typing import Optional
 
 import uvicorn
@@ -9,7 +11,6 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
 from furrow.config import Settings
-from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
 
@@ -55,10 +56,50 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        furrow_path = shutil.which("furrow")
+        if furrow_path:
+            cmd = [furrow_path, "start", goal]
+        else:
+            cmd = [
+                sys.executable,
+                "-c",
+                "from furrow.cli.main import main; main(['start', '{}'])".format(goal),
+            ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                await websocket.send_text(line.decode().rstrip("\n"))
+            await proc.wait()
+            if proc.returncode != 0:
+                stderr = await proc.stderr.read()
+                await websocket.send_text(
+                    f"\n[error] process exited with code {proc.returncode}"
+                )
+                if stderr:
+                    await websocket.send_text(stderr.decode().rstrip("\n"))
+        except WebSocketDisconnect:
+            if proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            raise
     except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        try:
+            await websocket.send_text(f"\n[error] {exc}")
+        except Exception:
+            pass
+        await websocket.close()
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
