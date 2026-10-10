@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
-
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import get_logger, setup_logging
 
 app = FastAPI(title="Furrow")
+logger = get_logger(__name__)
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -55,11 +54,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        logger.info("web_request", goal=goal)
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
     except WebSocketDisconnect:
-        pass
+        logger.info("web_disconnect")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    setup_logging(level=settings.log_level, json_logs=settings.json_logs)
     uvicorn.run(app, host=host, port=port)
