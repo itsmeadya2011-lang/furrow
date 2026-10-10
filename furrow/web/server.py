@@ -8,7 +8,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
+from furrow.config import Settings, settings as default_settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -52,10 +52,20 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    settings = default_settings
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+        if model:
+            settings.model = model
+
+        orchestrator = Orchestrator(goal=goal, settings=settings)
+
+        async def send_event(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator._on_event = send_event
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
