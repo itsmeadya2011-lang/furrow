@@ -37,10 +37,12 @@ async def index() -> HTMLResponse:
     const out = document.getElementById('out');
     form.onsubmit = async (e) => {
       e.preventDefault();
-      out.textContent += '\\nStarting...\\n';
+      out.textContent = '';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
-      ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onopen = () => out.textContent += 'Connecting...\n';
+      ws.onmessage = (ev) => out.textContent += ev.data + '\n';
+      ws.onclose = () => out.textContent += '\nClosed.\n';
+      ws.onerror = (ev) => out.textContent += '\nError connecting.\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -55,10 +57,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+
         orchestrator = Orchestrator(goal=goal)
+
+        async def broadcast(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator.set_broadcast(broadcast)
+
         await orchestrator.run()
+        await websocket.send_text("Furrow finished")
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"Error: {e}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
