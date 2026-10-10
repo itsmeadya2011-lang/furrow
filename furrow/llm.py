@@ -43,6 +43,27 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            try:
+                import httpx
+                base_url = self.settings.ollama_base_url
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(
+                        f"{base_url}/api/chat",
+                        json={
+                            "model": model or "llama2",
+                            "messages": [
+                                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                                {"role": "user", "content": prompt},
+                            ],
+                            "stream": False,
+                        },
+                        timeout=300.0,
+                    )
+                    data = resp.json()
+                    return data.get("message", {}).get("content", "")
+            except Exception as e:
+                raise ValueError(f"Ollama support requires ollama to be running and model available: {e}")
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -63,7 +84,8 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        content = response.choices[0].message.content
+        return content or ""
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
