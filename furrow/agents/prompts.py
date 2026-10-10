@@ -27,9 +27,24 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+You must return a JSON object (no markdown) with this shape:
+{
+  "operations": [
+    {"type": "read", "path": "src/file.py"},
+    {"type": "write", "path": "src/file.py", "content": "new content"},
+    {"type": "edit", "path": "src/file.py", "old": "old text", "new": "new text"}
+  ],
+  "summary": "Brief summary of changes made"
+}
+
+Available operations:
+- read: Read a file's content
+- write: Write new content to a file (creates if needed)
+- edit: Replace a specific string in a file (exact match required)
+
+Only include operations that are necessary. If no changes needed, return empty operations array."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
