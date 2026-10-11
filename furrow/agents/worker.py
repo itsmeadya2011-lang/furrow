@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import WORKER_PROMPT
@@ -16,5 +18,45 @@ class WorkerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        file_contents = {}
+        missing_files = []
+
+        for path in self.task.files or []:
+            try:
+                content = await self.client.read_file(path)
+                file_contents[path] = content
+            except FileNotFoundError:
+                missing_files.append(path)
+            except Exception:
+                missing_files.append(path)
+
+        prompt_parts = [f"Task: {self.task.description}"]
+
+        if file_contents:
+            prompt_parts.append("Current file contents:")
+            for path, content in file_contents.items():
+                prompt_parts.append(f"--- {path} ---")
+                prompt_parts.append(content)
+                prompt_parts.append("--- end ---")
+
+        if missing_files:
+            prompt_parts.append(f"Note: These files were not found: {', '.join(missing_files)}")
+
+        prompt = "\n".join(prompt_parts)
+
+        response = await self.client.complete(prompt, model=self.client.settings.worker_model, system=WORKER_PROMPT)
+
+        try:
+            result = json.loads(response)
+            files = result.get("files", {})
+            summary = result.get("summary", "Task completed")
+
+            for path, content in files.items():
+                try:
+                    await self.client.write_file(path, content)
+                except Exception:
+                    pass
+
+            return summary
+        except json.JSONDecodeError:
+            return response
