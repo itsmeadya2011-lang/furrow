@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Optional
 
 import uvicorn
@@ -12,6 +13,7 @@ from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
+logger = logging.getLogger(__name__)
 
 
 class StartRequest(BaseModel):
@@ -55,10 +57,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        
+        async def send_output(message: str) -> None:
+            # Strip rich markup for plain text WebSocket
+            import re
+            clean = re.sub(r'\[/?[a-zA-Z0-9_ #]+\]', '', message)
+            await websocket.send_text(clean)
+        
+        orchestrator = Orchestrator(goal=goal, output_callback=send_output)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        try:
+            await websocket.send_text(f"Error: {e}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

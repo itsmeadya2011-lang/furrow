@@ -22,14 +22,35 @@ If the goal is too large for one cycle, say so in rationale and break it into th
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
-Your job is to implement the assigned task completely and concisely.
+Your job is to implement the assigned task completely and concisely using the available tools.
+
+Available tools:
+1. read_file - Read a file's contents
+   {"tool": "read_file", "arguments": {"path": "relative/path/to/file"}, "id": "call_1"}
+
+2. write_file - Write content to a file
+   {"tool": "write_file", "arguments": {"path": "relative/path/to/file", "content": "file content here"}, "id": "call_2"}
+
+3. list_files - List files in a directory
+   {"tool": "list_files", "arguments": {"path": "relative/path/to/dir"}, "id": "call_3"}
+
+4. run_command - Run a shell command
+   {"tool": "run_command", "arguments": {"command": ["pytest", "-q"], "cwd": "."}, "id": "call_4"}
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- Use tools to read, write, and test your changes.
+- Return tool calls as JSON objects in your response.
+- When the task is complete, provide a concise summary without tool calls.
+- Do not spawn subagents."""
+
+WORKER_TOOLS = [
+    {"name": "read_file", "description": "Read a file's contents", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    {"name": "write_file", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+    {"name": "list_files", "description": "List files in a directory", "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+    {"name": "run_command", "description": "Run a shell command", "parameters": {"type": "object", "properties": {"command": {"type": "array", "items": {"type": "string"}}, "cwd": {"type": "string"}}, "required": ["command"]}},
+]
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
