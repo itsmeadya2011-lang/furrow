@@ -1,16 +1,85 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+
+def _build_retryable_exceptions() -> tuple[type[BaseException], ...]:
+    """Build the tuple of retryable exception types defensively.
+
+    Each SDK is imported lazily so the module still imports cleanly even if a
+    given SDK is absent from the environment.
+    """
+    retryable: list[type[BaseException]] = [asyncio.TimeoutError]
+
+    try:
+        import anthropic as _anthropic
+    except ImportError:  # pragma: no cover - anthropic is a hard dependency
+        _anthropic = None  # type: ignore[assignment]
+
+    if _anthropic is not None:
+        retryable.extend(
+            exc
+            for exc in (
+                getattr(_anthropic, "APIConnectionError", None),
+                getattr(_anthropic, "RateLimitError", None),
+            )
+            if exc is not None
+        )
+
+    try:
+        import openai as _openai
+    except ImportError:  # pragma: no cover - openai is a hard dependency
+        _openai = None  # type: ignore[assignment]
+
+    if _openai is not None:
+        retryable.extend(
+            exc
+            for exc in (
+                getattr(_openai, "APIConnectionError", None),
+                getattr(_openai, "RateLimitError", None),
+            )
+            if exc is not None
+        )
+
+    try:
+        import httpx as _httpx
+    except ImportError:  # pragma: no cover - httpx is a hard dependency
+        _httpx = None  # type: ignore[assignment]
+
+    if _httpx is not None:
+        retryable.extend(
+            exc
+            for exc in (
+                getattr(_httpx, "TransportError", None),
+                getattr(_httpx, "TimeoutException", None),
+            )
+            if exc is not None
+        )
+
+    return tuple(retryable)
+
+
+_RETRYABLE_EXCEPTIONS = _build_retryable_exceptions()
+
+_RETRY_DECORATOR = retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=30),
+    reraise=True,
+    retry=retry_if_exception_type(_RETRYABLE_EXCEPTIONS),
+)
 
 
 class LLMClient:
@@ -43,9 +112,12 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @_RETRY_DECORATOR
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -53,8 +125,15 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        if not response.content:
+            return ""
+        return "".join(
+            block.text
+            for block in response.content
+            if getattr(block, "type", None) == "text"
+        )
 
+    @_RETRY_DECORATOR
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +143,20 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @_RETRY_DECORATOR
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        base_url = self.settings.ollama_base_url
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+            "stream": False,
+        }
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(f"{base_url}/api/generate", json=payload)
+            response.raise_for_status()
+            return response.json()["response"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

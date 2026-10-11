@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import shutil
 from typing import TYPE_CHECKING
 
+from furrow.agents.parse import extract_json
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
@@ -27,7 +28,7 @@ class TesterAgent:
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
-            data = json.loads(response)
+            data = json.loads(extract_json(response))
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
@@ -43,16 +44,19 @@ class TesterAgent:
             ["go", "test", "./..."],
         ]
         for cmd in candidates:
+            if not shutil.which(cmd[0]):
+                continue
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    return output + f"\n[exit code: {proc.returncode}]"
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError):
                 continue
         return "No test runner found."
