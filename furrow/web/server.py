@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -49,16 +50,48 @@ async def index() -> HTMLResponse:
 """)
 
 
+class WebSocketLogger:
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+
+    def __call__(self, message: str) -> None:
+        # Send message via WebSocket (non-blocking)
+        asyncio.create_task(self._send(message))
+
+    async def _send(self, message: str) -> None:
+        try:
+            await self.websocket.send_text(message)
+        except Exception:
+            pass  # Connection closed
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        # Create logger that sends to websocket
+        ws_logger = WebSocketLogger(websocket)
+
+        # Create orchestrator with websocket output callback
+        orchestrator = Orchestrator(goal=goal, output_callback=ws_logger)
+
+        if model:
+            orchestrator.settings.model = model
+
+        # Run orchestrator and capture its output
         await orchestrator.run()
+        await websocket.send_text("\n[bold green]Furrow completed.[/bold green]")
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"\n[red]Error: {e}[/red]")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

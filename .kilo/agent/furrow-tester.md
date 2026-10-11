@@ -17,3 +17,4 @@ You are a Furrow tester. Verify that completed tasks work correctly.
 }
 - Do not scope creep. Only fix what is needed to make tests pass.
 - Do not spawn further subagents.
+- Use configurable test command (FURROW_TEST_COMMAND) or auto-detect pytest/npm/cargo/go test.
