@@ -1,0 +1,30 @@
+from setuptools import setup, find_packages
+
+setup(
+    name="furrow",
+    version="0.1.0",
+    description="Autonomous coding agent with infinite parallel development loop",
+    author="",
+    packages=find_packages(include=["furrow*"]),
+    python_requires=">=3.10",
+    install_requires=[
+        "fastapi>=0.111",
+        "uvicorn[standard]>=0.30",
+        "pydantic>=2.7",
+        "pydantic-settings>=2.2",
+        "anthropic>=0.34",
+        "openai>=1.40",
+        "httpx>=0.27",
+        "click>=8.1",
+        "rich>=13.7",
+        "python-dotenv>=1.0",
+        "aiofiles>=24.1",
+        "tenacity>=8.2",
+        "structlog>=24.1",
+    ],
+    entry_points={
+        "console_scripts": [
+            "furrow=furrow.cli.main:main",
+        ],
+    },
+)

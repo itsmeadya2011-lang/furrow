@@ -18,7 +18,14 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+
+Context will include:
+- Current task statuses (pending/completed/failed)
+- Recent execution history
+- Project file structure
+
+Use this context to avoid re-planning completed work and to understand dependencies."""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
@@ -43,3 +50,18 @@ Return JSON only (no markdown) with this shape:
 }
 
 If tests failed, list each failure in the failures array."""
+
+TESTER_FIX_PROMPT = """You are a tester agent in Furrow. Tests have failed. Create a plan to fix them.
+
+Return JSON only with this shape:
+{
+  "fix_tasks": [
+    {
+      "description": "Fix specific failure description",
+      "files": ["file1.py", "file2.py"]
+    }
+  ]
+}
+
+Create 1-3 targeted fix tasks. Each should address a specific failure.
+Only include files that are likely to need changes."""

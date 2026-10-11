@@ -1,0 +1,13 @@
+aiofiles>=24.1
+anthropic>=0.34
+click>=8.1
+fastapi>=0.111
+httpx>=0.27
+openai>=1.40
+pydantic-settings>=2.2
+pydantic>=2.7
+python-dotenv>=1.0
+rich>=13.7
+structlog>=24.1
+tenacity>=8.2
+uvicorn[standard]>=0.30
