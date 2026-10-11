@@ -1,0 +1,12 @@
+{
+  "goal": "Fix failing tests:\nfail",
+  "cycles": 4,
+  "tasks": [
+    {
+      "id": "1",
+      "description": "task",
+      "status": "completed",
+      "result": "done"
+    }
+  ]
+}

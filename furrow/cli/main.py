@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
-import click
+import click  # type: ignore[import-not-found]
 from rich.console import Console
 
 from furrow.core.orchestrator import Orchestrator

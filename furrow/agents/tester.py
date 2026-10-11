@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -21,7 +20,7 @@ class TesterAgent:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except (OSError, ValueError) as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -47,12 +46,12 @@ class TesterAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                continue
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                return stdout.decode() + stderr.decode()
+            except asyncio.TimeoutError:
+                proc.kill()
                 continue
         return "No test runner found."
