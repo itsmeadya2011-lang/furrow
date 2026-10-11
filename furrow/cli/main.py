@@ -24,6 +24,7 @@ def start(goal: str | None, model: str | None) -> None:
         goal = click.prompt("Enter your goal for Furrow")
     if model:
         from furrow.config import settings
+
         settings.model = model
     try:
         asyncio.run(Orchestrator(goal=goal).run())
@@ -35,6 +36,7 @@ def start(goal: str | None, model: str | None) -> None:
 @main.command()
 def web() -> None:
     from furrow.web.server import run
+
     run()
 
 
