@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -24,7 +23,16 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        # Add context about what tasks were completed
+        task_context = ""
+        if tasks:
+            task_context = "\n\nCompleted tasks:\n"
+            for t in tasks:
+                task_context += f"  - {t.id}: {t.description} ({t.status})\n"
+                if t.result:
+                    task_context += f"    Result: {t.result[:200]}\n"
+
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}{task_context}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
