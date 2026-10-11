@@ -29,7 +29,50 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Available tools:
+- read_file(path): Read the contents of a file
+- write_file(path, content): Write content to a file (creates directories as needed)
+- list_files(directory): List all files in a directory recursively
+
+Use these tools to explore the codebase and make changes. When you're done, provide a summary of what you accomplished."""
+
+WORKER_TOOLS = [
+    {
+        "name": "read_file",
+        "description": "Read the contents of a file",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file to read"}
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "write_file",
+        "description": "Write content to a file (creates directories as needed)",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file to write"},
+                "content": {"type": "string", "description": "Content to write to the file"}
+            },
+            "required": ["path", "content"]
+        }
+    },
+    {
+        "name": "list_files",
+        "description": "List all files in a directory recursively",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "description": "Directory to list files from"}
+            },
+            "required": ["directory"]
+        }
+    }
+]
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

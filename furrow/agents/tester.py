@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = get_logger(__name__)
 
 
 class TesterAgent:
@@ -18,19 +20,26 @@ class TesterAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        logger.info("testing_started", goal=goal[:100], task_count=len(tasks))
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except (OSError, asyncio.TimeoutError) as e:
+            logger.error("testing_error", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
+            logger.info("testing_completed", passed=result.passed, summary=result.summary)
+            return result
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "passed" in response.lower()
+            result = TestResult(passed=passed, summary=response, failures=[])
+            logger.warning("testing_parse_fallback", passed=passed, response=response[:200])
+            return result
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -49,10 +58,15 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    output = stdout.decode() + stderr.decode()
+                    logger.debug("test_runner_output", cmd=cmd[0], output_length=len(output))
+                    return output
                 except asyncio.TimeoutError:
                     proc.kill()
+                    logger.warning("test_runner_timeout", cmd=cmd[0])
                     continue
-            except (FileNotFoundError, Exception):
+            except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+                logger.debug("test_runner_not_found", cmd=cmd[0], error=str(e))
                 continue
+        logger.warning("no_test_runner_found")
         return "No test runner found."
