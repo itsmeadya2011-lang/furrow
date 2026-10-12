@@ -1,4 +1,3 @@
-import pytest
 from furrow.config import Plan, TaskModel, TestResult
 
 
