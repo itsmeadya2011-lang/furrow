@@ -1,22 +1,69 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.llm import LLMClient
+from furrow.logging import get_logger
+
+logger = get_logger("server")
 
 app = FastAPI(title="Furrow")
+
+# Global orchestrator instance for shared state
+_orchestrator: Orchestrator | None = None
+_orchestrator_lock = asyncio.Lock()
 
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
+
+
+async def get_orchestrator(goal: str, model: str | None = None, websocket: WebSocket | None = None) -> Orchestrator:
+    global _orchestrator
+    async with _orchestrator_lock:
+        if _orchestrator is None:
+            client = LLMClient()
+            if model:
+                client.settings.model = model
+            output_callback = None
+            if websocket:
+                async def send_output(message: str):
+                    try:
+                        await websocket.send_text(message)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("websocket_send_failed", error=str(e))
+                output_callback = send_output
+            _orchestrator = Orchestrator(goal=goal, client=client, output_callback=output_callback)
+        elif _orchestrator.goal != goal:
+            # New goal, create new orchestrator
+            client = LLMClient()
+            if model:
+                client.settings.model = model
+            output_callback = None
+            if websocket:
+                async def send_output(message: str):
+                    try:
+                        await websocket.send_text(message)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("websocket_send_failed", error=str(e))
+                output_callback = send_output
+            _orchestrator = Orchestrator(goal=goal, client=client, output_callback=output_callback)
+        elif websocket and _orchestrator._output_callback is None:
+            # Update callback for existing orchestrator
+            async def send_output(message: str):
+                try:
+                    await websocket.send_text(message)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("websocket_send_failed", error=str(e))
+            _orchestrator._output_callback = send_output
+        return _orchestrator
 
 
 @app.get("/")
@@ -55,10 +102,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+        
+        orchestrator = await get_orchestrator(goal, model, websocket)
+        
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:  # noqa: BLE001
+        await websocket.send_text(f"Error: {e}")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
