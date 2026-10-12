@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import aiofiles
 import anthropic
@@ -14,7 +14,7 @@ from furrow.config import Provider, Settings, settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
+    def __init__(self, settings: Settings = cast(Settings, settings)) -> None:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
