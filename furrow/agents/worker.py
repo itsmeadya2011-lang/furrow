@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import WORKER_PROMPT
@@ -16,5 +18,39 @@ class WorkerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        files_context = ", ".join(self.task.files) if self.task.files else "any relevant files"
+        prompt = (
+            f"{WORKER_PROMPT}\n\n"
+            f"Task: {self.task.description}\n"
+            f"Files to touch: {files_context}\n\n"
+            f"Before writing code, first read the existing files you need to modify using the "
+            f"read_file tool. Then implement the changes using write_file. "
+            f"Return a concise summary of what you changed."
+        )
+        response = await self.client.complete(prompt, model=self.client.settings.worker_model)
+        await self._apply_changes(response)
+        return response
+
+    async def _apply_changes(self, response: str) -> None:
+        """Parse the LLM response for file change blocks and apply them.
+
+        Supports fenced code blocks with file paths, e.g.:
+
+        ```python
+        # path/to/file.py
+        <content>
+        ```
+        """
+        # Pattern: ```lang\n# path/to/file.py\n<content>```
+        pattern = re.compile(
+            r"```(\w+)\s*\n#\s*(?P<path>[^\n]+)\n(?P<content>.*?)```",
+            re.DOTALL,
+        )
+        for match in pattern.finditer(response):
+            path = match.group("path").strip()
+            content = match.group("content")
+            try:
+                await self.client.write_file(path, content)
+            except Exception:
+                # Best-effort: don't fail the whole task if one file write fails
+                pass

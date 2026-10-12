@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import re
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -26,11 +26,42 @@ class TesterAgent:
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        return self._parse_response(response, test_output)
+
+    def _parse_response(self, response: str, test_output: str) -> TestResult:
+        """Parse the LLM response, trying JSON first, then falling back to heuristics."""
+        # Try to extract JSON from the response (handles markdown code fences)
+        cleaned = response.strip()
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```\w*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned)
+
         try:
-            data = json.loads(response)
-            return TestResult(**data)
-        except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            data = json.loads(cleaned)
+            return TestResult(
+                passed=bool(data.get("passed", False)),
+                summary=str(data.get("summary", "")),
+                failures=list(data.get("failures", [])),
+            )
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+        # Fallback: try to find JSON object anywhere in the response
+        json_match = re.search(r"\{[^}]*\}", response, re.DOTALL)
+        if json_match:
+            try:
+                data = json.loads(json_match.group())
+                return TestResult(
+                    passed=bool(data.get("passed", False)),
+                    summary=str(data.get("summary", "")),
+                    failures=list(data.get("failures", [])),
+                )
+            except (json.JSONDecodeError, ValueError, TypeError):
+                pass
+
+        # Last resort: string matching on the raw output
+        passed = "passed" in response.lower() and "fail" not in response.lower()
+        return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
