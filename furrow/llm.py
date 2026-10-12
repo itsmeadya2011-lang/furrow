@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
