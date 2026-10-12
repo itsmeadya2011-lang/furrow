@@ -49,7 +49,8 @@ class TesterAgent:
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    returncode = proc.returncode
+                    return f"EXIT CODE: {returncode}\n" + stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue

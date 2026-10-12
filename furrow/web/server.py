@@ -55,10 +55,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+        settings = Settings(model=model) if model else None
+
+        async def callback(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator = Orchestrator(
+            goal=goal,
+            settings=settings,
+            output_callback=callback,
+        )
         await orchestrator.run()
+        await websocket.send_text("\n[Furrow] Done.")
     except WebSocketDisconnect:
         pass
+    except Exception as exc:
+        try:
+            await websocket.send_text(f"\n[error] {exc}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
