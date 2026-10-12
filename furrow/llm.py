@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
@@ -39,12 +40,27 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        last_error = None
+        
+        for attempt in range(self.settings.llm_max_retries):
+            try:
+                if self.settings.provider == Provider.ANTHROPIC:
+                    return await self._complete_anthropic(prompt, system, model)
+                elif self.settings.provider == Provider.OPENAI:
+                    return await self._complete_openai(prompt, system, model)
+                else:
+                    raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            except (anthropic.APIError, openai.APIError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < self.settings.llm_max_retries - 1:
+                    await asyncio.sleep(self.settings.llm_retry_delay * (attempt + 1))
+                    continue
+                raise
+            except Exception as e:
+                # Non-retryable errors
+                raise
+        
+        raise last_error or RuntimeError("Max retries exceeded")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
