@@ -2,26 +2,30 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+logger = get_logger(__name__)
 
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.settings = settings or (client.settings if client else None)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
+        except OSError as e:
+            logger.warning("test_run_failed", error=str(e))
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -33,6 +37,7 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        timeout = self.settings.test_timeout if self.settings else 120
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -48,11 +53,12 @@ class TesterAgent:
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except OSError as e:
+                logger.debug("test_runner_command_failed", command=cmd[0], error=str(e))
                 continue
         return "No test runner found."
