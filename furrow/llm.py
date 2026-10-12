@@ -7,10 +7,19 @@ from typing import Any
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -37,8 +46,16 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=60),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APIConnectionError, openai.RateLimitError, openai.APIConnectionError)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.info("llm_complete", model=model, provider=self.settings.provider.value, prompt_length=len(prompt))
+
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -66,16 +83,19 @@ class LLMClient:
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("read_file", path=str(path))
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("write_file", path=str(path), size=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
+        logger.debug("list_files", directory=str(directory))
         p = Path(directory)
         if not p.exists():
             return []
