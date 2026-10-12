@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -18,52 +20,102 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self.anthropic_client: AsyncAnthropic | None = None
+        self.openai_client: AsyncOpenAI | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
-        if self._anthropic is None:
-            api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(api_key=api_key)
+        if self.anthropic_client is not None:
+            return self.anthropic_client
+        if self._anthropic is not None:
+            return self._anthropic
+        api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY is not set")
+        self._anthropic = AsyncAnthropic(api_key=api_key)
         return self._anthropic
+
+    @anthropic.setter
+    def anthropic(self, value: AsyncAnthropic) -> None:
+        self.anthropic_client = value
+
+    @anthropic.deleter
+    def anthropic(self) -> None:
+        self.anthropic_client = None
+        self._anthropic = None
 
     @property
     def openai(self) -> AsyncOpenAI:
-        if self._openai is None:
-            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+        if self.openai_client is not None:
+            return self.openai_client
+        if self._openai is not None:
+            return self._openai
+        api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError("OPENAI_API_KEY is not set")
+        self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @openai.setter
+    def openai(self, value: AsyncOpenAI) -> None:
+        self.openai_client = value
+
+    @openai.deleter
+    def openai(self) -> None:
+        self.openai_client = None
+        self._openai = None
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("complete.anthropic", model=model, max_tokens=self.settings.max_tokens)
         response = await self.anthropic.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=self.settings.max_tokens,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("complete.openai", model=model, max_tokens=self.settings.max_tokens)
         response = await self.openai.chat.completions.create(
             model=model,
+            max_tokens=self.settings.max_tokens,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("complete.ollama", model=model, base_url=self.settings.ollama_base_url)
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+            "stream": False,
+        }
+        async with httpx.AsyncClient() as http_client:
+            response = await http_client.post(
+                f"{self.settings.ollama_base_url}/api/generate",
+                json=payload,
+                timeout=300,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("response", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
