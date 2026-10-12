@@ -6,6 +6,7 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Specific enough that a worker can implement it without ambiguity
 
 Return JSON only (no markdown, no explanation) with this shape:
+Never wrap the JSON in markdown code fences.
 {
   "tasks": [
     {
