@@ -14,12 +14,19 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
 
 
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TaskModel(BaseModel):
     id: str
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
+    status: TaskStatus = TaskStatus.PENDING
     result: Optional[str] = None
 
 

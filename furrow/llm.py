@@ -6,9 +6,11 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
@@ -18,6 +20,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._httpx: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -25,7 +28,10 @@ class LLMClient:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(api_key=api_key)
+            self._anthropic = AsyncAnthropic(
+                api_key=api_key,
+                timeout=httpx.Timeout(120),
+            )
         return self._anthropic
 
     @property
@@ -34,17 +40,43 @@ class LLMClient:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            self._openai = AsyncOpenAI(api_key=api_key, timeout=httpx.Timeout(120))
         return self._openai
+
+    @property
+    def _http_client(self) -> httpx.AsyncClient:
+        if self._httpx is None:
+            self._httpx = httpx.AsyncClient(timeout=httpx.Timeout(120))
+        return self._httpx
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_with_retry(Provider.ANTHROPIC, prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_with_retry(Provider.OPENAI, prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_with_retry(Provider.OLLAMA, prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    @retry(
+        retry=retry_if_exception_type(Exception),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def _complete_with_retry(
+        self, provider: Provider, prompt: str, system: str, model: str
+    ) -> str:
+        if provider == Provider.ANTHROPIC:
+            return await self._complete_anthropic(prompt, system, model)
+        elif provider == Provider.OPENAI:
+            return await self._complete_openai(prompt, system, model)
+        elif provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
+        else:
+            raise ValueError(f"Unsupported provider: {provider}")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
@@ -53,7 +85,14 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        if not response.content:
+            return ""
+        texts: list[str] = []
+        for block in response.content:
+            text = getattr(block, "text", None)
+            if text:
+                texts.append(text)
+        return "".join(texts)
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -64,6 +103,27 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages: list[dict[str, str]] = []
+        sys = system or "You are a helpful coding assistant."
+        if sys:
+            messages.append({"role": "system", "content": sys})
+        messages.append({"role": "user", "content": prompt})
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        url = f"{self.settings.ollama_base_url.rstrip('/')}/api/chat"
+        response = await self._http_client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        message = data.get("message", {})
+        content = message.get("content", "")
+        if isinstance(content, str):
+            return content
+        return ""
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
