@@ -1,16 +1,40 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
+from anthropic import APIError as AnthropicAPIError
 from anthropic import AsyncAnthropic
+from openai import APIError as OpenAIAPIError
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+
+def strip_code_fences(text: str) -> str:
+    """Strip surrounding markdown code fences and a leading language tag line."""
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return stripped
+    # Drop the opening fence line (optionally including a language tag).
+    lines = stripped.splitlines()
+    # Remove the first line if it is a fence (with optional language tag).
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    # Remove a trailing fence line if present.
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
 
 
 class LLMClient:
@@ -18,6 +42,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._http: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,15 +62,40 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def http(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=httpx.Timeout(120.0))
+        return self._http
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    async def complete_json(
+        self, prompt: str, system: str = "", model: str | None = None
+    ) -> dict[str, Any]:
+        """Complete and parse a JSON object, tolerating markdown code fences."""
+        response = await self.complete(prompt, system=system, model=model)
+        cleaned = strip_code_fences(response)
+        try:
+            return json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Failed to parse JSON response: {exc}. Raw response: {response!r}") from exc
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((AnthropicAPIError,)),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -53,8 +103,15 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        parts = [block.text for block in response.content if hasattr(block, "text")]
+        return "".join(parts)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((OpenAIAPIError,)),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +121,30 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((httpx.HTTPError,)),
+        reraise=True,
+    )
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        url = f"{self.settings.ollama_base_url}/v1/chat/completions"
+        response = await self.http.post(
+            url,
+            json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system or "You are a helpful coding assistant.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            },
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:

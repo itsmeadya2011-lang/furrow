@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import WORKER_PROMPT
@@ -16,5 +17,17 @@ class WorkerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self) -> str:
-        prompt = f"{WORKER_PROMPT}\n\nTask: {self.task.description}\nFiles to touch: {', '.join(self.task.files) if self.task.files else 'any'}\n"
-        return await self.client.complete(prompt, model=self.client.settings.worker_model)
+        sections: list[str] = [WORKER_PROMPT, "", f"Goal context: {self.task.description}", ""]
+        if self.task.files:
+            for path in self.task.files:
+                try:
+                    content = await self.client.read_file(path)
+                except Exception:
+                    continue
+                sections.append(f"--- {path} ---\n{content}\n")
+        else:
+            sections.append("Files to touch: any")
+
+        prompt = "\n".join(sections)
+        data = await self.client.complete_json(prompt, model=self.client.settings.worker_model)
+        return json.dumps(data)
