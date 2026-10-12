@@ -20,6 +20,18 @@ Return JSON only (no markdown, no explanation) with this shape:
 
 If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
 
+WORKER_TOOLS_PROMPT = """You have access to file tools. Use them to read and edit files.
+
+Available tools:
+- read_file: Read a file's contents. Input: {"path": "..."}
+- write_file: Write content to a file (creates directories as needed). Input: {"path": "...", "content": "..."}
+- list_files: List files in a directory. Input: {"directory": "..."}
+
+To use a tool, wrap the call in <tool_call> tags like this:
+<tool_call>{"name": "read_file", "input": {"path": "src/main.py"}}</tool_call>
+
+After all tool calls, provide a final summary of what you did."""
+
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
 Your job is to implement the assigned task completely and concisely.

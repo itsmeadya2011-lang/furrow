@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 from typing import Optional
 
 import uvicorn
@@ -8,7 +9,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -41,6 +41,7 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onerror = (err) => out.textContent += '\\nError: ' + err + '\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -55,10 +56,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def send(message: str) -> None:
+            try:
+                await websocket.send_text(html.escape(message))
+            except Exception:
+                pass
+
+        orchestrator = Orchestrator(goal=goal, on_output=send)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(f"Error: {e}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

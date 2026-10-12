@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -11,6 +12,35 @@ from furrow.llm import LLMClient
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+
+_JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+_JSON_INLINE_RE = re.compile(r"(\{[^{}]*\"passed\"[^{}]*\})", re.DOTALL)
+
+
+def _extract_json(text: str) -> str | None:
+    """Try to find a JSON object containing a 'passed' key in the response."""
+    # Try fenced code block first
+    match = _JSON_BLOCK_RE.search(text)
+    if match:
+        return match.group(1)
+    # Try inline JSON
+    match = _JSON_INLINE_RE.search(text)
+    if match:
+        return match.group(1)
+    # Fallback: find first { ... } pair
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    for i, ch in enumerate(text[start:], start):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
 
 
 class TesterAgent:
@@ -26,11 +56,19 @@ class TesterAgent:
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
-        try:
-            data = json.loads(response)
-            return TestResult(**data)
-        except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+
+        json_str = _extract_json(response)
+        if json_str:
+            try:
+                data = json.loads(json_str)
+                return TestResult(**data)
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+        # Last-resort heuristic
+        lowered = response.lower()
+        passed = "passed" in lowered and "fail" not in lowered.split("passed")[0]
+        return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
