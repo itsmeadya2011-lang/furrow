@@ -29,6 +29,19 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+Tools available:
+- read_file: Read a file's content. Args: {"path": "path/to/file"}
+- write_file: Write content to a file. Args: {"path": "path/to/file", "content": "file content"}
+- list_files: List files in a directory. Args: {"directory": "path/to/dir"}
+
+To use a tool, respond with a JSON code block:
+```json
+{"tool": "read_file", "args": {"path": "src/main.py"}}
+```
+
+You can make multiple tool calls in one response. After each round, you'll see the results and can continue.
+When the task is complete, provide a final summary without any tool calls.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
@@ -43,3 +56,11 @@ Return JSON only (no markdown) with this shape:
 }
 
 If tests failed, list each failure in the failures array."""
+
+TESTER_FIX_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
+
+Given the goal and test failures, provide specific fix instructions for a worker to implement.
+
+Return a concise, actionable fix plan that a worker can execute directly.
+Focus on minimal changes to address the specific failures.
+"""

@@ -2,15 +2,20 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+from anthropic import APIError as AnthropicAPIError
 from anthropic import AsyncAnthropic
+from anthropic import RateLimitError as AnthropicRateLimitError
+from openai import APIError as OpenAIAPIError
 from openai import AsyncOpenAI
+from openai import RateLimitError as OpenAIRateLimitError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 
 class LLMClient:
@@ -37,16 +42,13 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
-
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((AnthropicRateLimitError, AnthropicAPIError, OpenAIRateLimitError, OpenAIAPIError)),
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("Calling Anthropic", model=model, prompt_length=len(prompt))
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=4096,
@@ -55,7 +57,13 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((OpenAIRateLimitError, OpenAIAPIError)),
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("Calling OpenAI", model=model, prompt_length=len(prompt))
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
@@ -65,17 +73,29 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            return await self._complete_anthropic(prompt, system, model)
+        elif self.settings.provider == Provider.OPENAI:
+            return await self._complete_openai(prompt, system, model)
+        else:
+            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("Reading file", path=str(path))
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("Writing file", path=str(path), size=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
+        logger.debug("Listing files", directory=str(directory))
         p = Path(directory)
         if not p.exists():
             return []
