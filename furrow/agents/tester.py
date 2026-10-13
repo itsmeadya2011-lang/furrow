@@ -2,27 +2,26 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-from typing import TYPE_CHECKING
+import logging
 
 from furrow.agents.prompts import TESTER_PROMPT
-from furrow.config import TaskModel, TestResult
+from furrow.config import Settings, TaskModel, TestResult
 from furrow.llm import LLMClient
 
-if TYPE_CHECKING:
-    from furrow.config import Settings
+logger = logging.getLogger(__name__)
 
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+        self.client = client or LLMClient(settings=settings or Settings())
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
         try:
             test_output = await self._run_tests()
-        except Exception as e:
-            return TestResult(passed=False, summary=str(e), failures=[str(e)])
+        except Exception:
+            logger.exception("Test runner failed")
+            return TestResult(passed=False, summary="Test runner failed", failures=["Test runner failed"])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
@@ -53,6 +52,9 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                continue
+            except Exception:  # noqa: BLE001
+                logger.debug("Test command failed: %s", cmd)
                 continue
         return "No test runner found."

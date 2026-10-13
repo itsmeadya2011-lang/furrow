@@ -5,8 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -18,6 +16,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._gemini: Any | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +36,28 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def gemini(self) -> Any:
+        if self._gemini is None:
+            try:
+                import google.generativeai as genai
+            except ImportError:
+                raise ValueError("google-generativeai package not installed. Run: pip install google-generativeai")
+            api_key = self.settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY is not set")
+            genai.configure(api_key=api_key)
+            self._gemini = genai
+        return self._gemini
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.GEMINI:
+            return await self._complete_gemini(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,7 +68,10 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # Handle different content block types
+        if response.content and hasattr(response.content[0], "text"):
+            return response.content[0].text
+        return str(response.content[0])
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -64,6 +82,13 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_gemini(self, prompt: str, system: str, model: str) -> str:
+        genai = self.gemini
+        full_prompt = (system + "\n\n" + prompt) if system else prompt
+        model_obj = genai.GenerativeModel(model)
+        response = await model_obj.generate_content_async(full_prompt)
+        return response.text or ""
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
