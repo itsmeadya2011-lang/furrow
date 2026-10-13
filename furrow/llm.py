@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
-
 import aiofiles
 import anthropic
+import httpx
 import openai
+import tenacity
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -18,6 +18,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._httpx: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,15 +38,39 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def httpx_client(self) -> httpx.AsyncClient:
+        if self._httpx is None:
+            self._httpx = httpx.AsyncClient(timeout=60.0)
+        return self._httpx
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+        retry=tenacity.retry_if_exception_type(
+            (httpx.RequestError, httpx.TimeoutException, anthropic.RateLimitError, openai.RateLimitError)
+        ),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+        retry=tenacity.retry_if_exception_type(
+            (anthropic.APIError, anthropic.APIConnectionError, anthropic.RateLimitError, anthropic.Timeout)
+        ),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +80,14 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+        retry=tenacity.retry_if_exception_type(
+            (openai.APIError, openai.APIConnectionError, openai.RateLimitError, openai.Timeout)
+        ),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +97,28 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @tenacity.retry(
+        stop=tenacity.stop_after_attempt(3),
+        wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+        retry=tenacity.retry_if_exception_type(
+            (httpx.RequestError, httpx.TimeoutException, httpx.HTTPStatusError)
+        ),
+        reraise=True,
+    )
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        model = model or "llama3"
+        url = f"{self.settings.ollama_base_url}/api/generate"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "system": system or "You are a helpful coding assistant.",
+            "stream": False,
+        }
+        response = await self.httpx_client.post(url, json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("response", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
