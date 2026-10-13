@@ -31,7 +31,7 @@ async def index() -> HTMLResponse:
     <input id="goal" placeholder="Enter goal" required />
     <button type="submit">Start</button>
   </form>
-  <pre id="out"></pre>
+  <pre id="out" style="background: #1e1e1e; color: #d4d4d4; padding: 10px; max-height: 500px; overflow: auto;"></pre>
   <script>
     const form = document.getElementById('form');
     const out = document.getElementById('out');
@@ -55,7 +55,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        
+        async def send_output(message: str) -> None:
+            try:
+                await websocket.send_text(message)
+            except Exception:
+                pass
+        
+        orchestrator = Orchestrator(goal=goal, output_callback=send_output)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass

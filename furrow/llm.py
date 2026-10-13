@@ -5,12 +5,14 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+import structlog
+from anthropic import APIError as AnthropicAPIError, AsyncAnthropic
+from openai import APIError as OpenAIAPIError, AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -37,14 +39,29 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((AnthropicAPIError, OpenAIAPIError, Exception)),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        logger.info("llm_complete_start", provider=self.settings.provider.value, model=model, prompt_len=len(prompt))
+        
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                result = await self._complete_anthropic(prompt, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                result = await self._complete_openai(prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            
+            logger.info("llm_complete_success", model=model, response_len=len(result))
+            return result
+        except Exception as e:
+            logger.error("llm_complete_failed", model=model, error=str(e))
+            raise
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
@@ -66,17 +83,25 @@ class LLMClient:
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("read_file", path=str(path))
         async with aiofiles.open(path, "r") as f:
-            return await f.read()
+            content = await f.read()
+        logger.debug("read_file_success", path=str(path), size=len(content))
+        return content
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("write_file", path=str(path), size=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
+        logger.debug("write_file_success", path=str(path))
 
     def list_files(self, directory: str | Path) -> list[str]:
+        logger.debug("list_files", directory=str(directory))
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        files = [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        logger.debug("list_files_success", directory=str(directory), count=len(files))
+        return files
