@@ -1,41 +1,24 @@
 from __future__ import annotations
 
-import asyncio
-import sys
-
 import click
 from rich.console import Console
 
-from furrow.core.orchestrator import Orchestrator
+from furrow.cli.commands.start import start_cmd
+from furrow.cli.commands.web import web_cmd
+from furrow.logging_config import configure_logging
 
 console = Console()
 
 
 @click.group()
-def main() -> None:
-    pass
+@click.option("--log-level", default="INFO", help="Log level (DEBUG, INFO, WARNING, ERROR)")
+@click.option("--log-json", is_flag=True, help="Output logs as JSON")
+def main(log_level: str, log_json: bool) -> None:
+    configure_logging(level=log_level, json_output=log_json)
 
 
-@main.command()
-@click.argument("goal", required=False)
-@click.option("--model", default=None, help="Override LLM model")
-def start(goal: str | None, model: str | None) -> None:
-    if not goal:
-        goal = click.prompt("Enter your goal for Furrow")
-    if model:
-        from furrow.config import settings
-        settings.model = model
-    try:
-        asyncio.run(Orchestrator(goal=goal).run())
-    except KeyboardInterrupt:
-        console.print("\n[yellow]Furrow stopped by user.[/yellow]")
-        sys.exit(0)
-
-
-@main.command()
-def web() -> None:
-    from furrow.web.server import run
-    run()
+main.add_command(start_cmd)
+main.add_command(web_cmd)
 
 
 if __name__ == "__main__":
