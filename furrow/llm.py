@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
-import aiofiles
-import anthropic
-import openai
+import aiofiles  # type: ignore[import-untyped]
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
 
 
 class LLMClient:
@@ -39,6 +39,7 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
+        logger.debug("llm_request", model=model, provider=self.settings.provider.value, prompt_len=len(prompt))
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
@@ -53,7 +54,11 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # Extract text from the first text block
+        for block in response.content:
+            if hasattr(block, "text") and block.text:
+                return block.text
+        return ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -66,16 +71,19 @@ class LLMClient:
         return response.choices[0].message.content or ""
 
     async def read_file(self, path: str | Path) -> str:
+        logger.debug("read_file", path=str(path))
         async with aiofiles.open(path, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
+        logger.debug("write_file", path=str(path), content_len=len(content))
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
+        logger.debug("list_files", directory=str(directory))
         p = Path(directory)
         if not p.exists():
             return []

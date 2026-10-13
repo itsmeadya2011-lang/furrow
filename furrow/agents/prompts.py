@@ -27,9 +27,22 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return JSON only with actions to perform (no markdown, no explanation).
 - Do not spawn subagents.
-"""
+
+Available actions (return as JSON):
+{
+  "read": ["file1.py", "file2.py"],
+  "write": [{"path": "file.py", "content": "..."}],
+  "edit": [{"path": "file.py", "old_str": "...", "new_str": "..."}],
+  "list": ["directory/"]
+}
+
+Example:
+{
+  "read": ["src/auth.py"],
+  "write": [{"path": "src/auth.py", "content": "new content..."}]
+}"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
@@ -39,7 +52,20 @@ Return JSON only (no markdown) with this shape:
 {
   "passed": true,
   "summary": "All tests passed",
-  "failures": []
+  "failures": [],
+  "fix": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array and optionally provide fix actions:
+{
+  "passed": false,
+  "summary": "Test failures detected",
+  "failures": ["test_xyz failed: AssertionError"],
+  "fix": [
+    {"action": "edit", "path": "src/module.py", "old_str": "old code", "new_str": "fixed code"}
+  ]
+}
+
+Available fix actions:
+- {"action": "write", "path": "file.py", "content": "new content"}
+- {"action": "edit", "path": "file.py", "old_str": "...", "new_str": "..."}"""
