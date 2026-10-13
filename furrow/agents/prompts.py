@@ -29,7 +29,16 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+Return JSON only with this shape:
+{
+  "changes": [
+    {"path": "file.py", "content": "full file content"}
+  ],
+  "summary": "Brief description of changes made"
+}
+
+If no files need to be changed, return empty changes array."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
@@ -42,4 +51,15 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array.
+
+If you can fix the failures by modifying files, also include a "fixes" array:
+{
+  "passed": false,
+  "summary": "Tests failed, attempting fixes",
+  "failures": ["test_auth.py::test_login - AssertionError"],
+  "fixes": [
+    {"path": "src/auth.py", "content": "fixed file content"}
+  ]
+}
+"""

@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings, settings, get_logger
+
+logger = get_logger("llm")
 
 
 class LLMClient:
@@ -64,6 +63,80 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def complete_with_context(
+        self, 
+        messages: list[dict], 
+        model: str | None = None,
+        max_tokens: int = 4096,
+        system: str = ""
+    ) -> str:
+        """Complete with full message history for context management."""
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            return await self._complete_anthropic_with_context(messages, model, max_tokens, system)
+        elif self.settings.provider == Provider.OPENAI:
+            return await self._complete_openai_with_context(messages, model, max_tokens, system)
+        else:
+            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_anthropic_with_context(
+        self, 
+        messages: list[dict], 
+        model: str, 
+        max_tokens: int,
+        system: str
+    ) -> str:
+        response = await self.anthropic.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            system=system or "You are a helpful coding assistant.",
+            messages=messages,
+        )
+        return response.content[0].text
+
+    async def _complete_openai_with_context(
+        self, 
+        messages: list[dict], 
+        model: str, 
+        max_tokens: int,
+        system: str
+    ) -> str:
+        # OpenAI uses system message in the messages array
+        full_messages = []
+        if system:
+            full_messages.append({"role": "system", "content": system})
+        full_messages.extend(messages)
+        
+        response = await self.openai.chat.completions.create(
+            model=model,
+            messages=full_messages,
+            max_tokens=max_tokens,
+        )
+        return response.choices[0].message.content or ""
+
+    def estimate_tokens(self, text: str) -> int:
+        """Rough token estimation (4 chars ≈ 1 token)."""
+        return len(text) // 4
+
+    def compact_messages(self, messages: list[dict], max_tokens: int = 8000) -> list[dict]:
+        """Compact message history to fit within token limit."""
+        total_tokens = sum(self.estimate_tokens(m.get("content", "")) for m in messages)
+        
+        if total_tokens <= max_tokens:
+            return messages
+        
+        # Keep system message and most recent messages
+        system_msgs = [m for m in messages if m.get("role") == "system"]
+        other_msgs = [m for m in messages if m.get("role") != "system"]
+        
+        # Keep removing oldest non-system messages until we fit
+        while other_msgs and total_tokens > max_tokens:
+            removed = other_msgs.pop(0)
+            total_tokens -= self.estimate_tokens(removed.get("content", ""))
+        
+        logger.warning("context_compacted", original=len(messages), compacted=len(system_msgs) + len(other_msgs))
+        return system_msgs + other_msgs
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
