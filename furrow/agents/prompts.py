@@ -18,7 +18,10 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice."""
+If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
+
+Use the provided project files list to understand the codebase structure and identify relevant files for each task.
+"""
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
@@ -29,6 +32,26 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+You have access to the following tools via JSON tool calls (wrap in ```json``` blocks):
+
+1. **read_file**: Read a file's contents
+   ```json
+   {"tool": "read_file", "path": "src/example.py"}
+   ```
+
+2. **write_file**: Write content to a file (creates directories as needed)
+   ```json
+   {"tool": "write_file", "path": "src/example.py", "content": "print('hello')"}
+   ```
+
+3. **list_files**: List files in a directory
+   ```json
+   {"tool": "list_files", "directory": "src"}
+   ```
+
+Use these tools to read existing code, understand the codebase, and write your changes.
+After making changes, provide a summary of what you did.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
