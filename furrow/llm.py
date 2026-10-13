@@ -9,6 +9,7 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from furrow.config import Provider, Settings, settings
 
@@ -20,7 +21,7 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
 
     @property
-    def anthropic(self) -> AsyncAnthropic:
+    def anthropic_client(self) -> AsyncAnthropic:
         if self._anthropic is None:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
@@ -29,7 +30,7 @@ class LLMClient:
         return self._anthropic
 
     @property
-    def openai(self) -> AsyncOpenAI:
+    def openai_client(self) -> AsyncOpenAI:
         if self._openai is None:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
@@ -37,6 +38,11 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        retry=retry_if_exception_type((anthropic.RateLimitError, anthropic.APIError, openai.RateLimitError, openai.APIError, TimeoutError)),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
@@ -47,7 +53,7 @@ class LLMClient:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
-        response = await self.anthropic.messages.create(
+        response = await self.anthropic_client.messages.create(
             model=model,
             max_tokens=4096,
             system=system or "You are a helpful coding assistant.",
@@ -56,7 +62,7 @@ class LLMClient:
         return response.content[0].text
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
+        response = await self.openai_client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
