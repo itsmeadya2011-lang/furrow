@@ -29,7 +29,19 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+- You can perform file operations by returning a JSON block with operations:
+```json
+{
+  "operations": [
+    {"type": "write", "path": "src/file.py", "content": "file content here"},
+    {"type": "read", "path": "src/file.py"},
+    {"type": "run", "path": "pytest tests/ -q"}
+  ]
+}
+```
+- Supported operation types: write, read, delete, run
+- For write operations, include the full file content
+- For run operations, put the command in the "path" field as a string"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
