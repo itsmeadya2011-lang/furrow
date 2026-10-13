@@ -14,20 +14,25 @@ Furrow is an autonomous coding agent that runs an infinite development loop for 
   3. Execute via parallel `furrow-worker` subagents
   4. Test via `furrow-tester` subagent
   5. Report and repeat
+- **State:** Persistent JSON state file (`.furrow_state.json`) for resume capability
+- **Limits:** Configurable `max_parallel_tasks` (default 5) and `max_cycles` (default unlimited)
 
 ### 2. Planner (`furrow-planner`)
 - **Type:** Subagent
 - **Role:** Breaks a high-level goal into parallelizable, independent tasks.
-- **Output:** JSON with `tasks[]`, each having `id`, `description`, `files`, `dependencies`.
+- **Input:** Goal + project context (file listing)
+- **Output:** JSON with `tasks[]`, each having `id`, `description`, `files`, `dependencies`, `rationale`
 
 ### 3. Worker (`furrow-worker`)
 - **Type:** Subagent
 - **Role:** Executes a single assigned task. Minimal, targeted changes. No scope creep.
 - **Constraint:** 1-3 tool call rounds per task.
+- **Tools:** Reads relevant files, writes file operations as JSON (`{"files": [{"path": "...", "operation": "write", "content": "..."}]}`)
 
 ### 4. Tester (`furrow-tester`)
 - **Type:** Subagent
-- **Role:** Runs tests, lint, type checks. Fixes failures. Returns pass/fail JSON.
+- **Role:** Runs tests, lint, type checks. Parses output directly (no LLM interpretation).
+- **Output:** JSON with `passed`, `summary`, `failures[]`
 
 ### 5. Command (`/furrow`)
 - **Type:** Slash command
@@ -53,8 +58,8 @@ Open by default: `bash: allow`, `edit: allow`, `read: allow`.
 - Run `/furrow <goal>` to start the loop.
 - The agent runs until the goal is complete or the user stops the session.
 - Mid-loop user input is incorporated into the next cycle's plan.
+- State persists to `.furrow_state.json` for resume across sessions.
 
 ## Future Work
 - CLI and desktop wrappers for non-TUI interaction.
-- Persistent state file for goal/task tracking across sessions.
-- Web UI for monitoring parallel agent activity.
+- Web UI for monitoring parallel agent activity (partially implemented via `furrow web`).

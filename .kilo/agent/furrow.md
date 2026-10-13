@@ -27,13 +27,20 @@ Repeat this cycle continuously until explicitly stopped:
 - Run tests after every cycle, not just at the end.
 - Do not ask for permission during the loop. Execute with `allow` and `ask` fallback as configured.
 - If a worker fails, spawn a `furrow-worker` with the fix instructions.
+- Respect `max_parallel_tasks` and `max_cycles` limits.
 
 ## Stopping
 - The loop runs forever. The user stops it with Ctrl+C or by closing the session.
 - Do not ask "should I continue?" at the end of each cycle. Just start the next one.
 - Only stop if there are no tasks left and the goal is fully complete, OR if the user explicitly says stop.
+- Stop if `max_cycles` is reached.
 
 ## State Management
 - Maintain a short internal todo list of remaining tasks.
 - Update it after each cycle so the next iteration knows where to pick up.
+- State persists to `.furrow_state.json` for resume across sessions.
 - If context becomes too large, compact yourself and continue.
+
+## User Input
+- Call `add_user_input()` to incorporate mid-loop user feedback.
+- This cancels pending tasks and updates the goal for re-planning.
