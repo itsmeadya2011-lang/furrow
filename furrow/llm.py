@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -14,10 +12,11 @@ from furrow.config import Provider, Settings, settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or Settings()
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._httpx: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,16 +36,29 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
+    @property
+    def httpx_client(self) -> httpx.AsyncClient:
+        """Lazy client for Ollama HTTP API."""
+        if self._httpx is None:
+            self._httpx = httpx.AsyncClient(timeout=60.0)
+        return self._httpx
+
+    async def complete(
+        self, prompt: str, system: str = "", model: str | None = None
+    ) -> str:
+        resolved_model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
+            return await self._complete_anthropic(prompt, system, resolved_model)
         elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
+            return await self._complete_openai(prompt, system, resolved_model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, resolved_model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_anthropic(
+        self, prompt: str, system: str, model: str
+    ) -> str:
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=4096,
@@ -55,15 +67,44 @@ class LLMClient:
         )
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_openai(
+        self, prompt: str, system: str, model: str
+    ) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {
+                    "role": "system",
+                    "content": system or "You are a helpful coding assistant.",
+                },
                 {"role": "user", "content": prompt},
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(
+        self, prompt: str, system: str, model: str
+    ) -> str:
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+
+        resp = await self.httpx_client.post(
+            f"{self.settings.ollama_base_url}/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Ollama responses have: message.role, message.content
+        if "message" in data and "content" in data["message"]:
+            return data["message"]["content"]
+        # Fallback: concatenate content from streamed responses
+        return data.get("message", {}).get("content", "")
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
@@ -80,3 +121,9 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    async def aclose(self) -> None:
+        """Close any lazily-initialized async clients."""
+        if self._httpx is not None:
+            await self._httpx.aclose()
+            self._httpx = None
