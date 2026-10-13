@@ -35,7 +35,7 @@ class TestResult(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env", extra="ignore")
 
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+
+    def validate_provider(self) -> None:
+        """Validate that required API keys are set for the chosen provider."""
+        if self.provider == Provider.ANTHROPIC and not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required when provider is 'anthropic'")
+        if self.provider == Provider.OPENAI and not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required when provider is 'openai'")
+        if self.provider == Provider.OLLAMA and not self.ollama_base_url:
+            raise ValueError("OLLAMA_BASE_URL is required when provider is 'ollama'")
 
 
 settings = Settings()

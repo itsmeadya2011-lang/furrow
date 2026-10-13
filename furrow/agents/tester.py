@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
+from .logging import get_logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
@@ -16,12 +17,15 @@ if TYPE_CHECKING:
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.client = client or LLMClient(settings=settings)
+        self.logger = get_logger(__name__)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        self.logger.info("Starting test execution", goal=goal, num_tasks=len(tasks))
         test_output = ""
         try:
             test_output = await self._run_tests()
         except Exception as e:
+            self.logger.error("Error during test execution", exc_info=True)
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
@@ -30,9 +34,12 @@ class TesterAgent:
             data = json.loads(response)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            passed = "passed" in response.lower()
+            self.logger.info("Test execution completed", passed=passed, summary=response)
+            return TestResult(passed=passed, summary=response, failures=[])
 
     async def _run_tests(self) -> str:
+        self.logger.debug("Looking for test runner")
         candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
@@ -53,6 +60,10 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                self.logger.debug(f"Test runner not found: {' '.join(cmd)}")
+                continue
+            except Exception as e:
+                self.logger.debug(f"Error running test command {' '.join(cmd)}: {e}")
                 continue
         return "No test runner found."

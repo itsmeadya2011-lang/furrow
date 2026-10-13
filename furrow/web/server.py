@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Optional
 
 import uvicorn
@@ -52,13 +53,25 @@ async def index() -> HTMLResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
+    task: asyncio.Task | None = None
     try:
+        await websocket.send_text("Starting...")
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        async def send_output(text: str) -> None:
+            await websocket.send_text(text)
+
+        orchestrator = Orchestrator(goal=goal, output_callback=send_output)
+        task = asyncio.create_task(orchestrator.run())
+        await task
     except WebSocketDisconnect:
         pass
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:

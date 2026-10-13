@@ -24,6 +24,16 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+You have access to the following tools. Use them by emitting a line in this exact format:
+TOOL: <tool_name> {"json_arguments"}
+
+Available tools:
+- read_file {"path": "src/foo.py"} - Read a file's contents
+- write_file {"path": "src/foo.py", "content": "..."} - Write content to a file (creates directories as needed)
+- list_files {"directory": "src/"} - List all files in a directory recursively
+
+After each tool call, you will receive the result. Continue calling tools until the task is complete, then provide a final summary.
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
@@ -42,4 +52,16 @@ Return JSON only (no markdown) with this shape:
   "failures": []
 }
 
-If tests failed, list each failure in the failures array."""
+If tests failed, list each failure in the failures array.
+
+IMPORTANT:
+- Always return valid JSON even if the test output is unclear or malformed
+- If the output contains "no test runner found", set "passed": false with an appropriate failure message in the failures array
+- If the output is empty or unparseable, set "passed": false with summary "Unable to determine test results"
+
+Example output for failed tests:
+{
+  "passed": false,
+  "summary": "Tests failed: no test runner found",
+  "failures": ["No test runner found in the project. Please configure a test framework (pytest, jest, etc.)."]
+}"""
