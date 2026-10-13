@@ -9,6 +9,7 @@ import anthropic
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
@@ -46,6 +47,20 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    async def complete_with_messages(self, messages: list[dict], model: str | None = None) -> str:
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            return await self._complete_anthropic_messages(messages, model)
+        elif self.settings.provider == Provider.OPENAI:
+            return await self._complete_openai_messages(messages, model)
+        else:
+            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +70,34 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def _complete_anthropic_messages(self, messages: list[dict], model: str) -> str:
+        # Separate system message
+        system = ""
+        filtered_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system = msg.get("content", "")
+            else:
+                filtered_messages.append(msg)
+
+        response = await self.anthropic.messages.create(
+            model=model,
+            max_tokens=4096,
+            system=system or "You are a helpful coding assistant.",
+            messages=filtered_messages,
+        )
+        return response.content[0].text
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -62,6 +105,18 @@ class LLMClient:
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
+        )
+        return response.choices[0].message.content or ""
+
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    async def _complete_openai_messages(self, messages: list[dict], model: str) -> str:
+        response = await self.openai.chat.completions.create(
+            model=model,
+            messages=messages,
         )
         return response.choices[0].message.content or ""
 
