@@ -1,16 +1,33 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
 import openai
+import structlog
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.wrap_logger(logging.getLogger("furrow.llm"))
+
+# Transient errors worth retrying (rate limits, timeouts, server errors).
+_RETRYABLE_TYPES = (
+    anthropic.RateLimitError,
+    anthropic.APITimeoutError,
+    openai.RateLimitError,
+    openai.APITimeoutError,
+)
 
 
 class LLMClient:
@@ -46,16 +63,30 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(
+        retry=retry_if_exception_type(_RETRYABLE_TYPES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("calling_anthropic", model=model, prompt_len=len(prompt))
         response = await self.anthropic.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=self.settings.max_tokens,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
         return response.content[0].text
 
+    @retry(
+        retry=retry_if_exception_type(_RETRYABLE_TYPES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
+        logger.debug("calling_openai", model=model, prompt_len=len(prompt))
         response = await self.openai.chat.completions.create(
             model=model,
             messages=[
