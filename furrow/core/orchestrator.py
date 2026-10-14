@@ -26,12 +26,19 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.current_tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            
+            # Check max cycles limit
+            if self.client.settings.max_cycles > 0 and self.cycles > self.client.settings.max_cycles:
+                console.print(f"[yellow]Max cycles ({self.client.settings.max_cycles}) reached. Halting.[/yellow]")
+                break
+                
             await self._cycle()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
@@ -39,12 +46,19 @@ class Orchestrator:
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
+            try:
+                plan = await self.planner.plan(self.goal)
+            except Exception as e:
+                console.print(f"[red]Planning failed: {e}[/red]")
+                console.print("[yellow]Halting due to planning failure.[/yellow]")
+                return
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
+
+        self.current_tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -64,7 +78,13 @@ class Orchestrator:
                 console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            try:
+                test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            except Exception as e:
+                console.print(f"[red]Testing failed: {e}[/red]")
+                console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
+                self.goal = f"Fix testing error:\n{str(e)}"
+                return
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
@@ -85,4 +105,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.current_tasks
