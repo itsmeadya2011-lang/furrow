@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -53,7 +50,12 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        for block in response.content:
+            if hasattr(block, "text"):
+                return block.text
+            if hasattr(block, "thinking"):
+                return block.thinking
+        return ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
