@@ -1,0 +1,213 @@
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from furrow.config import Completion, Provider, Settings
+from furrow.llm import LLMClient
+
+
+class TestLLMClientInit:
+    def test_init_with_default_settings(self):
+        client = LLMClient()
+        assert client.settings is not None
+        assert client._anthropic is None
+        assert client._openai is None
+
+    def test_init_with_custom_settings(self):
+        settings = Settings(provider=Provider.OPENAI, model="gpt-4")
+        client = LLMClient(settings=settings)
+        assert client.settings.provider == Provider.OPENAI
+        assert client.settings.model == "gpt-4"
+
+
+class TestLLMClientCompleteAnthropic:
+    @pytest.mark.asyncio
+    async def test_complete_anthropic_mocked(self):
+        settings = Settings(provider=Provider.ANTHROPIC, anthropic_api_key="test-key")
+        client = LLMClient(settings=settings)
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="Hello, world!")]
+
+        with patch.object(client, "_anthropic") as mock_anthropic:
+            mock_anthropic.messages.create = AsyncMock(return_value=mock_response)
+            result = await client.complete("test prompt", system="test system", model="test-model", max_tokens=100)
+
+        assert result == "Hello, world!"
+        mock_anthropic.messages.create.assert_called_once()
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        assert call_kwargs["model"] == "test-model"
+        assert call_kwargs["max_tokens"] == 100
+        assert call_kwargs["system"] == "test system"
+        assert call_kwargs["messages"] == [{"role": "user", "content": "test prompt"}]
+
+    @pytest.mark.asyncio
+    async def test_complete_anthropic_uses_defaults(self):
+        settings = Settings(provider=Provider.ANTHROPIC, anthropic_api_key="test-key", max_tokens=2048, timeout=60.0)
+        client = LLMClient(settings=settings)
+
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(type="text", text="Default response")]
+
+        with patch.object(client, "_anthropic") as mock_anthropic:
+            mock_anthropic.messages.create = AsyncMock(return_value=mock_response)
+            await client.complete("test")
+
+        call_kwargs = mock_anthropic.messages.create.call_args[1]
+        assert call_kwargs["max_tokens"] == 2048
+
+
+class TestLLMClientCompleteOpenAI:
+    @pytest.mark.asyncio
+    async def test_complete_openai_mocked(self):
+        settings = Settings(provider=Provider.OPENAI, openai_api_key="test-key")
+        client = LLMClient(settings=settings)
+
+        mock_message = MagicMock(content="OpenAI response")
+        mock_choice = MagicMock(message=mock_message)
+        mock_response = MagicMock(choices=[mock_choice])
+
+        with patch.object(client, "_openai") as mock_openai:
+            mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
+            result = await client.complete("test prompt", model="gpt-4", max_tokens=500)
+
+        assert result == "OpenAI response"
+        mock_openai.chat.completions.create.assert_called_once()
+        call_kwargs = mock_openai.chat.completions.create.call_args[1]
+        assert call_kwargs["model"] == "gpt-4"
+        assert call_kwargs["max_tokens"] == 500
+
+
+class TestLLMClientFileOperations:
+    @pytest.mark.asyncio
+    async def test_read_file(self, tmp_path):
+        settings = Settings()
+        client = LLMClient(settings=settings)
+
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("file content")
+
+        content = await client.read_file(test_file)
+        assert content == "file content"
+
+    @pytest.mark.asyncio
+    async def test_write_file(self, tmp_path):
+        settings = Settings()
+        client = LLMClient(settings=settings)
+
+        test_file = tmp_path / "new_file.txt"
+        await client.write_file(test_file, "new content")
+
+        assert test_file.read_text() == "new content"
+
+    @pytest.mark.asyncio
+    async def test_write_file_creates_parent_dirs(self, tmp_path):
+        settings = Settings()
+        client = LLMClient(settings=settings)
+
+        test_file = tmp_path / "subdir" / "nested" / "file.txt"
+        await client.write_file(test_file, "nested content")
+
+        assert test_file.read_text() == "nested content"
+
+    def test_list_files(self, tmp_path):
+        settings = Settings()
+        client = LLMClient(settings=settings)
+
+        (tmp_path / "file1.txt").write_text("1")
+        (tmp_path / "file2.py").write_text("2")
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "subdir" / "file3.txt").write_text("3")
+
+        files = client.list_files(tmp_path)
+        assert set(files) == {"file1.txt", "file2.py", "subdir/file3.txt"}
+
+    def test_list_files_empty_directory(self, tmp_path):
+        settings = Settings()
+        client = LLMClient(settings=settings)
+
+        files = client.list_files(tmp_path)
+        assert files == []
+
+    def test_list_files_nonexistent_directory(self):
+        settings = Settings()
+        client = LLMClient(settings=settings)
+
+        files = client.list_files("/nonexistent/path")
+        assert files == []
+
+
+class TestLLMClientCompleteWithTools:
+    @pytest.mark.asyncio
+    async def test_complete_with_tools_anthropic(self):
+        settings = Settings(provider=Provider.ANTHROPIC, anthropic_api_key="test-key")
+        client = LLMClient(settings=settings)
+
+        mock_tool = MagicMock(type="tool_call", id="call_1")
+        mock_tool.tool = MagicMock()
+        mock_tool.tool.name = "read_file"
+        mock_tool.tool.input = {"path": "test.py"}
+        mock_text = MagicMock(type="text", text="I'll read that file")
+        mock_response = MagicMock(content=[mock_tool, mock_text])
+        mock_response.stop_reason = "tool_use"
+
+        with patch.object(client, "_anthropic") as mock_anthropic:
+            mock_anthropic.messages.create = AsyncMock(return_value=mock_response)
+            result = await client.complete_with_tools(
+                "test prompt",
+                tools=[{"name": "read_file", "description": "Read a file"}],
+                tool_choice={"type": "auto"},
+            )
+
+        assert isinstance(result, Completion)
+        assert result.text == "I'll read that file"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "read_file"
+        assert result.tool_calls[0].arguments == {"path": "test.py"}
+        assert result.tool_calls[0].id == "call_1"
+
+    @pytest.mark.asyncio
+    async def test_complete_with_tools_openai(self):
+        settings = Settings(provider=Provider.OPENAI, openai_api_key="test-key")
+        client = LLMClient(settings=settings)
+
+        mock_tool_call = MagicMock()
+        mock_tool_call.function = MagicMock()
+        mock_tool_call.function.name = "write_file"
+        mock_tool_call.function.arguments = '{"path": "test.py", "content": "hi"}'
+        mock_tool_call.id = "call_1"
+        mock_message = MagicMock(content="Done", tool_calls=[mock_tool_call])
+        mock_choice = MagicMock(message=mock_message, finish_reason="tool_calls")
+        mock_response = MagicMock(choices=[mock_choice])
+
+        with patch.object(client, "_openai") as mock_openai:
+            mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
+            result = await client.complete_with_tools("test prompt", tools=[{"name": "write_file"}])
+
+        assert isinstance(result, Completion)
+        assert result.text == "Done"
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].name == "write_file"
+        assert result.tool_calls[0].arguments == {"path": "test.py", "content": "hi"}
+
+    @pytest.mark.asyncio
+    async def test_complete_with_tools_ollama_fallback(self):
+        settings = Settings(provider=Provider.OLLAMA, ollama_base_url="http://localhost:11434")
+        client = LLMClient(settings=settings)
+
+
+
+class TestLLMClientOllamaImportError:
+    @pytest.mark.asyncio
+    async def test_ollama_raises_import_error_when_not_installed(self):
+        settings = Settings(provider=Provider.OLLAMA)
+        client = LLMClient(settings=settings)
+        with patch("furrow.llm.ollama", None), pytest.raises(ImportError, match="ollama package is not installed"):\n            _ = client.ollama_client
+                _ = client.ollama_client
+
+    @pytest.mark.asyncio
+    async def test_complete_ollama_raises_import_error(self):
+        settings = Settings(provider=Provider.OLLAMA)
+        client = LLMClient(settings=settings)
+        with patch("furrow.llm.ollama", None), pytest.raises(ImportError, match="ollama package is required for OLLAMA provider"):\n            await client.complete("test")
+                await client.complete("test")

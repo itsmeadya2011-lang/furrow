@@ -1,0 +1,183 @@
+import asyncio
+import json
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from furrow.agents.tester import TesterAgent
+from furrow.config import Settings, TaskModel, TestResult
+from furrow.llm import LLMClient
+
+
+class TestTesterAgent:
+    @pytest.fixture
+    def mock_client(self):
+        settings = Settings(anthropic_api_key="test-key", test_timeout=10)
+        client = LLMClient(settings=settings)
+        client.complete = AsyncMock()
+        return client
+
+    @pytest.fixture
+    def tasks(self):
+        return [
+            TaskModel(id="1", description="Task 1"),
+            TaskModel(id="2", description="Task 2"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_run_with_mocked_llm_and_subprocess(self, mock_client, tasks, tmp_path):
+        test_output = "test_session starts\n1 passed, 0 failed"
+        mock_client.complete.return_value = json.dumps(
+            {"passed": True, "summary": "All tests passed", "failures": []}
+        )
+
+        with patch.object(TesterAgent, "_run_tests", new_callable=AsyncMock) as mock_run_tests:
+            mock_run_tests.return_value = test_output
+
+            tester = TesterAgent(client=mock_client)
+            result = await tester.run("Test goal", tasks)
+
+        assert isinstance(result, TestResult)
+        assert result.passed is True
+        assert result.summary == "All tests passed"
+
+    @pytest.mark.asyncio
+    async def test_run_tests_no_runner_found_raises_runtime_error(self, mock_client):
+        tester = TesterAgent(client=mock_client)
+
+        with patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError()):
+            with pytest.raises(RuntimeError, match="No test runner found"):
+                await tester._run_tests()
+
+    @pytest.mark.asyncio
+    async def test_test_command_config_override(self, mock_client, tasks, tmp_path):
+        mock_client.complete.return_value = json.dumps(
+            {"passed": True, "summary": "Custom command passed", "failures": []}
+        )
+
+        settings = Settings(anthropic_api_key="test-key", test_command="custom-test-command")
+        client = LLMClient(settings=settings)
+        client.complete = mock_client.complete
+
+        tester = TesterAgent(client=client)
+
+        with patch.object(tester, "_run_shell_command", new_callable=AsyncMock) as mock_shell:
+            mock_shell.return_value = "custom output"
+            result = await tester.run("Test goal", tasks)
+
+        mock_shell.assert_called_once_with("custom-test-command")
+        assert result.passed is True
+
+    @pytest.mark.asyncio
+    async def test_test_timeout_handling(self, mock_client):
+        settings = Settings(anthropic_api_key="test-key", test_timeout=1)
+        client = LLMClient(settings=settings)
+        client.complete = mock_client.complete
+
+        tester = TesterAgent(client=client)
+
+        async def slow_communicate():
+            await asyncio.sleep(2)
+            return b"", b""
+
+        mock_proc = MagicMock()
+        mock_proc.communicate = slow_communicate
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
+            with pytest.raises(RuntimeError, match="No test runner found"):
+                await tester._run_tests()
+
+    @pytest.mark.asyncio
+    async def test_json_response_parsing_for_test_results(self, mock_client, tasks):
+        mock_client.complete.return_value = json.dumps(
+            {"passed": False, "summary": "2 failed", "failures": ["test_a failed", "test_b failed"]}
+        )
+
+        tester = TesterAgent(client=mock_client)
+
+        with patch.object(tester, "_run_tests", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "test output"
+            result = await tester.run("Test goal", tasks)
+
+        assert result.passed is False
+        assert result.failures == ["test_a failed", "test_b failed"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_parsing_non_json_response(self, mock_client, tasks):
+        mock_client.complete.return_value = "The tests passed successfully!"
+
+        tester = TesterAgent(client=mock_client)
+
+        with patch.object(tester, "_run_tests", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "test output"
+            result = await tester.run("Test goal", tasks)
+
+        assert result.passed is True
+        assert result.summary == "The tests passed successfully!"
+
+    @pytest.mark.asyncio
+    async def test_fallback_parsing_failure_response(self, mock_client, tasks):
+        mock_client.complete.return_value = "Tests failed: assertion error"
+
+        tester = TesterAgent(client=mock_client)
+
+        with patch.object(tester, "_run_tests", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "test output"
+            result = await tester.run("Test goal", tasks)
+
+        assert result.passed is False
+        assert "assertion error" in result.summary.lower()
+
+    @pytest.mark.asyncio
+    async def test_run_tests_tries_multiple_commands(self, mock_client):
+        tester = TesterAgent(client=mock_client)
+
+        call_count = 0
+
+        async def mock_create_subprocess_exec(*cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise FileNotFoundError()
+            mock_proc = MagicMock()
+            mock_proc.communicate = AsyncMock(return_value=(b"success", b""))
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=mock_create_subprocess_exec):
+            result = await tester._run_tests()
+
+        assert call_count == 3
+        assert result == "success"
+
+    @pytest.mark.asyncio
+    async def test_run_tests_custom_command_timeout(self, mock_client):
+        settings = Settings(anthropic_api_key="test-key", test_command="slow-command", test_timeout=1)
+        client = LLMClient(settings=settings)
+        client.complete = mock_client.complete
+
+        tester = TesterAgent(client=client)
+
+        async def slow_communicate():
+            await asyncio.sleep(2)
+            return b"", b""
+
+        mock_proc = MagicMock()
+        mock_proc.communicate = slow_communicate
+
+        with patch("asyncio.create_subprocess_shell", return_value=mock_proc):
+            with pytest.raises(RuntimeError, match="Test command timed out"):
+                await tester._run_tests()
+
+    @pytest.mark.asyncio
+    async def test_run_with_empty_tasks(self, mock_client):
+        mock_client.complete.return_value = json.dumps(
+            {"passed": True, "summary": "No tasks", "failures": []}
+        )
+
+        tester = TesterAgent(client=mock_client)
+
+        with patch.object(tester, "_run_tests", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = "no tests"
+            result = await tester.run("Test goal", [])
+
+        assert result.passed is True

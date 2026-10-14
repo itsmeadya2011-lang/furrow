@@ -24,11 +24,38 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+You have access to the following file tools:
+- read_file(path): Read and return the contents of a file
+- write_file(path, content): Write content to a file, creating directories as needed
+- list_files(directory): List all files in a directory recursively
+
+Workflow:
+1. Read relevant files to understand the codebase structure
+2. Make the necessary changes using write_file
+3. Return your results as JSON
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+Return JSON only (no markdown, no explanation) with this exact shape:
+{
+  "changed_files": [
+    {"path": "relative/path/to/file.py", "content": "full file content"}
+  ],
+  "summary": "Brief description of changes made",
+  "issues": ["Any problems encountered"]
+}
+"""
+
+WORKSPACE_CONTEXT_PROMPT = """workspace directory: {workspace}
+
+Files in workspace:
+{file_list}
+
+{file_contents}
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.

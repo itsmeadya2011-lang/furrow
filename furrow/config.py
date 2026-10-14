@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,7 +20,7 @@ class TaskModel(BaseModel):
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
     status: str = "pending"
-    result: Optional[str] = None
+    result: str | None = None
 
 
 class Plan(BaseModel):
@@ -42,13 +42,31 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    test_command: str | None = None
+    test_timeout: int = 120
+    max_tokens: int = 4096
+    max_retries: int = 3
+    timeout: float = 120.0
+
+
+class ToolCall(BaseModel):
+    name: str
+    arguments: dict[str, Any]
+    id: str
+
+
+class Completion(BaseModel):
+    text: str = ""
+    tool_calls: list[ToolCall] = Field(default_factory=list)
+    finish_reason: str | None = None
+    usage: dict[str, Any] | None = None
 
 
 settings = Settings()
