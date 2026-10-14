@@ -6,14 +6,16 @@ import sys
 import click
 from rich.console import Console
 
+from furrow.config import settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import setup_logging
 
 console = Console()
 
 
 @click.group()
 def main() -> None:
-    pass
+    setup_logging(settings.log_level)
 
 
 @main.command()

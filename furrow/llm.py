@@ -1,16 +1,30 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
+from anthropic import APIError as AnthropicAPIError
 from anthropic import AsyncAnthropic
+from openai import APIError as OpenAIError
 from openai import AsyncOpenAI
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from furrow.config import Provider, Settings, settings
+from furrow.logging import get_logger
+
+log = get_logger(__name__)
+_logger = logging.getLogger(__name__)
 
 
 class LLMClient:
@@ -18,6 +32,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: httpx.AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,14 +52,39 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> httpx.AsyncClient:
+        if self._ollama is None:
+            self._ollama = httpx.AsyncClient(
+                base_url=self.settings.ollama_base_url,
+                timeout=httpx.Timeout(60.0),
+            )
+        return self._ollama
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((AnthropicAPIError, OpenAIError, httpx.HTTPError, Exception)),
+        before_sleep=before_sleep_log(_logger, logging.WARNING),
+        reraise=True,
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        log.debug("llm.complete.start", provider=self.settings.provider.value, model=model, prompt_length=len(prompt))
+        try:
+            if self.settings.provider == Provider.ANTHROPIC:
+                result = await self._complete_anthropic(prompt, system, model)
+            elif self.settings.provider == Provider.OPENAI:
+                result = await self._complete_openai(prompt, system, model)
+            elif self.settings.provider == Provider.OLLAMA:
+                result = await self._complete_ollama(prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            log.debug("llm.complete.success", provider=self.settings.provider.value, model=model, result_length=len(result))
+            return result
+        except Exception as e:
+            log.error("llm.complete.error", provider=self.settings.provider.value, model=model, error=str(e))
+            raise
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
@@ -64,6 +104,19 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        response = await self.ollama.post(
+            "/api/generate",
+            json={
+                "model": model,
+                "prompt": prompt,
+                "system": system or "You are a helpful coding assistant.",
+                "stream": False,
+            },
+        )
+        response.raise_for_status()
+        return response.json()["response"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
