@@ -47,7 +47,9 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
-    workspace: Path = Field(default_factory=Path.cwd)
+    max_tokens: int = 4096
+    timeout: float = 120.0
+    workspace: Path = Field(default_factory=lambda: Path.cwd())
     log_level: str = "INFO"
 
 

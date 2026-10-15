@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Coroutine
 
 from rich.console import Console
 from rich.panel import Panel
@@ -14,75 +14,113 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TaskModel, TestResult
 from furrow.llm import LLMClient
 
 console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        on_output: Callable[[str], None] | Callable[[str], Coroutine[Any, Any, None]] | None = None,
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[TaskModel] = []
+        self.completed_tasks: list[TaskModel] = []
+        self.failed_tasks: list[TaskModel] = []
+        self._on_output = on_output
+
+    async def _emit(self, message: str) -> None:
+        if self._on_output is None:
+            return
+        result = self._on_output(message)
+        if asyncio.iscoroutine(result):
+            await result
 
     async def run(self) -> None:
-        console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        await self._emit(f"Furrow starting. Goal: {self.goal}")
         while True:
             self.cycles += 1
-            console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            await self._emit(f"\n=== Cycle {self.cycles} ===")
             await self._cycle()
             if self._is_done():
-                console.print("[bold green]Goal complete. Halting.[/bold green]")
+                await self._emit("Goal complete. Halting.")
                 break
 
     async def _cycle(self) -> None:
-        with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
-        console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        await self._emit("Planning...")
+        plan = await self.planner.plan(self.goal)
+        await self._emit(f"Plan rationale: {plan.rationale}")
 
         if not plan.tasks:
-            console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            await self._emit("No tasks planned. Goal may be complete.")
             return
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        # Merge new tasks with existing ones, avoiding duplicates by id
+        existing_ids = {t.id for t in self.tasks}
+        for task in plan.tasks:
+            if task.id not in existing_ids:
+                self.tasks.append(task)
 
-        for task, result in zip(plan.tasks, results):
-            if isinstance(result, Exception):
-                task.status = "failed"
-                task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
-            else:
-                task.status = "completed"
-                task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+        # Determine which tasks still need to run
+        pending = [t for t in self.tasks if t.status == "pending"]
+        if not pending:
+            await self._emit("All tasks already processed.")
+            return
 
-        with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+        await self._emit(f"Executing {len(pending)} task(s) in parallel...")
+
+        sem = asyncio.Semaphore(self.client.settings.max_parallel_tasks)
+
+        async def run_with_limit(task: TaskModel) -> TaskModel:
+            async with sem:
+                try:
+                    result = await WorkerAgent(task=task, client=self.client).run()
+                    task.status = "completed"
+                    task.result = result
+                    self.completed_tasks.append(task)
+                    await self._emit(f"[green]Task {task.id} completed[/green]")
+                    return task
+                except Exception as e:
+                    task.status = "failed"
+                    task.result = str(e)
+                    self.failed_tasks.append(task)
+                    await self._emit(f"[red]Task {task.id} failed: {e}[/red]")
+                    return task
+
+        results = await asyncio.gather(*(run_with_limit(t) for t in pending))
+
+        await self._emit("Testing...")
+        test_result = await TesterAgent(client=self.client).run(self.goal, self.tasks)
 
         if test_result.passed:
-            console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            await self._emit(f"[green]Tests passed: {test_result.summary}[/green]")
         else:
-            console.print(f"[red]Tests failed: {test_result.summary}[/red]")
+            await self._emit(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
-                console.print(f"  • {failure}")
-            console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
-            self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
+                await self._emit(f"  • {failure}")
+            await self._emit("Will attempt fix in next cycle.")
+            # Reset failed tasks to pending so they get retried
+            for task in self.failed_tasks:
+                task.status = "pending"
+            self.failed_tasks.clear()
+            self.goal = "Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
+        if self.failed_tasks:
             return False
-        if completed >= len(self._get_tasks()):
+        if self.client.settings.max_cycles and self.cycles >= self.client.settings.max_cycles:
+            return True
+        pending = sum(1 for t in self.tasks if t.status == "pending")
+        if pending > 0:
+            return False
+        completed = sum(1 for t in self.tasks if t.status == "completed")
+        if completed >= len(self.tasks) and self.tasks:
             return True
         return False
-
-    def _get_tasks(self) -> list[Any]:
-        return []
