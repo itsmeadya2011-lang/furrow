@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TestResult, settings
 from furrow.llm import LLMClient
 
 console = Console()
@@ -25,12 +25,18 @@ class Orchestrator:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
+        self.worker = WorkerAgent(client=self.client)
+        self.tester = TesterAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            if settings.max_cycles > 0 and self.cycles > settings.max_cycles:
+                console.print(f"[yellow]Max cycles ({settings.max_cycles}) reached. Halting.[/yellow]")
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
@@ -39,21 +45,31 @@ class Orchestrator:
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
-            plan = await self.planner.plan(self.goal)
-        console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+            try:
+                plan = await self.planner.plan(self.goal)
+            except Exception as e:
+                console.print(f"[red]Planning failed: {e}[/red]")
+                return
 
-        if not plan.tasks:
+        console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
+        self.tasks = plan.tasks
+
+        if not self.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                tasks = [
+                    WorkerAgent(task=task, client=self.client).run()
+                    for task in self.tasks
+                ]
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+            except Exception as e:
+                console.print(f"[red]Task execution failed: {e}[/red]")
+                return
 
-        for task, result in zip(plan.tasks, results):
+        for task, result in zip(self.tasks, results):
             if isinstance(result, Exception):
                 task.status = "failed"
                 task.result = str(result)
@@ -64,10 +80,16 @@ class Orchestrator:
                 console.print(f"[green]Task {task.id} completed[/green]")
 
         with Status("[bold yellow]Testing...", console=console) as status:
-            test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
+            try:
+                test_result = await TesterAgent(client=self.client).run(self.goal, self.tasks)
+            except Exception as e:
+                console.print(f"[red]Testing failed: {e}[/red]")
+                return
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            # If all tasks pass and tests pass, goal is complete
+            # Don't update goal to continue fixing tests
         else:
             console.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
@@ -76,6 +98,8 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
+        if not self._get_tasks():
+            return False
         completed = sum(1 for t in self._get_tasks() if t.status == "completed")
         failed = sum(1 for t in self._get_tasks() if t.status == "failed")
         if failed > 0:
@@ -85,4 +109,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks

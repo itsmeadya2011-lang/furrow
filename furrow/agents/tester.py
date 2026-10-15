@@ -33,7 +33,7 @@ class TesterAgent:
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
-        candidates = [
+        test_candidates = [
             ["pytest", "-q"],
             ["python", "-m", "pytest", "-q"],
             ["npm", "test", "--", "--silent"],
@@ -42,17 +42,56 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
-        for cmd in candidates:
+
+        lint_candidates = [
+            ["ruff", "check", "."],
+            ["python", "-m", "ruff", "check", "."],
+            ["mypy", "."],
+            ["python", "-m", "mypy", "."],
+            ["npm", "run", "lint"],
+            ["pnpm", "lint"],
+            ["yarn", "lint"],
+            ["cargo", "clippy"],
+            ["go", "vet", "./..."],
+        ]
+
+        combined_output = []
+
+        # Run test runners first
+        for cmd in test_candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    combined_output.append(stdout.decode() + stderr.decode())
                 except asyncio.TimeoutError:
                     proc.kill()
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+            except Exception:
+                continue
+
+        # Run linting/type checking commands after test runners
+        for cmd in lint_candidates:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                try:
+                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                    combined_output.append(stdout.decode() + stderr.decode())
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    continue
+            except FileNotFoundError:
+                continue
+            except Exception:
+                continue
+
+        if not combined_output:
+            return "No test runner found."
+
+        return "\n".join(combined_output)

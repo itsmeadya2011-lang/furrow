@@ -6,9 +6,11 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
@@ -37,15 +39,26 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def _ollama(self) -> httpx.AsyncClient:
+        if not hasattr(self, "_ollama_client") or self._ollama_client is None:
+            base_url = self.settings.ollama_base_url or "http://localhost:11434"
+            self._ollama_client = httpx.AsyncClient(base_url=base_url, timeout=60.0)
+        return self._ollama_client
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +68,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -64,6 +78,21 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10))
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        messages = [{"role": "user", "content": prompt}]
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        if system:
+            payload["system"] = system
+        response = await self._ollama.post("/api/chat", json=payload)
+        response.raise_for_status()
+        data = response.json()
+        return data["message"]["content"]
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
