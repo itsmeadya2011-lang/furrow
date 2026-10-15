@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TestResult, settings
 from furrow.llm import LLMClient
 
 console = Console()
@@ -26,11 +26,15 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self._current_tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
             self.cycles += 1
+            if settings.max_cycles > 0 and self.cycles >= settings.max_cycles:
+                console.print("[bold yellow]Max cycles reached. Halting.[/bold yellow]")
+                break
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
             if self._is_done():
@@ -43,8 +47,11 @@ class Orchestrator:
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
+            self._current_tasks = []
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
+
+        self._current_tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -85,4 +92,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self._current_tasks
