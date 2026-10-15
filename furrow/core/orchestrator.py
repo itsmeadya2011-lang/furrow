@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TestResult, TaskModel
 from furrow.llm import LLMClient
 
 console = Console()
@@ -24,7 +24,9 @@ class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None) -> None:
         self.goal = goal
         self.client = client or LLMClient()
+        self.settings = self.client.settings
         self.planner = PlannerAgent(client=self.client)
+        self.tasks: list[TaskModel] = []
         self.cycles = 0
 
     async def run(self) -> None:
@@ -76,6 +78,8 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
+        if self.settings.max_cycles > 0 and self.cycles >= self.settings.max_cycles:
+            return True
         completed = sum(1 for t in self._get_tasks() if t.status == "completed")
         failed = sum(1 for t in self._get_tasks() if t.status == "failed")
         if failed > 0:
@@ -84,5 +88,5 @@ class Orchestrator:
             return True
         return False
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+    def _get_tasks(self) -> list[TaskModel]:
+        return self.tasks
