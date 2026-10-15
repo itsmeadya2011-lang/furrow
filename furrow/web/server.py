@@ -8,10 +8,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import get_logger
 
 app = FastAPI(title="Furrow")
+_logger = get_logger("web")
 
 
 class StartRequest(BaseModel):
@@ -55,8 +56,42 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        # Queue to collect live output from the orchestrator
+        output_queue: asyncio.Queue[str] = asyncio.Queue()
+
+        def output_callback(message: str) -> None:
+            output_queue.put_nowait(message)
+
+        orchestrator = Orchestrator(goal=goal, output_callback=output_callback)
+
+        async def forward_output() -> None:
+            """Drain the output queue and send messages to the WebSocket."""
+            while True:
+                try:
+                    message = await asyncio.wait_for(output_queue.get(), timeout=0.5)
+                    await websocket.send_text(message)
+                except asyncio.TimeoutError:
+                    # Break only when orchestrator is done AND queue is drained
+                    if orchestrator_task.done() and output_queue.empty():
+                        break
+
+        orchestrator_task = asyncio.create_task(orchestrator.run())
+        forwarder_task = asyncio.create_task(forward_output())
+
+        try:
+            await orchestrator_task
+        except Exception as e:
+            _logger.error("Orchestrator failed", error=str(e))
+            await websocket.send_text(f"ERROR: {e}")
+        finally:
+            forwarder_task.cancel()
+            try:
+                await forwarder_task
+            except asyncio.CancelledError:
+                pass
+
+        await websocket.close()
     except WebSocketDisconnect:
         pass
 

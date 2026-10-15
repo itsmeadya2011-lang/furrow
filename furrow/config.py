@@ -12,6 +12,19 @@ class Provider(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OLLAMA = "ollama"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls, value: object) -> "Provider" | None:
+        if isinstance(value, str) and value.lower() == "unknown":
+            return cls.UNKNOWN
+        # Try case-insensitive matching
+        if isinstance(value, str):
+            value_lower = value.lower()
+            for member in cls:
+                if member.value.lower() == value_lower or member.name.lower() == value_lower:
+                    return member
+        return None
 
 
 class TaskModel(BaseModel):

@@ -6,9 +6,12 @@ from typing import TYPE_CHECKING
 from furrow.agents.prompts import PLANNER_PROMPT
 from furrow.config import Plan
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 if TYPE_CHECKING:
     from furrow.config import Settings
+
+_logger = get_logger("planner")
 
 
 class PlannerAgent:
@@ -16,10 +19,14 @@ class PlannerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def plan(self, goal: str) -> Plan:
+        _logger.debug("Planning", goal=goal)
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
-            return Plan(**data)
+            plan = Plan(**data)
+            _logger.info("Plan created", num_tasks=len(plan.tasks))
+            return plan
         except (json.JSONDecodeError, ValueError) as e:
+            _logger.error("Failed to parse plan", error=str(e), response=response[:500])
             raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
