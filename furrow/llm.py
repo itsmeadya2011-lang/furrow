@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,128 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def complete_with_tools(
+        self,
+        prompt: str,
+        tools: list[dict],
+        tool_handlers: dict,
+        system: str = "",
+        model: str | None = None,
+        max_iterations: int = 15,
+    ) -> str:
+        """Run an LLM loop with tool calling. tools is a list of tool definitions.
+        tool_handlers maps tool name -> async callable(handler_input: dict) -> str.
+        Loops until the LLM returns a final text answer (no more tool calls)."""
+        model = model or self.settings.model
+        if self.settings.provider == Provider.ANTHROPIC:
+            return await self._complete_with_tools_anthropic(
+                prompt, tools, tool_handlers, system, model, max_iterations
+            )
+        elif self.settings.provider == Provider.OPENAI:
+            return await self._complete_with_tools_openai(
+                prompt, tools, tool_handlers, system, model, max_iterations
+            )
+        else:
+            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+
+    async def _complete_with_tools_anthropic(
+        self,
+        prompt: str,
+        tools: list[dict],
+        tool_handlers: dict,
+        system: str,
+        model: str,
+        max_iterations: int,
+    ) -> str:
+        anthropic_tools = [
+            {"name": t["name"], "description": t["description"], "input_schema": t["input_schema"]}
+            for t in tools
+        ]
+        messages: list[dict] = [{"role": "user", "content": prompt}]
+        final_text = ""
+        for _ in range(max_iterations):
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=4096,
+                system=system or "You are a helpful coding assistant.",
+                messages=messages,
+                tools=anthropic_tools,
+            )
+            if response.stop_reason == "tool_use":
+                tool_results: list[dict] = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        handler = tool_handlers.get(block.name)
+                        if handler is None:
+                            result = f"Tool '{block.name}' is not available"
+                        else:
+                            result = await handler(block.input)
+                        tool_results.append(
+                            {"type": "tool_result", "tool_use_id": block.id, "content": result}
+                        )
+                messages.append({"role": "assistant", "content": response.content})
+                messages.append({"role": "user", "content": tool_results})
+                continue
+            text_parts = [block.text for block in response.content if block.type == "text"]
+            if text_parts:
+                final_text = "".join(text_parts)
+            return final_text
+        return final_text
+
+    async def _complete_with_tools_openai(
+        self,
+        prompt: str,
+        tools: list[dict],
+        tool_handlers: dict,
+        system: str,
+        model: str,
+        max_iterations: int,
+    ) -> str:
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t["name"],
+                    "description": t["description"],
+                    "parameters": t["input_schema"],
+                },
+            }
+            for t in tools
+        ]
+        messages: list[dict] = [
+            {"role": "system", "content": system or "You are a helpful coding assistant."},
+            {"role": "user", "content": prompt},
+        ]
+        final_text = ""
+        for _ in range(max_iterations):
+            response = await self.openai.chat.completions.create(
+                model=model,
+                messages=messages,
+                tools=openai_tools,
+            )
+            message = response.choices[0].message
+            tool_calls = message.tool_calls or []
+            if tool_calls:
+                tool_results: list[dict] = []
+                for tool_call in tool_calls:
+                    handler = tool_handlers.get(tool_call.function.name)
+                    if handler is None:
+                        result = f"Tool '{tool_call.function.name}' is not available"
+                    else:
+                        args = json.loads(tool_call.function.arguments or "{}")
+                        result = await handler(args)
+                    tool_results.append(
+                        {"role": "tool", "tool_call_id": tool_call.id, "content": result}
+                    )
+                messages.append(
+                    {"role": "assistant", "content": message.content or "", "tool_calls": message.tool_calls}
+                )
+                messages.extend(tool_results)
+                continue
+            final_text = message.content or ""
+            return final_text
+        return final_text
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
