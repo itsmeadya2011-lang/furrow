@@ -56,3 +56,50 @@ class TesterAgent:
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+    async def fix_failures(self, goal: str, failures: list[str], tasks: list[TaskModel]) -> list[dict]:
+        """Analyze failures and return fix operations."""
+        if not failures:
+            return []
+        
+        # Get the files that were modified
+        files_to_check = set()
+        for task in tasks:
+            files_to_check.update(task.files)
+        
+        file_contents = {}
+        for file_path in files_to_check:
+            try:
+                content = await self.client.read_file(file_path)
+                file_contents[file_path] = content
+            except FileNotFoundError:
+                file_contents[file_path] = ""
+        
+        context = ""
+        if file_contents:
+            context = "\n\nRelevant files:\n"
+            for path, content in file_contents.items():
+                context += f"\n--- {path} ---\n{content}\n"
+        
+        prompt = f"""You are a test fixer. Analyze the test failures and provide fixes.
+
+Goal: {goal}
+
+Test failures:
+{chr(10).join(failures)}
+
+{context}
+
+Return JSON with file operations to fix the failures:
+{{
+  "fixes": [
+    {{"path": "file.py", "content": "...", "operation": "write"}}
+  ]
+}}"""
+        
+        response = await self.client.complete(prompt, model=self.client.settings.tester_model)
+        try:
+            data = json.loads(response)
+            return data.get("fixes", [])
+        except (json.JSONDecodeError, ValueError):
+            return []

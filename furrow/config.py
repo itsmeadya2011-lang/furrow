@@ -14,6 +14,13 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
 
 
+class FileOperation(BaseModel):
+    """Represents a file operation to be performed by a worker."""
+    path: str
+    content: str
+    operation: str = "write"  # "write", "append", "delete"
+
+
 class TaskModel(BaseModel):
     id: str
     description: str

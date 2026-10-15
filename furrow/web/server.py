@@ -10,6 +10,11 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+from furrow.logging import configure_logging, get_logger
+
+# Configure logging
+configure_logging()
+logger = get_logger(__name__)
 
 app = FastAPI(title="Furrow")
 
@@ -55,11 +60,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        logger.info("starting_furrow", goal=goal)
         orchestrator = Orchestrator(goal=goal)
         await orchestrator.run()
     except WebSocketDisconnect:
-        pass
+        logger.info("websocket_disconnected")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
+    logger.info("starting_web_server", host=host, port=port)
     uvicorn.run(app, host=host, port=port)
