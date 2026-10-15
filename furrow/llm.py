@@ -5,10 +5,6 @@ from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
 
@@ -16,25 +12,27 @@ from furrow.config import Provider, Settings, settings
 class LLMClient:
     def __init__(self, settings: Settings = settings) -> None:
         self.settings = settings
-        self._anthropic: AsyncAnthropic | None = None
-        self._openai: AsyncOpenAI | None = None
+        self._anthropic: Any = None
+        self._openai: Any = None
 
     @property
-    def anthropic(self) -> AsyncAnthropic:
+    def anthropic(self) -> Any:
         if self._anthropic is None:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(api_key=api_key)
+            import anthropic
+            self._anthropic = anthropic.AsyncAnthropic(api_key=api_key)
         return self._anthropic
 
     @property
-    def openai(self) -> AsyncOpenAI:
+    def openai(self) -> Any:
         if self._openai is None:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            import openai
+            self._openai = openai.AsyncOpenAI(api_key=api_key)
         return self._openai
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
@@ -53,7 +51,11 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        # Handle different content block types
+        content = response.content[0]
+        if hasattr(content, 'text'):
+            return content.text
+        return str(content)
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
