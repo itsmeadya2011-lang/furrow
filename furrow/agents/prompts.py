@@ -27,8 +27,20 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+You are a worker agent implementing a specific task. Make minimal, targeted changes.
+
+Task: {task_description}
+
+Current file contents:
+{files_section}
+
+Return the updated files in this exact format (one per file, no explanation):
+FILE: <path>
+```python
+<updated content>
+```
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
