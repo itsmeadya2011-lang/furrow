@@ -20,7 +20,7 @@ class TesterAgent:
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
         try:
-            test_output = await self._run_tests()
+            test_output = await self._run_checks()
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
@@ -31,6 +31,20 @@ class TesterAgent:
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
             return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+
+    async def _run_checks(self) -> str:
+        sections: list[str] = []
+
+        sections.append("=== Tests ===")
+        sections.append(await self._run_tests())
+
+        sections.append("=== Lint ===")
+        sections.append(await self._run_lint())
+
+        sections.append("=== Type check ===")
+        sections.append(await self._run_type_check())
+
+        return "\n".join(sections)
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -56,3 +70,31 @@ class TesterAgent:
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+    async def _run_lint(self) -> str:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ruff", "check", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except FileNotFoundError:
+            return "ruff not found; skipped."
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            return stdout.decode() + stderr.decode()
+        except asyncio.TimeoutError:
+            proc.kill()
+            return "Lint timed out; skipped."
+
+    async def _run_type_check(self) -> str:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "mypy", ".", stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except FileNotFoundError:
+            return "mypy not found; skipped."
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            return stdout.decode() + stderr.decode()
+        except asyncio.TimeoutError:
+            proc.kill()
+            return "Type check timed out; skipped."
