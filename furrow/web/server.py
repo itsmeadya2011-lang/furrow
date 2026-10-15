@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
 import uvicorn
@@ -8,7 +9,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -55,7 +55,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def on_progress(event: dict) -> None:
+            await websocket.send_text(json.dumps(event))
+
+        orchestrator = Orchestrator(goal=goal, on_progress=on_progress)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
@@ -63,3 +67,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
     uvicorn.run(app, host=host, port=port)
+
+
+__all__ = ["app", "StartRequest", "run"]

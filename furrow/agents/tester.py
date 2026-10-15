@@ -56,3 +56,6 @@ class TesterAgent:
             except (FileNotFoundError, Exception):
                 continue
         return "No test runner found."
+
+
+__all__ = ["TesterAgent"]
