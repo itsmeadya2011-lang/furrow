@@ -42,17 +42,47 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        tried = []
+        errors = []
         for cmd in candidates:
+            cmd_str = " ".join(cmd)
+            tried.append(cmd_str)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
+                    stdout_dec = stdout.decode(errors="replace") if stdout else ""
+                    stderr_dec = stderr.decode(errors="replace") if stderr else ""
+                    if proc.returncode == 0:
+                        return (
+                            f"Runner: {cmd_str}\n\n"
+                            f"STDOUT:\n{stdout_dec}\n\n"
+                            f"STDERR:\n{stderr_dec}\n"
+                        )
+                    else:
+                        return (
+                            f"Runner: {cmd_str}\n\n"
+                            f"Exit code: {proc.returncode}\n\n"
+                            f"STDOUT:\n{stdout_dec}\n\n"
+                            f"STDERR:\n{stderr_dec}\n\n"
+                            f"Errors encountered: {errors}\n"
+                            f"Tried commands: {tried}\n"
+                        )
                 except asyncio.TimeoutError:
                     proc.kill()
+                    await proc.wait()
+                    errors.append(f"Timeout after 120s for: {cmd_str}")
                     continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
+                errors.append(f"Command not found: {cmd_str}")
                 continue
-        return "No test runner found."
+            except Exception as e:
+                errors.append(f"Error running {cmd_str}: {type(e).__name__}: {e}")
+                continue
+        return (
+            f"No test runner succeeded.\n\n"
+            f"Tried commands: {tried}\n\n"
+            f"Errors encountered: {errors}\n"
+        )
