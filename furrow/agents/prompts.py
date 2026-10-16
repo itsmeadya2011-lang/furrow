@@ -29,6 +29,20 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+
+File Operations:
+You can read and write files using the following tags in your response:
+
+To read a file (returns its contents):
+<<<READ: path/to/file>>>
+
+To write (create or overwrite) a file:
+<<<WRITE: path/to/file>>>
+file content goes here
+<<<END>>>
+
+You may issue multiple READ and WRITE operations. After each WRITE, the file will be saved to disk.
+Current working directory is the project root.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
