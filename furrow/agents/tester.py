@@ -42,17 +42,31 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
-        for cmd in candidates:
+        lint_candidates = [
+            ["ruff", "check"],
+            ["mypy", "."],
+        ]
+        outputs: list[str] = []
+        found_any = False
+        for cmd in candidates + lint_candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+                text = stdout.decode() + stderr.decode()
+                if text.strip():
+                    outputs.append(f"=== $ {' '.join(cmd)} ===\n{text}")
+                    found_any = True
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                continue
+        if not found_any:
+            return "No test runner found."
+        return "\n".join(outputs)
