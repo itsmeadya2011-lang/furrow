@@ -34,6 +34,16 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class FileChange(BaseModel):
+    path: str
+    content: str
+
+
+class WorkerResult(BaseModel):
+    files: list[FileChange] = Field(default_factory=list)
+    summary: str = ""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
