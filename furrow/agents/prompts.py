@@ -27,8 +27,24 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Read the existing file contents provided below before making changes.
+- Return JSON only (no markdown, no explanation) with this shape:
+{
+  "files": {
+    "path/to/file.py": "full new file content as a string",
+    "path/to/other.py": "full new file content as a string"
+  },
+  "summary": "Brief summary of what was changed and any issues"
+}
+- Include every file listed in "Files to touch" that you create or modify.
+- If a file should not be changed, omit it from the files map.
 - Do not spawn subagents.
+
+Existing file contents:
+{existing_files}
+
+Task: {task_description}
+Files to touch: {files_to_touch}
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
