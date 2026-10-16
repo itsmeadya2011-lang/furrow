@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 
 class TesterAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+        self.client = client or (LLMClient(settings=settings) if settings else LLMClient())
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         test_output = ""
