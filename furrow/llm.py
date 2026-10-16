@@ -2,15 +2,28 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
+import httpx
+import structlog
+import tenacity
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+logger = structlog.get_logger(__name__)
+
+_RETRY = tenacity.retry(
+    stop=tenacity.stop_after_attempt(3),
+    wait=tenacity.wait_exponential(multiplier=1, min=1, max=10),
+    retry=tenacity.retry_if_exception_type(Exception),
+    before_sleep=lambda retry_state: logger.warning(
+        "LLM completion failed, retrying",
+        attempt=retry_state.attempt_number,
+        error=str(retry_state.outcome.exception()),
+    ),
+)
 
 
 class LLMClient:
@@ -37,15 +50,19 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @_RETRY
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    @_RETRY
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -55,6 +72,7 @@ class LLMClient:
         )
         return response.content[0].text
 
+    @_RETRY
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
             model=model,
@@ -65,18 +83,38 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    @_RETRY
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        payload = {"model": model, "prompt": full_prompt, "stream": False}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.settings.ollama_base_url}/api/generate",
+                json=payload,
+                timeout=60.0,
+            )
+            response.raise_for_status()
+            return response.json().get("response", "")
+
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
+        p = Path(path)
+        if not p.is_absolute():
+            p = self.settings.workspace / p
+        async with aiofiles.open(p, "r") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
+        if not p.is_absolute():
+            p = self.settings.workspace / p
         p.parent.mkdir(parents=True, exist_ok=True)
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
+        if not p.is_absolute():
+            p = self.settings.workspace / p
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]

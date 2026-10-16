@@ -27,7 +27,15 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return file changes using the following structured format, one block per file:
+
+FILE: path/to/file.py
+```python
+# new file content here
+```
+
+- You may include multiple FILE blocks.
+- End your response with a plain-text summary of what you changed and any issues.
 - Do not spawn subagents.
 """
 
