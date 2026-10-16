@@ -27,7 +27,14 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return JSON only (no markdown, no explanation) with this shape:
+{
+  "summary": "Brief summary of what was changed",
+  "files": [
+    {"path": "relative/path/to/file.py", "content": "Full file contents to write (create or overwrite)"}
+  ]
+}
+- If no file changes are needed, return an empty files array.
 - Do not spawn subagents.
 """
 

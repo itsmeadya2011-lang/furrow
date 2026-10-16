@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from typing import Optional
 
 import uvicorn
@@ -8,7 +7,6 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -39,8 +37,12 @@ async def index() -> HTMLResponse:
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
       const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
+      ws.onmessage = (ev) => {
+        const data = JSON.parse(ev.data);
+        out.textContent += (data.message || ev.data) + '\\n';
+      };
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onerror = () => out.textContent += '\\nWebSocket error.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -55,8 +57,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        async def send_status(message: str) -> None:
+            await websocket.send_json({"type": "status", "message": message})
+
+        orchestrator = Orchestrator(goal=goal, on_status=send_status)
+        if model:
+            orchestrator.client.settings.model = model
         await orchestrator.run()
+        await websocket.send_json({"type": "complete"})
     except WebSocketDisconnect:
         pass
 
