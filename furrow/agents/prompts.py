@@ -27,9 +27,14 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
+- When creating or modifying files, use code blocks with FILE: headers:
+  ```python
+  FILE: src/auth.py
+  def authenticate():
+      ...
+  ```
 - Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- Do not spawn subagents."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
