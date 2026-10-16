@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    timeout: float = 60.0
 
 
 settings = Settings()
