@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import asyncio
-from typing import Optional
-
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
 app = FastAPI(title="Furrow")
@@ -16,7 +12,7 @@ app = FastAPI(title="Furrow")
 
 class StartRequest(BaseModel):
     goal: str
-    model: Optional[str] = None
+    model: str | None = None
 
 
 @app.get("/")
@@ -35,12 +31,15 @@ async def index() -> HTMLResponse:
   <script>
     const form = document.getElementById('form');
     const out = document.getElementById('out');
+    let ws = null;
     form.onsubmit = async (e) => {
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
-      const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
-      ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      if (ws) ws.close();
+      ws = new WebSocket('ws://' + location.host + '/ws');
+      ws.onmessage = (ev) => { out.textContent += ev.data + '\\n'; out.scrollTop = out.scrollHeight; };
+      ws.onclose = () => { out.textContent += '\\nClosed.\\n'; ws = null; };
+      ws.onerror = () => { out.textContent += '\\nWebSocket error.\\n'; };
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -55,7 +54,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def emit(message: str) -> None:
+            try:
+                await websocket.send_text(message)
+            except (RuntimeError, ConnectionError):
+                pass
+
+        orchestrator = Orchestrator(goal=goal, emit=emit)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
