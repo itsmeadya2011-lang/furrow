@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TestResult, settings
 from furrow.llm import LLMClient
 
 console = Console()
@@ -26,6 +26,7 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -36,32 +37,53 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            if settings.max_cycles and self.cycles >= settings.max_cycles:
+                console.print("[yellow]Max cycles reached. Halting.[/yellow]")
+                break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
+        self.tasks = list(plan.tasks) if plan.tasks else self.tasks
+
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
+        # Execute tasks in dependency waves
+        max_parallel = settings.max_parallel_tasks or len(plan.tasks)
+        pending = {t.id: t for t in plan.tasks}
+        completed_ids: set[str] = set()
+        while pending:
+            wave = [
+                t for t in pending.values()
+                if all(dep in completed_ids for dep in t.dependencies)
             ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for task, result in zip(plan.tasks, results):
-            if isinstance(result, Exception):
-                task.status = "failed"
-                task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
-            else:
-                task.status = "completed"
-                task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+            if not wave:
+                console.print("[red]Deadlock: unresolvable task dependencies.[/red]")
+                for t in pending.values():
+                    t.status = "failed"
+                    t.result = "unresolvable dependency"
+                break
+            wave = wave[:max_parallel]
+            with Status("[bold yellow]Executing tasks in parallel...", console=console):
+                results = await asyncio.gather(
+                    *[WorkerAgent(task=task, client=self.client).run() for task in wave],
+                    return_exceptions=True,
+                )
+            for task, result in zip(wave, results):
+                if isinstance(result, Exception):
+                    task.status = "failed"
+                    task.result = str(result)
+                    console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                else:
+                    task.status = "completed"
+                    task.result = result
+                    completed_ids.add(task.id)
+                    console.print(f"[green]Task {task.id} completed[/green]")
+                del pending[task.id]
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
@@ -85,4 +107,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
