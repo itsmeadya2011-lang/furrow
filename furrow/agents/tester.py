@@ -41,6 +41,10 @@ class TesterAgent:
             ["yarn", "test", "--silent"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
+            ["ruff", "check", "."],
+            ["ruff", "format", "--check", "."],
+            ["mypy", "."],
+            ["python", "-m", "ruff", "check", "."],
         ]
         for cmd in candidates:
             try:
