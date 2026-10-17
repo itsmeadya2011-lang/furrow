@@ -22,4 +22,4 @@ class PlannerAgent:
             data = json.loads(response)
             return Plan(**data)
         except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
+            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}") from e

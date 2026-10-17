@@ -2,20 +2,19 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import cast
 
-import aiofiles
-import anthropic
-import openai
+import aiofiles  # type: ignore[import-untyped]
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, settings
+from furrow.config import Provider, Settings
+from furrow.config import settings as default_settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or default_settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -46,6 +45,28 @@ class LLMClient:
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
+    def validate(self) -> None:
+        """Validate that the configured provider's API key is available.
+
+        Raises ValueError with a clear message if not. Called at startup so
+        configuration errors surface immediately rather than mid-loop.
+        """
+        if self.settings.provider == Provider.ANTHROPIC:
+            key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+            if not key:
+                raise ValueError(
+                    "ANTHROPIC_API_KEY is not set. Set it in your environment or .env file."
+                )
+        elif self.settings.provider == Provider.OPENAI:
+            key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+            if not key:
+                raise ValueError(
+                    "OPENAI_API_KEY is not set. Set it in your environment or .env file."
+                )
+        elif self.settings.provider == Provider.OLLAMA:
+            # Ollama runs locally; no API key required.
+            pass
+
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -53,7 +74,9 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        content = response.content[0]
+        text = getattr(content, "text", "")
+        return cast(str, text)
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -63,11 +86,11 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        return cast(str, response.choices[0].message.content or "")
 
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
-            return await f.read()
+        async with aiofiles.open(path) as f:
+            return cast(str, await f.read())
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
