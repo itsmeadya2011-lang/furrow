@@ -24,6 +24,8 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
+        if len(test_output) > 5000:
+            test_output = test_output[-5000:] + "\n...[truncated]"
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
@@ -41,6 +43,9 @@ class TesterAgent:
             ["yarn", "test", "--silent"],
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
+            ["ruff", "check", "."],
+            ["ruff", "format", "--check", "."],
+            ["mypy", "."],
         ]
         for cmd in candidates:
             try:
@@ -55,4 +60,4 @@ class TesterAgent:
                     continue
             except (FileNotFoundError, Exception):
                 continue
-        return "No test runner found."
+        return "No test runner, linter, or type checker found."
