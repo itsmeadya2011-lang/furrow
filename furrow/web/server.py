@@ -55,8 +55,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        orchestrator = Orchestrator(goal=goal, message_queue=queue)
+        task = asyncio.create_task(orchestrator.run())
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=0.1)
+                await websocket.send_text(item)
+            except asyncio.TimeoutError:
+                if task.done():
+                    while not queue.empty():
+                        item = queue.get_nowait()
+                        await websocket.send_text(item)
+                    break
     except WebSocketDisconnect:
         pass
 
