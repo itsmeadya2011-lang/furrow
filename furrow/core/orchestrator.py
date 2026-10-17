@@ -26,6 +26,9 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
+        self.max_cycles = getattr(self.client.settings, "max_cycles", 0) or 0
+        self.max_parallel_tasks = getattr(self.client.settings, "max_parallel_tasks", 5) or 5
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -33,6 +36,9 @@ class Orchestrator:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
+            if self.max_cycles and self.cycles >= self.max_cycles:
+                console.print("[bold yellow]Max cycles reached. Halting.[/bold yellow]")
+                break
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
@@ -44,7 +50,11 @@ class Orchestrator:
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self.tasks = []
             return
+
+        plan.tasks = plan.tasks[: self.max_parallel_tasks]
+        self.tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -85,4 +95,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
