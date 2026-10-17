@@ -24,7 +24,7 @@ class TesterAgent:
         except Exception as e:
             return TestResult(passed=False, summary=str(e), failures=[str(e)])
 
-        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
+        prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTasks completed: {[t.description for t in tasks if t.status == 'completed']}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
@@ -51,7 +51,10 @@ class TesterAgent:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
                     return stdout.decode() + stderr.decode()
                 except asyncio.TimeoutError:
-                    proc.kill()
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
                     continue
             except (FileNotFoundError, Exception):
                 continue

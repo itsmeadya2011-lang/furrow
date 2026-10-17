@@ -7,9 +7,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-
-from furrow.config import Settings
-from furrow.core.orchestrator import Orchestrator
+from rich.console import Console
 
 app = FastAPI(title="Furrow")
 
@@ -56,9 +54,39 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        # Stream output to websocket
+        original_console = orch_module.console
+        import io
+
+        class WebSocketConsole(Console):
+            def __init__(self, ws: WebSocket):
+                super().__init__(file=io.StringIO(), width=120)
+                self.ws = ws
+
+            def _write_buffer(self):
+                buf = self.file.getvalue()
+                if buf:
+                    self.file.truncate(0)
+                    self.file.seek(0)
+                    try:
+                        asyncio.create_task(self.ws.send_text(buf))
+                    except Exception:
+                        pass
+
+        ws_console = WebSocketConsole(websocket)
+        orch_module.console = ws_console
+        try:
+            await orchestrator.run()
+        finally:
+            await websocket.send_text("\n[COMPLETE]")
     except WebSocketDisconnect:
         pass
+    finally:
+        try:
+            orch_module.console = original_console
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
