@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -34,6 +36,41 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class CycleState(BaseModel):
+    """Persistent state for a single orchestrator cycle."""
+
+    cycle: int
+    goal: str
+    plan: Optional[Plan] = None
+    task_results: dict[str, str] = Field(default_factory=dict)
+    test_result: Optional[TestResult] = None
+    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class OrchestratorState(BaseModel):
+    """Persistent state for the orchestrator across cycles/sessions."""
+
+    goal: str
+    cycles: int = 0
+    completed: bool = False
+    cycle_states: list[CycleState] = Field(default_factory=list)
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+    def save(self, path: str | Path) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(self.model_dump_json(indent=2))
+
+    @classmethod
+    def load(cls, path: str | Path) -> "OrchestratorState":
+        p = Path(path)
+        if not p.exists():
+            return cls(goal="")
+        data = json.loads(p.read_text())
+        return cls.model_validate(data)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
@@ -45,10 +82,13 @@ class Settings(BaseSettings):
     anthropic_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
     ollama_base_url: str = "http://localhost:11434"
+    ollama_model: str = "llama3.1"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
+    state_file: Path = Field(default_factory=lambda: Path.cwd() / ".furrow_state.json")
     log_level: str = "INFO"
+    log_format: str = "json"  # "json" or "console"
 
 
 settings = Settings()
