@@ -29,6 +29,9 @@ Rules:
 - Make minimal, targeted changes.
 - Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
+- Output JSON only (no markdown, no explanation) describing file operations.
+- If a file listed does not exist yet, create it with the provided content.
+- Include the FULL new content for each file, not just a diff.
 """
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
