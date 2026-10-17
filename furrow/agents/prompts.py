@@ -27,7 +27,17 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- You will be given the existing contents of the files to touch (if any).
+- Respond with JSON only (no markdown, no explanation) with this shape:
+{
+  "summary": "Brief summary of changes made",
+  "writes": [
+    {"path": "src/foo.py", "content": "complete new file content"},
+    {"path": "tests/test_foo.py", "content": "complete new file content"}
+  ]
+}
+- Include every file you create or modify in `writes`, with its complete new content.
+- Paths are relative to the project workspace. Create parent directories as needed.
 - Do not spawn subagents.
 """
 
