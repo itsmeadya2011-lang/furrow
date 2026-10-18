@@ -6,6 +6,7 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
@@ -43,6 +44,8 @@ class LLMClient:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -55,15 +58,29 @@ class LLMClient:
         )
         return response.content[0].text
 
-    async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
-        response = await self.openai.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
+    async def _complete_ollama(self, prompt: str, system: str, model: str | None = None) -> str:
+        model = model or self.settings.model
+        base_url = self.settings.ollama_base_url.rstrip("/")
+        url = f"{base_url}/api/chat"
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
                 {"role": "user", "content": prompt},
             ],
-        )
-        return response.choices[0].message.content or ""
+            "stream": False,
+        }
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"Ollama request failed: {exc}") from exc
+        data = response.json()
+        try:
+            return data["message"]["content"]
+        except (KeyError, TypeError) as exc:
+            raise RuntimeError(f"Unexpected Ollama response: {data}") from exc
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
