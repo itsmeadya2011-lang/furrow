@@ -34,6 +34,19 @@ class TestResult(BaseModel):
     failures: list[str] = Field(default_factory=list)
 
 
+class FileOperation(BaseModel):
+    op: str  # "write" | "edit" | "delete"
+    path: str
+    content: Optional[str] = None
+    old: Optional[str] = None
+    new: Optional[str] = None
+
+
+class WorkerResult(BaseModel):
+    operations: list[FileOperation] = Field(default_factory=list)
+    summary: str
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
@@ -49,6 +62,7 @@ class Settings(BaseSettings):
     max_cycles: int = 0
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    test_timeout: int = 120
 
 
 settings = Settings()

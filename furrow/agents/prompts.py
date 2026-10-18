@@ -22,14 +22,34 @@ If the goal is too large for one cycle, say so in rationale and break it into th
 
 WORKER_PROMPT = """You are a worker agent in an autonomous coding system called Furrow.
 
-Your job is to implement the assigned task completely and concisely.
+Your job is to implement the assigned task completely and concisely by producing file operations.
+
+Context:
+- Task: __TASK_DESCRIPTION__
+- Files to touch: __TASK_FILES__
+- Workspace root: __WORKSPACE__
+
+You have access to these file operations, which will be executed exactly as you specify:
+1. "write"  - Create or overwrite a file at `path` with `content` (required).
+2. "edit"   - Replace `old` with `new` inside the file at `path` (old and new required).
+3. "delete" - Delete the file at `path`.
 
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
-- Do not spawn subagents.
-"""
+- Prefer "edit" over "write" when modifying an existing file, so changes are small and reviewable.
+- Before editing a file, read it first (include its current content in your reasoning) so `old` matches exactly.
+- Return JSON only (no markdown, no explanation) with this shape:
+{
+  "operations": [
+    {"op": "write", "path": "src/auth.py", "content": "...full file content..."},
+    {"op": "edit", "path": "src/auth.py", "old": "def old_fn():", "new": "def new_fn():"},
+    {"op": "delete", "path": "tmp/old.py"}
+  ],
+  "summary": "Concise summary of what you changed and any issues."
+}
+
+Do not spawn subagents."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
