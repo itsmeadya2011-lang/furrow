@@ -35,13 +35,17 @@ async def index() -> HTMLResponse:
   <script>
     const form = document.getElementById('form');
     const out = document.getElementById('out');
+    let ws = null;
     form.onsubmit = async (e) => {
       e.preventDefault();
       out.textContent += '\\nStarting...\\n';
-      const ws = new WebSocket('ws://' + location.host + '/ws');
-      ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
-      ws.onclose = () => out.textContent += '\\nClosed.\\n';
-      ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
+      const goal = document.getElementById('goal').value;
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(protocol + '//' + location.host + '/ws');
+      ws.onmessage = (ev) => { out.textContent += ev.data + '\\n'; out.scrollTop = out.scrollHeight; };
+      ws.onclose = () => { out.textContent += '\\nClosed.\\n'; ws = null; };
+      ws.onerror = (err) => { out.textContent += '\\nWebSocket error.\\n'; };
+      ws.onopen = () => ws.send(JSON.stringify({goal: goal}));
     };
   </script>
 </body>
@@ -55,7 +59,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+
+        async def emit(message: str) -> None:
+            await websocket.send_text(message)
+
+        orchestrator = Orchestrator(goal=goal, emit=emit)
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
