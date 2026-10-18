@@ -21,11 +21,14 @@ console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(self, goal: str, client: LLMClient | None = None, settings: Any = None) -> None:
+        from furrow.config import settings as default_settings
+        self.settings = settings or default_settings
         self.goal = goal
-        self.client = client or LLMClient()
-        self.planner = PlannerAgent(client=self.client)
+        self.client = client or LLMClient(settings=self.settings)
+        self.planner = PlannerAgent(client=self.client, settings=self.settings)
         self.cycles = 0
+        self.tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -36,12 +39,15 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
+                console.print("[yellow]Max cycles reached. Halting.[/yellow]")
+                break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
-
+        self.tasks = list(plan.tasks)
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
@@ -85,4 +91,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
