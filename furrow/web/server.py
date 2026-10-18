@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Optional
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -11,6 +13,7 @@ from pydantic import BaseModel
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
 
+log = structlog.get_logger(__name__)
 app = FastAPI(title="Furrow")
 
 
@@ -55,10 +58,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
+        model = data.get("model")
         orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+        if model:
+            orchestrator.client.settings.model = model
+
+        async for message in orchestrator.run_stream():
+            await websocket.send_text(message)
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        log.error("orchestrator_error", error=str(e))
+        await websocket.send_text(f"\n[red]Error: {e}[/red]\n")
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
