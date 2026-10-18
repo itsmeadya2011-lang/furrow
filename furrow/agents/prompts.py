@@ -27,7 +27,13 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return JSON only (no markdown, no explanation) with this shape:
+  {
+    "edits": [{"path": "file.py", "content": "full new file content"}],
+    "summary": "Brief summary of changes"
+  }
+- Write complete file contents in each edit's content field (not diffs).
+- If no file changes are needed, return an empty edits array.
 - Do not spawn subagents.
 """
 

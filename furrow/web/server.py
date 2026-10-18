@@ -55,10 +55,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        orchestrator = Orchestrator(
+            goal=goal,
+            emit=lambda msg: _safe_send(websocket, msg),
+        )
         await orchestrator.run()
     except WebSocketDisconnect:
         pass
+
+
+def _safe_send(websocket: WebSocket, message: str) -> None:
+    async def _send() -> None:
+        try:
+            await websocket.send_text(message)
+        except Exception:
+            pass
+
+    asyncio.create_task(_send())
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
