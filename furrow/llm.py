@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+
+def extract_json(response: str) -> Any:
+    """Extract a JSON object from an LLM response, tolerating markdown fences."""
+    stripped = response.strip()
+    # Remove markdown code fences if present.
+    fence = re.search(r"```(?:json)?\s*\n(.*?)\n```", stripped, re.DOTALL | re.IGNORECASE)
+    if fence:
+        stripped = fence.group(1).strip()
+    return json.loads(stripped)
 
 
 class LLMClient:

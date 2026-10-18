@@ -27,9 +27,16 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
 - Do not spawn subagents.
-"""
+
+You are given the current contents of the files to touch (or a note that a file does not exist yet).
+Return JSON only (no markdown, no explanation) mapping each file path to its complete new file content:
+{
+  "src/foo.py": "def hello():\n    return 'world'\n",
+  "tests/test_foo.py": "def test_hello():\n    assert hello() == 'world'\n"
+}
+
+Include every file listed in "Files to touch", even if its content is unchanged. For brand-new files, provide the full desired content."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
