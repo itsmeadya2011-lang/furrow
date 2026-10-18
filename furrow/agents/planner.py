@@ -7,6 +7,10 @@ from furrow.agents.prompts import PLANNER_PROMPT
 from furrow.config import Plan
 from furrow.llm import LLMClient
 
+import structlog
+
+logger = structlog.get_logger("furrow.planner")
+
 if TYPE_CHECKING:
     from furrow.config import Settings
 
@@ -16,10 +20,13 @@ class PlannerAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def plan(self, goal: str) -> Plan:
+        logger.info("planning.start")
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
         try:
             data = json.loads(response)
-            return Plan(**data)
+            plan = Plan(**data)
+            logger.info("plan.parsed")
+            return plan
         except (json.JSONDecodeError, ValueError) as e:
             raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")

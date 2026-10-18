@@ -9,6 +9,10 @@ from furrow.agents.prompts import TESTER_PROMPT
 from furrow.config import TaskModel, TestResult
 from furrow.llm import LLMClient
 
+import structlog
+
+logger = structlog.get_logger("furrow.tester")
+
 if TYPE_CHECKING:
     from furrow.config import Settings
 
@@ -18,19 +22,24 @@ class TesterAgent:
         self.client = client or LLMClient(settings=settings)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        logger.info("testing.start")
         test_output = ""
         try:
             test_output = await self._run_tests()
         except Exception as e:
-            return TestResult(passed=False, summary=str(e), failures=[str(e)])
+            result = TestResult(passed=False, summary=str(e), failures=[str(e)])
+            logger.info("testing.result", passed=result.passed)
+            return result
 
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
             data = json.loads(response)
-            return TestResult(**data)
+            result = TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            result = TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+        logger.info("testing.result", passed=result.passed)
+        return result
 
     async def _run_tests(self) -> str:
         candidates = [

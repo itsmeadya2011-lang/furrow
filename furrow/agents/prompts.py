@@ -27,7 +27,12 @@ Your job is to implement the assigned task completely and concisely.
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Return the complete updated file contents for each file you modify.
+- Use this exact format for each file:
+```filename: path/to/file
+<complete file content>
+```
+- Only include files that actually need changes.
 - Do not spawn subagents.
 """
 
