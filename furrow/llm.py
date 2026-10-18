@@ -8,6 +8,7 @@ import aiofiles
 import anthropic
 import openai
 from anthropic import AsyncAnthropic
+from ollama import AsyncClient
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
@@ -18,6 +19,7 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+        self._ollama: AsyncClient | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -37,12 +39,20 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @property
+    def ollama(self) -> AsyncClient:
+        if self._ollama is None:
+            self._ollama = AsyncClient(base_url=self.settings.ollama_base_url)
+        return self._ollama
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -64,6 +74,29 @@ class LLMClient:
             ],
         )
         return response.choices[0].message.content or ""
+
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        response = await self.ollama.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": system or "You are a helpful coding assistant."},
+                {"role": "user", "content": prompt},
+            ],
+        )
+        # ollama.AsyncClient.chat may return a ChatResponse object or a dict
+        # depending on the installed version; handle both gracefully.
+        message = None
+        if hasattr(response, "message"):
+            message = response.message
+        elif isinstance(response, dict):
+            message = response.get("message")
+        content = ""
+        if message is not None:
+            if hasattr(message, "content"):
+                content = message.content or ""
+            elif isinstance(message, dict):
+                content = message.get("content") or ""
+        return content
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path, "r") as f:
