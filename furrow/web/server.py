@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from typing import Optional
 
 import uvicorn
@@ -55,10 +56,34 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
-        await orchestrator.run()
+
+        output_queue: asyncio.Queue[str | None] = asyncio.Queue()
+
+        def on_output(text: str) -> None:
+            # Strip rich markup tags so the browser receives clean text.
+            clean_text = re.sub(r"\[[^\]]*\]", "", text)
+            output_queue.put_nowait(clean_text)
+
+        async def drain_queue() -> None:
+            while True:
+                message = await output_queue.get()
+                if message is None:
+                    break
+                await websocket.send_text(message)
+
+        drain_task = asyncio.create_task(drain_queue())
+        try:
+            orchestrator = Orchestrator(goal=goal, on_output=on_output)
+            await orchestrator.run()
+        finally:
+            output_queue.put_nowait(None)
+            await drain_task
     except WebSocketDisconnect:
-        pass
+        try:
+            drain_task.cancel()
+            await drain_task
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
