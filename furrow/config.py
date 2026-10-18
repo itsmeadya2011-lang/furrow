@@ -24,7 +24,7 @@ class TaskModel(BaseModel):
 
 
 class Plan(BaseModel):
-    tasks: list[TaskModel]
+    tasks: list[TaskModel] = Field(default_factory=list)
     rationale: str
 
 
