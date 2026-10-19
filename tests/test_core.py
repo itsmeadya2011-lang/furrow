@@ -10,3 +10,22 @@ def test_plan_parse():
 def test_test_result():
     t = TestResult(passed=True, summary="ok", failures=[])
     assert t.passed is True
+
+
+def test_task_model_defaults():
+    t = TaskModel(id="1", description="test")
+    assert t.status == "pending"
+    assert t.files == []
+    assert t.dependencies == []
+    assert t.result is None
+
+
+def test_test_result_defaults():
+    t = TestResult(passed=False, summary="fail")
+    assert t.failures == []
+
+
+def test_plan_empty_tasks():
+    p = Plan(tasks=[], rationale="nothing to do")
+    assert p.tasks == []
+    assert p.rationale == "nothing to do"
