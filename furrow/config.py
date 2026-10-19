@@ -1,11 +1,26 @@
 from __future__ import annotations
 
+import structlog
 from enum import Enum
 from pathlib import Path
 from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def configure_logging(level: str = "INFO") -> None:
+    structlog.configure(
+        processors=[
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(
+            getattr(__import__("logging", fromlist=[]), level.upper(), 20)
+        ),
+        cache_logger_on_first_use=True,
+    )
 
 
 class Provider(str, Enum):

@@ -4,9 +4,14 @@ import asyncio
 import sys
 
 import click
+import structlog
 from rich.console import Console
 
+from furrow.config import configure_logging, settings
 from furrow.core.orchestrator import Orchestrator
+
+configure_logging(settings.log_level)
+logger = structlog.get_logger("furrow.cli")
 
 console = Console()
 

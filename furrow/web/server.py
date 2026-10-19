@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Optional
 
+import structlog
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
@@ -10,6 +11,8 @@ from pydantic import BaseModel
 
 from furrow.config import Settings
 from furrow.core.orchestrator import Orchestrator
+
+logger = structlog.get_logger("furrow.web")
 
 app = FastAPI(title="Furrow")
 
@@ -41,6 +44,7 @@ async def index() -> HTMLResponse:
       const ws = new WebSocket('ws://' + location.host + '/ws');
       ws.onmessage = (ev) => out.textContent += ev.data + '\\n';
       ws.onclose = () => out.textContent += '\\nClosed.\\n';
+      ws.onerror = (err) => out.textContent += '\\nWebSocket error.\\n';
       ws.send(JSON.stringify({goal: document.getElementById('goal').value}));
     };
   </script>
@@ -55,10 +59,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         data = await websocket.receive_json()
         goal = data.get("goal", "")
-        orchestrator = Orchestrator(goal=goal)
+        model = data.get("model")
+
+        async def send_output(message: str) -> None:
+            try:
+                await websocket.send_text(message)
+            except Exception:
+                pass
+
+        orchestrator = Orchestrator(goal=goal, on_output=send_output)
+        if model:
+            orchestrator.cfg.model = model
+        logger.info("furrow_run_started", goal=goal, model=model)
         await orchestrator.run()
+        logger.info("furrow_run_completed", goal=goal)
     except WebSocketDisconnect:
-        pass
+        logger.info("furrow_websocket_disconnected")
+    except Exception as e:  # noqa: BLE001
+        logger.error("furrow_websocket_error", error=str(e))
+        try:
+            await websocket.send_text(f"Error: {e}")
+        except Exception:
+            pass
 
 
 def run(host: str = "0.0.0.0", port: int = 8000) -> None:
