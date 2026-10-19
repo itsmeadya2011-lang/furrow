@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -26,10 +25,15 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
+        self.settings = self.client.settings
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
         while True:
+            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
+                console.print("[yellow]Reached max cycles. Stopping.[/yellow]")
+                break
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
@@ -46,22 +50,35 @@ class Orchestrator:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
             return
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
-            tasks = [
-                WorkerAgent(task=task, client=self.client).run()
-                for task in plan.tasks
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
+        self.tasks = plan.tasks
 
-        for task, result in zip(plan.tasks, results):
-            if isinstance(result, Exception):
-                task.status = "failed"
-                task.result = str(result)
-                console.print(f"[red]Task {task.id} failed: {result}[/red]")
-            else:
-                task.status = "completed"
-                task.result = result
-                console.print(f"[green]Task {task.id} completed[/green]")
+        # Respect task dependencies: execute in waves.
+        remaining = list(plan.tasks)
+        completed_ids: set[str] = set()
+        max_parallel = max(1, self.settings.max_parallel_tasks)
+
+        while remaining:
+            wave = [t for t in remaining if all(dep in completed_ids for dep in (t.dependencies or []))]
+            if not wave:
+                # deadlock: run remaining anyway
+                wave = remaining[:]
+            # cap parallelism
+            for i in range(0, len(wave), max_parallel):
+                chunk = wave[i:i + max_parallel]
+                coros = [WorkerAgent(task=task, client=self.client).run() for task in chunk]
+                results = await asyncio.gather(*coros, return_exceptions=True)
+                for task, result in zip(chunk, results):
+                    if isinstance(result, Exception):
+                        task.status = "failed"
+                        task.result = str(result)
+                        console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                    else:
+                        task.status = "completed"
+                        task.result = result
+                        completed_ids.add(task.id)
+                        console.print(f"[green]Task {task.id} completed[/green]")
+            for t in wave:
+                remaining = [r for r in remaining if r.id != t.id]
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
@@ -76,13 +93,15 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if not self.tasks:
+            return True
+        completed = sum(1 for t in self.tasks if t.status == "completed")
+        failed = sum(1 for t in self.tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(self.tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
