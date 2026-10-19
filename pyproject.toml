@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "furrow"
@@ -30,6 +30,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
+    "types-aiofiles>=24.1",
 ]
 
 [project.scripts]
@@ -46,3 +47,37 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific
+    "BLE", # flake8-blind-except
+    "S",   # bandit
+]
+ignore = [
+    "S101",   # assert used (pytest)
+    "S603",   # subprocess without shell=True
+    "S604",   # subprocess with shell
+]
+
+[tool.ruff.lint.per-file-ignores]
+"furrow/cli/main.py" = ["S603"]
+"furrow/agents/tester.py" = ["S603", "S404"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+files = ["furrow"]
+
+[[tool.mypy.overrides]]
+module = ["aiofiles.*", "anthropic.*", "openai.*", "fastapi.*", "uvicorn.*"]
+ignore_missing_imports = true

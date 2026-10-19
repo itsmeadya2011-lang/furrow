@@ -6,16 +6,18 @@ from typing import Any
 
 import aiofiles
 import anthropic
+import httpx
 import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
 
 class LLMClient:
-    def __init__(self, settings: Settings = settings) -> None:
-        self.settings = settings
+    def __init__(self, settings: Settings | None = None) -> None:
+        self.settings = settings or settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
 
@@ -37,12 +39,19 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        retry=retry_if_exception_type((anthropic.APIError, openai.APIError)),
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
         elif self.settings.provider == Provider.OPENAI:
             return await self._complete_openai(prompt, system, model)
+        elif self.settings.provider == Provider.OLLAMA:
+            return await self._complete_ollama(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")
 
@@ -53,7 +62,10 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        for block in response.content:
+            if getattr(block, "type", None) == "text":
+                return block.text
+        return ""
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -65,18 +77,43 @@ class LLMClient:
         )
         return response.choices[0].message.content or ""
 
+    async def _complete_ollama(self, prompt: str, system: str, model: str) -> str:
+        async with httpx.AsyncClient() as client:  # noqa: F821
+            response = await client.post(
+                f"{self.settings.ollama_base_url}/api/chat",
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": system or "You are a helpful coding assistant."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["message"]["content"]
+
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path, "r") as f:
+        async with aiofiles.open(path, "r", encoding="utf-8") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
+        async with aiofiles.open(p, "w", encoding="utf-8") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        excluded = {".git", "node_modules", "__pycache__", ".venv", "venv", ".furrow"}
+        result: list[str] = []
+        for f in p.rglob("*"):
+            if not f.is_file():
+                continue
+            if any(part in excluded for part in f.parts):
+                continue
+            result.append(str(f.relative_to(p)))
+        return result
