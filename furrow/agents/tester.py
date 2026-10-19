@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import re
 from typing import TYPE_CHECKING
 
 from furrow.agents.prompts import TESTER_PROMPT
@@ -27,10 +27,14 @@ class TesterAgent:
         prompt = f"{TESTER_PROMPT}\n\nGoal: {goal}\n\nTest output:\n{test_output}\n"
         response = await self.client.complete(prompt, model=self.client.settings.tester_model)
         try:
-            data = json.loads(response)
+            cleaned = response.strip()
+            m = re.search(r"```(?:json)?\s*(.*?)```", cleaned, re.DOTALL)
+            if m:
+                cleaned = m.group(1).strip()
+            data = json.loads(cleaned)
             return TestResult(**data)
         except (json.JSONDecodeError, ValueError):
-            return TestResult(passed="passed" in response.lower(), summary=response, failures=[])
+            return TestResult(passed="passed" in response.lower() and "failed" not in response.lower(), summary=response, failures=[])
 
     async def _run_tests(self) -> str:
         candidates = [
@@ -42,17 +46,24 @@ class TesterAgent:
             ["cargo", "test", "-q"],
             ["go", "test", "./..."],
         ]
+        results = []
         for cmd in candidates:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
-                    return stdout.decode() + stderr.decode()
-                except asyncio.TimeoutError:
-                    proc.kill()
-                    continue
-            except (FileNotFoundError, Exception):
+            except FileNotFoundError:
                 continue
-        return "No test runner found."
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+            except asyncio.TimeoutError:
+                proc.kill()
+                results.append(f"$ {' '.join(cmd)}\nTIMED OUT")
+                continue
+            out = stdout.decode(errors="replace") + stderr.decode(errors="replace")
+            results.append(f"$ {' '.join(cmd)} (exit {proc.returncode})\n{out}")
+            if proc.returncode is not None:
+                return results[-1]
+        if not results:
+            return "No test runner found."
+        return "\n\n".join(results)

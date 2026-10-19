@@ -2,11 +2,8 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import aiofiles
-import anthropic
-import openai
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -53,7 +50,10 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        return response.content[0].text
+        content = response.content
+        if not content:
+            return ""
+        return getattr(content[0], "text", "")
 
     async def _complete_openai(self, prompt: str, system: str, model: str) -> str:
         response = await self.openai.chat.completions.create(
@@ -75,7 +75,7 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
+    async def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
