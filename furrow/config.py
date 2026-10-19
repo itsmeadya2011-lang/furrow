@@ -52,3 +52,7 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+from furrow.logging import setup_logging  # noqa: E402
+
+setup_logging(settings.log_level)

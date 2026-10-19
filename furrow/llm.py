@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any
 
 import aiofiles
-import anthropic
-import openai
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic, APIError as AnthropicAPIError, RateLimitError as AnthropicRateLimitError
+from openai import AsyncOpenAI, APIError as OpenAIAPIError, RateLimitError as OpenAIRateLimitError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from furrow.config import Provider, Settings, settings
 
@@ -37,6 +37,21 @@ class LLMClient:
             self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(
+            (
+                AnthropicAPIError,
+                OpenAIAPIError,
+                AnthropicRateLimitError,
+                OpenAIRateLimitError,
+                asyncio.TimeoutError,
+                ConnectionError,
+                TimeoutError,
+            )
+        ),
+    )
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
