@@ -13,7 +13,10 @@ if TYPE_CHECKING:
 
 class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
-        self.client = client or LLMClient(settings=settings)
+        from furrow.config import settings as default_settings
+
+        self.settings = settings or default_settings
+        self.client = client or LLMClient(settings=self.settings)
 
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"

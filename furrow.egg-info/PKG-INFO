@@ -1,0 +1,98 @@
+Metadata-Version: 2.4
+Name: furrow
+Version: 0.1.0
+Summary: Autonomous coding agent with infinite parallel development loop
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.111
+Requires-Dist: uvicorn[standard]>=0.30
+Requires-Dist: pydantic>=2.7
+Requires-Dist: pydantic-settings>=2.2
+Requires-Dist: anthropic>=0.34
+Requires-Dist: openai>=1.40
+Requires-Dist: httpx>=0.27
+Requires-Dist: click>=8.1
+Requires-Dist: rich>=13.7
+Requires-Dist: python-dotenv>=1.0
+Requires-Dist: aiofiles>=24.1
+Requires-Dist: tenacity>=8.2
+Requires-Dist: structlog>=24.1
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: ruff>=0.5; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+
+# Furrow
+
+Autonomous coding agent with an infinite parallel development loop.
+
+## Install
+
+```bash
+pip install furrow
+```
+
+## Usage
+
+```bash
+furrow start "Add JWT auth to the API"
+furrow web
+```
+
+Alternatively, run as a module:
+
+```bash
+python -m furrow start "Add JWT auth to the API"
+```
+
+Set `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in your environment.
+
+## Architecture
+
+Furrow consists of an orchestrator loop that drives three agents: a planner
+that decomposes a goal into tasks, a worker that executes tasks, and a tester
+that validates results. Tasks run in parallel up to a configurable limit, and
+the loop continues until the goal is complete or the maximum cycle count is
+reached. A FastAPI web UI (`furrow web`) provides a browser-based interface for
+monitoring and triggering runs.
+
+## Configuration
+
+Copy `.env.example` to `.env` and adjust as needed:
+
+```bash
+cp .env.example .env
+```
+
+Key variables include `FURROW_PROVIDER` (anthropic, openai, ollama),
+`FURROW_MODEL` and per-agent model overrides, `ANTHROPIC_API_KEY` /
+`OPENAI_API_KEY`, `FURROW_OLLAMA_BASE_URL`, `FURROW_MAX_PARALLEL_TASKS`,
+`FURROW_MAX_CYCLES`, `FURROW_WORKSPACE`, and `FURROW_LOG_LEVEL`. See
+`.env.example` for the full list and defaults.
+
+## Development
+
+Install with dev dependencies:
+
+```bash
+pip install -e ".[dev]"
+```
+
+Run the test suite:
+
+```bash
+pytest
+```
+
+Lint and typecheck:
+
+```bash
+ruff check
+mypy .
+```
+
+## Web UI
+
+Run `furrow web` to start the FastAPI server, then open the local URL printed to
+the console to view runs, tasks, and agent output in the browser.
