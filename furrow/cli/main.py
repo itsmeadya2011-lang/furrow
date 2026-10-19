@@ -1,18 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 
 import click
 from rich.console import Console
 
+from furrow.config import settings
 from furrow.core.orchestrator import Orchestrator
 
 console = Console()
 
 
+def setup_logging() -> None:
+    logging.basicConfig(
+        level=getattr(logging, settings.log_level.upper(), logging.INFO),
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+
 @click.group()
 def main() -> None:
+    setup_logging()
     pass
 
 

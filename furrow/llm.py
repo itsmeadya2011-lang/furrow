@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,8 @@ from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, settings
+
+logger = logging.getLogger("furrow.llm")
 
 
 class LLMClient:
@@ -39,12 +43,36 @@ class LLMClient:
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
-        if self.settings.provider == Provider.ANTHROPIC:
-            return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
-            return await self._complete_openai(prompt, system, model)
-        else:
-            raise ValueError(f"Unsupported provider: {self.settings.provider}")
+        last_error: Exception | None = None
+        for attempt in range(1, self.settings.max_llm_retries + 1):
+            try:
+                logger.debug(
+                    "LLM call attempt %d/%d: provider=%s model=%s prompt_len=%d",
+                    attempt,
+                    self.settings.max_llm_retries,
+                    self.settings.provider,
+                    model,
+                    len(prompt),
+                )
+                if self.settings.provider == Provider.ANTHROPIC:
+                    return await self._complete_anthropic(prompt, system, model)
+                elif self.settings.provider == Provider.OPENAI:
+                    return await self._complete_openai(prompt, system, model)
+                else:
+                    raise ValueError(f"Unsupported provider: {self.settings.provider}")
+            except Exception as e:
+                last_error = e
+                if attempt < self.settings.max_llm_retries:
+                    wait = min(2 ** attempt, 30)
+                    logger.warning(
+                        "LLM call failed (attempt %d/%d): %s. Retrying in %ds...",
+                        attempt,
+                        self.settings.max_llm_retries,
+                        e,
+                        wait,
+                    )
+                    await asyncio.sleep(wait)
+        raise last_error if last_error else RuntimeError("LLM call failed with no retries")
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
