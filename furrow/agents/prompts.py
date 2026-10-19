@@ -24,10 +24,19 @@ WORKER_PROMPT = """You are a worker agent in an autonomous coding system called 
 
 Your job is to implement the assigned task completely and concisely.
 
+Return file changes using this exact format (one block per file):
+
+FILE: path/to/file.py
+```python
+<full file content>
+```
+
 Rules:
 - Work only on the assigned task. Do not refactor unrelated code.
 - Make minimal, targeted changes.
-- Return a concise summary of what you changed and any issues.
+- Rewrite entire files; do not return patches.
+- Multiple FILE blocks for multiple files.
+- Return a concise summary after the file blocks of what you changed and any issues.
 - Do not spawn subagents.
 """
 
