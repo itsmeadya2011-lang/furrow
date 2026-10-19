@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,29 @@ class LLMClient:
         self.settings = settings
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
+
+    @staticmethod
+    def extract_tool_calls(text: str) -> list[dict[str, Any]]:
+        """Extract JSON tool-call objects from LLM response text.
+
+        Tolerates surrounding prose by scanning for balanced JSON objects that
+        contain a ``tool`` key. Returns objects in order of appearance.
+        """
+        objects: list[dict[str, Any]] = []
+        decoder = json.JSONDecoder()
+        idx = 0
+        while idx < len(text):
+            start = text.find("{", idx)
+            if start == -1:
+                break
+            try:
+                obj, end = decoder.raw_decode(text[start:])
+                if isinstance(obj, dict) and "tool" in obj:
+                    objects.append(obj)
+                idx = start + end
+            except json.JSONDecodeError:
+                idx = start + 1
+        return objects
 
     @property
     def anthropic(self) -> AsyncAnthropic:

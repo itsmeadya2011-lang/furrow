@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from rich.console import Console
 from rich.panel import Panel
@@ -21,25 +22,49 @@ console = Console()
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        send: Callable[[str], Any] | None = None,
+    ) -> None:
         self.goal = goal
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[TaskModel] = []
+        self.send = send
+
+    async def _emit(self, message: str) -> None:
+        if self.send is None:
+            return
+        result = self.send(message)
+        if inspect.isawaitable(result):
+            await result
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        await self._emit(f"Started: {self.goal}")
         while True:
+            max_cycles = self.client.settings.max_cycles
+            if max_cycles > 0 and self.cycles >= max_cycles:
+                console.print("[yellow]Max cycles reached. Halting.[/yellow]")
+                await self._emit("Max cycles reached. Halting.")
+                break
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+            await self._emit(f"Cycle {self.cycles}")
             await self._cycle()
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                await self._emit("Goal complete. Halting.")
                 break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
+        self.tasks = plan.tasks
+        await self._emit(f"Plan: {plan.rationale}")
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
         if not plan.tasks:
@@ -58,18 +83,22 @@ class Orchestrator:
                 task.status = "failed"
                 task.result = str(result)
                 console.print(f"[red]Task {task.id} failed: {result}[/red]")
+                await self._emit(f"Task {task.id} failed: {result}")
             else:
                 task.status = "completed"
                 task.result = result
                 console.print(f"[green]Task {task.id} completed[/green]")
+                await self._emit(f"Task {task.id} completed")
 
         with Status("[bold yellow]Testing...", console=console) as status:
             test_result = await TesterAgent(client=self.client).run(self.goal, plan.tasks)
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            await self._emit(f"Tests passed: {test_result.summary}")
         else:
             console.print(f"[red]Tests failed: {test_result.summary}[/red]")
+            await self._emit(f"Tests failed: {test_result.summary}")
             for failure in test_result.failures:
                 console.print(f"  • {failure}")
             console.print("[yellow]Will attempt fix in next cycle.[/yellow]")
@@ -85,4 +114,4 @@ class Orchestrator:
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
