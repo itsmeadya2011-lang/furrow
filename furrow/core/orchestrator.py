@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -26,13 +24,18 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
+        from furrow.config import settings
         while True:
             self.cycles += 1
             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
             await self._cycle()
+            if settings.max_cycles and self.cycles >= settings.max_cycles:
+                console.print("[bold yellow]Reached max_cycles. Halting.[/bold yellow]")
+                break
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
@@ -42,11 +45,14 @@ class Orchestrator:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
-        if not plan.tasks:
-            console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
-            return
+         if not plan.tasks:
+             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+             self.tasks = []
+             return
+... (already self.tasks?)
 
-        with Status("[bold yellow]Executing tasks in parallel...", console=console):
+         self.tasks = plan.tasks
+         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
                 WorkerAgent(task=task, client=self.client).run()
                 for task in plan.tasks
@@ -76,13 +82,15 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
+        if not self.tasks:
+            return True
+        completed = sum(1 for t in self.tasks if t.status == "completed")
+        failed = sum(1 for t in self.tasks if t.status == "failed")
         if failed > 0:
             return False
-        if completed >= len(self._get_tasks()):
+        if completed >= len(self.tasks):
             return True
         return False
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks
