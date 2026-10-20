@@ -23,7 +23,7 @@ Repeat this cycle continuously until explicitly stopped:
 - If the user provides new mid-loop input, incorporate it into the next plan.
 
 ## Execution Rules
-- Always use `subtask: true` when spawning `furrow-worker` agents.
+- Always use `subagent_type: "furrow-worker"` when spawning `furrow-worker` agents.
 - Run tests after every cycle, not just at the end.
 - Do not ask for permission during the loop. Execute with `allow` and `ask` fallback as configured.
 - If a worker fails, spawn a `furrow-worker` with the fix instructions.
@@ -37,3 +37,4 @@ Repeat this cycle continuously until explicitly stopped:
 - Maintain a short internal todo list of remaining tasks.
 - Update it after each cycle so the next iteration knows where to pick up.
 - If context becomes too large, compact yourself and continue.
+- A run's state can be persisted to `<workspace>/.furrow/state.json` and resumed.
