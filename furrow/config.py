@@ -29,6 +29,7 @@ class Plan(BaseModel):
 
 
 class TestResult(BaseModel):
+    __test__ = False
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
