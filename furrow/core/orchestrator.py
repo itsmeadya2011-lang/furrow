@@ -26,6 +26,8 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
+        self.done = False
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
@@ -36,6 +38,9 @@ class Orchestrator:
             if self._is_done():
                 console.print("[bold green]Goal complete. Halting.[/bold green]")
                 break
+            if self.client.settings.max_cycles and self.cycles >= self.client.settings.max_cycles:
+                console.print("[yellow]Max cycles reached. Halting.[/yellow]")
+                break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
@@ -44,7 +49,10 @@ class Orchestrator:
 
         if not plan.tasks:
             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+            self.done = True
             return
+
+        self.tasks = list(plan.tasks)
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -68,6 +76,7 @@ class Orchestrator:
 
         if test_result.passed:
             console.print(f"[green]Tests passed: {test_result.summary}[/green]")
+            self.done = True
         else:
             console.print(f"[red]Tests failed: {test_result.summary}[/red]")
             for failure in test_result.failures:
@@ -76,13 +85,7 @@ class Orchestrator:
             self.goal = f"Fix failing tests:\n" + "\n".join(test_result.failures)
 
     def _is_done(self) -> bool:
-        completed = sum(1 for t in self._get_tasks() if t.status == "completed")
-        failed = sum(1 for t in self._get_tasks() if t.status == "failed")
-        if failed > 0:
-            return False
-        if completed >= len(self._get_tasks()):
-            return True
-        return False
+        return self.done
 
     def _get_tasks(self) -> list[Any]:
-        return []
+        return self.tasks

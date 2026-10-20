@@ -31,17 +31,20 @@ class LLMClient:
     @property
     def openai(self) -> AsyncOpenAI:
         if self._openai is None:
-            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(api_key=api_key)
+            if self.settings.provider == Provider.OLLAMA:
+                self._openai = AsyncOpenAI(base_url=f"{self.settings.ollama_base_url}/v1", api_key="ollama")
+            else:
+                api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+                if not api_key:
+                    raise ValueError("OPENAI_API_KEY is not set")
+                self._openai = AsyncOpenAI(api_key=api_key)
         return self._openai
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         if self.settings.provider == Provider.ANTHROPIC:
             return await self._complete_anthropic(prompt, system, model)
-        elif self.settings.provider == Provider.OPENAI:
+        elif self.settings.provider in (Provider.OPENAI, Provider.OLLAMA):
             return await self._complete_openai(prompt, system, model)
         else:
             raise ValueError(f"Unsupported provider: {self.settings.provider}")

@@ -17,9 +17,17 @@ class PlannerAgent:
 
     async def plan(self, goal: str) -> Plan:
         prompt = f"{PLANNER_PROMPT}\n\nGoal: {goal}\n"
-        response = await self.client.complete(prompt, model=self.client.settings.planner_model)
-        try:
-            data = json.loads(response)
-            return Plan(**data)
-        except (json.JSONDecodeError, ValueError) as e:
-            raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
+         response = await self.client.complete(prompt, model=self.client.settings.planner_model)
+         text = response.strip()
+         if text.startswith("```"):
+             lines = text.splitlines()
+             if lines and lines[0].startswith("```"):
+                 lines = lines[1:]
+             if lines and lines[-1].strip() == "```":
+                 lines = lines[:-1]
+             text = "\n".join(lines).strip()
+         try:
+             data = json.loads(text)
+             return Plan(**data)
+         except (json.JSONDecodeError, ValueError) as e:
+             raise ValueError(f"Failed to parse plan from LLM: {e}\nResponse: {response}")
