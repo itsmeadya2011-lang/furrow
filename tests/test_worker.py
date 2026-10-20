@@ -229,6 +229,25 @@ async def test_iteration_budget(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_iteration_budget_failure(tmp_path):
+    responses = [
+        LLMResponse(
+            text="", tool_calls=[ToolCall(id=f"t{i}", name="read_file", arguments={"path": "x"})]
+        )
+        for i in range(5)
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path, iters=3)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="loop")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is False
+    assert "budget exhausted" in (result.error or "")
+
+
+@pytest.mark.asyncio
 async def test_client_exception(tmp_path):
     client = FakeLLMClient([RuntimeError("boom")])
     settings = make_settings(tmp_path)
@@ -239,6 +258,35 @@ async def test_client_exception(tmp_path):
     result = await agent.run()
     assert result.success is False
     assert "boom" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_list_files_missing_directory(tmp_path):
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="list_files", arguments={"path": "no_such_dir"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = str(b["content"]).lower()
+                    assert "error" in content
+                    assert "does not exist" in content
+                    found = True
+    assert found
 
 
 @pytest.mark.asyncio

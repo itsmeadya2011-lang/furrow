@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     max_task_retries: int = 1
     request_timeout: float = 120.0
     max_tokens: int = 4096
+    max_output_chars: int = 20000
+    worker_command_timeout: float = 120.0
     state_file: Path = Path(".furrow/state.json")
 
     def state_path(self, workspace: Path | None = None) -> Path:

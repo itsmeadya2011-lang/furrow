@@ -171,7 +171,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         return;
       }
       append(JSON.stringify(msg));
-      if (msg.type === 'task_started' || msg.type === 'task_finished') {
+      if (msg.type === 'task_finished') {
         loadStatus();
       }
       if (msg.type === 'done') {

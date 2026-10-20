@@ -96,3 +96,13 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch):
 def test_settings_provider_default():
     s = Settings()
     assert s.provider == Provider.ANTHROPIC
+
+
+def test_settings_max_output_chars_default():
+    s = Settings()
+    assert s.max_output_chars == 20000
+
+
+def test_settings_worker_command_timeout_default():
+    s = Settings()
+    assert s.worker_command_timeout == 120.0

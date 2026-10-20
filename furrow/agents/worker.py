@@ -111,7 +111,7 @@ class WorkerAgent:
         # budget exhausted
         return WorkerResult(
             summary="worker iteration budget exhausted",
-            success=True,
+            success=False,
             files_changed=sorted(self.files_changed),
             iterations=max_iters,
             error="worker iteration budget exhausted",
@@ -149,8 +149,8 @@ class WorkerAgent:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        if len(content) > 20000:
-            content = content[:20000]
+        if len(content) > self.settings.max_output_chars:
+            content = content[: self.settings.max_output_chars]
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -170,6 +170,10 @@ class WorkerAgent:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
             return "error: path escapes workspace"
+        if not resolved.exists():
+            return "error: directory does not exist"
+        if not resolved.is_dir():
+            return "error: path is not a directory"
         try:
             entries = self.client.list_files(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
@@ -197,7 +201,7 @@ class WorkerAgent:
             return "error: could not parse command"
         if not parts:
             return "error: empty command"
-        timeout = min(self.settings.request_timeout, 120.0)
+        timeout = self.settings.worker_command_timeout
         try:
             proc = await asyncio.create_subprocess_exec(
                 *parts,
@@ -216,6 +220,6 @@ class WorkerAgent:
         combined = stdout.decode("utf-8", errors="replace") + stderr.decode(
             "utf-8", errors="replace"
         )
-        if len(combined) > 20000:
-            combined = combined[:20000]
+        if len(combined) > self.settings.max_output_chars:
+            combined = combined[: self.settings.max_output_chars]
         return combined

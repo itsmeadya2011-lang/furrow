@@ -40,6 +40,16 @@ def test_detect_packagejson(tmp_path):
     assert cmd is not None and "npm" in cmd
 
 
+def test_detect_node_preferred_over_python(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert "pytest" not in cmd
+    assert cmd[0] in ("npm", "pnpm", "yarn")
+
+
 def test_detect_cargo(tmp_path):
     (tmp_path / "Cargo.toml").write_text("[package]\n")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
