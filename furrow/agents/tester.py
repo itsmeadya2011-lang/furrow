@@ -138,6 +138,14 @@ class TesterAgent:
         ):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Python projects with tests/ dir but no explicit config file
+        if has_tests_dir:
+            test_files = list((self.workspace / "tests").glob("test_*.py")) + list(
+                (self.workspace / "tests").glob("*_test.py")
+            )
+            if test_files:
+                return [sys.executable, "-m", "pytest", "-q"]
+
         # Check for Node.js test runners
         if has_package:
             # Check for jest/vitest configs

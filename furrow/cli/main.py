@@ -96,6 +96,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(version="0.1.0", prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging()

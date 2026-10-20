@@ -223,6 +223,10 @@ class Orchestrator:
             if old is not None:
                 if old.status == "completed":
                     pt.status = "completed"
+                    # Preserve previously stored result/error for completed tasks;
+                    # the planner does not populate these fields.
+                    pt.result = old.result
+                    pt.error = old.error
                 else:
                     pt.status = "pending"
                 old.description = pt.description
@@ -325,6 +329,8 @@ class Orchestrator:
             failed_ids = {t.id for t in self.tasks if t.status == "failed"}
             runnable = []
             for t in wave:
+                if t.status == "completed":
+                    continue  # already done in a prior cycle; do not re-run
                 if any(d in failed_ids for d in t.dependencies):
                     t.status = "blocked"
                 else:

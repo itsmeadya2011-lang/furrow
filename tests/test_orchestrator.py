@@ -325,3 +325,36 @@ async def test_console_reports_failed_task(tmp_path, monkeypatch):
     printed = "\n".join(console.messages)
     assert "Task t1 failed: boom" in printed
     assert "Tests failed: s" in printed
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_preserves_completed_task_result(tmp_path, monkeypatch):
+    """A completed task must keep its result when reappearing in a new plan and
+    must not be re-executed by _execute."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    # Cycle 1: plan a task, it runs and completes via FakeWorker ("did t1").
+    t1 = TaskModel(id="t1", description="do t1")
+    orch.planner = FakePlanner(tasks=[t1])
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    assert orch.tasks[0].status == "completed"
+    assert orch.tasks[0].result == "did t1"
+
+    # Cycle 2: same task id reappears in the plan (planner drops status/result).
+    # _merge_plan must restore completed status + preserved result.
+    # _execute must skip it (not re-run).
+    orch.planner = FakePlanner(tasks=[t1])
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    t1_merged = next(t for t in orch.tasks if t.id == "t1")
+    assert t1_merged.status == "completed"
+    assert t1_merged.result == "did t1"
+    # FakeWorker only runs once per task id (workers dict is per-orchestrator run,
+    # but a new WorkerAgent is created per task id; still, result should be preserved)
+    assert t1_merged.attempts == 1  # not re-run in cycle 2

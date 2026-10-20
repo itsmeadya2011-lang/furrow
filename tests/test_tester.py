@@ -106,3 +106,13 @@ def test_run_failing_command(tmp_path):
     )
     res = run(agent.run("goal", []))
     assert res.passed is False
+
+
+def test_detect_tests_dir_no_config(tmp_path):
+    """A tests/ directory with test files but no config file should still detect pytest."""
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_foo.py").write_text("def test_foo():\n    assert True\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import shlex
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,11 @@ class WorkerAgent:
             return self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "grep_file":
+            return self._grep_file(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -184,6 +190,41 @@ class WorkerAgent:
         if len(entries) > 500:
             entries = entries[:500]
         return "\n".join(rels[:500])
+
+    def _grep_file(self, pattern: str, path: str) -> str:
+        """Search for a regex pattern in files under `path` within the workspace.
+
+        Returns matching lines as "relative_path:line_number:content" or an error
+        message. Results are truncated to 500 matches.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+        matches: list[str] = []
+        base = self.workspace.resolve()
+        try:
+            files = [f for f in resolved.rglob("*") if f.is_file()]
+        except (OSError, ValueError) as exc:
+            return f"error: {exc}"
+        for f in files:
+            try:
+                rel = str(f.relative_to(base))
+            except ValueError:
+                rel = str(f)
+            try:
+                content = f.read_text(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                continue
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                if regex.search(line):
+                    matches.append(f"{rel}:{line_no}:{line}")
+                    if len(matches) >= 500:
+                        return "\n".join(matches)
+        return "\n".join(matches)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

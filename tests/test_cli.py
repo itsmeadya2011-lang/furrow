@@ -185,3 +185,11 @@ def test_start_reports_failures(
 
     assert result.exit_code == 1
     assert "boom" in result.output
+
+
+def test_version(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert "furrow" in result.output
+    assert "0.1.0" in result.output
