@@ -77,6 +77,16 @@ furrow/
 
 Kilo integration uses open permissions by default (`bash: allow`, `edit: allow`, `read: allow`) as configured in `kilo.json`.
 
+## Version control
+
+A Furrow run works in a disposable workspace, so a change is only durable once it is committed **and** pushed to `origin`. A local-only commit is lost when the workspace is discarded.
+
+- Work on the branch the session was given (`kilo/<name>`). Do not rewrite history on a shared ref — no force pushes, no rebases of published branches.
+- Commit at the end of every cycle that produced changes. The message describes the change, not the process.
+- Push the branch to `origin` before the session ends, and set it to track the remote branch.
+- If the session was given a base branch (a `session/agent_<uuid>` branch), fast-forward that branch to the run's tip and push it too, so the next run starts from the improved code rather than re-deriving it. A fast-forward is safe because the old tip stays in history.
+- Leave `.furrow/` (run state) untracked — it is local scratch state, covered by `.gitignore`.
+
 ## Usage
 
 - **Kilo**: Run `/furrow <goal>` to start the Kilo orchestrator loop.

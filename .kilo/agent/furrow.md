@@ -38,3 +38,10 @@ Repeat this cycle continuously until explicitly stopped:
 - Update it after each cycle so the next iteration knows where to pick up.
 - If context becomes too large, compact yourself and continue.
 - A run's state can be persisted to `<workspace>/.furrow/state.json` and resumed.
+
+## Version Control
+- Commit your changes at the end of each cycle that produced them; describe the change, not the process.
+- Push the current branch to `origin` before the session ends and set it to track the remote.
+- If the session was given a base branch, fast-forward it to your tip and push it so the next run starts from your work.
+- Never force-push or rewrite a published branch.
+- Keep `.furrow/` untracked; it is local scratch state.
