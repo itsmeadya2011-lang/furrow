@@ -32,10 +32,11 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     p = Path(path)
     if p.is_absolute():
         try:
-            p.relative_to(workspace)
+            p.resolve().relative_to(workspace)
         except ValueError:
             return None
         return p
+
     # reject traversal
     candidate = (workspace / p).resolve()
     try:
@@ -110,11 +111,12 @@ class WorkerAgent:
 
         # budget exhausted
         return WorkerResult(
-            summary="worker iteration budget exhausted",
-            success=True,
-            files_changed=sorted(self.files_changed),
-            iterations=max_iters,
-            error="worker iteration budget exhausted",
+    summary="worker iteration budget exhausted",
+    success=False,
+    files_changed=sorted(self.files_changed),
+    iterations=max_iters,
+    error="worker iteration budget exhausted",
+
         )
 
     def _initial_text(self) -> str:

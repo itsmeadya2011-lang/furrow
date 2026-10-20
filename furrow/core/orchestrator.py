@@ -147,8 +147,8 @@ class Orchestrator:
                 break
             self._merge_plan(plan)
             await self._execute(plan)
-            test_result = await self.tester.run(self.original_goal, self.tasks)
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+            test_result = await self.tester.run(self.original_goal, self.tasks)
             self.event_bus.emit(
                 Event(
                     type=EventType.TEST_FINISHED,
@@ -231,6 +231,8 @@ class Orchestrator:
                 old.status = pt.status
                 old.result = pt.result
                 old.error = pt.error
+                if pt.status != "completed":
+                    old.attempts = 0
                 plan.tasks[index] = old
             else:
                 self.tasks.append(pt)
@@ -269,14 +271,23 @@ class Orchestrator:
             return worker
 
         async def run_one(task: TaskModel) -> None:
+            if task.status == "completed":
+                return
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
                 result = await worker_for(task).run()
-                success = bool(getattr(result, "success", False))
-                task.result = getattr(result, "summary", None)
-                task.error = getattr(result, "error", None)
+                if isinstance(result, BaseException):
+                    success = False
+                    summary = str(result)
+                    error = str(result)
+                else:
+                    success = bool(getattr(result, "success", False))
+                    summary = getattr(result, "summary", None)
+                    error = getattr(result, "error", None)
+                task.result = summary
+                task.error = error
                 task.attempts += 1
                 task.finished_at = datetime.now(timezone.utc).isoformat()
                 if success:
