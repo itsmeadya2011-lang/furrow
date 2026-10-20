@@ -226,6 +226,7 @@ async def test_iteration_budget(tmp_path):
     result = await agent.run()
     assert result.iterations == 3
     assert result.error == "worker iteration budget exhausted"
+    assert result.success is False
 
 
 @pytest.mark.asyncio

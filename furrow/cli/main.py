@@ -10,6 +10,7 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,8 @@ def start(
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
+    if not goal:
+        goal = os.environ.get("FURROW_GOAL", "")
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)

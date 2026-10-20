@@ -108,10 +108,10 @@ class WorkerAgent:
                 )
             messages.append({"role": "user", "content": result_blocks})
 
-        # budget exhausted
+        # budget exhausted — the worker did not complete the task
         return WorkerResult(
             summary="worker iteration budget exhausted",
-            success=True,
+            success=False,
             files_changed=sorted(self.files_changed),
             iterations=max_iters,
             error="worker iteration budget exhausted",

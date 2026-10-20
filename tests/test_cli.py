@@ -99,6 +99,27 @@ def test_start_prompts_and_uses_the_typed_goal(
     assert fake_orchestrator.init_kwargs["goal"] == "build a thing"
 
 
+def test_start_uses_furrow_goal_env_var(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FURROW_GOAL", "build from env")
+    result = runner.invoke(main, ["start"])
+
+    assert result.exit_code == 0
+    assert "Enter your goal for Furrow" not in result.output
+    assert fake_orchestrator.init_kwargs["goal"] == "build from env"
+
+
+def test_start_cli_argument_takes_precedence_over_env(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FURROW_GOAL", "build from env")
+    result = runner.invoke(main, ["start", "build from arg"])
+
+    assert result.exit_code == 0
+    assert fake_orchestrator.init_kwargs["goal"] == "build from arg"
+
+
 def test_status_without_state(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
 
