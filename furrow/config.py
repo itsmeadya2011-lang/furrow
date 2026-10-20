@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,13 +13,21 @@ class Provider(str, Enum):
     OLLAMA = "ollama"
 
 
+class TaskStatus(str, Enum):
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class TaskModel(BaseModel):
     id: str
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
-    result: Optional[str] = None
+    status: TaskStatus = TaskStatus.PENDING
+    result: str | None = None
+    files_changed: list[str] = Field(default_factory=list)
 
 
 class Plan(BaseModel):
@@ -29,6 +36,8 @@ class Plan(BaseModel):
 
 
 class TestResult(BaseModel):
+    __test__ = False
+
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
@@ -42,13 +51,16 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
-    anthropic_api_key: Optional[str] = None
-    openai_api_key: Optional[str] = None
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = 5
     max_cycles: int = 0
+    max_consecutive_failures: int = 3
+    state_file: Path = Field(default_factory=lambda: Path(".furrow/state.json"))
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    apply_worker_edits: bool = True
 
 
 settings = Settings()

@@ -29,9 +29,10 @@ Repeat this cycle continuously until explicitly stopped:
 - If a worker fails, spawn a `furrow-worker` with the fix instructions.
 
 ## Stopping
-- The loop runs forever. The user stops it with Ctrl+C or by closing the session.
+- The loop stops when the goal is complete, when there is nothing left to plan, when the cycle budget is exhausted, or when it stops making progress — and the user can always stop it.
 - Do not ask "should I continue?" at the end of each cycle. Just start the next one.
-- Only stop if there are no tasks left and the goal is fully complete, OR if the user explicitly says stop.
+- Stop reasons: "no tasks planned — goal satisfied", "goal complete", "max cycles reached", "no progress".
+- Budgets: `FURROW_MAX_CYCLES` (0 = unlimited), `FURROW_MAX_CONSECUTIVE_FAILURES`, `FURROW_MAX_PARALLEL_TASKS`.
 
 ## State Management
 - Maintain a short internal todo list of remaining tasks.
