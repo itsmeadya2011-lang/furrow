@@ -14,7 +14,7 @@ from rich.status import Status
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, TestResult
+from furrow.config import Plan, TestResult, settings
 from furrow.llm import LLMClient
 
 console = Console()
@@ -26,25 +26,32 @@ class Orchestrator:
         self.client = client or LLMClient()
         self.planner = PlannerAgent(client=self.client)
         self.cycles = 0
+        self.tasks: list[Any] = []
+        self.max_cycles = settings.max_cycles
 
     async def run(self) -> None:
         console.print(Panel.fit(f"[bold green]Furrow[/bold green]\nGoal: {self.goal}", title="Furrow"))
-        while True:
-            self.cycles += 1
-            console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
-            await self._cycle()
-            if self._is_done():
-                console.print("[bold green]Goal complete. Halting.[/bold green]")
-                break
+         while True:
+             self.cycles += 1
+             console.print(f"\n[bold cyan]═══ Cycle {self.cycles} ═══[/bold cyan]")
+             await self._cycle()
+             if self._is_done():
+                 console.print("[bold green]Goal complete. Halting.[/bold green]")
+                 break
+             if self.max_cycles and self.cycles >= self.max_cycles:
+                 console.print("[yellow]Max cycles reached. Halting.[/yellow]")
+                 break
 
     async def _cycle(self) -> None:
         with Status("[bold yellow]Planning...", console=console) as status:
             plan = await self.planner.plan(self.goal)
         console.print(Panel(Pretty(plan.model_dump()), title="Plan", border_style="blue"))
 
-        if not plan.tasks:
-            console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
-            return
+         if not plan.tasks:
+             console.print("[yellow]No tasks planned. Goal may be complete.[/yellow]")
+             return
+
+         self.tasks = plan.tasks
 
         with Status("[bold yellow]Executing tasks in parallel...", console=console):
             tasks = [
@@ -84,5 +91,5 @@ class Orchestrator:
             return True
         return False
 
-    def _get_tasks(self) -> list[Any]:
-        return []
+     def _get_tasks(self) -> list[Any]:
+         return self.tasks
