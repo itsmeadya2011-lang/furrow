@@ -185,6 +185,36 @@ class LLMClient:
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
+        self._input_tokens = 0
+        self._output_tokens = 0
+
+    @property
+    def input_tokens(self) -> int:
+        """Total input (prompt) tokens consumed across all calls."""
+        return self._input_tokens
+
+    @property
+    def output_tokens(self) -> int:
+        """Total output (completion) tokens consumed across all calls."""
+        return self._output_tokens
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens consumed across all calls."""
+        return self._input_tokens + self._output_tokens
+
+    def usage(self) -> dict[str, int]:
+        """Return a snapshot of token usage."""
+        return {
+            "input_tokens": self._input_tokens,
+            "output_tokens": self._output_tokens,
+            "total_tokens": self.total_tokens,
+        }
+
+    def reset_usage(self) -> None:
+        """Reset token counters to zero."""
+        self._input_tokens = 0
+        self._output_tokens = 0
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -283,6 +313,11 @@ class LLMClient:
 
         return await self._retry(call)
 
+    def _record_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Accumulate token usage from a provider response."""
+        self._input_tokens += max(0, int(input_tokens or 0))
+        self._output_tokens += max(0, int(output_tokens or 0))
+
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
         response = await self.anthropic.messages.create(
             model=model,
@@ -290,6 +325,8 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
+        self._record_usage(getattr(response, "input_tokens", None),
+                           getattr(response, "output_tokens", None))
         text = ""
         for block in response.content:
             if block.type == "text":
@@ -306,6 +343,11 @@ class LLMClient:
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
             ],
+        )
+        usage = getattr(response, "usage", None)
+        self._record_usage(
+            getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", None)),
+            getattr(usage, "output_tokens", getattr(usage, "completion_tokens", None)),
         )
         return response.choices[0].message.content or ""
 
@@ -327,6 +369,8 @@ class LLMClient:
         if request_tools:
             kwargs["tools"] = request_tools
         response = await self.anthropic.messages.create(**kwargs)
+        self._record_usage(getattr(response, "input_tokens", None),
+                           getattr(response, "output_tokens", None))
         text = ""
         tool_calls: list[ToolCall] = []
         for block in response.content:
@@ -363,6 +407,11 @@ class LLMClient:
         if request_tools:
             kwargs["tools"] = request_tools
         response = await client.chat.completions.create(**kwargs)
+        usage = getattr(response, "usage", None)
+        self._record_usage(
+            getattr(usage, "input_tokens", getattr(usage, "prompt_tokens", None)),
+            getattr(usage, "output_tokens", getattr(usage, "completion_tokens", None)),
+        )
         choice = response.choices[0]
         message = choice.message
         text = message.content or ""

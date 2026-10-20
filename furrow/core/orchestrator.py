@@ -60,6 +60,7 @@ class Orchestrator:
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
+            "usage": self.client.usage(),
         }
 
     def _console(self) -> Any:
@@ -248,9 +249,10 @@ class Orchestrator:
                     t.status = "blocked"
                 break
             waves.append(wave)
+            wave_ids = {t.id for t in wave}
             for t in wave:
                 done.add(t.id)
-            remaining = [t for t in remaining if t not in wave]
+            remaining = [t for t in remaining if t.id not in wave_ids]
         return waves
 
     async def _execute(self, plan: Plan) -> None:

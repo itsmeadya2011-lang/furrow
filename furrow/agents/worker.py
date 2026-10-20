@@ -139,6 +139,8 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "grep":
+            return self._grep(str(args.get("pattern", "")), str(args.get("path", "")) or ".")
         return f"unknown tool: {name}"
 
     async def _read_file(self, path: str) -> str:
@@ -184,6 +186,57 @@ class WorkerAgent:
         if len(entries) > 500:
             entries = entries[:500]
         return "\n".join(rels[:500])
+
+    def _grep(self, pattern: str, path: str) -> str:
+        """Search for a regex pattern across files in the workspace.
+
+        Returns matching lines as ``path:line: content``. Skips binary-looking
+        files and caps output at 20000 characters.
+        """
+        import re
+
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            rx = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+        base = self.workspace.resolve()
+        targets: list[Path] = []
+        if resolved.is_file():
+            targets = [resolved]
+        elif resolved.is_dir():
+            targets = [f for f in resolved.rglob("*") if f.is_file()]
+        else:
+            return "error: path does not exist"
+        matches: list[str] = []
+        for f in targets:
+            try:
+                data = f.read_bytes()
+            except OSError:
+                continue
+            # Heuristic: skip binary files (NUL byte present)
+            if b"\x00" in data[:8192]:
+                continue
+            try:
+                text = data.decode("utf-8", errors="replace")
+            except (ValueError, UnicodeError):
+                continue
+            rel = str(f.relative_to(base)) if f.is_absolute() and base in f.parents else str(f)
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if rx.search(line):
+                    matches.append(f"{rel}:{lineno}: {line}")
+                    if len(matches) >= 200:
+                        break
+            if len(matches) >= 200:
+                break
+        if not matches:
+            return "no matches"
+        out = "\n".join(matches[:200])
+        if len(out) > 20000:
+            out = out[:20000]
+        return out
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

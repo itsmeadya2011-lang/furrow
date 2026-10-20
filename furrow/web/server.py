@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from typing import Any
 
 import uvicorn
@@ -31,6 +32,10 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Furrow")
 
 POLL_INTERVAL = 0.05
+
+# Rolling buffer of the most recent orchestrator events, for clients that
+# connect after a run has started (or to poll history without a WebSocket).
+EVENT_BUFFER: deque[Event] = deque(maxlen=500)
 
 DEFAULT_CURRENT: dict[str, Any] = {
     "running": False,
@@ -258,16 +263,22 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
     _CURRENT["result"] = task.result()
 
 
-async def _drain(queue: asyncio.Queue[Event]) -> None:
-    """Consume events so a background run does not fill its queue forever."""
+async def _drain(queue: asyncio.Queue[Event], buffer: deque[Event] | None = None) -> None:
+    """Consume events so a background run does not fill its queue forever.
+
+    Optionally appends each event to a rolling buffer so recent history is
+    available via ``GET /api/events`` after the fact.
+    """
     while True:
-        await queue.get()
+        event = await queue.get()
+        if buffer is not None:
+            buffer.append(event)
 
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
-    """Run an orchestrator in the background and discard the emitted events."""
+    """Run an orchestrator in the background and buffer its emitted events."""
     queue = bus.subscribe()
-    drain = asyncio.create_task(_drain(queue))
+    drain = asyncio.create_task(_drain(queue, EVENT_BUFFER))
     try:
         return await orchestrator.run()
     finally:
@@ -320,6 +331,14 @@ async def api_status() -> dict[str, Any]:
         "running": bool(_CURRENT.get("running")),
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
+    }
+
+
+@app.get("/api/events")
+async def api_events() -> dict[str, Any]:
+    """Recent orchestrator events from the rolling buffer (most recent last)."""
+    return {
+        "events": [event.to_dict() for event in EVENT_BUFFER],
     }
 
 
