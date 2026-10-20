@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -190,10 +191,16 @@ class WorkerAgent:
         for denied in DENIED_COMMANDS:
             if denied in command:
                 return "error: command denied"
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return "error: could not parse command"
+        if not parts:
+            return "error: empty command"
         timeout = min(self.settings.request_timeout, 120.0)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                command,
+            proc = await asyncio.create_subprocess_exec(
+                *parts,
                 cwd=str(self.workspace),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

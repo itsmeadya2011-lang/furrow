@@ -19,6 +19,7 @@ import click
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
+from furrow.logging import configure_logging
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
@@ -97,6 +98,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 @click.group()
 def main() -> None:
     """Furrow - an autonomous coding agent."""
+    configure_logging()
 
 
 @main.command()

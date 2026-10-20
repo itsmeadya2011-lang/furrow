@@ -172,6 +172,7 @@ class Orchestrator:
                 tests_passed=test_result.passed, test_summary=test_result.summary,
                 timestamp=datetime.now(timezone.utc).isoformat(),
             ))
+            self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                             cycles=self.cycles, tasks=self.tasks, history=self.history)
             self.state_store.save(state)
@@ -217,9 +218,9 @@ class Orchestrator:
 
     def _merge_plan(self, plan: Plan) -> None:
         by_id = {t.id: t for t in self.tasks}
-        for pt in plan.tasks:
-            if pt.id in by_id:
-                old = by_id[pt.id]
+        for index, pt in enumerate(plan.tasks):
+            old = by_id.get(pt.id)
+            if old is not None:
                 if old.status == "completed":
                     pt.status = "completed"
                 else:
@@ -230,6 +231,7 @@ class Orchestrator:
                 old.status = pt.status
                 old.result = pt.result
                 old.error = pt.error
+                plan.tasks[index] = old
             else:
                 self.tasks.append(pt)
         self._active_ids = {t.id for t in plan.tasks}
@@ -254,23 +256,35 @@ class Orchestrator:
     async def _execute(self, plan: Plan) -> None:
         waves = self._plan_waves(plan.tasks)
         sem = asyncio.Semaphore(self.settings.max_parallel_tasks)
+        max_retries = max(0, self.settings.max_task_retries)
+        workers: dict[str, WorkerAgent] = {}
+
+        def worker_for(task: TaskModel) -> WorkerAgent:
+            """Return the worker for *task*, creating it once so retries reuse it."""
+            worker = workers.get(task.id)
+            if worker is None:
+                worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
+                                     workspace=self.settings.workspace, goal=self.original_goal)
+                workers[task.id] = worker
+            return worker
 
         async def run_one(task: TaskModel) -> None:
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
-                worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
-                                    workspace=self.settings.workspace, goal=self.original_goal)
-                result = await worker.run()
-                if getattr(result, "success", False):
-                    task.status = "completed"
-                else:
-                    task.status = "failed"
+                result = await worker_for(task).run()
+                success = bool(getattr(result, "success", False))
                 task.result = getattr(result, "summary", None)
                 task.error = getattr(result, "error", None)
                 task.attempts += 1
                 task.finished_at = datetime.now(timezone.utc).isoformat()
+                if success:
+                    task.status = "completed"
+                elif task.attempts <= max_retries:
+                    task.status = "pending"
+                else:
+                    task.status = "failed"
                 self.event_bus.emit(
                     Event(
                         type=EventType.TASK_FINISHED,
@@ -282,11 +296,30 @@ class Orchestrator:
                     )
                 )
                 task_id = self._escape(task.id)
+                detail = self._escape(self._one_line(task.error or "unknown error"))
                 if task.status == "completed":
                     self._say(f"[green]Task {task_id} completed[/green]")
+                elif task.status == "pending":
+                    self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
+                    self.event_bus.emit(
+                        Event(type=EventType.LOG,
+                             message=f"task {task.id} failed, retrying "
+                                     f"(attempt {task.attempts} of {max_retries + 1})")
+                    )
                 else:
-                    detail = self._escape(self._one_line(task.error or "unknown error"))
                     self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+
+        async def run_retries(tasks: list[TaskModel]) -> None:
+            """Re-run tasks that failed while retries remain, until the budget is spent."""
+            retry_queue = [t for t in tasks
+                           if t.status == "pending" and t.attempts <= max_retries]
+            while retry_queue:
+                batch = retry_queue
+                retry_queue = []
+                await asyncio.gather(*[run_one(t) for t in batch], return_exceptions=True)
+                for t in batch:
+                    if t.status == "pending" and t.attempts <= max_retries:
+                        retry_queue.append(t)
 
         for wave in waves:
             failed_ids = {t.id for t in self.tasks if t.status == "failed"}
@@ -297,3 +330,4 @@ class Orchestrator:
                 else:
                     runnable.append(t)
             await asyncio.gather(*[run_one(t) for t in runnable], return_exceptions=True)
+            await run_retries(runnable)

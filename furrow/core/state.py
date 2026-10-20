@@ -15,7 +15,6 @@ Design notes:
 from __future__ import annotations
 
 import json
-import logging
 import os
 import tempfile
 from datetime import datetime, timezone
@@ -24,8 +23,9 @@ from pathlib import Path
 from pydantic import BaseModel, Field, ValidationError
 
 from furrow.config import TaskModel
+from furrow.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 STATE_VERSION = 1
 

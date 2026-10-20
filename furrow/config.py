@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     max_worker_iterations: int = 12
     max_retries: int = 3
+    max_task_retries: int = 1
     request_timeout: float = 120.0
     max_tokens: int = 4096
     state_file: Path = Path(".furrow/state.json")

@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from furrow.config import Plan, TaskModel, TestResult, WorkerResult
+from furrow.config import Plan, TaskModel, TestResult
 
 
 def strip_code_fences(text: str) -> str:
@@ -203,13 +203,3 @@ def parse_test_result(text: str) -> TestResult:
         except (ValueError, TypeError):
             s = str(text) if text is not None else ""
         return TestResult(passed=True, summary=s[:500], failures=[])
-
-
-def parse_worker_result(text: str) -> WorkerResult | None:
-    try:
-        data = parse_json(text)
-        if isinstance(data, dict):
-            return WorkerResult(**data)
-        return None
-    except (ValueError, TypeError):
-        return None
