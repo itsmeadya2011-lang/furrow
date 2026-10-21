@@ -789,3 +789,94 @@ async def test_command_timeout_from_command_timeout_not_request_timeout(tmp_path
     )
     out = await agent._run_command("sleep 2")
     assert "timed out" not in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_kill_process_tree_waits_after_kill(tmp_path, monkeypatch):
+    """_kill_process_tree reaps the process after killing it via the process group."""
+    from furrow.agents.worker import WorkerAgent
+
+    killed = {"pg": False, "kill": False}
+    waited = False
+
+    class FakeProc:
+        pid = 4242
+
+        def kill(self):
+            killed["kill"] = True
+
+        async def wait(self):
+            nonlocal waited
+            waited = True
+
+    def fake_getpgid(pid):
+        return 12345
+
+    def fake_killpg(pgid, sig):
+        killed["pg"] = True
+
+    monkeypatch.setattr("os.getpgid", fake_getpgid)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+
+    proc = FakeProc()
+    await WorkerAgent._kill_process_tree(proc, new_session=True)
+
+    assert killed["pg"] is True
+    assert killed["kill"] is False
+    assert waited is True
+
+
+@pytest.mark.asyncio
+async def test_kill_process_tree_fallback_kill_then_wait(tmp_path, monkeypatch):
+    """When killpg is unavailable, fall back to proc.kill() then wait."""
+    from furrow.agents.worker import WorkerAgent
+
+    killed = {"pg": False, "kill": False}
+    waited = False
+
+    class FakeProc:
+        pid = 4242
+
+        def kill(self):
+            killed["kill"] = True
+
+        async def wait(self):
+            nonlocal waited
+            waited = True
+
+    def fake_getpgid(pid):
+        raise OSError("no pg")
+
+    monkeypatch.setattr("os.getpgid", fake_getpgid)
+
+    proc = FakeProc()
+    await WorkerAgent._kill_process_tree(proc, new_session=True)
+
+    assert killed["pg"] is False
+    assert killed["kill"] is True
+    assert waited is True
+
+
+@pytest.mark.asyncio
+async def test_kill_process_tree_no_session_uses_kill_then_wait(tmp_path):
+    """When new_session is False, proc.kill() is called then wait."""
+    from furrow.agents.worker import WorkerAgent
+
+    killed = {"kill": False}
+    waited = False
+
+    class FakeProc:
+        pid = 4242
+
+        def kill(self):
+            killed["kill"] = True
+
+        async def wait(self):
+            nonlocal waited
+            waited = True
+
+    proc = FakeProc()
+    await WorkerAgent._kill_process_tree(proc, new_session=False)
+
+    assert killed["kill"] is True
+    assert waited is True

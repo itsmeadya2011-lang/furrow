@@ -665,6 +665,31 @@ async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_merge_plan_resets_running_task_to_pending(tmp_path, monkeypatch):
+    """A task with a non-terminal status (e.g. running) is reset to pending.
+
+    The old code had a redundant if/else where both branches set pending;
+    the simplified version does the same in one line.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "running"
+    task.attempts = 1
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+
+
+@pytest.mark.asyncio
 async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

@@ -482,7 +482,14 @@ class WorkerAgent:
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
-        """Kill a timed-out command together with every process it spawned."""
+        """Kill a timed-out command together with every process it spawned.
+
+        After sending SIGKILL (via the process group when available, or via
+        ``proc.kill()`` as a fallback), wait for the process to terminate so it
+        is reaped and does not become a zombie.  A short timeout prevents
+        hanging if the process cannot be waited on.
+        """
+        killed = False
         if new_session:
             try:
                 pgid = os.getpgid(proc.pid)
@@ -494,9 +501,12 @@ class WorkerAgent:
                 except (OSError, AttributeError):
                     pass
                 else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
-        # Fallback: no process group available (or killing it failed).
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
+                    killed = True
+        if not killed:
+            # Fallback: no process group available (or killing it failed).
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
+            killed = True
+        # Reap the process so it does not linger as a zombie.
+        with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
