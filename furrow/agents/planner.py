@@ -18,7 +18,9 @@ class PlannerAgent:
             prompt += "\n\nContext:\n" + context
 
         model = self.settings.planner_model
-        response = await self.client.complete(prompt, system=PLANNER_SYSTEM, model=model)
+        response = await self.client.complete(
+            prompt, system=PLANNER_SYSTEM, model=model, role="planner"
+        )
         try:
             return parse_plan(response)
         except ValueError as first:
@@ -27,7 +29,9 @@ class PlannerAgent:
                 + "\n\nYour previous reply could not be parsed. Reply with ONLY a JSON object "
                 + "matching the required shape, no prose, no markdown fences."
             )
-            response2 = await self.client.complete(stricter, system=PLANNER_SYSTEM, model=model)
+            response2 = await self.client.complete(
+                stricter, system=PLANNER_SYSTEM, model=model, role="planner"
+            )
             try:
                 return parse_plan(response2)
             except ValueError as second:

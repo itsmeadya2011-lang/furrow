@@ -16,14 +16,14 @@ class FakeLLMClient:
         self.responses = list(responses)
         self.calls = []
 
-    async def chat(self, messages, tools=None, system="", model=None):
+    async def chat(self, messages, tools=None, system="", model=None, role="default"):
         self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, role="default"):
         return ""
 
     async def read_file(self, path):
@@ -44,7 +44,7 @@ class LoopingLLMClient(FakeLLMClient):
         super().__init__([response])
         self.response = response
 
-    async def chat(self, messages, tools=None, system="", model=None):
+    async def chat(self, messages, tools=None, system="", model=None, role="default"):
         self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
         return self.response
 
@@ -374,14 +374,295 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == [
+        "edit_file",
+        "grep_search",
+        "list_files",
+        "read_file",
+        "run_command",
+        "write_file",
+    ]
+    assert len(WORKER_TOOLS) == 6
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
         assert p["type"] == "object"
         assert "properties" in p
         assert "required" in p
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replaces_substring(tmp_path):
+    (tmp_path / "a.txt").write_text("hello world\nfoo bar")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="edit_file",
+                    arguments={
+                        "path": "a.txt",
+                        "old_text": "hello world",
+                        "new_text": "goodbye world",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert (tmp_path / "a.txt").read_text() == "goodbye world\nfoo bar"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_old_text_not_found(tmp_path):
+    (tmp_path / "a.txt").write_text("hello world")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="edit_file",
+                    arguments={
+                        "path": "a.txt",
+                        "old_text": "nonexistent",
+                        "new_text": "x",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "not found" in b["content"].lower()
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_edit_file_ambiguous_old_text(tmp_path):
+    (tmp_path / "a.txt").write_text("foo\nfoo\nbar")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="edit_file",
+                    arguments={
+                        "path": "a.txt",
+                        "old_text": "foo",
+                        "new_text": "baz",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "ambiguous" in b["content"].lower()
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_search_finds_matches(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def bar():\n    return foo()\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_search",
+                    arguments={"pattern": "def foo"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "a.py" in b["content"]
+                    assert "def foo" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_search_no_matches(tmp_path):
+    (tmp_path / "a.py").write_text("print('hi')\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_search",
+                    arguments={"pattern": "nonexistent_pattern_xyz"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "no matches" in b["content"].lower()
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_search_invalid_regex(tmp_path):
+    (tmp_path / "a.py").write_text("x\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_search",
+                    arguments={"pattern": "[invalid"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "invalid regex" in b["content"].lower()
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_write_file_size_limit(tmp_path):
+    """write_file rejects content larger than MAX_WRITE_SIZE."""
+    from furrow.agents.worker import MAX_WRITE_SIZE
+
+    big_content = "x" * (MAX_WRITE_SIZE + 1)
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="write_file",
+                    arguments={"path": "big.txt", "content": big_content},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="big")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "too large" in b["content"].lower()
+                    found = True
+    assert found
+    assert not (tmp_path / "big.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_edit_file_path_escape(tmp_path):
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="edit_file",
+                    arguments={"path": "../evil.txt", "old_text": "x", "new_text": "y"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="escape")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    assert not (tmp_path.parent / "evil.txt").exists()
 
 
 def test_resolve_in_workspace():

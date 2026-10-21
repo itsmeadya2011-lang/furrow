@@ -139,11 +139,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
+<div class="meta" id="header-meta">
+    <span>cycle <b id="cycle">—</b></span>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span id="cost" class="reason" style="display:none"></span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -178,6 +179,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    if (cost > 0) {
+      costEl.textContent = '$' + cost.toFixed(4);
+      costEl.style.display = '';
+    } else {
+      costEl.style.display = 'none';
+    }
   }
 
   function renderTasks(tasks) {

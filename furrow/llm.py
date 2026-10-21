@@ -13,6 +13,7 @@ from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
+from furrow.pricing import compute_cost_usd, price_for
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -50,24 +51,53 @@ def _is_retryable(exc: BaseException) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
-def _extract_anthropic_usage(response: Any) -> Usage:
+def _extract_anthropic_usage(response: Any, model: str = "",
+                                settings: Settings | None = None) -> Usage:
     """Pull token usage out of an Anthropic messages response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
         return Usage(calls=1)
     input_tokens = getattr(usage, "input_tokens", 0) or 0
     output_tokens = getattr(usage, "output_tokens", 0) or 0
-    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1)
+    cost = _compute_cost("anthropic", model, input_tokens, output_tokens, settings)
+    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1, cost_usd=cost)
 
 
-def _extract_openai_usage(response: Any) -> Usage:
+def _extract_openai_usage(response: Any, model: str = "",
+                             settings: Settings | None = None) -> Usage:
     """Pull token usage out of an OpenAI-compatible response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
         return Usage(calls=1)
     prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
     completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-    return Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens, calls=1)
+    cost = _compute_cost("openai", model, prompt_tokens, completion_tokens, settings)
+    return Usage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+        calls=1,
+        cost_usd=cost,
+    )
+
+
+def _compute_cost(provider: str, model: str, input_tokens: int, output_tokens: int,
+                      settings: Settings | None = None) -> float:
+    """Compute USD cost for the given tokens using *settings* pricing.
+
+    Returns 0.0 when cost tracking is disabled or the model is unknown and the
+    default price is free. When *settings* is None the global settings are used.
+    """
+    if settings is None:
+        settings = global_settings
+    if not settings.track_cost:
+        return 0.0
+    input_per_1k, output_per_1k = price_for(
+        provider,
+        model,
+        custom=settings.model_pricing,
+        default_per_1k=settings.default_cost_per_1k,
+    )
+    return compute_cost_usd(input_tokens, output_tokens, input_per_1k, output_per_1k)
 
 
 def to_anthropic_tools(tools: list[dict]) -> list[dict]:
@@ -207,37 +237,114 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        # Per-role API-key overrides so different roles can use different keys.
+        self._role_keys: dict[str, str | None] = {}
 
+    def _role_provider(self, role: str) -> Provider:
+        """Return the provider to use for *role* (planner/worker/tester/default)."""
+        override = getattr(self.settings, f"{role}_provider", None)
+        if override is not None:
+            return Provider(override) if not isinstance(override, Provider) else override
+        return self.settings.provider
+
+    def _role_model(self, role: str) -> str:
+        """Return the model to use for *role*."""
+        return getattr(self.settings, f"{role}_model", None) or self.settings.model
+
+    def _role_api_key(self, role: str) -> str | None:
+        """Return the API key to use for *role*, or None to use the default."""
+        override = getattr(self.settings, f"{role}_api_key", None)
+        if override:
+            return override
+        return None
+
+    def _client_for_provider(self, provider: Provider, api_key: str | None = None) -> Any:
+        """Return the underlying SDK client for *provider*, creating it lazily."""
+        if provider == Provider.ANTHROPIC:
+            if self._anthropic is None:
+                key = api_key or self.settings.anthropic_api_key or os.getenv(
+                    "ANTHROPIC_API_KEY"
+                )
+                if not key:
+                    raise ValueError("ANTHROPIC_API_KEY is not set")
+                self._anthropic = AsyncAnthropic(
+                    api_key=key, timeout=self.settings.request_timeout
+                )
+            return self._anthropic
+        if provider == Provider.OPENAI:
+            if self._openai is None:
+                key = api_key or self.settings.openai_api_key or os.getenv(
+                    "OPENAI_API_KEY"
+                )
+                if not key:
+                    raise ValueError("OPENAI_API_KEY is not set")
+                self._openai = AsyncOpenAI(
+                    api_key=key, timeout=self.settings.request_timeout
+                )
+            return self._openai
+        if provider == Provider.OLLAMA:
+            if self._ollama is None:
+                base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
+                self._ollama = AsyncOpenAI(
+                    api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
+                )
+            return self._ollama
+        raise ValueError(f"Unsupported provider: {provider}")
+
+    # Backwards-compatible properties for direct client access.
     @property
     def anthropic(self) -> AsyncAnthropic:
-        if self._anthropic is None:
-            api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
-        return self._anthropic
+        return self._client_for_provider(Provider.ANTHROPIC)
 
     @property
     def openai(self) -> AsyncOpenAI:
-        if self._openai is None:
-            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
-        return self._openai
+        return self._client_for_provider(Provider.OPENAI)
 
     @property
     def ollama(self) -> AsyncOpenAI:
-        if self._ollama is None:
-            base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
-            self._ollama = AsyncOpenAI(
-                api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
-            )
-        return self._ollama
+        return self._client_for_provider(Provider.OLLAMA)
+
+    def _provider_for(self, provider: Provider | str) -> Provider:
+        if isinstance(provider, Provider):
+            return provider
+        return Provider(provider)
+
+    def _fallback_chain(self, role: str, model: str | None = None) -> list[tuple[Provider, str]]:
+        """Return the ordered (provider, model) list to try for *role*.
+
+        The primary (role provider, role model or *model* override) is first;
+        the configured ``fallback_chain`` follows; the global default is last.
+        """
+        chain: list[tuple[Provider, str]] = []
+        primary_provider = self._role_provider(role)
+        primary_model = model or self._role_model(role)
+        chain.append((primary_provider, primary_model))
+        for provider_str, fallback_model in self.settings.fallback_chain:
+            chain.append((self._provider_for(provider_str), fallback_model))
+        if (self.settings.provider, self.settings.model) not in chain:
+            chain.append((self.settings.provider, self.settings.model))
+        return chain
+
+    async def _retry_with_fallback(self, call, role: str = "default", model: str | None = None):
+        """Run *call* with retry, then walk the fallback chain on retryable errors.
+
+        *call* must be a zero-arg callable returning an awaitable. Each entry in
+        the fallback chain is tried with a fresh retry budget; only retryable
+        errors trigger the next entry.
+        """
+        chain = self._fallback_chain(role, model)
+        last_exc: Exception | None = None
+        for provider, model in chain:
+            try:
+                return await self._retry(lambda p=provider, m=model: call(p, m))
+            except Exception as exc:
+                last_exc = exc
+                if not _is_retryable(exc):
+                    raise
+                continue
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError("LLM fallback chain exited unexpectedly")
 
     async def _retry(self, call):
         max_attempts = max(1, int(self.settings.max_retries))
@@ -265,22 +372,26 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
-        provider = self.settings.provider
+    async def complete(self, prompt: str, system: str = "", model: str | None = None,
+                       role: str = "default") -> str:
+        """Run a completion for *role* (planner/worker/tester/default).
 
-        async def call() -> str:
-            if provider == Provider.ANTHROPIC:
-                response = await self._complete_anthropic(prompt, system, model)
-            elif provider == Provider.OPENAI:
-                response = await self._complete_openai(self.openai, prompt, system, model)
-            elif provider == Provider.OLLAMA:
-                response = await self._complete_openai(self.ollama, prompt, system, model)
+        When *model* is given it overrides the role's configured model. The
+        fallback chain is walked on retryable errors.
+        """
+        api_key = self._role_api_key(role)
+
+        async def call(prov: Provider, mod: str) -> str:
+            if prov == Provider.ANTHROPIC:
+                response = await self._complete_anthropic(prompt, system, mod, api_key)
+            elif prov == Provider.OPENAI or prov == Provider.OLLAMA:
+                client = self._client_for_provider(prov, api_key)
+                response = await self._complete_openai(client, prompt, system, mod)
             else:
-                raise ValueError(f"Unsupported provider: {provider}")
+                raise ValueError(f"Unsupported provider: {prov}")
             return response.text
 
-        return await self._retry(call)
+        return await self._retry_with_fallback(call, role, model)
 
     async def chat(
         self,
@@ -288,27 +399,27 @@ class LLMClient:
         tools: list[dict] | None = None,
         system: str = "",
         model: str | None = None,
+        role: str = "default",
     ) -> LLMResponse:
-        model = model or self.settings.model
-        provider = self.settings.provider
+        """Run a chat completion for *role* with tool calling and fallback."""
+        api_key = self._role_api_key(role)
 
-        async def call() -> LLMResponse:
-            if provider == Provider.ANTHROPIC:
-                return await self._chat_anthropic(messages, tools, system, model)
-            elif provider == Provider.OPENAI:
+        async def call(prov: Provider, mod: str) -> LLMResponse:
+            if prov == Provider.ANTHROPIC:
+                return await self._chat_anthropic(messages, tools, system, mod, api_key)
+            elif prov == Provider.OPENAI or prov == Provider.OLLAMA:
+                client = self._client_for_provider(prov, api_key)
                 return await self._chat_openai_compatible(
-                    self.openai, messages, tools, system, model
+                    client, messages, tools, system, mod
                 )
-            elif provider == Provider.OLLAMA:
-                return await self._chat_openai_compatible(
-                    self.ollama, messages, tools, system, model
-                )
-            raise ValueError(f"Unsupported provider: {provider}")
+            raise ValueError(f"Unsupported provider: {prov}")
 
-        return await self._retry(call)
+        return await self._retry_with_fallback(call, role, model)
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
-        response = await self.anthropic.messages.create(
+    async def _complete_anthropic(self, prompt: str, system: str, model: str,
+                                  api_key: str | None = None) -> LLMResponse:
+        client = self._client_for_provider(Provider.ANTHROPIC, api_key)
+        response = await client.messages.create(
             model=model,
             max_tokens=self.settings.max_tokens,
             system=system or "You are a helpful coding assistant.",
@@ -318,7 +429,7 @@ class LLMClient:
         for block in response.content:
             if block.type == "text":
                 text += block.text
-        usage = _extract_anthropic_usage(response)
+        usage = _extract_anthropic_usage(response, model, self.settings)
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
@@ -334,7 +445,7 @@ class LLMClient:
             ],
         )
         text = response.choices[0].message.content or ""
-        usage = _extract_openai_usage(response)
+        usage = _extract_openai_usage(response, model, self.settings)
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
@@ -344,7 +455,9 @@ class LLMClient:
         tools: list[dict] | None,
         system: str,
         model: str,
+        api_key: str | None = None,
     ) -> LLMResponse:
+        client = self._client_for_provider(Provider.ANTHROPIC, api_key)
         request_tools = to_anthropic_tools(tools or [])
         request_messages = to_anthropic_messages(messages)
         kwargs: dict[str, Any] = {
@@ -355,7 +468,7 @@ class LLMClient:
         }
         if request_tools:
             kwargs["tools"] = request_tools
-        response = await self.anthropic.messages.create(**kwargs)
+        response = await client.messages.create(**kwargs)
         text = ""
         tool_calls: list[ToolCall] = []
         for block in response.content:
@@ -365,7 +478,7 @@ class LLMClient:
                 tool_calls.append(
                     ToolCall(id=block.id, name=block.name, arguments=block.input or {})
                 )
-        usage = _extract_anthropic_usage(response)
+        usage = _extract_anthropic_usage(response, model, self.settings)
         self.total_usage.add(usage)
         return LLMResponse(
             text=text,
@@ -407,7 +520,7 @@ class LLMClient:
                     arguments=parse_tool_arguments(tc.function.arguments),
                 )
             )
-        usage = _extract_openai_usage(response)
+        usage = _extract_openai_usage(response, model, self.settings)
         self.total_usage.add(usage)
         return LLMResponse(
             text=text,

@@ -65,6 +65,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if usage.cost_usd > 0:
+            click.echo(f"  Est. cost:       ${usage.cost_usd:.4f} USD")
     if result.summary:
         click.echo(f"  Summary: {result.summary}")
 
@@ -79,6 +81,8 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        if usage.cost_usd > 0:
+            click.echo(f"  Est. cost:       ${usage.cost_usd:.4f} USD")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:

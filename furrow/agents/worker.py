@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shlex
 import signal
 from pathlib import Path
@@ -27,6 +28,15 @@ DENIED_COMMANDS = (
 
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
+
+# Maximum number of lines returned by ``grep_search``.
+MAX_GREP_LINES = 200
+
+# Maximum size of content accepted by ``write_file`` / ``edit_file``.
+MAX_WRITE_SIZE = 100_000
+
+# Maximum size of old_text/new_text for ``edit_file``.
+MAX_EDIT_TEXT_SIZE = 50_000
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -84,7 +94,8 @@ class WorkerAgent:
         for i in range(max_iters):
             iterations = i + 1
             response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM,
+                model=self.settings.worker_model, role="worker",
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
@@ -140,9 +151,20 @@ class WorkerAgent:
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
             return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+        if name == "edit_file":
+            return await self._edit_file(
+                str(args.get("path", "")),
+                str(args.get("old_text", "")),
+                str(args.get("new_text", "")),
+            )
         if name == "list_files":
             return self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
+            )
+        if name == "grep_search":
+            return self._grep_search(
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+                str(args.get("pattern", "")),
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
@@ -164,6 +186,8 @@ class WorkerAgent:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
             return "error: path escapes workspace"
+        if len(content.encode("utf-8")) > MAX_WRITE_SIZE:
+            return f"error: content too large (max {MAX_WRITE_SIZE} bytes)"
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
@@ -190,6 +214,77 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _edit_file(self, path: str, old_text: str, new_text: str) -> str:
+        """Replace the first occurrence of *old_text* with *new_text* in *path*."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if len(old_text) > MAX_EDIT_TEXT_SIZE:
+            return f"error: old_text too large (max {MAX_EDIT_TEXT_SIZE} bytes)"
+        if len(new_text) > MAX_EDIT_TEXT_SIZE:
+            return f"error: new_text too large (max {MAX_EDIT_TEXT_SIZE} bytes)"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        count = content.count(old_text)
+        if count == 0:
+            return f"error: old_text not found in {path}"
+        if count > 1:
+            return f"error: old_text is ambiguous ({count} matches in {path}); provide more context"
+        new_content = content.replace(old_text, new_text, 1)
+        if len(new_content.encode("utf-8")) > MAX_WRITE_SIZE:
+            return f"error: resulting file too large (max {MAX_WRITE_SIZE} bytes)"
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path} ({len(new_content.encode('utf-8'))} bytes)"
+
+    def _grep_search(self, path: str, pattern: str) -> str:
+        """Search file contents under *path* for *pattern* (regex)."""
+        if not pattern:
+            return "error: pattern is required"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+        matches: list[str] = []
+        base = self.workspace.resolve()
+        try:
+            for entry in self.client.list_files(resolved):
+                try:
+                    file_path = Path(entry)
+                    if not file_path.is_absolute():
+                        file_path = resolved / file_path
+                    if not file_path.is_file():
+                        continue
+                    with open(file_path, encoding="utf-8", errors="replace") as fh:
+                        for line_no, line in enumerate(fh, start=1):
+                            if regex.search(line):
+                                try:
+                                    rel = str(file_path.relative_to(base))
+                                except ValueError:
+                                    rel = str(file_path)
+                                matches.append(f"{rel}:{line_no}:{line.rstrip()}")
+                                if len(matches) >= MAX_GREP_LINES:
+                                    break
+                except (OSError, ValueError):
+                    continue
+                if len(matches) >= MAX_GREP_LINES:
+                    break
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if len(matches) >= MAX_GREP_LINES:
+            matches.append(f"... truncated at {MAX_GREP_LINES} matches")
+        return "\n".join(matches) if matches else "no matches"
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

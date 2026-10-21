@@ -253,7 +253,8 @@ class TesterAgent:
 
             try:
                 response = await self.client.complete(
-                    prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                    prompt, system=TESTER_SYSTEM, model=self.settings.tester_model,
+                    role="tester",
                 )
                 result = parse_test_result(response)
                 return result

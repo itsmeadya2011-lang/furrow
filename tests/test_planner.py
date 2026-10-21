@@ -13,7 +13,7 @@ class FakeLLMClient:
         self.prompts = []
         self.models = []
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, role="default"):
         self.prompts.append(prompt)
         self.models.append(model)
         if self.raises:

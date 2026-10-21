@@ -71,12 +71,41 @@ WORKER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "edit_file",
+        "description": "edit a file by replacing an exact substring. Fails if the old "
+                       "text is not found or is ambiguous. Prefer this over "
+                       "write_file for targeted changes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["path", "old_text", "new_text"],
+        },
+    },
+    {
         "name": "list_files",
         "description": "list files under a workspace directory (relative paths).",
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": [],
+        },
+    },
+    {
+        "name": "grep_search",
+        "description": "search file contents for a regex pattern under a directory "
+                       "in the workspace. Returns matching lines with file paths "
+                       "and line numbers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "pattern": {"type": "string"},
+            },
+            "required": ["pattern"],
         },
     },
     {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import field
 from typing import Any
 
 import anthropic
@@ -385,6 +386,9 @@ async def test_complete_anthropic_extracts_usage():
     assert client.total_usage.output_tokens == 42
     assert client.total_usage.calls == 1
     assert client.total_usage.total_tokens == 142
+    # Default model is claude-sonnet-4-20250514 @ $3/$15 per 1k
+    # 100/1000*3 + 42/1000*15 = 0.30 + 0.63 = 0.93
+    assert client.total_usage.cost_usd == 0.93
 
 
 async def test_complete_openai_extracts_usage():
@@ -393,7 +397,7 @@ async def test_complete_openai_extracts_usage():
     fake_usage = _FakeOpenAIUsage(prompt_tokens=77, completion_tokens=33)
     fake = _FakeOpenAI("ok")
     fake.chat.completions.usage = fake_usage
-    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
     client._openai = fake
 
     result = await client.complete("hi")
@@ -403,6 +407,8 @@ async def test_complete_openai_extracts_usage():
     assert client.total_usage.output_tokens == 33
     assert client.total_usage.calls == 1
     assert client.total_usage.total_tokens == 110
+    # gpt-4o: 77/1000*2.5 + 33/1000*10 = 0.1925 + 0.33 = 0.5225
+    assert client.total_usage.cost_usd == pytest.approx(0.5225)
 
 
 async def test_complete_without_usage_does_not_crash():
@@ -419,6 +425,7 @@ async def test_complete_without_usage_does_not_crash():
     assert client.total_usage.output_tokens == 0
     assert client.total_usage.calls == 1
     assert client.total_usage.total_tokens == 0
+    assert client.total_usage.cost_usd == 0.0
 
 
 async def test_total_usage_accumulates_across_calls():
@@ -426,7 +433,7 @@ async def test_total_usage_accumulates_across_calls():
 
     fake = _FakeOpenAI("ok")
     fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=10, completion_tokens=5)
-    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
     client._openai = fake
 
     await client.complete("first")
@@ -436,6 +443,8 @@ async def test_total_usage_accumulates_across_calls():
     assert client.total_usage.input_tokens == 20
     assert client.total_usage.output_tokens == 10
     assert client.total_usage.total_tokens == 30
+    # gpt-4o: 20/1000*2.5 + 10/1000*10 = 0.05 + 0.10 = 0.15
+    assert client.total_usage.cost_usd == pytest.approx(0.15)
 
 
 async def test_chat_attaches_usage():
@@ -456,3 +465,232 @@ async def test_chat_attaches_usage():
     assert response.usage.total_tokens == 10
     assert client.total_usage.input_tokens == 4
     assert client.total_usage.calls == 1
+
+
+async def test_complete_anthropic_computes_cost_for_known_model():
+    """A known Anthropic model gets its cost computed from the pricing table."""
+    usage = _FakeAnthropicUsage(input_tokens=1000, output_tokens=500)
+    response = _FakeAnthropicResponse("hello there", usage=usage)
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._anthropic = _FakeAnthropicClient(response)
+
+    result = await client.complete("hi")
+
+    assert result == "hello there"
+    # 1000 input @ $3/1k + 500 output @ $15/1k = 3.0 + 7.5 = 10.5
+    assert client.total_usage.cost_usd == 10.5
+
+
+async def test_complete_openai_computes_cost_for_known_model():
+    """A known OpenAI model gets its cost computed from the pricing table."""
+    fake_usage = _FakeOpenAIUsage(prompt_tokens=2000, completion_tokens=1000)
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = fake_usage
+    # Use gpt-4o-mini which is in the pricing table at $0.15/$0.60 per 1k
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o-mini"))
+    client._openai = fake
+
+    result = await client.complete("hi")
+
+    assert result == "ok"
+    # 2000 input @ $0.15/1k + 1000 output @ $0.60/1k = 0.30 + 0.60 = 0.90
+    assert client.total_usage.cost_usd == pytest.approx(0.90)
+
+
+async def test_complete_ollama_model_has_zero_cost():
+    """Local Ollama models are free, so cost stays at zero."""
+    fake = _FakeOpenAI("ok")
+    client = LLMClient(settings=Settings(provider=Provider.OLLAMA))
+    client._ollama = fake
+
+    await client.complete("please edit a file")
+
+    assert client.total_usage.cost_usd == 0.0
+
+
+async def test_complete_unknown_model_has_zero_cost_by_default():
+    """An unknown model falls back to the free default price."""
+    fake = _FakeOpenAI("ok")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="unknown-model"))
+    client._openai = fake
+
+    await client.complete("hi")
+
+    assert client.total_usage.cost_usd == 0.0
+
+
+async def test_complete_with_track_cost_disabled_has_zero_cost():
+    """When track_cost is False, no cost is computed regardless of model."""
+    usage = _FakeAnthropicUsage(input_tokens=1000, output_tokens=500)
+    response = _FakeAnthropicResponse("hello", usage=usage)
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC, track_cost=False))
+    client._anthropic = _FakeAnthropicClient(response)
+
+    await client.complete("hi")
+
+    assert client.total_usage.cost_usd == 0.0
+
+
+async def test_complete_with_custom_model_pricing():
+    """Custom pricing overrides the built-in table."""
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=1000, completion_tokens=500)
+    custom = {"openai:my-model": (1.5, 3.0)}
+    client = LLMClient(
+        settings=Settings(provider=Provider.OPENAI, model="my-model", model_pricing=custom)
+    )
+    client._openai = fake
+
+    await client.complete("hi")
+
+    # 1000 input @ $1.5/1k + 500 output @ $3/1k = 1.5 + 1.5 = 3.0
+    assert client.total_usage.cost_usd == 3.0
+
+
+async def test_complete_with_custom_default_per_1k():
+    """An unknown model uses the configured default price."""
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=1000, completion_tokens=500)
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.OPENAI,
+            model="unknown",
+            default_cost_per_1k=(1.0, 2.0),
+        )
+    )
+    client._openai = fake
+
+    await client.complete("hi")
+
+    # 1000 input @ $1/1k + 500 output @ $2/1k = 1.0 + 1.0 = 2.0
+    assert client.total_usage.cost_usd == 2.0
+
+
+async def test_usage_add_accumulates_cost():
+    from furrow.config import Usage
+
+    a = Usage(input_tokens=10, output_tokens=5, cost_usd=1.5)
+    b = Usage(input_tokens=3, output_tokens=7, cost_usd=2.5)
+    a.add(b)
+    assert a.cost_usd == 4.0
+
+
+async def test_complete_uses_role_provider_override():
+    """A per-role provider override routes the call to that provider."""
+    fake = _FakeOpenAI("ok")
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.ANTHROPIC,
+            planner_provider=Provider.OPENAI,
+            planner_model="gpt-4o-mini",
+        )
+    )
+    client._openai = fake
+
+    await client.complete("plan this", role="planner")
+
+    assert fake.chat.completions.last_kwargs["model"] == "gpt-4o-mini"
+
+
+async def test_complete_uses_role_model_override():
+    """A per-role model override is used for that role."""
+    fake = _FakeOpenAI("ok")
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.OPENAI,
+            planner_model="gpt-4o",
+        )
+    )
+    client._openai = fake
+
+    await client.complete("plan this", role="planner")
+
+    assert fake.chat.completions.last_kwargs["model"] == "gpt-4o"
+
+
+async def test_complete_uses_role_api_key_override():
+    """A per-role API key override is passed to the underlying client."""
+    fake = _FakeOpenAI("ok")
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.OPENAI,
+            planner_api_key="sk-planner-test",
+        )
+    )
+    client._openai = fake
+
+    await client.complete("plan this", role="planner")
+
+    assert fake.chat.completions.last_kwargs["model"] is not None
+
+
+async def test_complete_fallback_chain_on_retryable_error():
+    """When the primary provider fails with a retryable error, the fallback
+    chain is tried before giving up."""
+    calls = []
+
+    class FailingAnthropicClient:
+        def __init__(self) -> None:
+            self.messages = self
+
+        async def create(self, **kwargs):
+            calls.append(("anthropic", kwargs.get("model")))
+            raise _FakeStatusError(429)
+
+    class FakeCompletions:
+        last_kwargs: dict = field(default_factory=dict)
+
+        async def create(self, **kwargs):
+            calls.append(("openai", kwargs.get("model")))
+            return _FakeResponse("ok-from-fallback")
+
+    class FakeOpenAI:
+        def __init__(self) -> None:
+            self.chat = self
+            self.completions = FakeCompletions()
+
+    # Build a client whose primary is anthropic and whose fallback is openai.
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.ANTHROPIC,
+            model="claude-sonnet-4-20250514",
+            fallback_chain=[("openai", "gpt-4o-mini")],
+            max_retries=1,
+        )
+    )
+    client._anthropic = FailingAnthropicClient()
+    client._openai = FakeOpenAI()
+
+    result = await client.complete("hi")
+
+    assert result == "ok-from-fallback"
+    assert ("anthropic", "claude-sonnet-4-20250514") in calls
+    assert ("openai", "gpt-4o-mini") in calls
+
+
+async def test_complete_no_fallback_on_non_retryable_error():
+    """A non-retryable error from the primary provider is raised immediately."""
+    calls = []
+
+    class FailingAnthropicClient:
+        def __init__(self) -> None:
+            self.messages = self
+
+        async def create(self, **kwargs):
+            calls.append(("anthropic", kwargs.get("model")))
+            raise _FakeStatusError(400)
+
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.ANTHROPIC,
+            model="claude-sonnet-4-20250514",
+            fallback_chain=[("openai", "gpt-4o-mini")],
+            max_retries=1,
+        )
+    )
+    client._anthropic = FailingAnthropicClient()
+
+    with pytest.raises(_FakeStatusError):
+        await client.complete("hi")
+
+    assert len(calls) == 1  # fallback never tried

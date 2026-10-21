@@ -148,6 +148,7 @@ def test_index_contains_ui_hooks(client: TestClient) -> None:
         'id="state"',
         'id="stopped-reason"',
         'id="usage"',
+        'id="cost"',
     ):
         assert hook in html, f"missing hook {hook}"
 

@@ -75,6 +75,13 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_PLANNER_MODEL` | `claude-3-5-haiku-20241022` | Model for the planner |
 | `FURROW_WORKER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the worker |
 | `FURROW_TESTER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the tester |
+| `FURROW_PLANNER_PROVIDER` | (default) | Override provider for the planner role |
+| `FURROW_WORKER_PROVIDER` | (default) | Override provider for the worker role |
+| `FURROW_TESTER_PROVIDER` | (default) | Override provider for the tester role |
+| `FURROW_PLANNER_API_KEY` | (default) | Override API key for the planner role |
+| `FURROW_WORKER_API_KEY` | (default) | Override API key for the worker role |
+| `FURROW_TESTER_API_KEY` | (default) | Override API key for the tester role |
+| `FURROW_FALLBACK_CHAIN` | (none) | Ordered list of `provider:model` pairs to try when the primary call fails with a retryable error |
 | `FURROW_ANTHROPIC_API_KEY` | (none) | Anthropic API key |
 | `FURROW_OPENAI_API_KEY` | (none) | OpenAI API key |
 | `FURROW_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama OpenAI-compatible base URL |
@@ -88,19 +95,17 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_TRACK_COST` | `true` | Compute and report estimated USD cost |
+| `FURROW_DEFAULT_COST_PER_1K` | `0.0,0.0` | Default per-1k token price for unknown models (USD) |
+| `FURROW_MODEL_PRICING` | (none) | Mapping of `provider:model` to `input_per_1k,output_per_1k` USD prices |
 
 A `.env` file is read automatically via pydantic-settings.
 
-## How the loop works
+## LLM token accounting and cost
 
-1. **Plan** — The planner creates a `Plan` with tasks, each task specifying `id`, `description`, `files`, and `dependencies`.
-2. **Execute** — Tasks run in dependency waves. The orchestrator respects `max_parallel_tasks` and marks tasks as pending/running/completed/failed/blocked. A failed task is retried with the same worker up to `max_task_retries` times; only when the retries are exhausted is it marked failed (and its dependents blocked). A worker that exhausts its iteration budget without solving the task is also marked failed — running out of iterations is never reported as success. Commands run by the worker and tester are executed with a timeout; when a command times out, its whole process group is killed so no orphan processes are left behind.
-3. **Test** — The tester detects the appropriate test command for the project (pytest, npm/pnpm/yarn, cargo, go) and returns a `TestResult`. When no test runner is detectable, the result is `skipped` and the run is reported as `SKIPPED` rather than passed.
-4. **Repeat** — If tests fail, the goal is amended with failure details to guide the next cycle. `max_cycles` controls termination (0 = unlimited). The worker uses a real tool-calling loop with `read_file`, `write_file`, `list_files`, and `run_command` to actually modify files in the sandboxed workspace.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`.
 
-## LLM token accounting
-
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+When `FURROW_TRACK_COST` is true (the default), Furrow also estimates the USD cost of every call using built-in pricing tables for common models. Unknown models fall back to a free default price (`FURROW_DEFAULT_COST_PER_1K`), and custom prices can be supplied via `FURROW_MODEL_PRICING`. Estimated cost is shown in the CLI summary/status and in the web UI header.
 
 ## State & resume
 
