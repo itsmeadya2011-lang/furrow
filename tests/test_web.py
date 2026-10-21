@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -161,6 +162,56 @@ def test_index_uses_text_content_for_untrusted_text(client: TestClient) -> None:
 
     assert "textContent" in html
     assert "innerHTML" not in html
+
+
+def test_index_script_declares_every_element_reference(client: TestClient) -> None:
+    """Every ``*El`` identifier used in the inline script is declared there.
+
+    Regression test for the bug where ``renderStatus()`` referenced
+    ``goalDisplayEl``, ``cycleEl``, ``stateEl``, ``stoppedReasonEl`` and
+    ``usageEl`` without declaring them, so every call threw a ReferenceError
+    that ``loadStatus()`` swallowed in its catch.
+    """
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    used = set(re.findall(r"\b([A-Za-z_$][A-Za-z0-9_$]*El)\b", script))
+    declared = set(re.findall(r"\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=", script))
+
+    undeclared = used - declared
+    assert not undeclared, f"used but never declared: {sorted(undeclared)}"
+
+
+def test_index_status_header_elements_bound_in_script(client: TestClient) -> None:
+    """The script binds to every status header element present in the page."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage"):
+        assert f"getElementById('{element_id}')" in script, (
+            f"script does not bind to #{element_id}"
+        )
+
+
+def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> None:
+    """Starting a run resets the summary tracker so every run logs its summary.
+
+    Regression test for the bug where ``lastSummary`` was never reset: two
+    consecutive runs ending with the same summary (e.g. "stopped: goal
+    complete") produced only one summary line in the log.
+    """
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    lines = script.splitlines()
+
+    send_indexes = [index for index, line in enumerate(lines) if "socket.send(" in line]
+    assert send_indexes, "the script never sends the start/resume message"
+
+    for index in send_indexes:
+        window = "\n".join(lines[max(0, index - 5) : index + 1])
+        assert "lastSummary = null" in window, (
+            "the summary tracker is not reset next to the start/resume message"
+        )
 
 
 def test_api_state_without_state(client: TestClient) -> None:

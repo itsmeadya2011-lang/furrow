@@ -152,7 +152,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
   const tasksEl = document.getElementById('tasks');
+  const goalDisplayEl = document.getElementById('goal-display');
+  const cycleEl = document.getElementById('cycle');
+  const stateEl = document.getElementById('state');
+  const stoppedReasonEl = document.getElementById('stopped-reason');
+  const usageEl = document.getElementById('usage');
   let socket = null;
+  let lastSummary = null;
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -262,7 +268,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const result = body.result || null;
       renderStatus(status, result, running);
       if (status && status.tasks) { renderTasks(status.tasks); }
-      if (body.result) { append('-- ' + text(body.result.summary)); }
+      if (body.result) {
+        const summary = text(body.result.summary);
+        if (summary && summary !== lastSummary) {
+          append('-- ' + summary);
+          lastSummary = summary;
+        }
+      }
     } catch (err) {
       append('! could not load status');
     }
@@ -274,6 +286,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
+      // A new run starts: forget the previous summary so this run always
+      // contributes its own summary line to the log.
+      lastSummary = null;
       socket.send(JSON.stringify(payload));
     };
     function truncate(value, max) {

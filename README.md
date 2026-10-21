@@ -13,7 +13,7 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 
 ## Security
 
-The worker's command execution is hardened: commands are normalized (lowercased, whitespace collapsed), split into segments on `;`, `&&`, `||`, `|`, and newlines, and every segment is checked. Destructive programs by name (`mkfs*`, `fdisk`, `parted`, `shutdown`, `reboot`, `poweroff`, `halt`, `init`, `dd`) and destructive patterns (`rm -rf /`, `rm -fr /`, `rm -rf /*`, `rm -rf ~`, `chmod -R 777 /`, `> /dev/sda`, the fork bomb) are denied. Force-pushing (`git push --force`, `-f`, `--force-with-lease`) is blocked, and redirection to an absolute path outside the workspace is denied. Ordinary development commands continue to work.
+The worker's command execution is hardened: commands run through `/bin/sh -c` so ordinary shell constructs (`cd dir && pytest`, pipes, variable assignments, redirections) work. Commands are normalized (lowercased, whitespace collapsed, home variables canonicalised), split into segments on `;`, `&&`, `||`, `|`, and newlines, and every segment and every command substitution (`$(...)`, backticks) is checked. Destructive programs by name (`mkfs*`, `dd`, `fdisk`, `parted`, `shutdown`, `reboot`, `poweroff`, `halt`, `init`) and destructive patterns (`rm -rf /` in all spellings including `rm -rf "$HOME"`, `rm -fr /`, `rm -rf /*`, `chmod -R 777 /`, the fork bomb, `> /dev/sda`) are denied. Force-pushing (`git push --force`, `-f`, `--force-with-lease`) is blocked, and any redirection whose target resolves outside the workspace (absolute paths, `..` traversal, `~` and `$HOME` targets) is denied; redirections inside the workspace are allowed. Commands run in their own process group so a timeout kills the whole tree. Ordinary development commands continue to work.
 
 ## Install
 
@@ -48,7 +48,7 @@ furrow status
 furrow status --workspace /path/to/project
 ```
 
-The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any.
+The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
 
 ### `furrow resume`
 Continue the persisted run.
@@ -66,7 +66,7 @@ furrow web
 furrow web --host 127.0.0.1 --port 8000
 ```
 
-The default web UI is available at [http://127.0.0.1:8000](http://127.0.0.1:8000).
+The default web UI is available at [http://127.0.0.1:8000](http://127.0.0.1:8000). The status header (goal, cycle, state, stopped reason, usage) is bound correctly and is refreshed by status fetches triggered by websocket events (task started, task finished, done) plus a single fetch on page load; the client does not poll on a timer. The run summary is appended to the event log only when it changes.
 
 The web API refuses to start a second run while one is already in progress — both through `POST /api/start` and through the websocket.
 
@@ -100,7 +100,7 @@ A `.env` file is read automatically via pydantic-settings.
 ## How the loop works
 
 1. **Plan** — The planner creates a `Plan` with tasks, each task specifying `id`, `description`, `files`, and `dependencies`.
-2. **Execute** — Tasks run in dependency waves. The orchestrator respects `max_parallel_tasks` and marks tasks as pending/running/completed/failed/blocked. A failed task is retried with the same worker up to `max_task_retries` times; only when the retries are exhausted is it marked failed (and its dependents blocked). A worker that exhausts its iteration budget without solving the task is also marked failed — running out of iterations is never reported as success. Commands run by the worker and tester are executed with a timeout; when a command times out, its whole process group is killed so no orphan processes are left behind.
+2. **Execute** — Tasks run in dependency waves. The orchestrator respects `max_parallel_tasks` and marks tasks as pending/running/completed/failed/blocked. A failed task is retried with the same worker up to `max_task_retries` times; only when the retries are exhausted is it marked failed (and its dependents blocked). A plan merge preserves a task's terminal status for reporting — completed stays completed, a task that failed with an exhausted retry budget stays failed, a blocked task stays blocked — and preserves its attempt counter, but the task is still attempted again in the next cycle: the retry budget is enforced within a cycle, not across cycles. A worker that exhausts its iteration budget without solving the task is also marked failed — running out of iterations is never reported as success. Commands run by the worker and tester are executed with timeouts from `command_timeout` and `test_timeout` respectively; when a command times out, its whole process group is killed so no orphan processes are left behind. The worker executes commands via `/bin/sh -c` with a hardened guard (segments, command substitutions, denied programs/patterns, force-pushes, and workspace-scoped redirections). The tester treats the exit status as ground truth (non-zero exit is failure even if the LLM reports passed; a runner that cannot start is an infrastructure error; `test_timeout` controls the test suite; "0 failed"/"no failures" are not misread as failures). The no-progress guard counter and previous plan signature are persisted in run state and restored on resume, so a resumed run does not restart the guard from zero; because the state file is written before each cycle's guard evaluation, the persisted counter lags the live one by one cycle (and the persisted signature is the previous cycle's). Tasks blocked by failed dependencies remain blocked and are reported separately. `RunResult` includes `tasks_blocked` and `tests_run`. `Settings` adds `command_timeout` (default 300s) and `test_timeout` (default 600s).
 3. **Test** — The tester detects the appropriate test command for the project (pytest, npm/pnpm/yarn, cargo, go) and returns a `TestResult`. When no test runner is detectable, the result is `skipped` and the run is reported as `SKIPPED` rather than passed.
 4. **Repeat** — If tests fail, the goal is amended with failure details to guide the next cycle. `max_cycles` controls termination (0 = unlimited). The worker uses a real tool-calling loop with `read_file`, `write_file`, `list_files`, and `run_command` to actually modify files in the sandboxed workspace.
 
@@ -110,7 +110,7 @@ The LLM client records input/output tokens and call counts for every completion,
 
 ## State & resume
 
-State is persisted atomically after every cycle to `<workspace>/.furrow/state.json`. Use `furrow resume` or `furrow start --resume` to continue a previous run. Corrupt state files are ignored and the run starts fresh. On resume, the persisted state file is loaded exactly once, so restored values cannot be overwritten by a second read.
+State is persisted atomically at the end of every completed cycle to `<workspace>/.furrow/state.json`; a cycle that ends early (a planner error, or a plan with no tasks) is not persisted, so the saved cycle count can lag the reported one by one. Use `furrow resume` or `furrow start --resume` to continue a previous run. Corrupt state files are ignored and the run starts fresh. On resume, the persisted state file is loaded exactly once, so restored values cannot be overwritten by a second read.
 
 ## Development
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -129,3 +130,34 @@ def test_save_updates_updated_at(tmp_path: Path) -> None:
     assert loaded is not None
     assert loaded.updated_at == after
     assert datetime.fromisoformat(loaded.updated_at) >= datetime.fromisoformat(before)
+
+
+def test_no_progress_and_prev_sig_roundtrip(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "s.json")
+    state = RunState(goal="g", no_progress=4, prev_sig="abc|def")
+    store.save(state)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.no_progress == 4
+    assert loaded.prev_sig == "abc|def"
+
+
+def test_legacy_state_without_new_keys_loads(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.json"
+    legacy = {
+        "version": 1,
+        "goal": "g",
+        "original_goal": "g",
+        "cycles": 0,
+        "tasks": [],
+        "history": [],
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "calls": 0},
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    store = StateStore(path)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.no_progress == 0
+    assert loaded.prev_sig == ""
+

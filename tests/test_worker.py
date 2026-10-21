@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from furrow.agents.prompts import WORKER_TOOLS
-from furrow.agents.worker import WorkerAgent, resolve_in_workspace
+from furrow.agents.worker import WorkerAgent, is_command_denied, resolve_in_workspace
 from furrow.config import Settings
 from furrow.llm import LLMResponse, ToolCall
 
@@ -274,7 +274,7 @@ async def test_run_command_timeout(tmp_path):
         LLMResponse(text="done", tool_calls=[]),
     ]
     client = FakeLLMClient(responses)
-    settings = make_settings(tmp_path).model_copy(update={"request_timeout": 0.2})
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 0.2})
     from furrow.config import TaskModel
 
     task = TaskModel(id="1", description="cmd")
@@ -299,7 +299,7 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
     # The subshell is a grandchild of the worker: killing only the direct child
     # leaves it alive and it would create the marker file.
     command = f"sh -c '(sleep 0.5; touch {marker}) & wait'"
-    settings = make_settings(tmp_path).model_copy(update={"request_timeout": 0.2})
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 0.2})
     from furrow.config import TaskModel
 
     task = TaskModel(id="1", description="cmd")
@@ -393,12 +393,17 @@ def test_resolve_in_workspace():
 
 
 @pytest.mark.asyncio
-async def test_denied_command_table(tmp_path):
+async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
     """Table-driven test with commands that MUST be denied.
 
     Includes the two cases the legacy substring check used to cover: the fork
     bomb (destroyed by the segment splitter, so it is matched against the
     whole command) and ``chmod -R 777 /`` (matched case-insensitively).
+
+    The rows that mention ``$HOME``/``~`` must never touch the real home
+    directory, so HOME points at a throwaway directory that lives *outside*
+    the workspace. If it lived inside, a redirect such as ``> ~/x`` would
+    stay inside the workspace and would legitimately be allowed.
     """
     denied_commands = [
         "/bin/rm -rf /",
@@ -415,8 +420,26 @@ async def test_denied_command_table(tmp_path):
         "echo hacked > /etc/passwd",
         "chmod -R 777 /",
         "chmod -r 777 /",
+        # command substitutions hide the dangerous part of the command
+        "echo $(rm -rf /)",
+        "echo `rm -rf /`",
+        # every spelling of the HOME variable
+        "rm -rf \"$HOME\"",
+        "rm -rf ${HOME}",
+        "rm -rf '$HOME'",
+        # redirections that escape the workspace
+        "echo hi > ../../etc/passwd",
+        "echo hi > ~/x",
+        "echo hi > $HOME/x",
+        "echo hi > ${HOME}/x",
     ]
     from furrow.config import TaskModel
+
+    # Throwaway home directory, deliberately outside of the workspace.
+    fake_home = tmp_path_factory.mktemp("fake_home")
+    assert not fake_home.is_relative_to(tmp_path)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
 
     for cmd in denied_commands:
         marker = tmp_path / f"marker_{hash(cmd)}.txt"
@@ -449,6 +472,11 @@ async def test_denied_command_table(tmp_path):
                         found_denied = True
         assert found_denied
         assert not marker.exists()
+
+    # None of the commands was executed: the throwaway home directory is
+    # still there and still empty.
+    assert fake_home.exists()
+    assert not any(fake_home.iterdir())
 
 
 @pytest.mark.asyncio
@@ -493,3 +521,271 @@ async def test_allowed_command_table(tmp_path):
                         )
                         found_result = True
         assert found_result
+
+
+def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
+    """Guard-level policy check, independent of the command executor.
+
+    Denied commands must be rejected and ordinary commands must stay
+    allowed. HOME points at a throwaway directory outside of the workspace so
+    that a regression can never reach the real home directory.
+    """
+    fake_home = tmp_path_factory.mktemp("fake_home")
+    assert not fake_home.is_relative_to(tmp_path)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    denied_commands = [
+        "rm -rf /",
+        "rm -rf ~",
+        'rm -rf "$HOME"',
+        "rm -rf ${HOME}",
+        "rm -rf '$HOME'",
+        "mkfs.ext4 /dev/sda",
+        "dd if=/dev/zero of=/dev/sda",
+        "fdisk /dev/sda",
+        "shutdown -h now",
+        "git push --force",
+        "git push -f origin main",
+        "echo hacked > /etc/passwd",
+        "echo hi > ../../etc/passwd",
+        "echo hi > ~/x",
+        "echo hi > $HOME/x",
+        "echo hi > ${HOME}/x",
+    ]
+    allowed_commands = [
+        "pytest -q",
+        "git status",
+        "ls -f",
+        "rm -rf build",
+        "echo hi > out.txt",
+        "cd sub && ls",
+    ]
+
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_checks_command_substitutions(tmp_path):
+    """The text of a command substitution is checked with the same rules.
+
+    ``fdisk`` is denied by program name, so the substitution
+    ``$(fdisk /dev/sda)`` has to be denied as well - and this only works
+    when the substitution itself is inspected.
+    """
+    assert is_command_denied("echo $(fdisk /dev/sda)", tmp_path) is True
+    assert is_command_denied("echo `fdisk /dev/sda`", tmp_path) is True
+
+
+def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
+    """A redirect whose target stays inside the workspace is allowed."""
+    assert is_command_denied("echo hi > out.txt", tmp_path) is False
+
+
+@pytest.mark.asyncio
+async def test_shell_and_chaining(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo a && echo b"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "a" in content and "b" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_shell_cd_changes_directory(tmp_path):
+    from furrow.config import TaskModel
+
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    command = f"cd {subdir} && pwd"
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": command})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert str(subdir.resolve()) in content or "subdir" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_shell_pipeline(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo hi | cat"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "hi" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_shell_env_assignment(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "FOO=bar; echo $FOO"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "bar" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_shell_redirection_creates_file(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo hi > out.txt"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    assert (tmp_path / "out.txt").exists()
+    assert (tmp_path / "out.txt").read_text().strip() == "hi"
+
+
+@pytest.mark.asyncio
+async def test_failing_command_does_not_raise(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": "exit 3"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    # failing command returns output (possibly empty) and does not raise
+                    assert b["content"] is not None
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_command_timeout_from_command_timeout_not_request_timeout(tmp_path):
+    from furrow.config import TaskModel
+
+    # request_timeout small, command_timeout large - sleep should NOT timeout
+    settings = make_settings(tmp_path).model_copy(
+        update={"request_timeout": 1.0, "command_timeout": 30.0}
+    )
+    assert float(settings.command_timeout) == 30.0
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="cmd"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    out = await agent._run_command("sleep 2")
+    assert "timed out" not in out.lower()

@@ -82,6 +82,8 @@ class RunResult(BaseModel):
     cycles: int = 0
     tasks_completed: int = 0
     tasks_failed: int = 0
+    tasks_blocked: int = 0
+    tests_run: int = 0
     summary: str = ""
     stopped_reason: str = ""
     skipped: bool = False
@@ -108,6 +110,8 @@ class Settings(BaseSettings):
     max_retries: int = 3
     max_task_retries: int = 1
     request_timeout: float = 120.0
+    command_timeout: float = 300.0    # timeout for a worker run_command execution
+    test_timeout: float = 600.0       # timeout for a tester test-suite execution
     max_tokens: int = 4096
     state_file: Path = Path(".furrow/state.json")
 

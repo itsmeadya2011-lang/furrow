@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from furrow.agents.tester import TesterAgent
+from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
 from furrow.config import Settings, TestResult
 
 
@@ -19,6 +19,25 @@ class FakeLLMClient:
         if self.raises:
             raise self.raises
         return self.response
+
+
+def fake_proc(returncode=0, stdout=b"", stderr=b""):
+    """Build a stand-in for an asyncio subprocess with a fixed exit status."""
+
+    class FakeProc:
+        pid = 4242
+
+        async def communicate(self):
+            return stdout, stderr
+
+        async def wait(self):
+            return returncode
+
+        def kill(self):
+            return None
+
+    FakeProc.returncode = returncode
+    return FakeProc()
 
 
 def run(coro):
@@ -179,12 +198,190 @@ def test_run_timeout_kills_process_group(tmp_path, monkeypatch):
     monkeypatch.setattr("os.getpgid", lambda pid: pid)
     monkeypatch.setattr("os.kill", fake_kill)
 
-    agent = TesterAgent(
-        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=1),
-        workspace=tmp_path,
-    )
+    # The test-suite timeout comes from `test_timeout`, not from the LLM
+    # request timeout, so the setting has to be provided explicitly here.
+    settings = Settings(_env_file=None, workspace=tmp_path, request_timeout=30)
+    settings = settings.model_copy(update={"test_timeout": 1})
+    agent = TesterAgent(settings=settings, workspace=tmp_path)
     res = run(agent.run("goal", []))
     assert isinstance(res, TestResult)
     assert res.passed is False
     assert "timed out" in res.summary.lower()
     assert killed["pg"] is True or killed["kill"] is True
+
+
+def test_failed_command_is_never_reported_as_passed(tmp_path, monkeypatch):
+    """A non-zero exit status wins over a green LLM verdict.
+
+    The exit status of the test command is the ground truth: a command that
+    exited non-zero ran failing (or crashing) tests, so the result must not be
+    reported as passed even when the LLM claims everything is fine.
+    """
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    stderr_text = (
+        "=================================== FAILURES ===================================\n"
+        "FAILED tests/test_x.py::test_y - AssertionError: expected 1 got 2\n"
+        "=========================== 1 failed, 2 passed in 0.12s ===========================\n"
+    )
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stderr=stderr_text.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "everything is fine"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is False
+    assert res.skipped is False
+    assert "failed" in res.summary.lower()
+    assert res.failures
+    assert any("test_y" in failure for failure in res.failures)
+
+
+def test_green_command_with_green_verdict_is_passed(tmp_path, monkeypatch):
+    """A zero exit status plus a green LLM verdict is a pass."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"5 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "all green"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is True
+    assert res.skipped is False
+    assert res.failures == []
+
+
+def test_green_command_with_failing_verdict_is_not_passed(tmp_path, monkeypatch):
+    """A zero exit status does not overrule an LLM that says the suite failed."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"no tests ran\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": false, "summary": "the suite did not run"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is False
+    assert "did not run" in res.summary.lower()
+
+
+def test_spawn_failure_is_reported_as_an_infrastructure_error(tmp_path, monkeypatch):
+    """A runner that cannot be started is not reported as a test failure."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        raise FileNotFoundError("pytest")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "all green"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is False
+    assert res.skipped is False
+    assert "could not be started" in res.summary.lower()
+    assert "did not run" in res.summary.lower()
+    assert res.failures
+    assert any("could not be started" in failure for failure in res.failures)
+
+
+def test_test_command_timeout_comes_from_test_timeout(tmp_path, monkeypatch):
+    """The test-suite timeout comes from `test_timeout`, not `request_timeout`."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    recorded = {}
+
+    async def fake_wait_for(awaitable, timeout=None):
+        recorded["timeout"] = timeout
+        return await awaitable
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"5 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(asyncio, "wait_for", fake_wait_for)
+
+    settings = Settings(_env_file=None, workspace=tmp_path, request_timeout=1.0)
+    settings = settings.model_copy(update={"test_timeout": 600.0})
+    agent = TesterAgent(
+        client=FakeLLMClient(response='{"passed": true, "summary": "all green"}'),
+        settings=settings,
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert recorded["timeout"] == 600.0
+    assert resolve_test_timeout(settings) == 600.0
+    assert res.passed is True
+
+
+def test_test_timeout_defaults_to_a_dedicated_value(tmp_path):
+    """Without an explicit `test_timeout` the tester still gets its own timeout."""
+    settings = Settings(_env_file=None, workspace=tmp_path, request_timeout=1.0)
+    assert resolve_test_timeout(settings) == 600.0
+
+
+def test_looks_like_failure_ignores_zero_counters():
+    """Negated / zero-count phrases are not failure lines."""
+    assert _looks_like_failure("5 passed, 0 failed in 0.12s") is False
+    assert _looks_like_failure("no failures") is False
+    assert _looks_like_failure("0 errors") is False
+    assert _looks_like_failure("failed: 0") is False
+    assert _looks_like_failure("FAILED (errors=0)") is False
+    assert _looks_like_failure("1 failed, 4 passed in 0.12s") is True
+    assert _looks_like_failure("FAILED tests/test_x.py::test_y - AssertionError") is True
+
+
+def test_green_summary_line_is_not_reported_as_a_failure(tmp_path, monkeypatch):
+    """'5 passed, 0 failed' must not turn into a failure entry."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"5 passed, 0 failed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("llm down"))
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is True
+    assert res.failures == []

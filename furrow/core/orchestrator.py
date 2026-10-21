@@ -48,6 +48,7 @@ class Orchestrator:
         self._resume_state_missing = False
         self._usage: Usage = Usage()
         self._usage_seen: Usage = Usage()
+        self._tests_run: int = 0
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -64,6 +65,15 @@ class Orchestrator:
                 # zero, so the baseline for the per-cycle delta is the client's
                 # CURRENT usage, not the persisted total.
                 self._usage_seen = self._client_usage()
+                # Restore no-progress guard state from persisted run state
+                try:
+                    self._no_progress = int(getattr(st, "no_progress", 0) or 0)
+                except Exception:
+                    self._no_progress = 0
+                try:
+                    self._prev_sig = str(getattr(st, "prev_sig", "") or "")
+                except Exception:
+                    self._prev_sig = ""
             else:
                 self._resume_state_missing = True
 
@@ -168,6 +178,7 @@ class Orchestrator:
                 break
             self._merge_plan(plan)
             await self._execute(plan)
+            self._tests_run += 1
             test_result = await self.tester.run(self.original_goal, self.tasks)
             skipped = bool(getattr(test_result, "skipped", False))
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
@@ -212,8 +223,9 @@ class Orchestrator:
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage)
+                              cycles=self.cycles, tasks=self.tasks, history=self.history,
+                              usage=self._usage, no_progress=self._no_progress,
+                              prev_sig=self._prev_sig)
             self.state_store.save(state)
             self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                     data={"path": str(self.state_store.path)}))
@@ -247,6 +259,7 @@ class Orchestrator:
         )
         completed = sum(1 for t in active if t.status == "completed")
         failed = sum(1 for t in active if t.status == "failed")
+        blocked = sum(1 for t in active if t.status == "blocked")
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
@@ -255,6 +268,8 @@ class Orchestrator:
             cycles=self.cycles,
             tasks_completed=completed,
             tasks_failed=failed,
+            tasks_blocked=blocked,
+            tests_run=int(getattr(self, "_tests_run", 0) or 0),
             summary=f"stopped: {self._stopped_reason}",
             stopped_reason=self._stopped_reason,
             skipped=bool(self._tests_skipped),
@@ -269,19 +284,40 @@ class Orchestrator:
 
     def _merge_plan(self, plan: Plan) -> None:
         by_id = {t.id: t for t in self.tasks}
+        max_retries = max(0, self.settings.max_task_retries)
         for index, pt in enumerate(plan.tasks):
             old = by_id.get(pt.id)
             if old is not None:
+                # Preserve terminal states; only retry-eligible failed tasks may
+                # be reset to pending. Blocked tasks must remain blocked so that
+                # retry budgets and dependency outcomes are not lost across cycles.
                 if old.status == "completed":
                     pt.status = "completed"
+                elif old.status == "failed":
+                    if old.attempts <= max_retries:
+                        pt.status = "pending"
+                    else:
+                        pt.status = "failed"
+                elif old.status == "blocked":
+                    pt.status = "blocked"
                 else:
-                    pt.status = "pending"
+                    if old.attempts <= max_retries and (
+                        old.status == "failed" or old.status in ("pending", "running")
+                    ):
+                        pt.status = "pending"
+                    else:
+                        pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
                 old.status = pt.status
-                old.result = pt.result
-                old.error = pt.error
+                # A freshly planned task carries result=None and error=None,
+                # so never let that wipe a result or error already recorded by
+                # a previous cycle. Only adopt non-None values from the plan.
+                if pt.result is not None:
+                    old.result = pt.result
+                if pt.error is not None:
+                    old.error = pt.error
                 plan.tasks[index] = old
             else:
                 self.tasks.append(pt)

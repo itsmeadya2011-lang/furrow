@@ -16,6 +16,50 @@ from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
 
+# Fallback timeout for the test command when ``Settings.test_timeout`` is not
+# available (the setting is read defensively, see ``resolve_test_timeout``).
+DEFAULT_TEST_TIMEOUT = 600.0
+
+# Keywords that mark a line as reporting a failure.
+_FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
+
+# Counter phrases that mention a failure keyword but report *zero* failures,
+# e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",
+# "errors=0".  They describe a green run and must not be read as a failure.
+_ZERO_COUNT_RE = re.compile(
+    r"\b(?:0|no|none|zero)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
+    r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\b\s*[:=]?\s*(?:0|none|zero)\b"
+    r"(?=\s*[,;)]|\s*$)",
+    re.IGNORECASE,
+)
+
+# A summary whose counter block is entirely zero, e.g. unittest's
+# "FAILED (errors=0)" or "FAILED (failures=0, errors=0)".
+_ALL_ZERO_SUMMARY_RE = re.compile(
+    r"\bfail(?:ed|ure|ures)?\b\s*\(\s*"
+    r"(?:\w+\s*[:=]\s*(?:0|none|zero)\s*[,;]?\s*)*\)",
+    re.IGNORECASE,
+)
+
+
+def resolve_test_timeout(settings: Settings) -> float:
+    """Return the timeout (in seconds) allowed for the test command.
+
+    The test-suite timeout is a separate concern from the LLM request timeout:
+    ``request_timeout`` bounds a single API call, while a test suite may
+    legitimately run for many minutes.  ``Settings.test_timeout`` is read
+    defensively (``getattr``) so the tester also works with settings objects
+    that do not define the setting yet.
+    """
+    raw = getattr(settings, "test_timeout", None)
+    try:
+        timeout = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        timeout = DEFAULT_TEST_TIMEOUT
+    if timeout <= 0:
+        timeout = DEFAULT_TEST_TIMEOUT
+    return timeout
+
 
 def parse_test_output(output: str) -> list[dict]:
     """Parse raw test output and return structured failure information."""
@@ -203,6 +247,83 @@ class TesterAgent:
 
         return None
 
+    def _finalize(
+        self,
+        *,
+        llm_result: TestResult | None,
+        returncode: int,
+        combined: str,
+        spawn_failed: bool,
+        spawn_error: str,
+        timed_out: bool,
+        timeout: float,
+    ) -> TestResult:
+        """Combine the exit status of the test command with the LLM verdict.
+
+        Rule: the process exit status is the ground truth.
+
+        * the runner could not be started -> infrastructure error, ``passed=False``
+        * the command exited non-zero    -> the tests failed, ``passed=False``,
+          whatever the LLM says
+        * the command exited zero        -> the LLM verdict decides; a "failed"
+          verdict against a zero exit code is kept (a green exit code with a
+          "the suite did not run" report must not be silently promoted to a
+          pass) and the disagreement is explained in the summary.
+        """
+        if spawn_failed:
+            # The runner never started: this is an infrastructure error, not a
+            # test failure, and it must be reported as such.
+            summary = (
+                f"The test runner could not be started: {spawn_error}. The tests did not run."
+            )
+            return TestResult(
+                passed=False,
+                summary=summary,
+                failures=[f"test runner could not be started: {spawn_error}"],
+            )
+
+        if timed_out:
+            status = (
+                f"The test command timed out after {timeout:g}s and was killed; "
+                "the test run did not finish."
+            )
+        elif returncode != 0:
+            status = f"The test command exited with status {returncode}; the test run failed."
+        else:
+            status = "The test command exited with status 0."
+
+        notes: list[str] = [status]
+        if llm_result is None:
+            # The LLM was unavailable: fall back to the raw output.
+            passed = returncode == 0 and not _has_failure_keywords(combined)
+            failures = _extract_failures(combined)
+            notes.append(combined[:500].strip())
+        else:
+            failures = list(llm_result.failures)
+            if llm_result.passed and returncode != 0:
+                # The exit status wins: a failed run is never reported as a pass.
+                passed = False
+                notes.append(
+                    "The LLM reported a pass, but the non-zero exit status is authoritative."
+                )
+            elif not llm_result.passed and returncode == 0:
+                # A green exit code with a "the suite did not run" report is not
+                # silently reported as a pass.
+                passed = False
+                notes.append("The command exited with status 0, but the LLM reported a failure.")
+            else:
+                passed = llm_result.passed
+            if not failures:
+                failures = _extract_failures(combined)
+            if llm_result.summary:
+                notes.append(llm_result.summary)
+
+        if not failures and not passed:
+            failures = [status]
+
+        summary = " ".join(part for part in notes if part).strip()
+        return TestResult(passed=passed, summary=summary, failures=failures)
+
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         try:
             cmd = await self.detect_command()
@@ -214,10 +335,18 @@ class TesterAgent:
                     failures=[],
                 )
 
-            timeout = min(self.settings.request_timeout, 300)
+            # The test-suite timeout is a separate concern from the LLM request
+            # timeout: `request_timeout` bounds a single API call, while a test
+            # suite may legitimately run for minutes.
+            timeout = resolve_test_timeout(self.settings)
+
             spawn_kwargs: dict[str, Any] = {}
             if os.name == "posix":
                 spawn_kwargs["start_new_session"] = True
+
+            spawn_failed = False
+            spawn_error = ""
+            timed_out = False
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -226,20 +355,29 @@ class TesterAgent:
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
                 )
+            except Exception as exc:
+                # The runner could not even be started.  That is an
+                # infrastructure error, not a test failure, and it has to be
+                # distinguishable from "the tests ran and failed".
+                spawn_failed = True
+                message = str(exc)
+                spawn_error = (
+                    f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+                )
+                returncode = 1
+                stdout = b""
+                stderr = b""
+            else:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
                     await self._kill_process_tree(proc)
-                    output = "Test command timed out."
+                    timed_out = True
                     returncode = 1
                     stdout = b""
-                    stderr = output.encode()
+                    stderr = f"Test command timed out after {timeout:g}s.".encode()
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
-            except Exception:
-                returncode = 1
-                stdout = b""
-                stderr = b"Failed to run test command."
 
             combined = (
                 stdout.decode("utf-8", errors="replace")
@@ -249,60 +387,87 @@ class TesterAgent:
             if len(combined) > 20000:
                 combined = combined[:20000]
 
-            prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+            llm_result: TestResult | None = None
+            if not spawn_failed:
+                # A runner that never started has no output worth summarising.
+                prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+                try:
+                    response = await self.client.complete(
+                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                    )
+                    llm_result = parse_test_result(response)
+                except Exception:
+                    llm_result = None
 
-            try:
-                response = await self.client.complete(
-                    prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
-                )
-                result = parse_test_result(response)
-                return result
-            except Exception:
-                passed = returncode == 0 and not _has_failure_keywords(combined)
-                failures = []
-                seen = set()
-                # Use the new parse_test_output helper for better failure extraction
-                parsed_failures = parse_test_output(combined)
-                for pf in parsed_failures:
-                    if pf.get("test") and pf.get("error"):
-                        fail_str = f"{pf['test']} - {pf['error']}"
-                    elif pf.get("test"):
-                        fail_str = str(pf["test"])
-                    elif pf.get("error"):
-                        fail_str = str(pf["error"])
-                    elif pf.get("file") and pf.get("line") is not None:
-                        fail_str = f"{pf['file']}:{pf['line']}"
-                    elif pf.get("file"):
-                        fail_str = str(pf["file"])
-                    else:
-                        continue
-                    if fail_str and fail_str not in seen:
-                        seen.add(fail_str)
-                        failures.append(fail_str)
-                        if len(failures) >= 10:
-                            break
-                if not failures:
-                    for line in combined.splitlines():
-                        ls = line.strip()
-                        if ls and _looks_like_failure(ls) and ls not in seen:
-                            seen.add(ls)
-                            failures.append(ls)
-                            if len(failures) >= 10:
-                                break
-                return TestResult(
-                    passed=passed,
-                    summary=combined[:500],
-                    failures=failures,
-                )
+            return self._finalize(
+                llm_result=llm_result,
+                returncode=returncode,
+                combined=combined,
+                spawn_failed=spawn_failed,
+                spawn_error=spawn_error,
+                timed_out=timed_out,
+                timeout=timeout,
+            )
         except Exception:
             return TestResult(passed=False, summary="Tester error", failures=[])
 
 
+def _extract_failures(output: str, limit: int = 10) -> list[str]:
+    """Best-effort extraction of failure details from raw test output."""
+    failures: list[str] = []
+    seen: set[str] = set()
+
+    for pf in parse_test_output(output):
+        if pf.get("test") and pf.get("error"):
+            fail_str = f"{pf['test']} - {pf['error']}"
+        elif pf.get("test"):
+            fail_str = str(pf["test"])
+        elif pf.get("error"):
+            fail_str = str(pf["error"])
+        elif pf.get("file") and pf.get("line") is not None:
+            fail_str = f"{pf['file']}:{pf['line']}"
+        elif pf.get("file"):
+            fail_str = str(pf["file"])
+        else:
+            continue
+        if fail_str and fail_str not in seen:
+            seen.add(fail_str)
+            failures.append(fail_str)
+            if len(failures) >= limit:
+                break
+
+    if not failures:
+        for line in output.splitlines():
+            ls = line.strip()
+            if ls and _looks_like_failure(ls) and ls not in seen:
+                seen.add(ls)
+                failures.append(ls)
+                if len(failures) >= limit:
+                    break
+    return failures
+
+
 def _has_failure_keywords(text: str) -> bool:
-    lower = text.lower()
-    return any(k in lower for k in ("fail", "error", "traceback", "assertion"))
+    """Return True when *text* reports a failure (zero counters do not count)."""
+    return any(_looks_like_failure(line) for line in text.splitlines())
 
 
 def _looks_like_failure(line: str) -> bool:
-    lower = line.lower()
-    return any(k in lower for k in ("fail", "error", "traceback", "assertion"))
+    """Return True when *line* reports a real failure.
+
+    Rule: a line only counts as a failure when it contains a failure keyword
+    that is not part of a negated / zero-count phrase.  Summary lines such as
+    "5 passed, 0 failed", "no failures", "0 errors", "failed: 0" or
+    "FAILED (errors=0)" describe a green run, while "1 failed, 4 passed" and
+    "FAILED tests/test_x.py::test_y" are real failures.
+    """
+    text = line.strip()
+    if not text:
+        return False
+    if not any(k in text.lower() for k in _FAILURE_KEYWORDS):
+        return False
+    # Drop the all-zero summary blocks and the zero counter phrases: whatever
+    # keyword survives is a genuine failure signal.
+    remainder = _ALL_ZERO_SUMMARY_RE.sub(" ", text)
+    remainder = _ZERO_COUNT_RE.sub(" ", remainder)
+    return any(k in remainder.lower() for k in _FAILURE_KEYWORDS)

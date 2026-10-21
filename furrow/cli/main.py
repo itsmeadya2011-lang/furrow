@@ -51,12 +51,17 @@ def _print_summary(result: RunResult) -> None:
     click.echo(f"  Cycles:          {result.cycles}")
     click.echo(f"  Tasks completed: {result.tasks_completed}")
     click.echo(f"  Tasks failed:    {result.tasks_failed}")
+    blocked = getattr(result, "tasks_blocked", 0) or 0
+    click.echo(f"  Tasks blocked:  {blocked}")
     click.echo(f"  Stopped reason:  {result.stopped_reason}")
     skipped = bool(getattr(result, "skipped", False))
+    tests_run = getattr(result, "tests_run", 0) or 0
     if skipped:
         click.secho("  Result: SKIPPED - no test runner detected.", fg="yellow")
     elif result.passed:
         click.secho("  Result: PASSED - all tests passed.", fg="green")
+    elif tests_run == 0:
+        click.secho("  Result: NOT RUN - no tests were executed.", fg="yellow")
     else:
         click.secho("  Result: FAILED - tests did not pass.", fg="red")
     usage = getattr(result, "usage", None)

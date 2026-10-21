@@ -111,3 +111,16 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch):
 def test_settings_provider_default():
     s = Settings()
     assert s.provider == Provider.ANTHROPIC
+
+
+def test_run_result_new_defaults():
+    r = RunResult()
+    assert r.tasks_blocked == 0
+    assert r.tests_run == 0
+
+
+def test_settings_new_timeouts_defaults():
+    s = Settings()
+    assert s.command_timeout == 300.0
+    assert s.test_timeout == 600.0
+

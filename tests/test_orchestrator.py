@@ -24,7 +24,11 @@ class FakeWorker:
 
 class FakePlanner:
     def __init__(self, tasks=None, raise_valueerror=False):
-        self.tasks = tasks or [TaskModel(id="t1", description="do t1")]
+        self.tasks = (
+            [TaskModel(id="t1", description="do t1")]
+            if tasks is None
+            else list(tasks)
+        )
         self.raise_valueerror = raise_valueerror
         self.calls = 0
 
@@ -528,3 +532,152 @@ async def test_worker_files_changed_empty_when_none(tmp_path, monkeypatch):
     result = await orch.run()
     assert orch.tasks[0].files_changed == []
     assert result.files_changed == []
+
+
+@pytest.mark.asyncio
+async def test_blocked_dep_counted_in_tasks_blocked(tmp_path, monkeypatch):
+    class FW(FakeWorker):
+        async def run(self):
+            if self.task.id == "1":
+                self.task.status = "failed"
+                return WorkerResult(summary="fail", success=False, files_changed=[])
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    t1 = TaskModel(id="1", description="one")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    t2o = next(t for t in orch.tasks if t.id == "2")
+    assert t2o.status == "blocked"
+    assert result.tasks_blocked > 0
+
+
+@pytest.mark.asyncio
+async def test_tests_run_zero_before_tests_and_ge_one_when_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    # Return empty plan so no tests are run
+    orch.planner = FakePlanner(tasks=[])
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.tests_run == 0
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings2 = make_settings(tmp_path / "ws2", max_cycles=1)
+    store2 = StateStore(tmp_path / "ws2" / "state.json")
+    orch2 = Orchestrator(goal="g", settings=settings2, state_store=store2)
+    orch2.planner = FakePlanner()
+    orch2.tester = FakeTester(passed=True)
+    result2 = await orch2.run()
+    assert result2.tests_run >= 1
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_does_not_reset_failed_exhausted_task(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "failed"
+    task.attempts = 1  # exhausted budget (max_task_retries == 0)
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_retries_failed_with_attempts_left(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "failed"
+    task.attempts = 1  # attempts <= max_task_retries -> should be retried
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_keeps_recorded_result_and_error_when_plan_is_none(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "completed"
+    task.result = "did the thing"
+    task.error = "old error"
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].result == "did the thing"
+    assert plan.tasks[0].error == "old error"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "completed"
+    task.result = "old result"
+    task.error = "old error"
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies,
+                         result="new result", error="new error")],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].result == "new result"
+    assert plan.tasks[0].error == "new error"
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    # simulate persisted values
+    st = store.load()
+    st.no_progress = 3
+    st.prev_sig = "sig123"
+    store.save(st)
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2._no_progress == 3
+    assert orch2._prev_sig == "sig123"

@@ -61,6 +61,8 @@ class RunState(BaseModel):
     history: list[HistoryEntry] = Field(default_factory=list)
     updated_at: str = Field(default_factory=utcnow)
     usage: Usage = Field(default_factory=Usage)
+    no_progress: int = 0
+    prev_sig: str = ""
 
 
 def state_path_for(

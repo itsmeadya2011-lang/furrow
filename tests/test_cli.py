@@ -6,8 +6,10 @@ always replaced by :class:`FakeOrchestrator`.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import Any, ClassVar
+from types import SimpleNamespace
+from typing import Any, ClassVar, cast
 
 import pytest
 from click.testing import CliRunner
@@ -82,6 +84,27 @@ def _write_state(workspace: Path) -> RunState:
     )
     StateStore(workspace / ".furrow" / "state.json").save(state)
     return state
+
+
+def _make_result(**kwargs: Any) -> RunResult:
+    """Build a :class:`RunResult` for the summary tests.
+
+    The newer fields (``tasks_blocked``, ``tests_run``) are set on the
+    instance instead of being handed to the constructor: they may not be
+    declared on the model yet and the CLI reads them defensively anyway.
+    """
+    result = RunResult(
+        passed=kwargs.pop("passed", False),
+        cycles=kwargs.pop("cycles", 1),
+        tasks_completed=kwargs.pop("tasks_completed", 0),
+        tasks_failed=kwargs.pop("tasks_failed", 0),
+        summary=kwargs.pop("summary", ""),
+        stopped_reason=kwargs.pop("stopped_reason", ""),
+        skipped=kwargs.pop("skipped", False),
+    )
+    for name, value in kwargs.items():
+        object.__setattr__(result, name, value)
+    return result
 
 
 def test_start_requires_goal_prompt(
@@ -325,6 +348,65 @@ def test_summary_omits_files_changed_when_empty(
     output = runner.invoke(main, ["start", "build a thing"]).output
 
     assert "Files changed:" not in output
+
+
+def test_summary_prints_tasks_blocked(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the number of blocked tasks."""
+    FakeOrchestrator.result = _make_result(passed=True, tasks_blocked=3)
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert re.search(r"Tasks blocked:\s+3\b", output)
+
+
+def test_summary_prints_not_run_when_no_test_ever_ran(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A failed run that never executed a test is reported as NOT RUN."""
+    FakeOrchestrator.result = _make_result(passed=False, skipped=False, tests_run=0)
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "NOT RUN" in output
+    assert "no tests were executed" in output
+    assert "FAILED - tests did not pass." not in output
+
+
+def test_summary_prints_failed_when_a_test_ran_and_failed(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A failed run that executed a test is reported as FAILED."""
+    FakeOrchestrator.result = _make_result(passed=False, skipped=False, tests_run=1)
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "FAILED - tests did not pass." in output
+    assert "NOT RUN" not in output
+
+
+def test_summary_handles_a_result_without_the_new_fields(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A legacy result lacking the new fields still prints a sane summary."""
+    legacy = SimpleNamespace(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        tasks_failed=0,
+        summary="",
+        stopped_reason="goal complete",
+        skipped=False,
+    )
+    assert not hasattr(legacy, "tasks_blocked")
+    assert not hasattr(legacy, "tests_run")
+    FakeOrchestrator.result = cast(RunResult, legacy)
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert re.search(r"Tasks blocked:\s+0\b", output)
+    assert "PASSED" in output
 
 
 def test_status_shows_per_task_files_changed(
