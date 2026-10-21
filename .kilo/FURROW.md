@@ -25,13 +25,20 @@ The Kilo-side setup defines primary/subagents and a slash command for running Fu
 | `furrow/llm.py` | Provider-neutral `LLMClient` with `complete()` and `chat(messages, tools, system, model)`. Converters for Anthropic/OpenAI message/tool formats. Supports Anthropic, OpenAI, and Ollama (OpenAI-compatible `/v1`). Tenacity retry on transient errors (408/409/425/429/5xx), non-retryable on 4xx. Usage tracking: every `LLMResponse` carries a `usage` and `LLMClient.total_usage` accumulates input/output tokens and call counts across calls. Helpers: `read_file`/`write_file`/`list_files`. |
 | `furrow/agents/parsing.py` | Robust parsing: `strip_code_fences`, `extract_json`, `parse_json`, `parse_plan`, `parse_test_result`. Handles fences, prose around JSON, and nested structures. |
 | `furrow/agents/planner.py` | `PlannerAgent.plan(goal, context="") -> Plan`. Retries once with stricter instructions on parse failure. |
-| `furrow/agents/worker.py` | Core of the product. `WorkerAgent(task, client, settings, workspace, goal).run() -> WorkerResult`. Runs a real tool-calling loop with four tools: `read_file`, `write_file`, `list_files`, `run_command`. Paths are sandboxed to the workspace; `run_command` has a destructive-command denylist and a timeout; iteration budget is `max_worker_iterations`. Exhausting the budget is a failure (never reported as success); a timed-out command kills its whole process group so no orphans are left behind. |
+| `furrow/agents/worker.py` | Core of the product. `WorkerAgent(task, client, settings, workspace, goal).run() -> WorkerResult`. Runs a real tool-calling loop with four tools: `read_file`, `write_file`, `list_files`, `run_command`. Paths are sandboxed to the workspace; the command guard normalizes the command, splits it into segments and denies destructive programs/patterns, force-pushes and redirection outside the workspace; commands have a timeout; iteration budget is `max_worker_iterations`. Exhausting the budget is a failure (never reported as success); a timed-out command kills its whole process group so no orphans are left behind. |
 | `furrow/agents/tester.py` | `TesterAgent.run(goal, tasks) -> TestResult`. `TesterAgent.detect_command() -> list[str] | None` detects per project type (pytest/npm/pnpm/yarn/cargo/go) instead of guessing binaries. Falls back to local classification on LLM failure. Returns a `skipped` result when no test runner is detectable; a timed-out command kills its whole process group. |
 | `furrow/core/orchestrator.py` | `Orchestrator(goal, client, settings, state_store, event_bus, resume)`. Tracks tasks for real, executes in dependency waves honoring `dependencies`, bounds concurrency with `max_parallel_tasks`, honors `max_cycles` (0 = unlimited) with a no-progress guard that also applies to skipped runs, keeps `original_goal` intact and amends a separate working goal with test-failure feedback, persists state after every cycle, emits events, prints console progress. On resume the persisted state is loaded exactly once; task exceptions are not swallowed — a raising task is marked failed after its retry budget. Accumulates LLM usage per cycle and per run into the result. `run() -> RunResult`, `status() -> dict`. |
 | `furrow/core/events.py` | `Event`, `EventType`, `EventBus` (fan-out pub/sub). |
 | `furrow/core/state.py` | `RunState`, `HistoryEntry`, `StateStore`. `RunState` and `HistoryEntry` carry a `usage` field alongside `goal`/`original_goal`/`cycles`/`tasks`/`history`/`updated_at`, so usage survives in the state file. Atomic writes (temp file + `os.replace`); corrupt state files are ignored. |
-| `furrow/cli/main.py` | Click CLI: `furrow start`, `furrow status`, `furrow resume`, `furrow web`. |
-| `furrow/web/server.py` | FastAPI app: `GET /` (single-page UI), `GET /api/state`, `GET /api/status`, `POST /api/start`, `WS /ws` streaming orchestrator events with final `{"type": "done", ...}` frame. |
+| `furrow/cli/main.py` | Click CLI: `furrow start`, `furrow status`, `furrow resume`, `furrow web`. Honours `FURROW_LOG_LEVEL`, prints the LLM token usage and the files changed by the run, and reports a run with no test runner as SKIPPED. |
+| `furrow/web/server.py` | FastAPI app: `GET /` (single-page UI with a status header, per-task panels and a readable timestamped event log), `GET /api/state`, `GET /api/status`, `POST /api/start`, `WS /ws` streaming orchestrator events with final `{"type": "done", ...}` frame. A second concurrent run is refused, and the run registry cannot get stuck in the "running" state. |
+| `furrow/__init__.py` | Package entry point; re-exports `Settings` and `LLMClient`. |
+| `furrow/agents/__init__.py` | Re-exports `PlannerAgent`, `TesterAgent`, `WorkerAgent`. |
+| `furrow/agents/prompts.py` | System prompts for planner/worker/tester and the four `WORKER_TOOLS` schemas (`read_file`, `write_file`, `list_files`, `run_command`). |
+| `furrow/cli/__init__.py` | Empty placeholder module. |
+| `furrow/core/__init__.py` | Re-exports `Event`, `EventBus`, `EventType`, `Orchestrator`, `RunState`, `StateStore`. |
+| `furrow/logging.py` | `configure_logging()` / `get_logger()`; structlog with a stdlib fallback. |
+| `furrow/web/__init__.py` | Re-exports the FastAPI `app` and `run()` helper. |
 
 ## File tree
 
@@ -71,7 +78,7 @@ furrow/
 ## Events and state
 
 - **Events** (`furrow/core/events.py`): `EventType` values include `CYCLE_STARTED`, `PLAN_CREATED`, `TASK_STARTED`, `TASK_FINISHED`, `TEST_STARTED`, `TEST_FINISHED`, `STATE_SAVED`, `LOG`, `ERROR`. `EventBus` provides fan-out pub/sub. The web UI and CLI consume these events.
-- **State file**: `<workspace>/.furrow/state.json` (configurable via `FURROW_STATE_FILE`). Contains `RunState` with `goal`, `original_goal`, `cycles`, `tasks`, `history`, and `updated_at`. Written atomically; corrupt files are ignored on load.
+- **State file**: `<workspace>/.furrow/state.json` (configurable via `FURROW_STATE_FILE`). Contains `RunState` with `goal`, `original_goal`, `cycles`, `tasks`, `history`, `updated_at` and the accumulated LLM usage. Written atomically; corrupt files are ignored on load.
 
 ## Permissions
 
@@ -95,7 +102,7 @@ A Furrow run works in a disposable workspace, so a change is only durable once i
 
 ## Future Work
 
-- Richer web UI with per-agent panels
+- Richer web UI with per-agent panels — delivered (status header with cycle/state/usage, per-task panels, timestamped event log).
 - A richer `furrow` package plugin system
 - Multi-provider model routing
 - Cost accounting: token accounting is delivered (per-call, per-cycle and per-run counts, persisted in state and printed by the CLI); currency cost estimation is still missing.

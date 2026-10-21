@@ -292,26 +292,63 @@ def test_summary_skips_usage_line_when_zero_calls(
     assert "LLM usage" not in output
 
 
-def test_summary_skips_usage_line_when_result_lacks_usage(
+def test_summary_prints_files_changed_when_present(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
-    """The CLI keeps working when the result object has no usage attribute at all."""
-
-    class NoUsageResult:
-        cycles = 1
-        tasks_completed = 1
-        tasks_failed = 0
-        stopped_reason = "goal complete"
-        passed = True
-        skipped = False
-        summary = "done"
-
-    FakeOrchestrator.result = NoUsageResult()  # type: ignore[assignment]
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        files_changed=["furrow/core/orchestrator.py", "furrow/config.py"],
+    )
 
     output = runner.invoke(main, ["start", "build a thing"]).output
 
-    assert "PASSED" in output
-    assert "LLM usage" not in output
+    assert "Files changed:" in output
+    assert "furrow/core/orchestrator.py, furrow/config.py" in output
+
+
+def test_summary_omits_files_changed_when_empty(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        files_changed=[],
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "Files changed:" not in output
+
+
+def test_status_shows_per_task_files_changed(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        tasks=[
+            TaskModel(
+                id="t1",
+                description="do the thing",
+                status="completed",
+                files_changed=["furrow/core/orchestrator.py", "furrow/config.py"],
+            )
+        ],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "[furrow/core/orchestrator.py, furrow/config.py]" in result.output
 
 
 def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> None:

@@ -247,6 +247,9 @@ class Orchestrator:
         )
         completed = sum(1 for t in active if t.status == "completed")
         failed = sum(1 for t in active if t.status == "failed")
+        files_changed = sorted(
+            {f for t in active for f in (getattr(t, "files_changed", None) or [])}
+        )
         return RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
@@ -256,6 +259,7 @@ class Orchestrator:
             stopped_reason=self._stopped_reason,
             skipped=bool(self._tests_skipped),
             usage=self._usage,
+            files_changed=files_changed,
         )
 
     def _context(self) -> str:
@@ -366,6 +370,9 @@ class Orchestrator:
                 task.result = getattr(result, "summary", None)
                 task.error = getattr(result, "error", None)
                 task.attempts += 1
+                task.files_changed = sorted(
+                    {str(p) for p in (getattr(result, "files_changed", None) or [])}
+                )
                 task.finished_at = datetime.now(timezone.utc).isoformat()
                 if success:
                     task.status = "completed"

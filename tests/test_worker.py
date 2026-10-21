@@ -390,3 +390,106 @@ def test_resolve_in_workspace():
     assert resolve_in_workspace(ws, "/etc/passwd") is None
     inside = resolve_in_workspace(ws, str(ws / "a.py"))
     assert inside == ws / "a.py"
+
+
+@pytest.mark.asyncio
+async def test_denied_command_table(tmp_path):
+    """Table-driven test with commands that MUST be denied.
+
+    Includes the two cases the legacy substring check used to cover: the fork
+    bomb (destroyed by the segment splitter, so it is matched against the
+    whole command) and ``chmod -R 777 /`` (matched case-insensitively).
+    """
+    denied_commands = [
+        "/bin/rm -rf /",
+        "rm  -rf  /",
+        "rm -rf /*",
+        "echo hi; rm -rf /",
+        "rm -fr /",
+        ":(){:|:&};:",
+        "mkfs.ext4 /dev/sda",
+        "dd if=/dev/zero of=/dev/sda",
+        "shutdown -h now",
+        "git push --force",
+        "git push -f origin main",
+        "echo hacked > /etc/passwd",
+        "chmod -R 777 /",
+        "chmod -r 777 /",
+    ]
+    from furrow.config import TaskModel
+
+    for cmd in denied_commands:
+        marker = tmp_path / f"marker_{hash(cmd)}.txt"
+        # Use command that would create marker if executed
+        test_cmd = cmd
+        # For commands that might not create marker, the denial is what matters
+        responses = [
+            LLMResponse(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t1", name="run_command", arguments={"command": test_cmd})
+                ],
+            ),
+            LLMResponse(text="done", tool_calls=[]),
+        ]
+        client = FakeLLMClient(responses)
+        settings = make_settings(tmp_path)
+        task = TaskModel(id="1", description="cmd")
+        agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+        await agent.run()
+        second_call = client.calls[1]["messages"]
+        found_denied = False
+        for m in second_call:
+            if isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if b.get("type") == "tool_result":
+                        assert b["content"] == "error: command denied", (
+                            f"Command '{cmd}' not denied properly"
+                        )
+                        found_denied = True
+        assert found_denied
+        assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_allowed_command_table(tmp_path):
+    """Table-driven test with commands that MUST still be allowed."""
+    allowed_commands = [
+        "pytest -q",
+        "python -m ruff check .",
+        "git status",
+        "rm -rf build",
+        "ls -la",
+        "npm test --silent",
+        "cargo test -q",
+        "echo hi > out.txt",
+    ]
+    from furrow.config import TaskModel
+
+    for cmd in allowed_commands:
+        responses = [
+            LLMResponse(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t1", name="run_command", arguments={"command": cmd})
+                ],
+            ),
+            LLMResponse(text="done", tool_calls=[]),
+        ]
+        client = FakeLLMClient(responses)
+        settings = make_settings(tmp_path)
+        task = TaskModel(id="1", description="cmd")
+        agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+        await agent.run()
+        second_call = client.calls[1]["messages"]
+        found_result = False
+        for m in second_call:
+            if isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if b.get("type") == "tool_result":
+                        result = b["content"]
+                        assert result != "error: command denied", (
+                            f"Command '{cmd}' was incorrectly denied"
+                        )
+                        found_result = True
+        assert found_result

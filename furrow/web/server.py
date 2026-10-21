@@ -276,6 +276,63 @@ INDEX_HTML = r"""<!DOCTYPE html>
       append('> connected');
       socket.send(JSON.stringify(payload));
     };
+    function truncate(value, max) {
+      const s = text(value);
+      return s.length > max ? s.slice(0, max) + '\u2026' : s;
+    }
+
+    function eventTime(msg) {
+      const ts = msg && msg.timestamp;
+      if (!ts) { return '--:--:--'; }
+      const m = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
+      return m ? m[1] : '--:--:--';
+    }
+
+    function renderEvent(msg) {
+      const type = msg && msg.type;
+      const data = (msg && msg.data) || {};
+      const time = eventTime(msg);
+      let line = '';
+      let color = '#8a93a5';
+      if (type === 'cycle_started') {
+        line = 'cycle ' + text(data.cycle) + ' started';
+      } else if (type === 'plan_created') {
+        line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+      } else if (type === 'task_started') {
+        line = 'task ' + text(data.task) + ' started';
+      } else if (type === 'task_finished') {
+        const ok = data.success === true;
+        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
+          truncate(data.summary, 200);
+        color = ok ? '#57d38c' : '#e0685f';
+      } else if (type === 'test_started') {
+        line = 'running tests...';
+      } else if (type === 'test_finished') {
+        const ok = data.passed === true;
+        line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
+        color = ok ? '#57d38c' : '#e0685f';
+      } else if (type === 'state_saved') {
+        line = 'state saved';
+      } else if (type === 'log') {
+        line = text(msg.message);
+      } else if (type === 'error') {
+        line = 'ERROR: ' + text(msg.message);
+        color = '#e0685f';
+      } else if (type === 'done') {
+        line = 'finished: ' + text(msg.message);
+        color = '#57d38c';
+      } else {
+        try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
+      }
+      const span = document.createElement('span');
+      span.style.color = color;
+      span.textContent = time + ' ' + line;
+      logEl.appendChild(span);
+      logEl.appendChild(document.createTextNode('\n'));
+      logEl.scrollTop = logEl.scrollHeight;
+      return line;
+    }
+
     socket.onmessage = function (ev) {
       let msg;
       try {
@@ -284,16 +341,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
         append(ev.data);
         return;
       }
-      append(JSON.stringify(msg));
+      renderEvent(msg);
       if (msg.type === 'task_started' || msg.type === 'task_finished') {
         loadStatus();
       }
       if (msg.type === 'done') {
-        append('-- ' + (msg.message || 'finished'));
         loadStatus();
-      }
-      if (msg.type === 'error') {
-        append('!! ' + (msg.message || 'error'));
       }
     };
     socket.onclose = function () {

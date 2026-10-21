@@ -65,6 +65,9 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+    files_changed = getattr(result, "files_changed", None) or []
+    if files_changed:
+        click.echo(f"  Files changed:    {', '.join(files_changed)}")
     if result.summary:
         click.echo(f"  Summary: {result.summary}")
 
@@ -82,7 +85,11 @@ def _print_state(state: RunState) -> None:
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
-            click.echo(f"  {task.id}  {task.status}  {task.description}")
+            files_changed = getattr(task, "files_changed", None) or []
+            line = f"  {task.id}  {task.status}  {task.description}"
+            if files_changed:
+                line += f"  [{', '.join(files_changed)}]"
+            click.echo(line)
     else:
         click.echo("Tasks:  (none)")
 

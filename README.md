@@ -7,9 +7,13 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Plans tasks with dependency tracking and parallel execution
 - Worker actually implements code using file and command tools
 - Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go)
-- Event-driven progress with a console UI and FastAPI web interface
+- Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header, and per-task panels)
 - Atomic state persistence with resume support
 - Offline test suite with no API keys required
+
+## Security
+
+The worker's command execution is hardened: commands are normalized (lowercased, whitespace collapsed), split into segments on `;`, `&&`, `||`, `|`, and newlines, and every segment is checked. Destructive programs by name (`mkfs*`, `fdisk`, `parted`, `shutdown`, `reboot`, `poweroff`, `halt`, `init`, `dd`) and destructive patterns (`rm -rf /`, `rm -fr /`, `rm -rf /*`, `rm -rf ~`, `chmod -R 777 /`, `> /dev/sda`, the fork bomb) are denied. Force-pushing (`git push --force`, `-f`, `--force-with-lease`) is blocked, and redirection to an absolute path outside the workspace is denied. Ordinary development commands continue to work.
 
 ## Install
 
@@ -43,6 +47,8 @@ Show the persisted state of the last run for a workspace.
 furrow status
 furrow status --workspace /path/to/project
 ```
+
+The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any.
 
 ### `furrow resume`
 Continue the persisted run.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shlex
 import signal
 from pathlib import Path
@@ -13,9 +14,14 @@ from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
+# Substring patterns that are denied in a command. They are matched
+# case-insensitively against the normalized command.
 DENIED_COMMANDS = (
     "rm -rf /",
+    "rm -fr /",
+    "rm -rf /*",
     "rm -rf ~",
+    "rm -rf $home",
     ":(){:|:&};:",
     "mkfs",
     "dd if=",
@@ -25,8 +31,131 @@ DENIED_COMMANDS = (
     "> /dev/sda",
 )
 
+# Programs that are denied by name: the basename of the first token of a
+# segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
+DENIED_PROGRAMS = frozenset(
+    {
+        "dd",
+        "fdisk",
+        "halt",
+        "init",
+        "mkfs",
+        "parted",
+        "poweroff",
+        "reboot",
+        "shutdown",
+    }
+)
+
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
+
+# Shell separators a command is split on.
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
+
+
+def _normalize_command(command: str) -> str:
+    """Normalize command for matching: lowercase, collapse whitespace,
+    strip surrounding whitespace/quotes."""
+    if not command:
+        return ""
+    cmd = command.strip()
+    # Strip surrounding quotes (single/double)
+    while len(cmd) >= 2 and ((cmd[0] == cmd[-1]) and cmd[0] in ('"', "'")):
+        cmd = cmd[1:-1].strip()
+    cmd = cmd.lower()
+    # Collapse runs of whitespace to single space
+    cmd = re.sub(r'\s+', ' ', cmd)
+    return cmd
+
+
+def _split_command_segments(command: str) -> list[str]:
+    """Split command into segments on shell separators ;, &&, ||, |, and newlines."""
+    if not command:
+        return []
+    segments = _SEGMENT_SPLIT_RE.split(command)
+    return [s for s in segments if s]  # Remove empty segments
+
+
+def _get_program_basename(segment: str) -> str | None:
+    """Get basename of first token in segment."""
+    seg = segment.strip()
+    if not seg:
+        return None
+    try:
+        parts = shlex.split(seg)
+    except ValueError:
+        parts = seg.split()
+    if not parts:
+        return None
+    first = parts[0]
+    return os.path.basename(first)
+
+
+def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
+    """Check if a normalized segment is dangerous."""
+    norm_seg = _normalize_command(segment)
+    if not norm_seg:
+        return False
+
+    # DENY by PROGRAM NAME
+    prog = _get_program_basename(segment)
+    if prog:
+        prog_norm = prog.lower()
+        if prog_norm in DENIED_PROGRAMS or prog_norm.startswith("mkfs."):
+            return True
+
+    # DENY by PATTERN
+    for denied in DENIED_COMMANDS:
+        if denied.lower() in norm_seg:
+            return True
+
+    # DENY force-pushing for git push
+    if "git" in norm_seg and "push" in norm_seg:
+        # Covers --force, --force-with-lease and --force-with-lease=<ref>.
+        if "--force" in norm_seg:
+            return True
+        # A short -f flag only counts as a shell token, so that ordinary
+        # commands (e.g. "ls -f") are not mistaken for a force push.
+        try:
+            parts = shlex.split(segment)
+        except ValueError:
+            parts = segment.split()
+        if any(part.lower() == "-f" for part in parts):
+            return True
+
+    # DENY redirection to absolute path outside workspace
+    redir_pattern = r'>>?\s*([^\s;|&]+)'
+    for m in re.finditer(redir_pattern, segment):
+        target = m.group(1)
+        target_clean = target.strip().strip('"').strip("'")
+        if not target_clean:
+            continue
+        target_path = Path(target_clean)
+        if target_path.is_absolute():
+            try:
+                target_path.resolve().relative_to(workspace.resolve())
+            except ValueError:
+                return True
+
+    return False
+
+
+def is_command_denied(command: str, workspace: Path) -> bool:
+    """Check if command is denied by security policy."""
+    if not command or not command.strip():
+        return False
+    # A denied pattern that contains a shell separator (the fork bomb) is
+    # broken apart by the segment split below, so it is matched against the
+    # whole command.
+    normalized = _normalize_command(command)
+    for denied in DENIED_COMMANDS:
+        if _SEGMENT_SPLIT_RE.search(denied) and denied.lower() in normalized:
+            return True
+    segments = _split_command_segments(command)
+    if not segments:
+        segments = [command]
+    return any(_is_dangerous_segment(seg, workspace) for seg in segments)
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -194,9 +323,12 @@ class WorkerAgent:
     async def _run_command(self, command: str) -> str:
         if not command.strip():
             return "error: empty command"
-        for denied in DENIED_COMMANDS:
-            if denied in command:
-                return "error: command denied"
+        # The hardened check subsumes the legacy pattern list: it normalizes
+        # the command, checks every segment against DENIED_COMMANDS and
+        # DENIED_PROGRAMS, and denies force pushes and redirections outside
+        # the workspace.
+        if is_command_denied(command, self.workspace):
+            return "error: command denied"
         try:
             parts = shlex.split(command)
         except ValueError:

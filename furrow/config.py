@@ -33,6 +33,7 @@ class TaskModel(BaseModel):
     attempts: int = 0
     started_at: str | None = None
     finished_at: str | None = None
+    files_changed: list[str] = Field(default_factory=list)
 
 
 class Plan(BaseModel):
@@ -85,6 +86,7 @@ class RunResult(BaseModel):
     stopped_reason: str = ""
     skipped: bool = False
     usage: Usage = Field(default_factory=Usage)
+    files_changed: list[str] = Field(default_factory=list)
 
 
 class Settings(BaseSettings):

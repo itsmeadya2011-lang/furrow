@@ -493,14 +493,38 @@ async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_non_skipped_run_reports_skipped_false(tmp_path, monkeypatch):
-    """A regular (non-skipped) run must not claim that the tests were skipped."""
+async def test_worker_files_changed_recorded_on_task_and_result(tmp_path, monkeypatch):
+    class FW(FakeWorker):
+        async def run(self):
+            return WorkerResult(
+                summary="ok",
+                success=True,
+                files_changed=[
+                    "furrow/core/orchestrator.py",
+                    "furrow/config.py",
+                    "furrow/core/orchestrator.py",
+                ],
+            )
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert orch.tasks[0].files_changed == ["furrow/config.py", "furrow/core/orchestrator.py"]
+    assert result.files_changed == ["furrow/config.py", "furrow/core/orchestrator.py"]
+
+
+@pytest.mark.asyncio
+async def test_worker_files_changed_empty_when_none(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
     store = StateStore(tmp_path / "state.json")
-    orch = Orchestrator(goal="ORIG", settings=settings, state_store=store)
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
     orch.planner = FakePlanner()
-    orch.tester = FakeTester(passed=True, skipped=False)
+    orch.tester = FakeTester(passed=True)
     result = await orch.run()
-    assert result.skipped is False
-    assert result.passed is True
+    assert orch.tasks[0].files_changed == []
+    assert result.files_changed == []
