@@ -7,7 +7,7 @@ from typing import Any
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
+from furrow.config import Plan, RunResult, Settings, TaskModel, TaskStatus, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
@@ -257,9 +257,9 @@ class Orchestrator:
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
         )
-        completed = sum(1 for t in active if t.status == "completed")
-        failed = sum(1 for t in active if t.status == "failed")
-        blocked = sum(1 for t in active if t.status == "blocked")
+        completed = sum(1 for t in active if t.status == TaskStatus.COMPLETED)
+        failed = sum(1 for t in active if t.status == TaskStatus.FAILED)
+        blocked = sum(1 for t in active if t.status == TaskStatus.BLOCKED)
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
@@ -291,22 +291,18 @@ class Orchestrator:
                 # Preserve terminal states; only retry-eligible failed tasks may
                 # be reset to pending. Blocked tasks must remain blocked so that
                 # retry budgets and dependency outcomes are not lost across cycles.
-                if old.status == "completed":
-                    pt.status = "completed"
-                elif old.status == "failed":
+                if old.status == TaskStatus.COMPLETED:
+                    pt.status = TaskStatus.COMPLETED
+                elif old.status == TaskStatus.FAILED:
                     if old.attempts <= max_retries:
-                        pt.status = "pending"
+                        pt.status = TaskStatus.PENDING
                     else:
-                        pt.status = "failed"
-                elif old.status == "blocked":
-                    pt.status = "blocked"
+                        pt.status = TaskStatus.FAILED
+                elif old.status == TaskStatus.BLOCKED:
+                    pt.status = TaskStatus.BLOCKED
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending/running/skipped: the task is retried in this cycle.
+                    pt.status = TaskStatus.PENDING
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
@@ -332,7 +328,7 @@ class Orchestrator:
             wave = [t for t in remaining if all(d in done or d not in ids for d in t.dependencies)]
             if not wave:
                 for t in remaining:
-                    t.status = "blocked"
+                    t.status = TaskStatus.BLOCKED
                 break
             waves.append(wave)
             for t in wave:
@@ -357,7 +353,7 @@ class Orchestrator:
 
         async def run_one(task: TaskModel) -> None:
             async with sem:
-                task.status = "running"
+                task.status = TaskStatus.RUNNING
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
                 try:
@@ -371,7 +367,10 @@ class Orchestrator:
                     task.attempts += 1
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
+                    task.status = (
+                        TaskStatus.PENDING if task.attempts <= max_retries
+                        else TaskStatus.FAILED
+                    )
                     self.event_bus.emit(
                         Event(
                             type=EventType.ERROR,
@@ -392,7 +391,7 @@ class Orchestrator:
                     )
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
+                    if task.status == TaskStatus.PENDING:
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(
                             Event(type=EventType.LOG,
@@ -411,26 +410,26 @@ class Orchestrator:
                 )
                 task.finished_at = datetime.now(timezone.utc).isoformat()
                 if success:
-                    task.status = "completed"
+                    task.status = TaskStatus.COMPLETED
                 elif task.attempts <= max_retries:
-                    task.status = "pending"
+                    task.status = TaskStatus.PENDING
                 else:
-                    task.status = "failed"
+                    task.status = TaskStatus.FAILED
                 self.event_bus.emit(
                     Event(
                         type=EventType.TASK_FINISHED,
                         data={
                             "task": task.id,
-                            "success": task.status == "completed",
+                            "success": task.status == TaskStatus.COMPLETED,
                             "summary": str(task.result or ""),
                         },
                     )
                 )
                 task_id = self._escape(task.id)
                 detail = self._escape(self._one_line(task.error or "unknown error"))
-                if task.status == "completed":
+                if task.status == TaskStatus.COMPLETED:
                     self._say(f"[green]Task {task_id} completed[/green]")
-                elif task.status == "pending":
+                elif task.status == TaskStatus.PENDING:
                     self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                     self.event_bus.emit(
                         Event(type=EventType.LOG,
@@ -458,21 +457,21 @@ class Orchestrator:
         async def run_retries(tasks: list[TaskModel]) -> None:
             """Re-run tasks that failed while retries remain, until the budget is spent."""
             retry_queue = [t for t in tasks
-                           if t.status == "pending" and t.attempts <= max_retries]
+                           if t.status == TaskStatus.PENDING and t.attempts <= max_retries]
             while retry_queue:
                 batch = retry_queue
                 retry_queue = []
                 await run_tasks(batch)
                 for t in batch:
-                    if t.status == "pending" and t.attempts <= max_retries:
+                    if t.status == TaskStatus.PENDING and t.attempts <= max_retries:
                         retry_queue.append(t)
 
         for wave in waves:
-            failed_ids = {t.id for t in self.tasks if t.status == "failed"}
+            failed_ids = {t.id for t in self.tasks if t.status == TaskStatus.FAILED}
             runnable = []
             for t in wave:
                 if any(d in failed_ids for d in t.dependencies):
-                    t.status = "blocked"
+                    t.status = TaskStatus.BLOCKED
                 else:
                     runnable.append(t)
             await run_tasks(runnable)

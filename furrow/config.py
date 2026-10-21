@@ -27,7 +27,7 @@ class TaskModel(BaseModel):
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
-    status: str = "pending"
+    status: TaskStatus = TaskStatus.PENDING
     result: str | None = None
     error: str | None = None
     attempts: int = 0
@@ -63,18 +63,61 @@ class Usage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     calls: int = 0
+    cost_usd: float = 0.0
 
     @property
     def total_tokens(self) -> int:
         """Total tokens (input + output) across the counted calls."""
         return self.input_tokens + self.output_tokens
 
+    @property
+    def total_cost_usd(self) -> float:
+        """Total cost in USD across the counted calls."""
+        return self.cost_usd
+
     def add(self, other: Usage) -> Usage:
         """Accumulate *other* into this usage and return self."""
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.calls += other.calls
+        self.cost_usd += other.cost_usd
         return self
+
+
+# Pricing table: USD per 1M tokens for (input, output).
+# Substring/prefix matching is used by `lookup_price`; unknown models are free.
+MODEL_PRICING_USD_PER_1M: dict[str, tuple[float, float]] = {
+    # Anthropic
+    "claude-sonnet-4-20250514": (3.0, 15.0),
+    "claude-3-5-sonnet-20241022": (3.0, 15.0),
+    "claude-3-5-haiku-20241022": (0.80, 4.0),
+    "claude-3-7-sonnet-20250219": (3.0, 15.0),
+    "claude-3-opus-20240229": (15.0, 75.0),
+    "claude-3-haiku-20240307": (0.25, 1.25),
+    # OpenAI
+    "gpt-4o": (2.50, 10.0),
+    "gpt-4o-mini": (0.15, 0.60),
+    "o1": (15.0, 60.0),
+    "o1-mini": (1.10, 4.40),
+    "o3": (15.0, 60.0),
+    "o3-mini": (1.10, 4.40),
+    "o4-mini": (1.10, 4.40),
+    # Ollama / self-hosted — free
+    "ollama": (0.0, 0.0),
+}
+
+
+def lookup_price(model: str) -> tuple[float, float]:
+    """Return (input_per_1m, output_per_1m) USD prices for *model*.
+
+    Matching is case-insensitive substring matching against the pricing
+    table keys; unknown models return (0.0, 0.0).
+    """
+    lowered = model.lower()
+    for key, price in MODEL_PRICING_USD_PER_1M.items():
+        if key in lowered:
+            return price
+    return (0.0, 0.0)
 
 
 class RunResult(BaseModel):

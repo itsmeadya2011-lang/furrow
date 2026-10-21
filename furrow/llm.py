@@ -11,7 +11,7 @@ import aiofiles
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, Usage
+from furrow.config import Provider, Settings, Usage, lookup_price
 from furrow.config import settings as global_settings
 
 try:
@@ -50,24 +50,32 @@ def _is_retryable(exc: BaseException) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
-def _extract_anthropic_usage(response: Any) -> Usage:
+def _extract_anthropic_usage(response: Any, model: str = "") -> Usage:
     """Pull token usage out of an Anthropic messages response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
-        return Usage(calls=1)
+        return Usage(calls=1, cost_usd=LLMClient.compute_cost(model, Usage(calls=1)))
     input_tokens = getattr(usage, "input_tokens", 0) or 0
     output_tokens = getattr(usage, "output_tokens", 0) or 0
-    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1)
+    usage_obj = Usage(
+        input_tokens=input_tokens, output_tokens=output_tokens, calls=1
+    )
+    usage_obj.cost_usd = LLMClient.compute_cost(model, usage_obj)
+    return usage_obj
 
 
-def _extract_openai_usage(response: Any) -> Usage:
+def _extract_openai_usage(response: Any, model: str = "") -> Usage:
     """Pull token usage out of an OpenAI-compatible response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
-        return Usage(calls=1)
+        return Usage(calls=1, cost_usd=LLMClient.compute_cost(model, Usage(calls=1)))
     prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
     completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-    return Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens, calls=1)
+    usage_obj = Usage(
+        input_tokens=prompt_tokens, output_tokens=completion_tokens, calls=1
+    )
+    usage_obj.cost_usd = LLMClient.compute_cost(model, usage_obj)
+    return usage_obj
 
 
 def to_anthropic_tools(tools: list[dict]) -> list[dict]:
@@ -208,6 +216,15 @@ class LLMClient:
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
 
+    @staticmethod
+    def compute_cost(model: str, usage: Usage) -> float:
+        """Return the USD cost of *usage* for *model* using the pricing table."""
+        input_price, output_price = lookup_price(model)
+        return (
+            usage.input_tokens * input_price / 1_000_000.0
+            + usage.output_tokens * output_price / 1_000_000.0
+        )
+
     @property
     def anthropic(self) -> AsyncAnthropic:
         if self._anthropic is None:
@@ -318,7 +335,7 @@ class LLMClient:
         for block in response.content:
             if block.type == "text":
                 text += block.text
-        usage = _extract_anthropic_usage(response)
+        usage = _extract_anthropic_usage(response, model)
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
@@ -334,7 +351,7 @@ class LLMClient:
             ],
         )
         text = response.choices[0].message.content or ""
-        usage = _extract_openai_usage(response)
+        usage = _extract_openai_usage(response, model)
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
@@ -365,7 +382,7 @@ class LLMClient:
                 tool_calls.append(
                     ToolCall(id=block.id, name=block.name, arguments=block.input or {})
                 )
-        usage = _extract_anthropic_usage(response)
+        usage = _extract_anthropic_usage(response, model)
         self.total_usage.add(usage)
         return LLMResponse(
             text=text,
@@ -407,7 +424,7 @@ class LLMClient:
                     arguments=parse_tool_arguments(tc.function.arguments),
                 )
             )
-        usage = _extract_openai_usage(response)
+        usage = _extract_openai_usage(response, model)
         self.total_usage.add(usage)
         return LLMResponse(
             text=text,

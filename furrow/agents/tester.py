@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +12,7 @@ from furrow.agents.parsing import parse_test_result
 from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
+from furrow.core.proc import kill_process_tree
 from furrow.llm import LLMClient
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
@@ -173,17 +172,7 @@ class TesterAgent:
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        await kill_process_tree(proc)
 
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()

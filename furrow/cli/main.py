@@ -25,6 +25,11 @@ WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
 
 
+def _format_cost(cost_usd: float) -> str:
+    """Format a USD cost with up to 4 decimal places, stripping trailing zeros."""
+    return f"{cost_usd:.4f}".rstrip("0").rstrip(".")
+
+
 def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
@@ -68,7 +73,8 @@ def _print_summary(result: RunResult) -> None:
     if usage is not None and usage.calls > 0:
         click.echo(
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
-            f"(in {usage.input_tokens} / out {usage.output_tokens})"
+            f"(in {usage.input_tokens} / out {usage.output_tokens}) "
+            f"${_format_cost(usage.cost_usd)}"
         )
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
@@ -86,12 +92,16 @@ def _print_state(state: RunState) -> None:
     click.echo(f"  Updated:       {state.updated_at}")
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
-        click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        click.echo(
+            f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
+            f"${_format_cost(usage.cost_usd)}"
+        )
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
             files_changed = getattr(task, "files_changed", None) or []
-            line = f"  {task.id}  {task.status}  {task.description}"
+            status = getattr(task.status, "value", task.status)
+            line = f"  {task.id}  {status}  {task.description}"
             if files_changed:
                 line += f"  [{', '.join(files_changed)}]"
             click.echo(line)

@@ -41,9 +41,10 @@ You break the user's goal into a small set of parallelizable coding tasks,
 returned as JSON."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
-You implement the assigned task by reading, writing, and running code in the
-workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+You implement the assigned task by reading, writing, deleting, searching, and
+running code in the workspace using the available tools (read_file, write_file,
+delete_file, list_files, search_files, run_command). Make minimal, targeted
+changes. When done, respond with a concise summary and no further tool calls."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -86,6 +87,28 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"command": {"type": "string"}},
             "required": ["command"],
+        },
+    },
+    {
+        "name": "delete_file",
+        "description": "delete a file from the workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "search_files",
+        "description": "search file contents under a workspace directory for a regex "
+                        "pattern; returns matching file:line:content lines.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["pattern"],
         },
     },
 ]
