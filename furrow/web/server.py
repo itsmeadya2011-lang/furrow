@@ -78,15 +78,56 @@ INDEX_HTML = r"""<!DOCTYPE html>
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
   }
-  table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
-  th, td {
-    text-align: left; padding: .4rem .5rem; font-size: .9rem;
-    border-bottom: 1px solid #2b3240; vertical-align: top;
+  .header {
+    border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
+    margin-bottom: 1rem; background: #171b23;
   }
-  th { color: #8a93a5; font-weight: 600; }
-  .done { color: #57d38c; }
-  .failed { color: #e0685f; }
-  .muted { color: #8a93a5; }
+  .header .goal {
+    font-size: 1.1rem; font-weight: 700; color: #f0f2f5;
+    word-break: break-word;
+  }
+  .header .meta {
+    display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .5rem;
+    font-size: .9rem; color: #8a93a5;
+  }
+  .header .meta b { color: #d7dae0; }
+  .header .reason { color: #f0b367; }
+  .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
+  .panel {
+    border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
+    background: #171b23;
+  }
+  .panel-head {
+    display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
+  }
+  .panel-id { font-size: .85rem; color: #8a93a5; }
+  .panel-status {
+    font-size: .8rem; font-weight: 700; text-transform: uppercase;
+    padding: .05rem .4rem; border-radius: 3px;
+  }
+  .panel-desc {
+    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
+    word-break: break-word;
+  }
+  .panel-meta {
+    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    margin-bottom: .4rem; flex-wrap: wrap;
+  }
+  .panel-result {
+    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
+    white-space: pre-wrap;
+  }
+  .panel-error {
+    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+  }
+  .panel-empty {
+    color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
+  }
+  .status-pending { color: #8a93a5; }
+  .status-running { color: #4c8dff; }
+  .status-completed { color: #57d38c; }
+  .status-failed { color: #e0685f; }
+  .status-blocked { color: #f0b367; }
 </style>
 </head>
 <body>
@@ -96,11 +137,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="start">Start</button>
   <button id="resume">Resume</button>
 </div>
+<div class="header" id="header">
+  <div class="goal" id="goal-display">\u2014</div>
+  <div class="meta" id="header-meta">
+    <span>cycle <b id="cycle">\u2014</b></span>
+    <span>state <b id="state">idle</b></span>
+    <span id="stopped-reason" class="reason"></span>
+    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+  </div>
+</div>
 <pre id="log"></pre>
-<table>
-  <thead><tr><th>Task</th><th>Status</th><th>Details</th></tr></thead>
-  <tbody id="tasks"></tbody>
-</table>
+<div class="panels" id="tasks"></div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -116,20 +163,83 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
+  function renderStatus(status, result, running) {
+    goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
+    cycleEl.textContent =
+      text(status && status.cycles !== undefined ? status.cycles : '\u2014');
+    stateEl.textContent = running ? 'running' : 'stopped';
+    const reason =
+      text(status && status.stopped_reason) ||
+      text(result && result.stopped_reason) || '';
+    stoppedReasonEl.textContent = reason;
+    stoppedReasonEl.style.display = reason ? '' : 'none';
+    const usage = (status && status.usage) || (result && result.usage) || {};
+    const calls = Number(usage.calls) || 0;
+    const total = (Number(usage.input_tokens) || 0) +
+      (Number(usage.output_tokens) || 0);
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+  }
+
   function renderTasks(tasks) {
-    tasksEl.innerHTML = '';
-    (tasks || []).forEach(function (task) {
-      const row = document.createElement('tr');
+    while (tasksEl.firstChild) {
+      tasksEl.removeChild(tasksEl.firstChild);
+    }
+    const list = tasks || [];
+    if (list.length === 0) {
+      const hint = document.createElement('p');
+      hint.className = 'panel-empty';
+      hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
+      tasksEl.appendChild(hint);
+      return;
+    }
+    list.forEach(function (task) {
       const status = text(task.status) || 'pending';
-      [text(task.id), status, text(task.result || task.error || task.description)]
-        .forEach(function (value) {
-          const cell = document.createElement('td');
-          cell.textContent = value;
-          if (value === 'completed') { cell.className = 'done'; }
-          if (value === 'failed') { cell.className = 'failed'; }
-          row.appendChild(cell);
-        });
-      tasksEl.appendChild(row);
+
+      const panel = document.createElement('div');
+      panel.className = 'panel';
+      panel.id = 'task-' + text(task.id);
+
+      const head = document.createElement('div');
+      head.className = 'panel-head';
+      const idEl = document.createElement('span');
+      idEl.className = 'panel-id';
+      idEl.textContent = '#' + text(task.id);
+      const statusEl = document.createElement('span');
+      statusEl.className = 'panel-status status-' + status;
+      statusEl.textContent = status;
+      head.appendChild(idEl);
+      head.appendChild(statusEl);
+
+      const desc = document.createElement('div');
+      desc.className = 'panel-desc';
+      desc.textContent = text(task.description);
+
+      const meta = document.createElement('div');
+      meta.className = 'panel-meta';
+      const attempts = document.createElement('span');
+      attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
+      meta.appendChild(attempts);
+
+      panel.appendChild(head);
+      panel.appendChild(desc);
+      panel.appendChild(meta);
+
+      const result = text(task.result);
+      const error = text(task.error);
+      if (result) {
+        const resultEl = document.createElement('div');
+        resultEl.className = 'panel-result';
+        resultEl.textContent = result;
+        panel.appendChild(resultEl);
+      }
+      if (error) {
+        const errorEl = document.createElement('div');
+        errorEl.className = 'panel-error';
+        errorEl.textContent = error;
+        panel.appendChild(errorEl);
+      }
+
+      tasksEl.appendChild(panel);
     });
   }
 
@@ -147,7 +257,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     try {
       const res = await fetch('/api/status');
       const body = await res.json();
-      if (body.status && body.status.tasks) { renderTasks(body.status.tasks); }
+      const running = body.running === true;
+      const status = body.status || null;
+      const result = body.result || null;
+      renderStatus(status, result, running);
+      if (status && status.tasks) { renderTasks(status.tasks); }
       if (body.result) { append('-- ' + text(body.result.summary)); }
     } catch (err) {
       append('! could not load status');
@@ -245,6 +359,10 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
     """Finalise the registry when a run ends."""
     _TASKS.discard(task)
     if _CURRENT.get("task") is not task:
+        # Another run owns the registry: never clobber its data, but keep the
+        # "running" flag in sync with the run that is actually in flight.
+        current = _CURRENT.get("task")
+        _CURRENT["running"] = bool(current is not None and not current.done())
         return
     _CURRENT["running"] = False
     if task.cancelled():
@@ -256,6 +374,20 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
         _CURRENT["error"] = str(exc)
         return
     _CURRENT["result"] = task.result()
+
+
+def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
+    """Clear the "running" flag when ``task`` is the run that owns the registry."""
+    if _CURRENT.get("task") is task:
+        _CURRENT["running"] = False
+
+
+def _cancel_run(task: asyncio.Task[RunResult]) -> None:
+    """Cancel a run and make sure the server does not stay stuck in "running"."""
+    task.cancel()
+    if _CURRENT.get("task") is task:
+        _CURRENT["running"] = False
+        _CURRENT["error"] = "run cancelled"
 
 
 async def _drain(queue: asyncio.Queue[Event]) -> None:
@@ -372,7 +504,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         try:
             payload = await websocket.receive_json()
-        except (WebSocketDisconnect, RuntimeError, ValueError):
+        except WebSocketDisconnect:
+            return
+        except (RuntimeError, ValueError):
+            await _send_error(websocket, "expected a JSON object with a goal")
             return
         try:
             request = SocketRequest.model_validate(payload)
@@ -383,6 +518,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         resume = request.resume
         if not goal and not resume:
             await _send_error(websocket, "goal is required")
+            return
+        if _CURRENT.get("running"):
+            # A run is already in flight: refuse to start a second one instead
+            # of overwriting the registry entry of the running one.
+            await _send_error(websocket, "a run is already in progress")
             return
         orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
         run_task = asyncio.create_task(orchestrator.run())
@@ -405,6 +545,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 continue
             await websocket.send_json(event.to_dict())
+        if run_task is None:  # pragma: no cover - defensive
+            return
+        # The run is over: clear the flag right away instead of waiting for the
+        # done-callback to be processed.
+        _clear_running_flag(run_task)
         if run_task.cancelled():
             return
         exc = run_task.exception()
@@ -420,9 +565,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "data": result.model_dump(mode="json"),
             }
         )
+    except asyncio.CancelledError:
+        # The client went away (or the server is shutting down): stop the run
+        # and make sure the server does not stay stuck in the "running" state.
+        if run_task is not None and not run_task.done():
+            _cancel_run(run_task)
+        raise
     except (WebSocketDisconnect, RuntimeError):
         if run_task is not None and not run_task.done():
-            run_task.cancel()
+            _cancel_run(run_task)
     finally:
         bus.unsubscribe(queue)
 

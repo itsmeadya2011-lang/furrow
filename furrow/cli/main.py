@@ -59,6 +59,12 @@ def _print_summary(result: RunResult) -> None:
         click.secho("  Result: PASSED - all tests passed.", fg="green")
     else:
         click.secho("  Result: FAILED - tests did not pass.", fg="red")
+    usage = getattr(result, "usage", None)
+    if usage is not None and usage.calls > 0:
+        click.echo(
+            f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
+            f"(in {usage.input_tokens} / out {usage.output_tokens})"
+        )
     if result.summary:
         click.echo(f"  Summary: {result.summary}")
 
@@ -70,6 +76,9 @@ def _print_state(state: RunState) -> None:
     click.echo(f"  Current goal:  {state.goal}")
     click.echo(f"  Cycles:        {state.cycles}")
     click.echo(f"  Updated:       {state.updated_at}")
+    usage = getattr(state, "usage", None)
+    if usage is not None and usage.calls > 0:
+        click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:

@@ -53,7 +53,8 @@ def test_detect_empty(tmp_path):
     assert cmd is None
 
 
-def test_run_no_runner(tmp_path):
+def test_run_no_runner_is_reported_as_skipped(tmp_path):
+    """No detected test runner means a skipped run, not a passed one."""
     agent = TesterAgent(
         settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
         workspace=tmp_path,
@@ -61,11 +62,10 @@ def test_run_no_runner(tmp_path):
     res = run(agent.run("goal", []))
     assert isinstance(res, TestResult)
     assert res.passed is True
+    assert res.skipped is True
     assert "skipped" in res.summary.lower()
-    if "skipped" in TestResult.model_fields:
-        assert res.skipped is True
-    else:
-        assert "no test runner" in res.summary.lower()
+    assert "no test runner" in res.summary.lower()
+    assert res.failures == []
 
 
 def test_run_llm_result(tmp_path):
@@ -95,17 +95,53 @@ def test_run_llm_raises_fallback(tmp_path):
     assert isinstance(res, TestResult)
 
 
-def test_run_no_runner_skipped(tmp_path):
+def test_run_failed_command_uses_local_fallback_classification(tmp_path, monkeypatch):
+    """A failing test command is reported as failed even when the LLM misbehaves.
+
+    The LLM classification raises, so the local fallback in
+    ``furrow.agents.tester`` has to decide the outcome from the raw output.
+    """
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    stderr_text = (
+        "=================================== FAILURES ===================================\n"
+        "FAILED tests/test_x.py::test_y - AssertionError: expected 1 got 2\n"
+        "=========================== 1 failed, 2 passed in 0.12s ===========================\n"
+    )
+
+    class FakeProc:
+        pid = 4242
+        returncode = 1
+
+        async def communicate(self):
+            return b"", stderr_text.encode()
+
+        async def wait(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("llm down"))
     agent = TesterAgent(
+        client=client,
         settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
         workspace=tmp_path,
     )
+
     res = run(agent.run("goal", []))
+
     assert isinstance(res, TestResult)
-    assert res.passed is True
-    assert "skipped" in res.summary.lower()
-    if "skipped" in TestResult.model_fields:
-        assert res.skipped is True
+    assert res.passed is False
+    assert res.skipped is False
+    assert res.failures
+    assert any("test_y" in failure for failure in res.failures)
+    assert "test_y" in res.summary
 
 
 def test_run_timeout_kills_process_group(tmp_path, monkeypatch):

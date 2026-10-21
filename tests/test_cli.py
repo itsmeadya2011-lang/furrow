@@ -13,7 +13,7 @@ import pytest
 from click.testing import CliRunner
 
 from furrow.cli.main import main
-from furrow.config import RunResult, TaskModel
+from furrow.config import RunResult, TaskModel, Usage
 from furrow.core.state import RunState, StateStore
 
 
@@ -218,27 +218,117 @@ def test_summary_prints_skipped_when_no_test_runner(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
     """A skipped run prints a distinct SKIPPED line instead of PASSED."""
-    result = RunResult(passed=True, cycles=1, summary="stopped: goal complete")
-    if "skipped" in RunResult.model_fields:
-        result.skipped = True
-    FakeOrchestrator.result = result
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        summary="stopped: goal complete",
+        skipped=True,
+    )
 
     output = runner.invoke(main, ["start", "build a thing"]).output
 
-    if "skipped" in RunResult.model_fields:
-        assert "SKIPPED" in output
-    else:
-        assert "PASSED" in output
+    assert "SKIPPED" in output
+    assert "PASSED" not in output
 
 
 def test_summary_prints_passed_by_default(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
     """Without the skipped flag the usual PASSED line is printed."""
-    FakeOrchestrator.result = None
+    result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+    )
+    assert result.skipped is False
+    FakeOrchestrator.result = result
 
     output = runner.invoke(main, ["start", "build a thing"]).output
 
     assert "PASSED" in output
-    if "skipped" in RunResult.model_fields:
-        assert "SKIPPED" not in output
+    assert "SKIPPED" not in output
+
+
+def test_summary_prints_usage_when_result_carries_usage(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the LLM usage line when the result carries usage."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "12 calls" in output
+    assert "4321 tokens" in output
+    assert "in 3900" in output
+    assert "out 421" in output
+
+
+def test_summary_skips_usage_line_when_zero_calls(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A run with no LLM calls does not print a misleading zero usage line."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(),
+    )
+    assert FakeOrchestrator.result.usage.calls == 0
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage" not in output
+
+
+def test_summary_skips_usage_line_when_result_lacks_usage(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The CLI keeps working when the result object has no usage attribute at all."""
+
+    class NoUsageResult:
+        cycles = 1
+        tasks_completed = 1
+        tasks_failed = 0
+        stopped_reason = "goal complete"
+        passed = True
+        skipped = False
+        summary = "done"
+
+    FakeOrchestrator.result = NoUsageResult()  # type: ignore[assignment]
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "PASSED" in output
+    assert "LLM usage" not in output
+
+
+def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> None:
+    """The status command prints the usage persisted in the run state."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "ship it" in result.output
+    assert "LLM usage:" in result.output
+    assert "12 calls" in result.output
+    assert "4321 tokens" in result.output

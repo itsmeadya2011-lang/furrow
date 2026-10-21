@@ -7,8 +7,10 @@ temporary directory.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections.abc import Iterator
+import time
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -26,6 +28,7 @@ class FakeOrchestrator:
     """Stand-in for the real orchestrator: records kwargs, emits two events."""
 
     init_kwargs: ClassVar[dict[str, Any]] = {}
+    instances: ClassVar[list[FakeOrchestrator]] = []
 
     def __init__(
         self,
@@ -36,6 +39,7 @@ class FakeOrchestrator:
         event_bus: Any = None,
         resume: bool = False,
     ) -> None:
+        FakeOrchestrator.instances.append(self)
         FakeOrchestrator.init_kwargs = {
             "goal": goal,
             "client": client,
@@ -70,6 +74,24 @@ class FakeOrchestrator:
         )
 
 
+class HangingOrchestrator(FakeOrchestrator):
+    """Fake orchestrator whose run never finishes on its own."""
+
+    async def run(self) -> RunResult:
+        await asyncio.sleep(30)
+        raise AssertionError("the hanging run should have been cancelled")
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
+    """Poll ``predicate`` until it holds or the timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
 @pytest.fixture(autouse=True)
 def isolated_server(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -86,6 +108,7 @@ def isolated_server(
 def fake_orchestrator(monkeypatch: pytest.MonkeyPatch) -> type[FakeOrchestrator]:
     """Replace the orchestrator in the web layer with the fake one."""
     FakeOrchestrator.init_kwargs = {}
+    FakeOrchestrator.instances.clear()
     monkeypatch.setattr("furrow.web.server.Orchestrator", FakeOrchestrator)
     return FakeOrchestrator
 
@@ -103,6 +126,41 @@ def test_index_returns_html(client: TestClient) -> None:
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
     assert "Furrow" in response.text
+
+
+def test_index_contains_ui_hooks(client: TestClient) -> None:
+    """The served page exposes stable hooks for the new UI."""
+    html = client.get("/").text
+
+    # Goal input, Start/Resume buttons and the log still exist.
+    for hook in (
+        'id="goal"',
+        'id="start"',
+        'id="resume"',
+        'id="log"',
+    ):
+        assert hook in html, f"missing hook {hook}"
+
+    # New status header hooks.
+    for hook in (
+        'id="goal-display"',
+        'id="cycle"',
+        'id="state"',
+        'id="stopped-reason"',
+        'id="usage"',
+    ):
+        assert hook in html, f"missing hook {hook}"
+
+    # Task panel container.
+    assert 'id="tasks"' in html
+
+
+def test_index_uses_text_content_for_untrusted_text(client: TestClient) -> None:
+    """Task text is assigned via textContent, never innerHTML interpolation."""
+    html = client.get("/").text
+
+    assert "textContent" in html
+    assert "innerHTML" not in html
 
 
 def test_api_state_without_state(client: TestClient) -> None:
@@ -207,3 +265,57 @@ def test_websocket_requires_goal(
 
     assert messages, "the server must answer instead of hanging"
     assert "error" in json.dumps(messages[-1]).lower()
+
+
+def test_websocket_rejects_a_second_run(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    # The registry is reset again by the ``isolated_server`` fixture.
+    server._CURRENT["running"] = True
+
+    messages: list[dict[str, Any]] = []
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "x"})
+        try:
+            messages.append(ws.receive_json())
+        except WebSocketDisconnect:
+            messages.append({"type": "closed"})
+
+    assert messages, "the server must answer instead of hanging"
+    assert messages[0]["type"] == "error"
+    assert "already in progress" in messages[0]["message"]
+    assert fake_orchestrator.instances == [], "no second run may be started"
+    assert server._CURRENT["running"] is True, "the running run must not be touched"
+
+
+def test_api_status_reports_not_running_after_run(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    client.post("/api/start", json={"goal": "build it"})
+
+    assert _wait_until(lambda: client.get("/api/status").json()["running"] is False), (
+        "the run never finished"
+    )
+    body = client.get("/api/status").json()
+    assert body["running"] is False
+    assert body["result"] is not None
+
+
+def test_websocket_disconnect_clears_the_running_flag(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "x"})
+        assert _wait_until(lambda: server._CURRENT.get("running") is True), "the run never started"
+
+    # The client is gone: the run must be cancelled and the flag cleared.
+    assert _wait_until(lambda: client.get("/api/status").json()["running"] is False), (
+        "the running flag stayed stuck after the client disconnected"
+    )
+    body = client.get("/api/status").json()
+    assert body["running"] is False
+    run_task = server._CURRENT.get("task")
+    assert run_task is not None
+    assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"

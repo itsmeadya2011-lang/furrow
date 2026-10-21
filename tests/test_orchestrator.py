@@ -489,3 +489,18 @@ async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
     assert orch.goal == orch.original_goal == "ORIG"
     assert orch._feedback == ""
     assert result.skipped is True
+    assert result.passed is True
+
+
+@pytest.mark.asyncio
+async def test_non_skipped_run_reports_skipped_false(tmp_path, monkeypatch):
+    """A regular (non-skipped) run must not claim that the tests were skipped."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="ORIG", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=False)
+    result = await orch.run()
+    assert result.skipped is False
+    assert result.passed is True

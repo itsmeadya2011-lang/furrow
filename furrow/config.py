@@ -56,6 +56,26 @@ class WorkerResult(BaseModel):
     iterations: int = 0
 
 
+class Usage(BaseModel):
+    """Token usage accumulated over one or more LLM calls."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    calls: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        """Total tokens (input + output) across the counted calls."""
+        return self.input_tokens + self.output_tokens
+
+    def add(self, other: Usage) -> Usage:
+        """Accumulate *other* into this usage and return self."""
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.calls += other.calls
+        return self
+
+
 class RunResult(BaseModel):
     passed: bool = False
     cycles: int = 0
@@ -64,6 +84,7 @@ class RunResult(BaseModel):
     summary: str = ""
     stopped_reason: str = ""
     skipped: bool = False
+    usage: Usage = Field(default_factory=Usage)
 
 
 class Settings(BaseSettings):

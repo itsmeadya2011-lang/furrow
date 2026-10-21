@@ -11,7 +11,7 @@ import aiofiles
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings
+from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 
 try:
@@ -37,6 +37,7 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str | None = None
     raw: Any = None
+    usage: Usage = field(default_factory=Usage)
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -47,6 +48,26 @@ def _is_retryable(exc: BaseException) -> bool:
         return True
     status_code = getattr(exc, "status_code", None)
     return status_code in RETRYABLE_STATUS_CODES
+
+
+def _extract_anthropic_usage(response: Any) -> Usage:
+    """Pull token usage out of an Anthropic messages response (graceful if absent)."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return Usage(calls=1)
+    input_tokens = getattr(usage, "input_tokens", 0) or 0
+    output_tokens = getattr(usage, "output_tokens", 0) or 0
+    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1)
+
+
+def _extract_openai_usage(response: Any) -> Usage:
+    """Pull token usage out of an OpenAI-compatible response (graceful if absent)."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return Usage(calls=1)
+    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
+    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+    return Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens, calls=1)
 
 
 def to_anthropic_tools(tools: list[dict]) -> list[dict]:
@@ -185,6 +206,7 @@ class LLMClient:
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
+        self.total_usage: Usage = Usage()
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -249,12 +271,14 @@ class LLMClient:
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
-                return await self._complete_anthropic(prompt, system, model)
+                response = await self._complete_anthropic(prompt, system, model)
             elif provider == Provider.OPENAI:
-                return await self._complete_openai(self.openai, prompt, system, model)
+                response = await self._complete_openai(self.openai, prompt, system, model)
             elif provider == Provider.OLLAMA:
-                return await self._complete_openai(self.ollama, prompt, system, model)
-            raise ValueError(f"Unsupported provider: {provider}")
+                response = await self._complete_openai(self.ollama, prompt, system, model)
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+            return response.text
 
         return await self._retry(call)
 
@@ -283,7 +307,7 @@ class LLMClient:
 
         return await self._retry(call)
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> str:
+    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=self.settings.max_tokens,
@@ -294,11 +318,13 @@ class LLMClient:
         for block in response.content:
             if block.type == "text":
                 text += block.text
-        return text
+        usage = _extract_anthropic_usage(response)
+        self.total_usage.add(usage)
+        return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _complete_openai(
         self, client: AsyncOpenAI, prompt: str, system: str, model: str
-    ) -> str:
+    ) -> LLMResponse:
         response = await client.chat.completions.create(
             model=model,
             max_tokens=self.settings.max_tokens,
@@ -307,7 +333,10 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        return response.choices[0].message.content or ""
+        text = response.choices[0].message.content or ""
+        usage = _extract_openai_usage(response)
+        self.total_usage.add(usage)
+        return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _chat_anthropic(
         self,
@@ -336,11 +365,14 @@ class LLMClient:
                 tool_calls.append(
                     ToolCall(id=block.id, name=block.name, arguments=block.input or {})
                 )
+        usage = _extract_anthropic_usage(response)
+        self.total_usage.add(usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
             stop_reason=response.stop_reason,
             raw=response,
+            usage=usage,
         )
 
     async def _chat_openai_compatible(
@@ -375,11 +407,14 @@ class LLMClient:
                     arguments=parse_tool_arguments(tc.function.arguments),
                 )
             )
+        usage = _extract_openai_usage(response)
+        self.total_usage.add(usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
             stop_reason=choice.finish_reason,
             raw=response,
+            usage=usage,
         )
 
     async def read_file(self, path: str | Path) -> str:

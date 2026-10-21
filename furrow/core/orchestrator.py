@@ -7,7 +7,7 @@ from typing import Any
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, RunResult, Settings, TaskModel
+from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
@@ -46,6 +46,8 @@ class Orchestrator:
         self._tests_skipped: bool = False
         self._console_obj: Any = _UNSET
         self._resume_state_missing = False
+        self._usage: Usage = Usage()
+        self._usage_seen: Usage = Usage()
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -57,16 +59,34 @@ class Orchestrator:
                 self.cycles = st.cycles
                 self.tasks = list(st.tasks)
                 self.history = list(st.history)
+                self._usage = st.usage.model_copy()
+                # A resumed run starts a fresh client whose counter starts at
+                # zero, so the baseline for the per-cycle delta is the client's
+                # CURRENT usage, not the persisted total.
+                self._usage_seen = self._client_usage()
             else:
                 self._resume_state_missing = True
 
+    def _client_usage(self) -> Usage:
+        """Cumulative usage of the LLM client (zero when the client does not report it)."""
+        raw = getattr(self.client, "total_usage", None)
+        if raw is None:
+            return Usage()
+        return Usage(
+            input_tokens=int(getattr(raw, "input_tokens", 0) or 0),
+            output_tokens=int(getattr(raw, "output_tokens", 0) or 0),
+            calls=int(getattr(raw, "calls", 0) or 0),
+        )
+
     def status(self) -> dict[str, Any]:
+        """Return a snapshot of the current run."""
         return {
             "goal": self.goal,
             "original_goal": self.original_goal,
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
+            "usage": self._usage.model_dump(),
         }
 
     def _console(self) -> Any:
@@ -175,26 +195,42 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+            cumulative = self._client_usage()
+            cycle_usage = Usage(
+                input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
+                output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
+                calls=max(0, cumulative.calls - self._usage_seen.calls),
+            )
+            self._usage.add(cycle_usage)
+            self._usage_seen = cumulative
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
                 tests_passed=test_result.passed, test_summary=test_result.summary,
                 timestamp=datetime.now(timezone.utc).isoformat(),
+                usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             state = RunState(goal=self.goal, original_goal=self.original_goal,
-                            cycles=self.cycles, tasks=self.tasks, history=self.history)
+                             cycles=self.cycles, tasks=self.tasks, history=self.history,
+                             usage=self._usage)
             self.state_store.save(state)
             self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                     data={"path": str(self.state_store.path)}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
-            if (not test_result.passed) and sig == self._prev_sig:
+            # A skipped run (no test runner) reports passed=True but gives the
+            # loop no verification signal, so it must trip the no-progress
+            # guard as well - otherwise the loop never stops.
+            no_signal = (not test_result.passed) or skipped
+            if no_signal and sig == self._prev_sig:
                 self._no_progress += 1
                 if self._no_progress >= 2:
-                    self._stopped_reason = "no progress"
+                    self._stopped_reason = (
+                        "no test runner detected" if skipped else "no progress"
+                    )
                     break
             else:
-                if sig != self._prev_sig or test_result.passed:
+                if sig != self._prev_sig or (test_result.passed and not skipped):
                     self._no_progress = 0
                 self._prev_sig = sig
 
@@ -219,6 +255,7 @@ class Orchestrator:
             summary=f"stopped: {self._stopped_reason}",
             stopped_reason=self._stopped_reason,
             skipped=bool(self._tests_skipped),
+            usage=self._usage,
         )
 
     def _context(self) -> str:

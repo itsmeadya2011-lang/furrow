@@ -22,7 +22,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, ValidationError
 
-from furrow.config import TaskModel
+from furrow.config import TaskModel, Usage
 from furrow.logging import get_logger
 
 logger = get_logger(__name__)
@@ -47,6 +47,7 @@ class HistoryEntry(BaseModel):
     tests_passed: bool | None = None
     test_summary: str = ""
     timestamp: str = Field(default_factory=utcnow)
+    usage: Usage = Field(default_factory=Usage)
 
 
 class RunState(BaseModel):
@@ -59,6 +60,7 @@ class RunState(BaseModel):
     tasks: list[TaskModel] = Field(default_factory=list)
     history: list[HistoryEntry] = Field(default_factory=list)
     updated_at: str = Field(default_factory=utcnow)
+    usage: Usage = Field(default_factory=Usage)
 
 
 def state_path_for(
