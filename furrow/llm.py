@@ -239,6 +239,27 @@ class LLMClient:
             )
         return self._ollama
 
+    async def aclose(self) -> None:
+        """Release any lazily-created provider clients.
+
+        Reusable: cached references are reset to ``None`` so a later request
+        creates a fresh client. Never raises.
+        """
+        for attr in ("_anthropic", "_openai", "_ollama"):
+            client = getattr(self, attr)
+            if client is None:
+                continue
+            try:
+                close = getattr(client, "aclose", None)
+                if close is None:
+                    close = getattr(client, "close", None)
+                if close is not None:
+                    result = close()
+                    if asyncio.iscoroutine(result):
+                        await result
+            except Exception:
+                pass
+            setattr(self, attr, None)
     async def _retry(self, call):
         max_attempts = max(1, int(self.settings.max_retries))
 

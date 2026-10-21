@@ -451,3 +451,88 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
     assert "LLM usage:" in result.output
     assert "12 calls" in result.output
     assert "4321 tokens" in result.output
+
+
+class RecordingClient:
+    """Fake LLM client that records whether it was closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class ClientReleasingOrchestrator:
+    """Fake orchestrator that owns a client recording its own closing."""
+
+    error: ClassVar[BaseException | None] = None
+    instances: ClassVar[list[ClientReleasingOrchestrator]] = []
+
+    def __init__(
+        self,
+        goal: str,
+        client: Any = None,
+        settings: Any = None,
+        state_store: Any = None,
+        event_bus: Any = None,
+        resume: bool = False,
+    ) -> None:
+        ClientReleasingOrchestrator.instances.append(self)
+        self.goal = goal
+        self.client = RecordingClient()
+
+    async def run(self) -> RunResult:
+        if ClientReleasingOrchestrator.error is not None:
+            raise ClientReleasingOrchestrator.error
+        return RunResult(
+            passed=True,
+            cycles=1,
+            tasks_completed=1,
+            summary="done",
+            stopped_reason="goal complete",
+        )
+
+
+@pytest.fixture
+def releasing_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> type[ClientReleasingOrchestrator]:
+    """Replace the orchestrator with a fake that owns a closable client."""
+    ClientReleasingOrchestrator.error = None
+    ClientReleasingOrchestrator.instances.clear()
+    monkeypatch.setattr("furrow.cli.main.Orchestrator", ClientReleasingOrchestrator)
+    return ClientReleasingOrchestrator
+
+
+def test_start_releases_the_llm_client_after_a_run(
+    runner: CliRunner,
+    releasing_orchestrator: type[ClientReleasingOrchestrator],
+    tmp_path: Path,
+) -> None:
+    """The CLI closes the LLM client once the run is over.
+
+    The client holds HTTP connections: they must be released when the run
+    ends, otherwise every run leaks a connection pool.
+    """
+    result = runner.invoke(main, ["start", "build a thing", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert len(releasing_orchestrator.instances) == 1
+    assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_start_releases_the_llm_client_when_the_run_raises(
+    runner: CliRunner,
+    releasing_orchestrator: type[ClientReleasingOrchestrator],
+    tmp_path: Path,
+) -> None:
+    """A failing run still releases the client: the release lives in a finally."""
+    releasing_orchestrator.error = RuntimeError("boom")
+
+    result = runner.invoke(main, ["start", "build a thing", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "boom" in result.output
+    assert len(releasing_orchestrator.instances) == 1
+    assert releasing_orchestrator.instances[0].client.closed is True

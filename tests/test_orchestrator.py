@@ -681,3 +681,153 @@ async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
     assert orch2._no_progress == 3
     assert orch2._prev_sig == "sig123"
+
+
+@pytest.mark.asyncio
+async def test_completed_task_is_not_executed_again_when_the_plan_is_unchanged(tmp_path, monkeypatch):  # noqa: E501
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    task = orch.tasks[0]
+    assert len(calls) == 1
+    assert task.status == "completed"
+    assert task.attempts == 1
+    events = drain(q)
+    assert any(e.type == EventType.LOG and "already completed" in e.message for e in events)
+
+
+@pytest.mark.asyncio
+async def test_completed_task_is_executed_again_when_the_description_changed(tmp_path, monkeypatch):
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1")])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()  # cycle 1
+
+    # Now change the plan description for next cycle
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1 differently")])
+    await orch.run()  # cycle 2
+    assert len(calls) == 2
+    assert orch.tasks[0].attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_task_with_an_exhausted_budget_stays_failed(tmp_path, monkeypatch):
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary="fail", success=False, files_changed=[], error="boom")
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=2, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="one")])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()  # first cycle
+    # After the next cycle's merge, a task that failed with an exhausted
+    # retry budget is still "failed" (not reset to "pending").`
+    task = orch.tasks[0]
+    assert task.status == "failed"
+    # blocked task stays blocked and is not run in next cycle
+    class FW2(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            if self.task.id == "1":
+                self.task.status = "failed"
+                return WorkerResult(summary="fail", success=False, files_changed=[])
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW2)
+    settings2 = make_settings(tmp_path / "ws2", max_cycles=2)
+    store2 = StateStore(tmp_path / "ws2" / "state.json")
+    orch2 = Orchestrator(goal="g", settings=settings2, state_store=store2)
+    t1 = TaskModel(id="1", description="one")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    orch2.planner = FakePlanner(tasks=[t1, t2])
+    orch2.tester = FakeTester(passed=False)
+    calls.clear()
+    await orch2.run()
+    t2o = next(t for t in orch2.tasks if t.id == "2")
+    assert t2o.status == "blocked"
+    # blocked task's worker is never invoked in next cycle
+    assert "2" not in calls or calls.count("2") == 0  # it was never run
+
+
+@pytest.mark.asyncio
+async def test_state_is_saved_once_per_cycle(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    q = orch.event_bus.subscribe()
+    saves = []
+    orig_save = store.save
+
+    def counting_save(state):
+        saves.append(1)
+        return orig_save(state)
+
+    monkeypatch.setattr(store, "save", counting_save)
+    await orch.run()
+    assert len(saves) == orch.cycles
+    events = drain(q)
+    state_saved = [e for e in events if e.type == EventType.STATE_SAVED]
+    assert len(state_saved) == orch.cycles
+
+
+@pytest.mark.asyncio
+async def test_persisted_no_progress_matches_the_live_counter(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    st = store.load()
+    assert st is not None
+    assert orch._no_progress == st.no_progress
+
+
+@pytest.mark.asyncio
+async def test_tests_run_is_restored_on_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result1 = await orch.run()
+    assert result1.tests_run >= 1
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2._tests_run == 1  # restored
+    orch2.planner = FakePlanner()
+    orch2.tester = FakeTester(passed=True)
+    result2 = await orch2.run()
+    assert result2.tests_run >= 1  # accounts for both cycles (restored)

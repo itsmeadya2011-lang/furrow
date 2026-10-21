@@ -13,6 +13,7 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from typing import Any
 
@@ -128,6 +129,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-completed { color: #57d38c; }
   .status-failed { color: #e0685f; }
   .status-blocked { color: #f0b367; }
+  .status-unknown { color: #8a93a5; }
 </style>
 </head>
 <body>
@@ -167,6 +169,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
+  }
+
+  // The task status is planned by the LLM, so it is untrusted input: it is
+  // mapped to a known token before it is used to build a class name.
+  const SAFE_STATUSES = {
+    pending: 'pending',
+    running: 'running',
+    completed: 'completed',
+    failed: 'failed',
+    blocked: 'blocked',
+    skipped: 'skipped',
+    unknown: 'unknown'
+  };
+
+  function statusClass(status) {
+    const key = text(status).trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(SAFE_STATUSES, key)) {
+      return SAFE_STATUSES[key];
+    }
+    return 'unknown';
   }
 
   function renderStatus(status, result, running) {
@@ -211,7 +233,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       idEl.className = 'panel-id';
       idEl.textContent = '#' + text(task.id);
       const statusEl = document.createElement('span');
-      statusEl.className = 'panel-status status-' + status;
+      statusEl.className = 'panel-status status-' + statusClass(status);
       statusEl.textContent = status;
       head.appendChild(idEl);
       head.appendChild(statusEl);
@@ -464,12 +486,44 @@ async def _drain(queue: asyncio.Queue[Event]) -> None:
         await queue.get()
 
 
+async def _release_client(client: Any) -> None:
+    """Release the HTTP resources of an LLM client, when it supports closing.
+
+    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
+    method, so it is looked up defensively and only awaited when the result
+    is awaitable.  A failing close is logged and ignored: closing must never
+    turn a successful run into a failed one.
+    """
+    closer = getattr(client, "aclose", None)
+    if closer is None:
+        return
+    try:
+        outcome = closer()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except Exception as exc:
+        logger.warning("Could not close the LLM client: %s", exc)
+
+
+async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
+    """Run an orchestrator and release its LLM client afterwards.
+
+    The client is closed in a ``finally`` block, so its HTTP connections are
+    released when the run finishes, when it fails and when it is cancelled
+    (e.g. because the websocket client went away).
+    """
+    try:
+        return await orchestrator.run()
+    finally:
+        await _release_client(getattr(orchestrator, "client", None))
+
+
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
     """Run an orchestrator in the background and discard the emitted events."""
     queue = bus.subscribe()
     drain = asyncio.create_task(_drain(queue))
     try:
-        return await orchestrator.run()
+        return await _run_orchestrator(orchestrator)
     finally:
         drain.cancel()
         bus.unsubscribe(queue)
@@ -593,7 +647,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
-        run_task = asyncio.create_task(orchestrator.run())
+        run_task = asyncio.create_task(_run_orchestrator(orchestrator))
         _TASKS.add(run_task)
         run_task.add_done_callback(_on_run_done)
         _CURRENT.update(

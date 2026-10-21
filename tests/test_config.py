@@ -124,3 +124,10 @@ def test_settings_new_timeouts_defaults():
     assert s.command_timeout == 300.0
     assert s.test_timeout == 600.0
 
+
+def test_runstate_has_tests_run_field_defaulting_to_zero():
+    from furrow.core.state import RunState
+
+    state = RunState()
+    assert state.tests_run == 0
+

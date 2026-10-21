@@ -161,3 +161,31 @@ def test_legacy_state_without_new_keys_loads(tmp_path: Path) -> None:
     assert loaded.no_progress == 0
     assert loaded.prev_sig == ""
 
+
+def test_tests_run_round_trips_through_save_and_load(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "s.json")
+    state = RunState(goal="g", tests_run=7)
+    store.save(state)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.tests_run == 7
+
+
+def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.json"
+    legacy = {
+        "version": 1,
+        "goal": "g",
+        "original_goal": "g",
+        "cycles": 0,
+        "tasks": [],
+        "history": [],
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "calls": 0},
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    store = StateStore(path)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.tests_run == 0
+

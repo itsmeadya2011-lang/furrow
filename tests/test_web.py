@@ -13,7 +13,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -76,6 +76,39 @@ class FakeOrchestrator:
 
 
 class HangingOrchestrator(FakeOrchestrator):
+    """Fake orchestrator whose run never finishes on its own."""
+
+    async def run(self) -> RunResult:
+        await asyncio.sleep(30)
+        raise AssertionError("the hanging run should have been cancelled")
+
+
+class RecordingClient:
+    """Fake LLM client that records whether it was closed."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class ClientRecordingOrchestrator(FakeOrchestrator):
+    """Fake orchestrator that owns a client recording its own closing."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self.client = RecordingClient()
+
+
+class FailingOrchestrator(ClientRecordingOrchestrator):
+    """Fake orchestrator whose run always fails."""
+
+    async def run(self) -> RunResult:
+        raise RuntimeError("boom")
+
+
+class HangingClientOrchestrator(ClientRecordingOrchestrator):
     """Fake orchestrator whose run never finishes on its own."""
 
     async def run(self) -> RunResult:
@@ -370,3 +403,102 @@ def test_websocket_disconnect_clears_the_running_flag(
     run_task = server._CURRENT.get("task")
     assert run_task is not None
     assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"
+
+
+def _inline_script(client: TestClient) -> str:
+    """The inline script of the served page."""
+    html = client.get("/").text
+    return html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+
+def test_index_script_never_concatenates_a_raw_status_into_a_class_name(
+    client: TestClient,
+) -> None:
+    """The status class is built from a fixed map, never from the raw status.
+
+    The task status is planned by the LLM, so it is untrusted input: it must
+    never end up verbatim in a class name.
+    """
+    script = _inline_script(client)
+
+    forbidden = (
+        r"'status-'\s*\+\s*status\b",
+        r'"status-"\s*\+\s*status\b',
+        r"'[^']*status-'\s*\+\s*status\b",
+        r'"[^"]*status-"\s*\+\s*status\b',
+        r"status-\$\{",
+        r"className\s*=\s*[^;]*?\+\s*status\s*;",
+    )
+    for pattern in forbidden:
+        assert not re.search(pattern, script), (
+            f"the script concatenates a raw status into a class name: {pattern}"
+        )
+
+    assert re.search(r"statusEl\.className\s*=\s*[^;]*statusClass\(", script), (
+        "the status class is not built from statusClass()"
+    )
+    assert re.search(r"statusEl\.textContent\s*=", script), (
+        "the status text is not written with textContent"
+    )
+
+
+def test_index_script_knows_every_status_and_falls_back_to_unknown(
+    client: TestClient,
+) -> None:
+    """The safe status map lists the known statuses and falls back to unknown."""
+    script = _inline_script(client)
+
+    match = re.search(r"const\s+SAFE_STATUSES\s*=\s*\{(.*?)\};", script, re.DOTALL)
+    assert match is not None, "the script has no SAFE_STATUSES map"
+    body = match.group(1)
+
+    for status in ("pending", "running", "completed", "failed", "blocked", "skipped"):
+        assert re.search(rf"\b{status}\s*:", body), f"{status} is missing from the status map"
+
+    assert re.search(r"\bunknown\s*:", body), "the status map has no unknown entry"
+    assert "return 'unknown';" in script, "statusClass() has no unknown fallback"
+
+
+@pytest.fixture
+def recording_orchestrator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> type[ClientRecordingOrchestrator]:
+    """Replace the orchestrator with a fake that owns a closable client."""
+    FakeOrchestrator.instances.clear()
+    monkeypatch.setattr("furrow.web.server.Orchestrator", ClientRecordingOrchestrator)
+    return ClientRecordingOrchestrator
+
+
+def test_api_start_releases_the_llm_client_when_the_run_finishes(
+    client: TestClient, recording_orchestrator: type[ClientRecordingOrchestrator]
+) -> None:
+    """A finished background run releases the LLM client of the orchestrator."""
+    response = client.post("/api/start", json={"goal": "build it"})
+
+    assert response.status_code == 200
+    assert len(recording_orchestrator.instances) == 1
+    recorder = cast(RecordingClient, recording_orchestrator.instances[0].client)
+    assert _wait_until(lambda: recorder.closed), "the run never released the client"
+
+
+async def test_run_orchestrator_releases_the_client_when_the_run_raises() -> None:
+    """A failing run still releases the client: the release lives in a finally."""
+    orchestrator = FailingOrchestrator(goal="build it")
+
+    with pytest.raises(RuntimeError):
+        await server._run_orchestrator(cast(Any, orchestrator))
+
+    assert orchestrator.client.closed is True
+
+
+async def test_run_orchestrator_releases_the_client_when_the_run_is_cancelled() -> None:
+    """A cancelled run (e.g. the websocket client left) releases the client."""
+    orchestrator = HangingClientOrchestrator(goal="build it")
+
+    task = asyncio.create_task(server._run_orchestrator(cast(Any, orchestrator)))
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert orchestrator.client.closed is True

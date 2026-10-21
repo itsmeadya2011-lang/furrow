@@ -63,7 +63,7 @@ class RunState(BaseModel):
     usage: Usage = Field(default_factory=Usage)
     no_progress: int = 0
     prev_sig: str = ""
-
+    tests_run: int = 0
 
 def state_path_for(
     workspace: str | Path, relative: str | Path = DEFAULT_STATE_RELATIVE_PATH

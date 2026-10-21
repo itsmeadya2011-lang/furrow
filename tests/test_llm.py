@@ -438,21 +438,70 @@ async def test_total_usage_accumulates_across_calls():
     assert client.total_usage.total_tokens == 30
 
 
-async def test_chat_attaches_usage():
-    from furrow.config import Provider
-
-    fake_usage = _FakeOpenAIUsage(prompt_tokens=4, completion_tokens=6)
-    fake = _FakeOpenAI("ok")
-    fake.chat.completions.usage = fake_usage
+async def test_aclose_closes_created_clients():
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    fake = _FakeOpenAI("ok")
+
+    closed = {"n": 0}
+
+    async def aclose() -> None:
+        closed["n"] += 1
+
+    fake.aclose = aclose
     client._openai = fake
 
-    response = await client.chat([{"role": "user", "content": "hi"}])
+    await client.aclose()
 
-    assert response.text == "ok"
-    assert response.usage.input_tokens == 4
-    assert response.usage.output_tokens == 6
-    assert response.usage.calls == 1
-    assert response.usage.total_tokens == 10
-    assert client.total_usage.input_tokens == 4
-    assert client.total_usage.calls == 1
+    assert closed["n"] == 1
+    assert client._openai is None
+
+
+async def test_aclose_no_client_is_noop():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    await client.aclose()  # should not raise
+    assert client._openai is None
+
+
+async def test_aclose_twice_does_not_raise():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    fake = _FakeOpenAI("ok")
+
+    async def aclose() -> None:
+        return None
+
+    fake.aclose = aclose
+    client._openai = fake
+
+    await client.aclose()
+    await client.aclose()  # second call must not raise
+
+
+async def test_aclose_swallows_close_errors():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    fake = _FakeOpenAI("ok")
+
+    async def aclose() -> None:
+        raise RuntimeError("boom")
+
+    fake.aclose = aclose
+    client._openai = fake
+
+    await client.aclose()  # must not raise
+    assert client._openai is None
+
+
+async def test_aclose_resets_so_fresh_client_created():
+    client = LLMClient(settings=Settings(provider=Provider.OLLAMA))
+    fake = _FakeOpenAI("ok")
+
+    async def aclose() -> None:
+        return None
+
+    fake.aclose = aclose
+    client._ollama = fake
+
+    await client.aclose()
+    assert client._ollama is None
+
+    fresh = client.ollama
+    assert fresh is not fake

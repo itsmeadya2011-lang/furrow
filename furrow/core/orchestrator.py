@@ -49,6 +49,7 @@ class Orchestrator:
         self._usage: Usage = Usage()
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
+        self._skip_ids: set[str] = set()
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -74,6 +75,10 @@ class Orchestrator:
                     self._prev_sig = str(getattr(st, "prev_sig", "") or "")
                 except Exception:
                     self._prev_sig = ""
+                try:
+                    self._tests_run = int(getattr(st, "tests_run", 0) or 0)
+                except Exception:
+                    self._tests_run = 0
             else:
                 self._resume_state_missing = True
 
@@ -222,29 +227,33 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            state = RunState(goal=self.goal, original_goal=self.original_goal,
-                              cycles=self.cycles, tasks=self.tasks, history=self.history,
-                              usage=self._usage, no_progress=self._no_progress,
-                              prev_sig=self._prev_sig)
-            self.state_store.save(state)
-            self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                    data={"path": str(self.state_store.path)}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
             no_signal = (not test_result.passed) or skipped
+            guard_tripped = False
             if no_signal and sig == self._prev_sig:
                 self._no_progress += 1
                 if self._no_progress >= 2:
                     self._stopped_reason = (
                         "no test runner detected" if skipped else "no progress"
                     )
-                    break
+                    guard_tripped = True
             else:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
                     self._no_progress = 0
                 self._prev_sig = sig
+
+            state = RunState(goal=self.goal, original_goal=self.original_goal,
+                             cycles=self.cycles, tasks=self.tasks, history=self.history,
+                             usage=self._usage, no_progress=self._no_progress,
+                             prev_sig=self._prev_sig, tests_run=self._tests_run)
+            self.state_store.save(state)
+            self.event_bus.emit(Event(type=EventType.STATE_SAVED,
+                                    data={"path": str(self.state_store.path)}))
+            if guard_tripped:
+                break
 
         if not self._stopped_reason:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
@@ -283,16 +292,23 @@ class Orchestrator:
         return ""
 
     def _merge_plan(self, plan: Plan) -> None:
+        self._skip_ids = set()
         by_id = {t.id: t for t in self.tasks}
         max_retries = max(0, self.settings.max_task_retries)
         for index, pt in enumerate(plan.tasks):
             old = by_id.get(pt.id)
             if old is not None:
+                old_desc = old.description
+                old_files = list(old.files)
                 # Preserve terminal states; only retry-eligible failed tasks may
                 # be reset to pending. Blocked tasks must remain blocked so that
                 # retry budgets and dependency outcomes are not lost across cycles.
                 if old.status == "completed":
-                    pt.status = "completed"
+                    if old_desc == pt.description and old_files == pt.files:
+                        pt.status = "completed"
+                        self._skip_ids.add(pt.id)
+                    else:
+                        pt.status = "pending"
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"
@@ -356,6 +372,10 @@ class Orchestrator:
             return worker
 
         async def run_one(task: TaskModel) -> None:
+            if task.id in self._skip_ids:
+                self.event_bus.emit(Event(type=EventType.LOG,
+                                        message=f"task {task.id} already completed - skipping"))
+                return
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
