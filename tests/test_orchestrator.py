@@ -42,11 +42,13 @@ class FakePlanner:
 
 
 class FakeTester:
-    def __init__(self, passed=False):
+    def __init__(self, passed=False, skipped=False):
         self.passed = passed
+        self.skipped = skipped
 
     async def run(self, goal, tasks):
-        return TestResult(passed=self.passed, summary="s", failures=["fail"])
+        return TestResult(passed=self.passed, summary="s", failures=["fail"],
+                          skipped=self.skipped)
 
 
 class BoomConsole:
@@ -72,9 +74,10 @@ class RecordingConsole:
         return "".join(str(part) for part in render(str(text)))
 
 
-def make_settings(tmp_path, max_cycles=3, max_parallel_tasks=2):
+def make_settings(tmp_path, max_cycles=3, max_parallel_tasks=2, max_task_retries=1):
     return Settings(_env_file=None, workspace=tmp_path, max_cycles=max_cycles,
-                    max_parallel_tasks=max_parallel_tasks)
+                    max_parallel_tasks=max_parallel_tasks,
+                    max_task_retries=max_task_retries)
 
 
 @pytest.mark.asyncio
@@ -325,3 +328,164 @@ async def test_console_reports_failed_task(tmp_path, monkeypatch):
     printed = "\n".join(console.messages)
     assert "Task t1 failed: boom" in printed
     assert "Tests failed: s" in printed
+
+
+def drain(queue):
+    """Return every event queued in *queue*."""
+    events = []
+    while not queue.empty():
+        events.append(queue.get_nowait())
+    return events
+
+
+@pytest.mark.asyncio
+async def test_task_that_raises_is_marked_failed(tmp_path, monkeypatch):
+    class FW(FakeWorker):
+        async def run(self):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    task = orch.tasks[0]
+    assert task.status == "failed"
+    assert task.error == "RuntimeError: boom"
+    assert task.finished_at
+    assert result.tasks_failed == 1
+    events = drain(q)
+    assert any(e.type == EventType.ERROR for e in events)
+    assert any("RuntimeError: boom" in e.message for e in events if e.type == EventType.ERROR)
+
+
+@pytest.mark.asyncio
+async def test_task_that_raises_is_retried_until_budget_is_spent(tmp_path, monkeypatch):
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    task = orch.tasks[0]
+    assert task.status == "failed"
+    assert task.attempts == 3  # max_task_retries + 1 attempts
+    assert len(calls) == 3
+    assert result.tasks_failed == 1
+
+
+@pytest.mark.asyncio
+async def test_task_that_raises_without_retries_fails_immediately(tmp_path, monkeypatch):
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    task = orch.tasks[0]
+    assert task.status == "failed"
+    assert task.attempts == 1
+    assert len(calls) == 1
+    assert result.tasks_failed == 1
+
+
+@pytest.mark.asyncio
+async def test_dependency_of_raised_task_is_blocked(tmp_path, monkeypatch):
+    class FW(FakeWorker):
+        async def run(self):
+            if self.task.id == "1":
+                raise RuntimeError("boom")
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    t1 = TaskModel(id="1", description="one")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    t1o = next(t for t in orch.tasks if t.id == "1")
+    t2o = next(t for t in orch.tasks if t.id == "2")
+    assert t1o.status == "failed"
+    assert t2o.status == "blocked"
+    assert result.tasks_failed == 1
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_state_and_loads_it_once(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    loads = []
+    original_load = store.load
+
+    def counting_load():
+        loads.append(1)
+        return original_load()
+
+    monkeypatch.setattr(store, "load", counting_load)
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert len(loads) == 1  # the state file is read exactly once, in __init__
+    assert orch2.cycles == 1
+    assert orch2.original_goal == "g"
+    assert orch2.goal == "g"
+    assert [t.id for t in orch2.tasks] == ["t1"]
+    assert len(orch2.history) == 1
+    orch2.planner = FakePlanner()
+    orch2.tester = FakeTester(passed=True)
+    await orch2.run()
+    assert len(loads) == 1  # run() must not load the state file again
+
+
+@pytest.mark.asyncio
+async def test_resume_without_state_file_logs_starting_fresh(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, resume=True)
+    q = orch.event_bus.subscribe()
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    events = drain(q)
+    assert any(e.type == EventType.LOG and "starting fresh" in e.message for e in events)
+
+
+@pytest.mark.asyncio
+async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="ORIG", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=True)
+    result = await orch.run()
+    assert orch.goal == orch.original_goal == "ORIG"
+    assert orch._feedback == ""
+    assert result.skipped is True

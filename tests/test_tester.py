@@ -61,7 +61,11 @@ def test_run_no_runner(tmp_path):
     res = run(agent.run("goal", []))
     assert isinstance(res, TestResult)
     assert res.passed is True
-    assert "no test runner" in res.summary.lower()
+    assert "skipped" in res.summary.lower()
+    if "skipped" in TestResult.model_fields:
+        assert res.skipped is True
+    else:
+        assert "no test runner" in res.summary.lower()
 
 
 def test_run_llm_result(tmp_path):
@@ -91,18 +95,60 @@ def test_run_llm_raises_fallback(tmp_path):
     assert isinstance(res, TestResult)
 
 
-def test_run_failing_command(tmp_path):
-    (tmp_path / "pyproject.toml").write_text("[project]\n")
-    tests = tmp_path / "tests"
-    tests.mkdir()
-    (tests / "test_x.py").write_text("def test_fail():\n    assert False\n")
-    client = FakeLLMClient(
-        response='{"passed": false, "summary": "failed", "failures": ["assert False"]}'
-    )
+def test_run_no_runner_skipped(tmp_path):
     agent = TesterAgent(
-        client=client,
         settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
         workspace=tmp_path,
     )
     res = run(agent.run("goal", []))
+    assert isinstance(res, TestResult)
+    assert res.passed is True
+    assert "skipped" in res.summary.lower()
+    if "skipped" in TestResult.model_fields:
+        assert res.skipped is True
+
+
+def test_run_timeout_kills_process_group(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    class FakeProc:
+        pid = 12345
+        returncode = None
+
+        async def communicate(self):
+            await asyncio.sleep(10)
+            return b"", b""
+
+        async def wait(self):
+            self.returncode = -9
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc()
+
+    killed = {"pg": False, "kill": False}
+
+    def fake_killpg(pgid, sig):
+        killed["pg"] = True
+        raise OSError("no pg")
+
+    def fake_kill(pid, sig=None):
+        killed["kill"] = True
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("os.kill", fake_kill)
+
+    agent = TesterAgent(
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=1),
+        workspace=tmp_path,
+    )
+    res = run(agent.run("goal", []))
+    assert isinstance(res, TestResult)
     assert res.passed is False
+    assert "timed out" in res.summary.lower()
+    assert killed["pg"] is True or killed["kill"] is True

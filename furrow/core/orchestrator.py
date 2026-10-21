@@ -43,8 +43,13 @@ class Orchestrator:
         self._stopped_reason = ""
         self._resume = resume
         self._last_test_passed: bool | None = None
+        self._tests_skipped: bool = False
         self._console_obj: Any = _UNSET
+        self._resume_state_missing = False
         if resume:
+            # The state file is read exactly once, here: `run()` must not load it
+            # again, otherwise the values restored at start-up would be silently
+            # overwritten by a second (possibly different) read.
             st = self.state_store.load()
             if st is not None:
                 self.goal = st.goal
@@ -52,6 +57,8 @@ class Orchestrator:
                 self.cycles = st.cycles
                 self.tasks = list(st.tasks)
                 self.history = list(st.history)
+            else:
+                self._resume_state_missing = True
 
     def status(self) -> dict[str, Any]:
         return {
@@ -106,17 +113,11 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
-        if self._resume:
-            st = self.state_store.load()
-            if st is None:
-                self.event_bus.emit(Event(type=EventType.LOG,
-                                        message="no state file found, starting fresh"))
-            else:
-                self.goal = st.goal
-                self.original_goal = st.original_goal
-                self.cycles = st.cycles
-                self.tasks = list(st.tasks)
-                self.history = list(st.history)
+        if self._resume and self._resume_state_missing:
+            # The state file was already looked up in __init__; it was missing.
+            self._resume_state_missing = False
+            self.event_bus.emit(Event(type=EventType.LOG,
+                                      message="no state file found, starting fresh"))
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
@@ -148,6 +149,7 @@ class Orchestrator:
             self._merge_plan(plan)
             await self._execute(plan)
             test_result = await self.tester.run(self.original_goal, self.tasks)
+            skipped = bool(getattr(test_result, "skipped", False))
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             self.event_bus.emit(
                 Event(
@@ -161,7 +163,14 @@ class Orchestrator:
             else:
                 self._say(f"[red]Tests failed: {summary}[/red]")
             self._last_test_passed = test_result.passed
-            if not test_result.passed:
+            self._tests_skipped = skipped
+            if skipped:
+                # A skipped run (e.g. no test runner detected) is not a failure:
+                # keep the original goal and drop the stale feedback so the loop
+                # does not chase a test runner that does not exist.
+                self.goal = self.original_goal
+                self._feedback = ""
+            elif not test_result.passed:
                 self._feedback = "\n".join(test_result.failures)
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
@@ -209,6 +218,7 @@ class Orchestrator:
             tasks_failed=failed,
             summary=f"stopped: {self._stopped_reason}",
             stopped_reason=self._stopped_reason,
+            skipped=bool(self._tests_skipped),
         )
 
     def _context(self) -> str:
@@ -273,7 +283,48 @@ class Orchestrator:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
-                result = await worker_for(task).run()
+                try:
+                    result = await worker_for(task).run()
+                except asyncio.CancelledError:
+                    raise  # cancellation is not a task failure
+                except Exception as exc:
+                    # A raised exception is handled exactly like a worker that
+                    # returned success=False: it consumes one attempt and follows
+                    # the same retry / terminal-failure path.
+                    task.attempts += 1
+                    task.error = f"{type(exc).__name__}: {exc}"
+                    task.finished_at = datetime.now(timezone.utc).isoformat()
+                    task.status = "pending" if task.attempts <= max_retries else "failed"
+                    self.event_bus.emit(
+                        Event(
+                            type=EventType.ERROR,
+                            message=f"task {task.id} raised: {task.error}",
+                            data={"task": task.id, "error": task.error,
+                                  "attempts": task.attempts},
+                        )
+                    )
+                    self.event_bus.emit(
+                        Event(
+                            type=EventType.TASK_FINISHED,
+                            data={
+                                "task": task.id,
+                                "success": False,
+                                "summary": str(task.error or ""),
+                            },
+                        )
+                    )
+                    task_id = self._escape(task.id)
+                    detail = self._escape(self._one_line(task.error))
+                    if task.status == "pending":
+                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
+                        self.event_bus.emit(
+                            Event(type=EventType.LOG,
+                                 message=f"task {task.id} failed, retrying "
+                                         f"(attempt {task.attempts} of {max_retries + 1})")
+                        )
+                    else:
+                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    return
                 success = bool(getattr(result, "success", False))
                 task.result = getattr(result, "summary", None)
                 task.error = getattr(result, "error", None)
@@ -309,6 +360,21 @@ class Orchestrator:
                 else:
                     self._say(f"[red]Task {task_id} failed: {detail}[/red]")
 
+        async def run_tasks(tasks: list[TaskModel]) -> None:
+            """Run tasks concurrently, never swallowing a cancellation.
+
+            Exceptions raised inside `run_one` are converted into task failures
+            there; only `asyncio.CancelledError` may still reach us and it must
+            always propagate.
+            """
+            if not tasks:
+                return
+            results = await asyncio.gather(*[run_one(t) for t in tasks],
+                                           return_exceptions=True)
+            for res in results:
+                if isinstance(res, asyncio.CancelledError):
+                    raise res
+
         async def run_retries(tasks: list[TaskModel]) -> None:
             """Re-run tasks that failed while retries remain, until the budget is spent."""
             retry_queue = [t for t in tasks
@@ -316,7 +382,7 @@ class Orchestrator:
             while retry_queue:
                 batch = retry_queue
                 retry_queue = []
-                await asyncio.gather(*[run_one(t) for t in batch], return_exceptions=True)
+                await run_tasks(batch)
                 for t in batch:
                     if t.status == "pending" and t.attempts <= max_retries:
                         retry_queue.append(t)
@@ -329,5 +395,5 @@ class Orchestrator:
                     t.status = "blocked"
                 else:
                     runnable.append(t)
-            await asyncio.gather(*[run_one(t) for t in runnable], return_exceptions=True)
+            await run_tasks(runnable)
             await run_retries(runnable)

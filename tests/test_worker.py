@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,18 @@ class FakeLLMClient:
 
     def list_files(self, directory):
         return [str(p) for p in Path(directory).rglob("*") if p.is_file()]
+
+
+class LoopingLLMClient(FakeLLMClient):
+    """Fake client that always answers with the same tool-calling response."""
+
+    def __init__(self, response):
+        super().__init__([response])
+        self.response = response
+
+    async def chat(self, messages, tools=None, system="", model=None):
+        self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
+        return self.response
 
 
 def make_settings(tmp_path, iters=12):
@@ -226,6 +239,89 @@ async def test_iteration_budget(tmp_path):
     result = await agent.run()
     assert result.iterations == 3
     assert result.error == "worker iteration budget exhausted"
+    # A truncated worker must never look successful, otherwise the orchestrator
+    # marks the task as completed and never retries it.
+    assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_iteration_budget_exhausted_reports_failure(tmp_path):
+    """Regression: exhausting the iteration budget yields success=False + error."""
+    response = LLMResponse(
+        text="", tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "x"})]
+    )
+    client = LoopingLLMClient(response)
+    settings = make_settings(tmp_path).model_copy(update={"max_worker_iterations": 2})
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="loop")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is False
+    assert result.error
+    assert result.iterations == 2
+    assert len(client.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout(tmp_path):
+    """Regression: a slow command times out and returns the timeout message."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": "sleep 5"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path).model_copy(update={"request_timeout": 0.2})
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "timed out" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_kills_grandchildren(tmp_path):
+    """Regression: timing out kills the whole process group, leaving no orphans."""
+    marker = tmp_path / "orphan.txt"
+    # The subshell is a grandchild of the worker: killing only the direct child
+    # leaves it alive and it would create the marker file.
+    command = f"sh -c '(sleep 0.5; touch {marker}) & wait'"
+    settings = make_settings(tmp_path).model_copy(update={"request_timeout": 0.2})
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command(command)
+    assert out == "command timed out"
+    await asyncio.sleep(1.0)
+    assert not marker.exists()
+
+
+def test_list_files_caps_at_500_entries(tmp_path):
+    for i in range(520):
+        (tmp_path / f"f{i:04d}.txt").write_text("x")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = agent._list_files(".")
+    lines = out.splitlines()
+    assert len(lines) == 500
 
 
 @pytest.mark.asyncio

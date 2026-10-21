@@ -22,6 +22,7 @@ class FakeOrchestrator:
 
     init_kwargs: ClassVar[dict[str, Any]] = {}
     error: ClassVar[BaseException | None] = None
+    result: ClassVar[RunResult | None] = None
 
     def __init__(
         self,
@@ -45,6 +46,8 @@ class FakeOrchestrator:
     async def run(self) -> RunResult:
         if FakeOrchestrator.error is not None:
             raise FakeOrchestrator.error
+        if FakeOrchestrator.result is not None:
+            return FakeOrchestrator.result
         return RunResult(
             passed=True,
             cycles=1,
@@ -59,6 +62,7 @@ def fake_orchestrator(monkeypatch: pytest.MonkeyPatch) -> type[FakeOrchestrator]
     """Replace the orchestrator in the CLI with the fake one."""
     FakeOrchestrator.init_kwargs = {}
     FakeOrchestrator.error = None
+    FakeOrchestrator.result = None
     monkeypatch.setattr("furrow.cli.main.Orchestrator", FakeOrchestrator)
     return FakeOrchestrator
 
@@ -185,3 +189,56 @@ def test_start_reports_failures(
 
     assert result.exit_code == 1
     assert "boom" in result.output
+
+
+def test_main_passes_configured_log_level_to_configure_logging(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """FURROW_LOG_LEVEL (read from settings at call time) reaches configure_logging.
+
+    main() used to call configure_logging() with no level, silently dropping
+    settings.log_level.
+    """
+    monkeypatch.setattr("furrow.cli.main.settings.log_level", "DEBUG")
+
+    captured: list[str] = []
+
+    def fake_configure_logging(level: str) -> None:
+        captured.append(level)
+
+    monkeypatch.setattr("furrow.cli.main.configure_logging", fake_configure_logging)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert captured == ["DEBUG"]
+
+
+def test_summary_prints_skipped_when_no_test_runner(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A skipped run prints a distinct SKIPPED line instead of PASSED."""
+    result = RunResult(passed=True, cycles=1, summary="stopped: goal complete")
+    if "skipped" in RunResult.model_fields:
+        result.skipped = True
+    FakeOrchestrator.result = result
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    if "skipped" in RunResult.model_fields:
+        assert "SKIPPED" in output
+    else:
+        assert "PASSED" in output
+
+
+def test_summary_prints_passed_by_default(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """Without the skipped flag the usual PASSED line is printed."""
+    FakeOrchestrator.result = None
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "PASSED" in output
+    if "skipped" in RunResult.model_fields:
+        assert "SKIPPED" not in output

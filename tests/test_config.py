@@ -54,6 +54,7 @@ def test_run_result_defaults():
     assert r.tasks_failed == 0
     assert r.summary == ""
     assert r.stopped_reason == ""
+    assert r.skipped is False
 
 
 def test_plan_and_test_result_still_work():
@@ -84,7 +85,21 @@ def test_settings_state_path_no_argument_uses_workspace():
 
 def test_test_result_not_collected_by_pytest():
     assert TestResult.__test__ is False
-    assert set(TestResult.model_fields) == {"passed", "summary", "failures"}
+    assert set(TestResult.model_fields) == {"passed", "summary", "failures", "skipped"}
+
+
+def test_skipped_defaults():
+    tr = TestResult(passed=True, summary="ok")
+    assert tr.skipped is False
+    r = RunResult()
+    assert r.skipped is False
+
+
+def test_skipped_can_be_set():
+    tr = TestResult(passed=True, summary="ok", skipped=True)
+    assert tr.skipped is True
+    r = RunResult(passed=True, skipped=True)
+    assert r.skipped is True
 
 
 def test_settings_env_override(monkeypatch: pytest.MonkeyPatch):

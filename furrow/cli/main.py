@@ -52,7 +52,10 @@ def _print_summary(result: RunResult) -> None:
     click.echo(f"  Tasks completed: {result.tasks_completed}")
     click.echo(f"  Tasks failed:    {result.tasks_failed}")
     click.echo(f"  Stopped reason:  {result.stopped_reason}")
-    if result.passed:
+    skipped = bool(getattr(result, "skipped", False))
+    if skipped:
+        click.secho("  Result: SKIPPED - no test runner detected.", fg="yellow")
+    elif result.passed:
         click.secho("  Result: PASSED - all tests passed.", fg="green")
     else:
         click.secho("  Result: FAILED - tests did not pass.", fg="red")
@@ -98,7 +101,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 @click.group()
 def main() -> None:
     """Furrow - an autonomous coding agent."""
-    configure_logging()
+    configure_logging(settings.log_level)
 
 
 @main.command()

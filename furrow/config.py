@@ -45,6 +45,7 @@ class TestResult(BaseModel):
     passed: bool
     summary: str
     failures: list[str] = Field(default_factory=list)
+    skipped: bool = False
 
 
 class WorkerResult(BaseModel):
@@ -62,6 +63,7 @@ class RunResult(BaseModel):
     tasks_failed: int = 0
     summary: str = ""
     stopped_reason: str = ""
+    skipped: bool = False
 
 
 class Settings(BaseSettings):

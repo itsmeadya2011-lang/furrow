@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import shlex
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,9 @@ DENIED_COMMANDS = (
     "chmod -R 777 /",
     "> /dev/sda",
 )
+
+# Maximum number of entries returned by the ``list_files`` tool.
+MAX_LIST_ENTRIES = 500
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -108,10 +113,12 @@ class WorkerAgent:
                 )
             messages.append({"role": "user", "content": result_blocks})
 
-        # budget exhausted
+        # budget exhausted: the worker was truncated, so this is NOT a success.
+        # Reporting success here would make the orchestrator mark the task as
+        # completed instead of retrying it.
         return WorkerResult(
             summary="worker iteration budget exhausted",
-            success=True,
+            success=False,
             files_changed=sorted(self.files_changed),
             iterations=max_iters,
             error="worker iteration budget exhausted",
@@ -174,16 +181,15 @@ class WorkerAgent:
             entries = self.client.list_files(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
+        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
         base = self.workspace.resolve()
-        for e in entries[:500]:
+        for e in entries[:MAX_LIST_ENTRIES]:
             try:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
-        if len(entries) > 500:
-            entries = entries[:500]
-        return "\n".join(rels[:500])
+        return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
@@ -198,20 +204,26 @@ class WorkerAgent:
         if not parts:
             return "error: empty command"
         timeout = min(self.settings.request_timeout, 120.0)
+        # On POSIX the command runs in its own session/process group so that a
+        # timeout can kill the whole tree (children and grandchildren included)
+        # instead of leaking orphans. On other platforms we fall back to
+        # killing the direct child only.
+        new_session = os.name == "posix"
+        spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
         try:
             proc = await asyncio.create_subprocess_exec(
                 *parts,
                 cwd=str(self.workspace),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
             )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
+            await self._kill_process_tree(proc, new_session)
             return "command timed out"
         combined = stdout.decode("utf-8", errors="replace") + stderr.decode(
             "utf-8", errors="replace"
@@ -219,3 +231,24 @@ class WorkerAgent:
         if len(combined) > 20000:
             combined = combined[:20000]
         return combined
+
+    @staticmethod
+    async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
+        """Kill a timed-out command together with every process it spawned."""
+        if new_session:
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (OSError, AttributeError):
+                pgid = None
+            if pgid is not None:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (OSError, AttributeError):
+                    pass
+                else:
+                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+                        await asyncio.wait_for(proc.wait(), timeout=5.0)
+                    return
+        # Fallback: no process group available (or killing it failed).
+        with contextlib.suppress(ProcessLookupError, OSError):
+            proc.kill()
