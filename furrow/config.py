@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import ClassVar
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -75,6 +76,28 @@ class Usage(BaseModel):
         self.output_tokens += other.output_tokens
         self.calls += other.calls
         return self
+
+    # Default USD price table: (input price per 1M tokens, output price per 1M tokens).
+    # Unknown models fall back to the "default" row.
+    DEFAULT_PRICES: ClassVar[dict[str, tuple[float, float]]] = {
+        "claude-sonnet-4-20250514": (3.0, 15.0),
+        "claude-3-5-haiku-20241022": (0.8, 4.0),
+        "claude-3-5-sonnet-20241022": (3.0, 15.0),
+        "gpt-4o": (2.5, 10.0),
+        "gpt-4o-mini": (0.15, 0.60),
+        "default": (1.0, 3.0),
+    }
+
+    def cost_estimate(self, model: str = "default") -> float:
+        """Return an estimated USD cost for the accumulated tokens.
+
+        *model* selects a row in :data:`DEFAULT_PRICES`; unknown models fall
+        back to the ``default`` row. Prices are per 1,000,000 tokens.
+        """
+        in_price, out_price = self.DEFAULT_PRICES.get(
+            model, self.DEFAULT_PRICES["default"]
+        )
+        return (self.input_tokens * in_price + self.output_tokens * out_price) / 1_000_000.0
 
 
 class RunResult(BaseModel):

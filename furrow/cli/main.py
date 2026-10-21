@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
 
+try:
+    from importlib.metadata import version as _pkg_version
+    VERSION = _pkg_version("furrow")
+except Exception:  # pragma: no cover - package not installed
+    VERSION = "0.1.0"
+
 
 def _run_settings(
     model: str | None = None,
@@ -74,6 +80,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        cost = usage.cost_estimate(settings.model)
+        click.echo(f"  Est. cost:       ${cost:.4f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -158,6 +166,12 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)
+
+
+@main.command()
+def version() -> None:
+    """Print the Furrow version."""
+    click.echo(VERSION)
 
 
 @main.command()
