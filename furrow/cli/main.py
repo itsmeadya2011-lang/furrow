@@ -34,10 +34,10 @@ def _run_settings(
     max_cycles: int | None = None,
     workspace: Path | None = None,
 ) -> Settings:
-    """Return a copy of the global settings with the given overrides applied.
+    """Return a validated copy of the global settings with the given overrides applied.
 
-    The module level ``settings`` object is never mutated: ``model_copy`` gives
-    us a fresh instance for this run only.
+    The module level ``settings`` object is never mutated: a fresh validated
+    instance is constructed for this run only.
     """
     updates: dict[str, Any] = {}
     if model is not None:
@@ -46,7 +46,8 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
-    return settings.model_copy(update=updates)
+    merged = {**settings.model_dump(), **updates}
+    return Settings.model_validate(merged)
 
 
 def _print_summary(result: RunResult) -> None:
@@ -152,6 +153,12 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
     _print_summary(result)
+    skipped = bool(getattr(result, "skipped", False))
+    tests_run = getattr(result, "tests_run", 0) or 0
+    if skipped or result.passed or tests_run == 0:
+        sys.exit(0)
+    else:
+        sys.exit(1)
 
 
 @click.group()
@@ -163,7 +170,7 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
-@click.option("--max-cycles", type=int, default=None, help=MAX_CYCLES_HELP)
+@click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 @click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
@@ -210,7 +217,7 @@ def status(workspace: Path | None) -> None:
     default=None,
     help=WORKSPACE_HELP,
 )
-@click.option("--max-cycles", type=int, default=None, help=MAX_CYCLES_HELP)
+@click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 def resume(workspace: Path | None, max_cycles: int | None) -> None:
     """Resume the persisted Furrow run."""
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
@@ -230,7 +237,11 @@ def web(host: str, port: int) -> None:
     """Run the Furrow web server."""
     from furrow.web.server import run
 
-    run(host=host, port=port)
+    try:
+        run(host=host, port=port)
+    except Exception as exc:
+        click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

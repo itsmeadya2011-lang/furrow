@@ -17,6 +17,7 @@ from typing import Any, ClassVar, cast
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
 from furrow.config import RunResult, settings
@@ -372,6 +373,48 @@ def test_websocket_rejects_a_second_run(
     assert server._CURRENT["running"] is True, "the running run must not be touched"
 
 
+def test_websocket_rejects_a_negative_max_cycles(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The websocket path cannot smuggle an out-of-range ``max_cycles`` past the request model.
+
+    The payload is rejected with an error frame and no run is started.
+    """
+    messages: list[dict[str, Any]] = []
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "x", "max_cycles": -1})
+        try:
+            messages.append(ws.receive_json())
+        except WebSocketDisconnect:
+            messages.append({"type": "closed"})
+
+    assert messages, "the server must answer instead of hanging"
+    assert messages[0]["type"] == "error"
+    assert "max_cycles" in messages[0]["message"]
+    assert fake_orchestrator.instances == [], "no run may be started"
+    assert server._CURRENT.get("running") is False
+
+
+def test_websocket_applies_a_valid_max_cycles_override(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A valid ``max_cycles`` override reaches the orchestrator of the run."""
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "g", "max_cycles": 2})
+        for _ in range(20):
+            try:
+                message = ws.receive_json()
+            except WebSocketDisconnect:
+                break
+            if message.get("type") == "done":
+                break
+
+    assert fake_orchestrator.instances, "the run must have started"
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_cycles == 2
+
+
 def test_api_status_reports_not_running_after_run(
     client: TestClient, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
@@ -502,3 +545,50 @@ async def test_run_orchestrator_releases_the_client_when_the_run_is_cancelled() 
         await task
 
     assert orchestrator.client.closed is True
+
+
+def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:
+    html = client.get("/").text
+    assert ".status-skipped" in html
+
+
+def test_start_request_rejects_negative_max_cycles(client: TestClient) -> None:
+    response = client.post("/api/start", json={"goal": "x", "max_cycles": -1})
+    assert response.status_code == 422
+
+
+def test_api_start_rejects_a_negative_max_cycles_without_starting_a_run(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """An out-of-range ``max_cycles`` never reaches the orchestrator."""
+    response = client.post("/api/start", json={"goal": "x", "max_cycles": -1})
+
+    assert response.status_code == 422
+    assert fake_orchestrator.instances == [], "no run may be started"
+    assert server._CURRENT.get("running") is False
+
+
+def test_run_settings_applies_a_valid_max_cycles_override() -> None:
+    """A valid override is applied to the settings of the run."""
+    original = server.settings.max_cycles
+
+    run_settings = server._run_settings(3)
+
+    assert run_settings.max_cycles == 3
+    assert server.settings.max_cycles == original, "the shared settings must not be modified"
+
+
+def test_run_settings_without_override_returns_the_current_settings() -> None:
+    """Without an override the current settings are used as they are."""
+    assert server._run_settings(None) is server.settings
+
+
+def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
+    """An out-of-range override is rejected instead of silently accepted.
+
+    ``model_copy(update=...)`` skips the pydantic validation, so a negative
+    ``max_cycles`` used to build a ``Settings`` object that violates the
+    bounds of ``furrow.config.Settings``.
+    """
+    with pytest.raises(ValidationError):
+        server._run_settings(-1)

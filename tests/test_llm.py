@@ -505,3 +505,242 @@ async def test_aclose_resets_so_fresh_client_created():
 
     fresh = client.ollama
     assert fresh is not fake
+
+class _FakeResponseNoChoices:
+    def __init__(self) -> None:
+        self.choices = []
+        self.usage = None
+
+
+class _FakeChoiceNoMessage:
+    def __init__(self) -> None:
+        self.message = None
+        self.finish_reason = "stop"
+
+
+class _FakeResponseNoMessage:
+    def __init__(self) -> None:
+        self.choices = [_FakeChoiceNoMessage()]
+        self.usage = None
+
+
+def test_is_retryable_response_status_code():
+    class _RespErr(Exception):
+        def __init__(self, code: int) -> None:
+            self.response = type("R", (), {"status_code": code})()
+
+    assert _is_retryable(_RespErr(429)) is True
+    assert _is_retryable(_RespErr(503)) is True
+    assert _is_retryable(_RespErr(400)) is False
+
+
+def test_is_retryable_no_status_at_all():
+    assert _is_retryable(ValueError("no status")) is False
+
+
+def test_is_retryable_status_code_path_still_works():
+    assert _is_retryable(_FakeStatusError(429)) is True
+    assert _is_retryable(_FakeStatusError(400)) is False
+
+
+async def test_complete_openai_empty_choices_raises_valueerror():
+    from furrow.config import Provider
+
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions = type("C", (), {})()
+    async def create(**kwargs):
+        return _FakeResponseNoChoices()
+    fake.chat.completions.create = create
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+    with pytest.raises(ValueError, match="no choices"):
+        await client.complete("hi")
+
+
+async def test_chat_openai_empty_choices_raises_valueerror():
+    from furrow.config import Provider
+
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions = type("C", (), {})()
+    async def create(**kwargs):
+        return _FakeResponseNoChoices()
+    fake.chat.completions.create = create
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+    with pytest.raises(ValueError, match="no choices"):
+        await client.chat([{"role": "user", "content": "hi"}])
+
+
+async def test_complete_openai_choice_no_message_raises_valueerror():
+    from furrow.config import Provider
+
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions = type("C", (), {})()
+    async def create(**kwargs):
+        return _FakeResponseNoMessage()
+    fake.chat.completions.create = create
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+    with pytest.raises(ValueError, match="no message"):
+        await client.complete("hi")
+
+
+async def test_chat_openai_choice_no_message_raises_valueerror():
+    from furrow.config import Provider
+
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions = type("C", (), {})()
+    async def create(**kwargs):
+        return _FakeResponseNoMessage()
+    fake.chat.completions.create = create
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+    with pytest.raises(ValueError, match="no message"):
+        await client.chat([{"role": "user", "content": "hi"}])
+
+
+async def test_complete_anthropic_none_content_yields_empty():
+    class _Resp:
+        content = None
+        usage = None
+        stop_reason = "end_turn"
+
+    class _Msgs:
+        async def create(self, **kwargs):
+            return _Resp()
+
+    class _Client:
+        messages = _Msgs()
+
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._anthropic = _Client()
+    result = await client.complete("hi")
+    assert result == ""
+
+
+async def test_chat_anthropic_none_content_yields_empty():
+    class _Resp:
+        content = None
+        usage = None
+        stop_reason = "end_turn"
+
+    class _Msgs:
+        async def create(self, **kwargs):
+            return _Resp()
+
+    class _Client:
+        messages = _Msgs()
+
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._anthropic = _Client()
+    result = await client.chat([{"role": "user", "content": "hi"}])
+    assert result.text == ""
+
+
+@pytest.fixture
+def fast_sleep(monkeypatch):
+    """Replace ``asyncio.sleep`` with a no-op so retry back-off does not slow tests."""
+    delays: list[float] = []
+
+    async def fake_sleep(seconds):
+        delays.append(float(seconds))
+
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+    return delays
+
+
+@pytest.mark.parametrize("tenacity_available", [True, False])
+async def test_retry_retries_a_retryable_error_the_expected_number_of_times(
+    monkeypatch, fast_sleep, tenacity_available
+):
+    monkeypatch.setattr("furrow.llm._TENACITY_AVAILABLE", tenacity_available)
+    calls = []
+
+    async def call() -> str:
+        calls.append(1)
+        raise _FakeStatusError(503)
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    with pytest.raises(_FakeStatusError):
+        await client._retry(call)
+    assert len(calls) == 3  # max_retries attempts
+
+
+@pytest.mark.parametrize("tenacity_available", [True, False])
+async def test_retry_raises_a_non_retryable_error_immediately(
+    monkeypatch, fast_sleep, tenacity_available
+):
+    monkeypatch.setattr("furrow.llm._TENACITY_AVAILABLE", tenacity_available)
+    calls = []
+
+    async def call() -> str:
+        calls.append(1)
+        raise ValueError("not retryable")
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    with pytest.raises(ValueError, match="not retryable"):
+        await client._retry(call)
+    assert len(calls) == 1  # a non-retryable error is never retried
+
+
+@pytest.mark.parametrize("tenacity_available", [True, False])
+async def test_retry_returns_the_result_of_a_successful_call(
+    monkeypatch, fast_sleep, tenacity_available
+):
+    monkeypatch.setattr("furrow.llm._TENACITY_AVAILABLE", tenacity_available)
+    calls = []
+
+    async def call() -> str:
+        calls.append(1)
+        return "ok"
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    assert await client._retry(call) == "ok"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("tenacity_available", [True, False])
+async def test_retry_succeeds_after_a_transient_error(
+    monkeypatch, fast_sleep, tenacity_available
+):
+    monkeypatch.setattr("furrow.llm._TENACITY_AVAILABLE", tenacity_available)
+    calls = []
+
+    async def call() -> str:
+        calls.append(1)
+        if len(calls) < 2:
+            raise _FakeStatusError(503)
+        return "recovered"
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    assert await client._retry(call) == "recovered"
+    assert len(calls) == 2
+
+
+async def test_complete_retries_a_transient_provider_error(monkeypatch, fast_sleep):
+    class _FlakyCompletions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise _FakeStatusError(503)
+            return _FakeResponse("ok")
+
+    class _FlakyChat:
+        def __init__(self) -> None:
+            self.completions = _FlakyCompletions()
+
+    class _FlakyOpenAI:
+        def __init__(self) -> None:
+            self.chat = _FlakyChat()
+
+    fake = _FlakyOpenAI()
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    client._openai = fake
+
+    result = await client.complete("hi")
+
+    assert result == "ok"
+    assert fake.chat.completions.calls == 2

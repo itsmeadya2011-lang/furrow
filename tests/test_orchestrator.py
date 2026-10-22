@@ -23,19 +23,22 @@ class FakeWorker:
 
 
 class FakePlanner:
-    def __init__(self, tasks=None, raise_valueerror=False):
+    def __init__(self, tasks=None, raise_valueerror=False, raise_runtimeerror=False):
         self.tasks = (
             [TaskModel(id="t1", description="do t1")]
             if tasks is None
             else list(tasks)
         )
         self.raise_valueerror = raise_valueerror
+        self.raise_runtimeerror = raise_runtimeerror
         self.calls = 0
 
     async def plan(self, goal, context=""):
         self.calls += 1
         if self.raise_valueerror:
             raise ValueError("boom")
+        if self.raise_runtimeerror:
+            raise RuntimeError("boom")
         return Plan(
             tasks=[
                 TaskModel(id=t.id, description=t.description, dependencies=list(t.dependencies))
@@ -831,3 +834,126 @@ async def test_tests_run_is_restored_on_resume(tmp_path, monkeypatch):
     orch2.tester = FakeTester(passed=True)
     result2 = await orch2.run()
     assert result2.tests_run >= 1  # accounts for both cycles (restored)
+
+
+@pytest.mark.asyncio
+async def test_planner_runtimeerror_produces_error_event_and_stopped_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(raise_runtimeerror=True)
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    assert result.stopped_reason.startswith("planner failed")
+    events = drain(q)
+    assert any(e.type == EventType.ERROR for e in events)
+
+
+@pytest.mark.asyncio
+async def test_state_store_save_oserror_does_not_crash_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+
+    def boom(state):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "save", boom)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    assert isinstance(result, RunResult)
+    events = drain(q)
+    errors = [e for e in events if e.type == EventType.ERROR]
+    assert errors, "a failed state save must emit an ERROR event"
+    assert any("disk full" in e.message for e in errors)
+    assert any(str(store.path) in e.message for e in errors)
+    # The state was NOT written, so no STATE_SAVED may be emitted for that cycle.
+    assert not [e for e in events if e.type == EventType.STATE_SAVED]
+
+
+@pytest.mark.asyncio
+async def test_state_saved_is_emitted_only_for_cycles_whose_save_succeeded(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+
+    attempts = []
+    original_save = store.save
+
+    def flaky_save(state):
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise OSError("disk full")
+        return original_save(state)
+
+    monkeypatch.setattr(store, "save", flaky_save)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+
+    assert isinstance(result, RunResult)
+    assert result.cycles == 2
+    assert len(attempts) == 2
+    events = drain(q)
+    state_saved = [e for e in events if e.type == EventType.STATE_SAVED]
+    errors = [e for e in events if e.type == EventType.ERROR]
+    # Only the cycle whose save succeeded reports a saved state.
+    assert len(state_saved) == 1
+    assert state_saved[0].data["path"] == str(store.path)
+    # The failed cycle reports the failure instead.
+    assert len(errors) == 1
+    assert "disk full" in errors[0].message
+    assert str(store.path) in errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_worker_result_attribute_access_failure_marks_task_failed(tmp_path, monkeypatch):
+    class BadResult:
+        @property
+        def success(self):
+            raise RuntimeError("attr boom")
+
+    class FW(FakeWorker):
+        async def run(self):
+            return BadResult()
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    task = orch.tasks[0]
+    assert task.status in ("failed", "pending")
+    assert task.attempts >= 1
+    events = drain(q)
+    assert any(e.type == EventType.ERROR for e in events)
+    assert any(
+        e.type == EventType.TASK_FINISHED and not e.data.get("success", True)
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_error_propagates_out_of_run(tmp_path, monkeypatch):
+    class FW(FakeWorker):
+        async def run(self):
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    with pytest.raises(asyncio.CancelledError):
+        await orch.run()

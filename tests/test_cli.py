@@ -166,6 +166,73 @@ def test_resume_runs_orchestrator(
     assert "goal complete" in result.output
 
 
+def test_start_max_cycles_negative_rejected(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(main, ["start", "build a thing", "--max-cycles", "-1"])
+
+    assert result.exit_code != 0
+
+
+def test_resume_max_cycles_negative_rejected(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(
+        main, ["resume", "--workspace", str(tmp_path), "--max-cycles", "-1"]
+    )
+
+    assert result.exit_code != 0
+
+
+def test_web_reports_friendly_error_on_bind_failure(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def raise_error(*args: Any, **kwargs: Any) -> None:
+        raise OSError("address already in use")
+
+    monkeypatch.setattr("furrow.web.server.run", raise_error)
+
+    result = runner.invoke(main, ["web"])
+
+    assert result.exit_code == 1
+    assert "Furrow failed:" in result.output
+
+
+def test_start_exits_1_on_failed_run(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    fake_orchestrator.result = _make_result(passed=False, tests_run=5)
+
+    result = runner.invoke(main, ["start", "build a thing"])
+
+    assert result.exit_code == 1
+    assert "FAILED" in result.output
+
+
+def test_start_exits_0_on_passed_run(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    fake_orchestrator.result = _make_result(passed=True, tests_run=3)
+
+    result = runner.invoke(main, ["start", "build a thing"])
+
+    assert result.exit_code == 0
+    assert "PASSED" in result.output
+
+
+def test_start_exits_0_on_skipped_run(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    fake_orchestrator.result = _make_result(passed=False, skipped=True, tests_run=0)
+
+    result = runner.invoke(main, ["start", "build a thing"])
+
+    assert result.exit_code == 0
+    assert "SKIPPED" in result.output
+
+
 def test_start_uses_max_cycles_and_workspace(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
 ) -> None:

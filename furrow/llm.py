@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import aiofiles
 from anthropic import AsyncAnthropic
@@ -22,6 +23,10 @@ except ImportError:  # pragma: no cover - tenacity is a declared dependency
     _TENACITY_AVAILABLE = False
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+#: Result type of a single LLM request (a plain string for `complete`, an
+#: :class:`LLMResponse` for `chat`).
+T = TypeVar("T")
 
 
 @dataclass(slots=True)
@@ -46,7 +51,12 @@ def _is_retryable(exc: BaseException) -> bool:
         return True
     if isinstance(exc, ConnectionError):
         return True
-    status_code = getattr(exc, "status_code", None)
+    status_code = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+    if status_code is None:
+        status_code = getattr(exc, "status_code", None)
     return status_code in RETRYABLE_STATUS_CODES
 
 
@@ -260,28 +270,33 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
-    async def _retry(self, call):
+    async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
+        """Run ``call`` and retry it while the error looks transient.
+
+        The call is retried up to ``settings.max_retries`` attempts. Errors that
+        are not retryable (see :func:`_is_retryable`) are raised immediately.
+        """
         max_attempts = max(1, int(self.settings.max_retries))
 
         if _TENACITY_AVAILABLE:
-            async for attempt in AsyncRetrying(
+            async for attempt_manager in AsyncRetrying(
                 stop=stop_after_attempt(max_attempts),
                 wait=wait_exponential(multiplier=1, min=1, max=20),
                 retry=retry_if_exception(_is_retryable),
                 reraise=True,
             ):
-                with attempt:
+                with attempt_manager:
                     return await call()
 
         last_exc: Exception | None = None
-        for attempt in range(max_attempts):
+        for attempt_index in range(max_attempts):
             try:
                 return await call()
             except Exception as exc:
                 last_exc = exc
-                if attempt + 1 >= max_attempts or not _is_retryable(exc):
+                if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
-                await asyncio.sleep(min(20.0, float(2 ** attempt)))
+                await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
@@ -336,7 +351,7 @@ class LLMClient:
             messages=[{"role": "user", "content": prompt}],
         )
         text = ""
-        for block in response.content:
+        for block in response.content or []:
             if block.type == "text":
                 text += block.text
         usage = _extract_anthropic_usage(response)
@@ -354,7 +369,14 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        text = response.choices[0].message.content or ""
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise ValueError("provider response contained no choices")
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        if message is None:
+            raise ValueError("provider response choice has no message")
+        text = message.content or ""
         usage = _extract_openai_usage(response)
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
@@ -379,7 +401,7 @@ class LLMClient:
         response = await self.anthropic.messages.create(**kwargs)
         text = ""
         tool_calls: list[ToolCall] = []
-        for block in response.content:
+        for block in response.content or []:
             if block.type == "text":
                 text += block.text
             elif block.type == "tool_use":
@@ -416,8 +438,13 @@ class LLMClient:
         if request_tools:
             kwargs["tools"] = request_tools
         response = await client.chat.completions.create(**kwargs)
-        choice = response.choices[0]
-        message = choice.message
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise ValueError("provider response contained no choices")
+        choice = choices[0]
+        message = getattr(choice, "message", None)
+        if message is None:
+            raise ValueError("provider response choice has no message")
         text = message.content or ""
         tool_calls: list[ToolCall] = []
         for tc in message.tool_calls or []:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import re
 import shlex
@@ -366,18 +367,39 @@ class WorkerAgent:
 
     async def _execute_tool(self, tc: ToolCall) -> str:
         name = tc.name
-        args = tc.arguments or {}
+        args = self._coerce_tool_args(tc.arguments)
+        if args is None:
+            return "error: invalid tool arguments"
         if name == "read_file":
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
             return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
         if name == "list_files":
-            return self._list_files(
+            return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
+
+    @staticmethod
+    def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:
+        if arguments is None:
+            return {}
+        if isinstance(arguments, dict):
+            return arguments
+        if isinstance(arguments, str):
+            text = arguments.strip()
+            if not text:
+                return {}
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                return None
+            if isinstance(parsed, dict):
+                return parsed
+            return None
+        return None
 
     async def _read_file(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
@@ -388,7 +410,7 @@ class WorkerAgent:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         if len(content) > 20000:
-            content = content[:20000]
+            content = content[:20000] + "\n[... output truncated ...]"
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -404,12 +426,12 @@ class WorkerAgent:
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
 
-    def _list_files(self, path: str) -> str:
+    async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
             return "error: path escapes workspace"
         try:
-            entries = self.client.list_files(resolved)
+            entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.

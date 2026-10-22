@@ -310,7 +310,8 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
     assert not marker.exists()
 
 
-def test_list_files_caps_at_500_entries(tmp_path):
+@pytest.mark.asyncio
+async def test_list_files_caps_at_500_entries(tmp_path):
     for i in range(520):
         (tmp_path / f"f{i:04d}.txt").write_text("x")
     client = FakeLLMClient([])
@@ -319,7 +320,7 @@ def test_list_files_caps_at_500_entries(tmp_path):
 
     task = TaskModel(id="1", description="list")
     agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
-    out = agent._list_files(".")
+    out = await agent._list_files(".")
     lines = out.splitlines()
     assert len(lines) == 500
 
@@ -789,3 +790,72 @@ async def test_command_timeout_from_command_timeout_not_request_timeout(tmp_path
     )
     out = await agent._run_command("sleep 2")
     assert "timed out" not in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_invalid_args_do_not_raise(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    for bad in ([1, 2], "not json", None):
+        tc = ToolCall(id="t", name="read_file", arguments=bad)
+        out = await agent._execute_tool(tc)
+        assert isinstance(out, str)
+        assert out.startswith("error: ")
+
+
+@pytest.mark.asyncio
+async def test_read_file_truncation_marker(tmp_path):
+    big = "a" * 25000
+    (tmp_path / "big.txt").write_text(big)
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="read")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._read_file("big.txt")
+    assert "[... output truncated ...]" in out
+
+
+@pytest.mark.asyncio
+async def test_list_files_runs_off_event_loop(tmp_path):
+    import threading
+
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("x")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    loop_thread = threading.get_ident()
+    seen = {}
+
+    def slow_list(directory):
+        seen["tid"] = threading.get_ident()
+        import time
+        time.sleep(0.1)
+        from pathlib import Path as _P
+        return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
+
+    client.list_files = slow_list
+
+    progress = {"n": 0}
+
+    async def ticker():
+        while not progress.get("done"):
+            progress["n"] += 1
+            await asyncio.sleep(0.01)
+
+    t = asyncio.ensure_future(ticker())
+    await agent._list_files(".")
+    progress["done"] = True
+    await t
+    assert seen["tid"] != loop_thread
+    assert progress["n"] > 0

@@ -131,3 +131,54 @@ def test_runstate_has_tests_run_field_defaulting_to_zero():
     state = RunState()
     assert state.tests_run == 0
 
+
+def test_unknown_status_normalized_and_plan_parsing_succeeds():
+    from furrow.agents.parsing import parse_plan
+
+    data = {
+        "rationale": "r",
+        "tasks": [{"id": "t1", "description": "d", "status": "UNKNOWN"}],
+    }
+    plan = parse_plan(__import__("json").dumps(data))
+    assert plan.tasks[0].status == "pending"
+
+
+def test_numeric_settings_reject_invalid_values():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(max_parallel_tasks=0)
+    with pytest.raises(ValidationError):
+        Settings(max_worker_iterations=0)
+    with pytest.raises(ValidationError):
+        Settings(max_tokens=0)
+    with pytest.raises(ValidationError):
+        Settings(request_timeout=0)
+    with pytest.raises(ValidationError):
+        Settings(command_timeout=0)
+    with pytest.raises(ValidationError):
+        Settings(test_timeout=0)
+    with pytest.raises(ValidationError):
+        Settings(max_cycles=-1)
+    with pytest.raises(ValidationError):
+        Settings(max_retries=-1)
+    with pytest.raises(ValidationError):
+        Settings(max_task_retries=-1)
+
+
+def test_numeric_settings_allow_valid_bounds():
+    s = Settings(
+        max_parallel_tasks=1,
+        max_cycles=0,
+        max_retries=0,
+        max_task_retries=0,
+        max_worker_iterations=1,
+        max_tokens=1,
+        request_timeout=0.001,
+        command_timeout=0.001,
+        test_timeout=0.001,
+    )
+    assert s.max_cycles == 0
+    assert s.max_retries == 0
+    assert s.max_task_retries == 0
+

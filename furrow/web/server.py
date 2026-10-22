@@ -20,7 +20,7 @@ from typing import Any
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, ValidationError
 
 from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
@@ -129,6 +129,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-completed { color: #57d38c; }
   .status-failed { color: #e0685f; }
   .status-blocked { color: #f0b367; }
+  .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
 </style>
 </head>
@@ -415,7 +416,7 @@ class StartRequest(BaseModel):
     """Body of the ``POST /api/start`` endpoint."""
 
     goal: str = ""
-    max_cycles: int | None = None
+    max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -423,7 +424,7 @@ class SocketRequest(BaseModel):
     """First (and only) message a websocket client sends."""
 
     goal: str = ""
-    max_cycles: int | None = None
+    max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -439,10 +440,27 @@ def _state_store() -> StateStore:
 
 
 def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override."""
+    """Settings for a run, with an optional ``max_cycles`` override.
+
+    The merged settings are *validated*: ``model_copy(update=...)`` skips the
+    pydantic validation and would happily build a ``Settings`` object with an
+    out-of-range value (a negative ``max_cycles`` for instance).  The module
+    level ``settings`` object is never modified: a new one is built instead.
+    """
     if max_cycles is None:
         return settings
-    return settings.model_copy(update={"max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+
+
+def _describe_validation_error(exc: ValidationError) -> str:
+    """Short, human readable reason why a payload was rejected."""
+    for error in exc.errors():
+        location = ".".join(str(part) for part in error.get("loc", ()))
+        if location == "max_cycles":
+            return "max_cycles must be greater than or equal to 0"
+        if location == "goal":
+            return "goal must be a string"
+    return "invalid request payload"
 
 
 def _on_run_done(task: asyncio.Task[RunResult]) -> None:
@@ -600,7 +618,15 @@ async def api_start(request: StartRequest) -> JSONResponse:
                 content={"started": False, "error": "no goal to resume"},
             )
     bus = EventBus()
-    orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+    try:
+        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+    except ValidationError as validation_error:
+        # Defence in depth: the request model already bounds ``max_cycles``,
+        # but an invalid run must never start.
+        return JSONResponse(
+            status_code=400,
+            content={"started": False, "error": _describe_validation_error(validation_error)},
+        )
     run_task = asyncio.create_task(_run_and_drain(orchestrator, bus))
     _TASKS.add(run_task)
     run_task.add_done_callback(_on_run_done)
@@ -633,6 +659,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             return
         try:
             request = SocketRequest.model_validate(payload)
+        except ValidationError as validation_error:
+            # A rejected payload (an out-of-range ``max_cycles`` for instance)
+            # must be answered with an error frame and must never start a run.
+            await _send_error(websocket, _describe_validation_error(validation_error))
+            return
         except ValueError:
             await _send_error(websocket, "expected a JSON object with a goal")
             return
@@ -646,7 +677,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # of overwriting the registry entry of the running one.
             await _send_error(websocket, "a run is already in progress")
             return
-        orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+        try:
+            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+        except ValidationError as validation_error:
+            # Defence in depth: the run settings are validated, so an invalid
+            # override can never reach the orchestrator.
+            await _send_error(websocket, _describe_validation_error(validation_error))
+            return
         run_task = asyncio.create_task(_run_orchestrator(orchestrator))
         _TASKS.add(run_task)
         run_task.add_done_callback(_on_run_done)

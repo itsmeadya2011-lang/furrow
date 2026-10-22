@@ -385,7 +385,7 @@ class TesterAgent:
                 + stderr.decode("utf-8", errors="replace")
             )
             if len(combined) > 20000:
-                combined = combined[:20000]
+                combined = "[... output truncated ...]\n" + combined[-20000:]
 
             llm_result: TestResult | None = None
             if not spawn_failed:

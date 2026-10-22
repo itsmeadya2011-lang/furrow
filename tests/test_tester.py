@@ -385,3 +385,79 @@ def test_green_summary_line_is_not_reported_as_a_failure(tmp_path, monkeypatch):
 
     assert res.passed is True
     assert res.failures == []
+
+
+def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
+    """Output longer than 20000 chars keeps the tail (with summary) and adds marker."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    head_start = "START_OF_ORIGINAL_OUTPUT_ABCDEFG"
+    padding = ("Y" * 10000) + ("Z" * 20000)
+    summary = (
+        "\n=========================== 2 failed, 3 passed in 1.23s "
+        "===========================\n"
+    )
+    stdout = (head_start + padding + summary).encode()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stdout=stdout)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("llm down"))
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+    assert res.passed is False
+    assert "[... output truncated ...]" in res.summary
+    assert "2 failed" in " ".join(res.failures)
+    # Beginning of original output is no longer what is kept
+    assert head_start not in res.summary
+    assert head_start not in " ".join(res.failures)
+    assert client.prompts
+    prompt = client.prompts[0]
+    assert "[... output truncated ...]" in prompt
+    assert "2 failed" in prompt
+    assert head_start not in prompt
+
+
+def test_truncation_keeps_tail_old_head_only_gone(tmp_path, monkeypatch):
+    """Old head-only behaviour is gone - beginning of output is not kept."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    head_start = "UNIQUE_HEAD_MARKER_111"
+    filler = "M" * 25005
+    tail = (
+        "\n=========================== 2 failed, 5 passed in 1.23s "
+        "===========================\nUNIQUE_TAIL_MARKER_777\n"
+    )
+    stdout = (head_start + filler + tail).encode()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stdout=stdout)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("llm down"))
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+    assert res.passed is False
+    assert "[... output truncated ...]" in res.summary
+    assert "2 failed" in " ".join(res.failures)
+    assert head_start not in res.summary
+    assert head_start not in " ".join(res.failures)
+    assert client.prompts
+    prompt = client.prompts[0]
+    assert "[... output truncated ...]" in prompt
+    assert "2 failed" in prompt
+    assert "UNIQUE_TAIL_MARKER_777" in prompt
+    assert head_start not in prompt
