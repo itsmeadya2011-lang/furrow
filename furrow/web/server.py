@@ -447,9 +447,10 @@ def _run_settings(max_cycles: int | None) -> Settings:
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
-        return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    base = settings.model_dump()
+    if max_cycles is not None:
+        base["max_cycles"] = max_cycles
+    return Settings.model_validate(base)
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
