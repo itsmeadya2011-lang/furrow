@@ -13,8 +13,10 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
+import collections
 import inspect
 import logging
+import signal
 from typing import Any
 
 import uvicorn
@@ -39,6 +41,7 @@ DEFAULT_CURRENT: dict[str, Any] = {
     "result": None,
     "task": None,
     "error": None,
+    "events": collections.deque(maxlen=100),
 }
 
 # Registry of the run that is currently active (or of the last one that ran).
@@ -473,6 +476,9 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
         _CURRENT["running"] = bool(current is not None and not current.done())
         return
     _CURRENT["running"] = False
+    events = _CURRENT.get("events")
+    if isinstance(events, collections.deque):
+        events.clear()
     if task.cancelled():
         _CURRENT["error"] = "run cancelled"
         return
@@ -537,13 +543,23 @@ async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
 
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
-    """Run an orchestrator in the background and discard the emitted events."""
+    """Run an orchestrator in the background and capture its events for polling."""
     queue = bus.subscribe()
-    drain = asyncio.create_task(_drain(queue))
+    events_buffer = _CURRENT.setdefault("events", collections.deque(maxlen=100))
+
+    async def _capture() -> None:
+        while True:
+            event = await queue.get()
+            try:
+                events_buffer.append(event.to_dict())
+            except Exception:
+                continue
+
+    capture = asyncio.create_task(_capture())
     try:
         return await _run_orchestrator(orchestrator)
     finally:
-        drain.cancel()
+        capture.cancel()
         bus.unsubscribe(queue)
 
 
@@ -588,10 +604,12 @@ async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""
     orchestrator = _CURRENT.get("orchestrator")
     result = _CURRENT.get("result")
+    events = list(_CURRENT.get("events", []))
     return {
         "running": bool(_CURRENT.get("running")),
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
+        "events": events,
     }
 
 
@@ -738,5 +756,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
-    """Start the Furrow web server."""
-    uvicorn.run(app, host=host, port=port)
+    """Start the Furrow web server with graceful shutdown."""
+    config = uvicorn.Config(app, host=host, port=port, log_level="info")
+    server = uvicorn.Server(config)
+
+    def _signal_handler() -> None:
+        """Cancel any active run and stop the server."""
+        run_task = _CURRENT.get("task")
+        if run_task is not None and not run_task.done():
+            run_task.cancel()
+        server.should_exit = True
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _signal_handler)
+        loop.add_signal_handler(signal.SIGINT, _signal_handler)
+    except (NotImplementedError, RuntimeError):
+        # Signal handlers not supported on this platform
+        pass
+
+    try:
+        loop.run_until_complete(server.serve())
+    finally:
+        loop.close()

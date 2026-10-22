@@ -33,6 +33,9 @@ def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    command_timeout: float | None = None,
+    test_timeout: float | None = None,
+    max_retries: int | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +49,12 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if command_timeout is not None:
+        updates["command_timeout"] = command_timeout
+    if test_timeout is not None:
+        updates["test_timeout"] = test_timeout
+    if max_retries is not None:
+        updates["max_retries"] = max_retries
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -189,17 +198,39 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option(
+    "--command-timeout", type=float, default=None,
+    help="Command execution timeout in seconds.",
+)
+@click.option(
+    "--test-timeout", type=float, default=None,
+    help="Test suite timeout in seconds.",
+)
+@click.option(
+    "--max-retries", type=click.IntRange(min=0), default=None,
+    help="Retry attempts for transient LLM errors.",
+)
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    command_timeout: float | None,
+    test_timeout: float | None,
+    max_retries: int | None,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        max_cycles=max_cycles,
+        workspace=workspace,
+        command_timeout=command_timeout,
+        test_timeout=test_timeout,
+        max_retries=max_retries,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -229,9 +260,33 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option(
+    "--command-timeout", type=float, default=None,
+    help="Command execution timeout in seconds.",
+)
+@click.option(
+    "--test-timeout", type=float, default=None,
+    help="Test suite timeout in seconds.",
+)
+@click.option(
+    "--max-retries", type=click.IntRange(min=0), default=None,
+    help="Retry attempts for transient LLM errors.",
+)
+def resume(
+    workspace: Path | None,
+    max_cycles: int | None,
+    command_timeout: float | None,
+    test_timeout: float | None,
+    max_retries: int | None,
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        workspace=workspace,
+        command_timeout=command_timeout,
+        test_timeout=test_timeout,
+        max_retries=max_retries,
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
