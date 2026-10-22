@@ -14,6 +14,7 @@ from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
+from furrow.costs import estimate_cost
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -355,6 +356,10 @@ class LLMClient:
             if block.type == "text":
                 text += block.text
         usage = _extract_anthropic_usage(response)
+        try:
+            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+        except Exception:
+            usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
@@ -378,6 +383,10 @@ class LLMClient:
             raise ValueError("provider response choice has no message")
         text = message.content or ""
         usage = _extract_openai_usage(response)
+        try:
+            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+        except Exception:
+            usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
@@ -409,6 +418,10 @@ class LLMClient:
                     ToolCall(id=block.id, name=block.name, arguments=block.input or {})
                 )
         usage = _extract_anthropic_usage(response)
+        try:
+            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+        except Exception:
+            usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(
             text=text,
@@ -456,6 +469,10 @@ class LLMClient:
                 )
             )
         usage = _extract_openai_usage(response)
+        try:
+            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+        except Exception:
+            usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(
             text=text,

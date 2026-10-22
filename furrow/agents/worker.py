@@ -493,13 +493,10 @@ class WorkerAgent:
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
-        if err.strip():
-            combined = out + ("\\n[stderr]\\n" + err if out else "[stderr]\\n" + err)
-        else:
-            combined = out
+        combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
-            combined = "[... output truncated ...]\\n" + combined[-cap:]
+            combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
 
     @staticmethod

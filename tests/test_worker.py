@@ -820,8 +820,37 @@ async def test_read_file_truncation_marker(tmp_path):
     assert "[... output truncated ...]" in out
 
 
+ 
 @pytest.mark.asyncio
-async def test_list_files_runs_off_event_loop(tmp_path):
+async def test_run_command_stderr_newline_format(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(id="t1", name="run_command", arguments={"command": "echo err >&2"})
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "\n[stderr]" in content
+                    assert "\\n[stderr]" not in content
+                    found = True
+    assert found
+
     import threading
 
     for i in range(5):

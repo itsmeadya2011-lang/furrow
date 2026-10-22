@@ -425,7 +425,27 @@ def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
     assert head_start not in prompt
 
 
-def test_truncation_keeps_tail_old_head_only_gone(tmp_path, monkeypatch):
+ 
+def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    agent = TesterAgent(
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+    assert isinstance(res, TestResult)
+    assert res.passed is False
+    assert "RuntimeError" in res.summary
+    assert res.failures
+    assert any("RuntimeError" in f for f in res.failures)
+
     """Old head-only behaviour is gone - beginning of output is not kept."""
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 

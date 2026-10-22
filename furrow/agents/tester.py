@@ -408,8 +408,13 @@ class TesterAgent:
                 timed_out=timed_out,
                 timeout=timeout,
             )
-        except Exception:
-            return TestResult(passed=False, summary="Tester error", failures=[])
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            return TestResult(
+                passed=False,
+                summary=f"Tester error: {message}",
+                failures=[f"tester error: {message}"],
+            )
 
 
 def _extract_failures(output: str, limit: int = 10) -> list[str]:

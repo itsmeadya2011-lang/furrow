@@ -744,3 +744,127 @@ async def test_complete_retries_a_transient_provider_error(monkeypatch, fast_sle
 
     assert result == "ok"
     assert fake.chat.completions.calls == 2
+
+
+async def test_complete_anthropic_records_the_cost_of_the_call():
+    usage = _FakeAnthropicUsage(input_tokens=100, output_tokens=42)
+    response = _FakeAnthropicResponse("hello there", usage=usage)
+    client = LLMClient(
+        settings=Settings(provider=Provider.ANTHROPIC, model="claude-3-5-haiku-20241022")
+    )
+    client._anthropic = _FakeAnthropicClient(response)
+
+    result = await client.complete("hi")
+
+    assert result == "hello there"
+    # claude-3-5-haiku: $0.80 / $4.00 per 1,000,000 tokens
+    expected = 100 / 1e6 * 0.80 + 42 / 1e6 * 4.0
+    assert client.total_usage.cost_usd == pytest.approx(expected)
+    assert client.total_usage.cost_usd > 0
+
+
+async def test_complete_openai_records_the_cost_of_the_call():
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=77, completion_tokens=33)
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o-mini"))
+    client._openai = fake
+
+    result = await client.complete("hi")
+
+    assert result == "ok"
+    # gpt-4o-mini: $0.15 / $0.60 per 1,000,000 tokens
+    expected = round(77 / 1e6 * 0.15 + 33 / 1e6 * 0.60, 6)
+    assert client.total_usage.cost_usd == pytest.approx(expected)
+    assert client.total_usage.cost_usd > 0
+
+
+async def test_cost_uses_the_model_that_was_actually_requested():
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=1000, completion_tokens=1000)
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
+    client._openai = fake
+
+    await client.complete("hi", model="gpt-4o-mini")
+
+    # priced as gpt-4o-mini, not as the configured gpt-4o
+    expected = 1000 / 1e6 * 0.15 + 1000 / 1e6 * 0.60
+    assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+async def test_unknown_model_leaves_the_cost_at_zero_but_the_call_succeeds():
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=1000, completion_tokens=500)
+    client = LLMClient(
+        settings=Settings(provider=Provider.OPENAI, model="totally-unknown-model")
+    )
+    client._openai = fake
+
+    result = await client.complete("hi")
+
+    assert result == "ok"
+    assert client.total_usage.calls == 1
+    assert client.total_usage.cost_usd == 0.0
+
+
+async def test_chat_anthropic_sets_the_cost_on_the_per_call_usage():
+    usage = _FakeAnthropicUsage(input_tokens=100, output_tokens=42)
+    response = _FakeAnthropicResponse("hello there", usage=usage)
+    client = LLMClient(
+        settings=Settings(provider=Provider.ANTHROPIC, model="claude-3-5-haiku-20241022")
+    )
+    client._anthropic = _FakeAnthropicClient(response)
+
+    result = await client.chat([{"role": "user", "content": "hi"}])
+
+    expected = 100 / 1e6 * 0.80 + 42 / 1e6 * 4.0
+    assert result.usage.cost_usd == pytest.approx(expected)
+    assert client.total_usage.cost_usd == pytest.approx(result.usage.cost_usd)
+
+
+async def test_chat_openai_sets_the_cost_on_the_per_call_usage():
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=77, completion_tokens=33)
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o-mini"))
+    client._openai = fake
+
+    result = await client.chat([{"role": "user", "content": "hi"}])
+
+    expected = round(77 / 1e6 * 0.15 + 33 / 1e6 * 0.60, 6)
+    assert result.usage.cost_usd == pytest.approx(expected)
+    assert client.total_usage.cost_usd == pytest.approx(result.usage.cost_usd)
+
+
+async def test_a_broken_price_table_does_not_break_the_request(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise RuntimeError("pricing exploded")
+
+    monkeypatch.setattr("furrow.llm.estimate_cost", _boom)
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=10, completion_tokens=5)
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o-mini"))
+    client._openai = fake
+
+    result = await client.complete("hi")
+
+    assert result == "ok"
+    assert client.total_usage.cost_usd == 0.0
+
+
+async def test_pricing_overrides_are_used_for_the_cost():
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=1000, completion_tokens=1000)
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.OPENAI,
+            model="gpt-4o-mini",
+            model_pricing={
+                "gpt-4o-mini": {"input_per_million": 1.0, "output_per_million": 2.0}
+            },
+        )
+    )
+    client._openai = fake
+
+    await client.complete("hi")
+
+    expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
+    assert client.total_usage.cost_usd == pytest.approx(expected)

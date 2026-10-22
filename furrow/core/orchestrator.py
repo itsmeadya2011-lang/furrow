@@ -91,6 +91,7 @@ class Orchestrator:
             input_tokens=int(getattr(raw, "input_tokens", 0) or 0),
             output_tokens=int(getattr(raw, "output_tokens", 0) or 0),
             calls=int(getattr(raw, "calls", 0) or 0),
+            cost_usd=float(getattr(raw, "cost_usd", 0.0) or 0.0),
         )
 
     def status(self) -> dict[str, Any]:
@@ -193,7 +194,6 @@ class Orchestrator:
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 break
-            self._tests_run += 1
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -203,6 +203,7 @@ class Orchestrator:
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 break
+            self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             self.event_bus.emit(
@@ -225,7 +226,13 @@ class Orchestrator:
                 self.goal = self.original_goal
                 self._feedback = ""
             elif not test_result.passed:
-                self._feedback = "\n".join(test_result.failures)
+                failures = [f for f in test_result.failures if f and f.strip()]
+                if not failures:
+                    failures = [
+                        test_result.summary
+                        or "the test suite failed without a detailed report"
+                    ]
+                self._feedback = "\n".join(failures)
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
@@ -234,6 +241,7 @@ class Orchestrator:
                 input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
                 output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
                 calls=max(0, cumulative.calls - self._usage_seen.calls),
+                cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
             )
             self._usage.add(cycle_usage)
             self._usage_seen = cumulative
@@ -266,7 +274,9 @@ class Orchestrator:
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
                              usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run)
+                             prev_sig=self._prev_sig, tests_run=self._tests_run,
+                             last_passed=test_result.passed, last_skipped=skipped,
+                             last_summary=test_result.summary)
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:

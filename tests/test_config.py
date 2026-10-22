@@ -14,6 +14,7 @@ from furrow.config import (
     TestResult,
     WorkerResult,
 )
+from furrow.costs import ModelPricing
 
 
 def test_task_model_defaults():
@@ -181,4 +182,80 @@ def test_numeric_settings_allow_valid_bounds():
     assert s.max_cycles == 0
     assert s.max_retries == 0
     assert s.max_task_retries == 0
+
+
+def test_usage_cost_usd_defaults_to_zero():
+    from furrow.config import Usage
+
+    u = Usage()
+    assert u.cost_usd == 0.0
+    assert u.total_tokens == 0
+
+
+def test_usage_add_accumulates_cost_usd():
+    from furrow.config import Usage
+
+    a = Usage(input_tokens=10, output_tokens=5, calls=2, cost_usd=0.25)
+    b = Usage(input_tokens=3, output_tokens=7, calls=1, cost_usd=0.75)
+    result = a.add(b)
+    assert result is a
+    assert a.cost_usd == 1.0
+    assert a.input_tokens == 13
+    assert a.output_tokens == 12
+    assert a.calls == 3
+    assert a.total_tokens == 25
+
+
+def test_settings_model_pricing_defaults_to_empty(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("FURROW_MODEL_PRICING", raising=False)
+    s = Settings(_env_file=None)
+    assert s.model_pricing == {}
+    assert s.pricing_overrides() == {}
+
+
+def test_settings_accepts_model_pricing_as_a_dict():
+    s = Settings(
+        model_pricing={
+            "my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)
+        }
+    )
+    assert s.model_pricing["my-model"].input_per_million == 1.0
+    assert s.model_pricing["my-model"].output_per_million == 2.0
+    assert s.pricing_overrides() == {
+        "my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)
+    }
+
+
+def test_settings_accepts_model_pricing_as_a_plain_dict():
+    s = Settings(
+        model_pricing={"my-model": {"input_per_million": 1.0, "output_per_million": 2.0}}
+    )
+    assert s.model_pricing["my-model"].input_per_million == 1.0
+    assert s.model_pricing["my-model"].output_per_million == 2.0
+
+
+def test_settings_reads_model_pricing_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv(
+        "FURROW_MODEL_PRICING",
+        '{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}',
+    )
+    s = Settings(_env_file=None)
+    assert s.model_pricing["my-model"].input_per_million == 1.0
+    assert s.model_pricing["my-model"].output_per_million == 2.0
+    assert s.pricing_overrides() == {
+        "my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)
+    }
+
+
+def test_pricing_overrides_returns_a_copy():
+    s = Settings(
+        model_pricing={
+            "my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)
+        }
+    )
+    overrides = s.pricing_overrides()
+    overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
+    assert s.model_pricing["my-model"].input_per_million == 1.0
 

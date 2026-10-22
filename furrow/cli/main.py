@@ -50,6 +50,17 @@ def _run_settings(
     return Settings.model_validate(merged)
 
 
+def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
+    """Return the (verdict, colour) of the one-line result of a run."""
+    if skipped:
+        return ("SKIPPED - no test runner detected.", "yellow")
+    if passed:
+        return ("PASSED - all tests passed.", "green")
+    if tests_run == 0:
+        return ("NOT RUN - no tests were executed.", "yellow")
+    return ("FAILED - tests did not pass.", "red")
+
+
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
     click.echo("Run summary")
@@ -61,14 +72,8 @@ def _print_summary(result: RunResult) -> None:
     click.echo(f"  Stopped reason:  {result.stopped_reason}")
     skipped = bool(getattr(result, "skipped", False))
     tests_run = getattr(result, "tests_run", 0) or 0
-    if skipped:
-        click.secho("  Result: SKIPPED - no test runner detected.", fg="yellow")
-    elif result.passed:
-        click.secho("  Result: PASSED - all tests passed.", fg="green")
-    elif tests_run == 0:
-        click.secho("  Result: NOT RUN - no tests were executed.", fg="yellow")
-    else:
-        click.secho("  Result: FAILED - tests did not pass.", fg="red")
+    text, colour = _result_line(result.passed, skipped, tests_run)
+    click.secho(f"  Result: {text}", fg=colour)
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(
@@ -89,6 +94,12 @@ def _print_state(state: RunState) -> None:
     click.echo(f"  Current goal:  {state.goal}")
     click.echo(f"  Cycles:        {state.cycles}")
     click.echo(f"  Updated:       {state.updated_at}")
+    tests_run = getattr(state, "tests_run", 0) or 0
+    skipped = bool(getattr(state, "last_skipped", False))
+    passed = getattr(state, "last_passed", None)
+    text, colour = _result_line(passed=passed, skipped=skipped, tests_run=tests_run)
+    click.echo(f"  Tests run:     {tests_run}")
+    click.secho(f"  Result:        {text}", fg=colour)
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")

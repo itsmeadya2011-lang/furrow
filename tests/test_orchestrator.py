@@ -957,3 +957,23 @@ async def test_cancelled_error_propagates_out_of_run(tmp_path, monkeypatch):
     orch.tester = FakeTester(passed=True)
     with pytest.raises(asyncio.CancelledError):
         await orch.run()
+
+
+@pytest.mark.asyncio
+async def test_usage_cost_carried(tmp_path, monkeypatch):
+    from furrow.config import Usage
+
+    class FakeClient:
+        def __init__(self):
+            self.total_usage = Usage(input_tokens=10, output_tokens=20, calls=1, cost_usd=0.123456)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=FakeClient())
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.usage.cost_usd == 0.123456
+    st = store.load()
+    assert st.usage.cost_usd == 0.123456

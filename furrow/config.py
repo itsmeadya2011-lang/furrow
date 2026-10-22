@@ -6,6 +6,8 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from furrow.costs import ModelPricing
+
 
 class Provider(str, Enum):
     ANTHROPIC = "anthropic"
@@ -76,6 +78,7 @@ class Usage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     calls: int = 0
+    cost_usd: float = 0.0
 
     @property
     def total_tokens(self) -> int:
@@ -87,6 +90,7 @@ class Usage(BaseModel):
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.calls += other.calls
+        self.cost_usd += other.cost_usd
         return self
 
 
@@ -127,11 +131,16 @@ class Settings(BaseSettings):
     test_timeout: float = Field(default=600.0, gt=0)
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
+    model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
         base = Path(workspace) if workspace is not None else Path(self.workspace)
         return base / Path(self.state_file)
+
+    def pricing_overrides(self) -> dict[str, ModelPricing]:
+        """User-supplied price overrides that take precedence over the built-in table."""
+        return dict(self.model_pricing)
 
 
 settings = Settings()
