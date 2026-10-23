@@ -105,7 +105,7 @@ def test_skipped_can_be_set():
 
 def test_settings_env_override(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FURROW_MAX_CYCLES", "7")
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.max_cycles == 7
 
 
@@ -208,7 +208,7 @@ def test_usage_add_accumulates_cost_usd():
 
 def test_settings_model_pricing_defaults_to_empty(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("FURROW_MODEL_PRICING", raising=False)
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.model_pricing == {}
     assert s.pricing_overrides() == {}
 
@@ -241,7 +241,7 @@ def test_settings_reads_model_pricing_from_the_environment(
         "FURROW_MODEL_PRICING",
         '{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}',
     )
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.model_pricing["my-model"].input_per_million == 1.0
     assert s.model_pricing["my-model"].output_per_million == 2.0
     assert s.pricing_overrides() == {

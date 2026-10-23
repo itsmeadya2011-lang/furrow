@@ -508,7 +508,7 @@ async def test_aclose_resets_so_fresh_client_created():
 
 class _FakeResponseNoChoices:
     def __init__(self) -> None:
-        self.choices = []
+        self.choices: list[Any] = []
         self.usage = None
 
 
