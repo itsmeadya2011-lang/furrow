@@ -271,6 +271,7 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -300,6 +301,9 @@ class LLMClient:
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
         if last_exc is not None:
             raise last_exc
+        # Unreachable: max_attempts >= 1 guarantees at least one iteration,
+        # and a successful call returns while a failing call either re-raises
+        # or stores the exception above.
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:

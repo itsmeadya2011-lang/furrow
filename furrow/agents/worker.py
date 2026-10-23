@@ -54,16 +54,19 @@ MAX_LIST_ENTRIES = 500
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
 
-# Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
-# friends untouched.
-_HOME_VAR = r"\$\{?home\}?(?![A-Za-z0-9_])"
+# Every spelling of the HOME variable.  The braced form requires both braces
+# to be present (``${HOME}``) and the unbraced form requires a trailing
+# boundary, so that ``$HOME_DIR`` and ``${HOME_DIR}`` are left untouched.
+_HOME_VAR = r"\$\{home\}|\$home(?![A-Za-z0-9_])"
 _HOME_VAR_RE = re.compile(
     rf'"(?:{_HOME_VAR})"' rf"|'(?:{_HOME_VAR})'" rf"|{_HOME_VAR}",
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
-_REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+# The target of a redirection: "> file", ">> file", "2> file", "2>> file",
+# "&> file", ">& file".  At most one fd digit is recognised so that "22>"
+# (a malformed command) is not silently treated as a redirect.
+_REDIRECT_RE = re.compile(r"(?:[0-9]?&?)>>?\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -262,24 +265,25 @@ def is_command_denied(command: str, workspace: Path) -> bool:
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
-    """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
+    """Return the absolute path for `path` inside `workspace`, or None when it escapes.
+
+    Symlinks are resolved so that an absolute path inside the workspace prefix
+    that points outside the workspace is rejected, just like a relative path
+    that traverses out.
+    """
     workspace = workspace.resolve()
     if not path:
         return None
     p = Path(path)
     if p.is_absolute():
-        try:
-            p.relative_to(workspace)
-        except ValueError:
-            return None
-        return p
-    # reject traversal
-    candidate = (workspace / p).resolve()
+        resolved = p.resolve()
+    else:
+        resolved = (workspace / p).resolve()
     try:
-        candidate.relative_to(workspace)
+        resolved.relative_to(workspace)
     except ValueError:
         return None
-    return candidate
+    return resolved
 
 
 class WorkerAgent:

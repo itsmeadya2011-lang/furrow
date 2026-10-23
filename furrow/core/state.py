@@ -111,9 +111,12 @@ class StateStore:
         The payload is written to a temporary file in the same directory, then
         flushed, fsync'ed and moved into place with ``os.replace``. If anything
         fails the temporary file is removed and the error is re-raised.
+
+        The caller's *state* object is not mutated: ``updated_at`` is set on a
+        copy so the in-memory object keeps its original timestamp.
         """
-        state.updated_at = utcnow()
-        payload = json.dumps(state.model_dump(mode="json"), indent=2)
+        snapshot = state.model_copy(update={"updated_at": utcnow()})
+        payload = json.dumps(snapshot.model_dump(mode="json"), indent=2)
 
         parent = self.path.parent
         parent.mkdir(parents=True, exist_ok=True)

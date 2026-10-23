@@ -259,17 +259,19 @@ class Orchestrator:
             # guard as well - otherwise the loop never stops.
             no_signal = (not test_result.passed) or skipped
             guard_tripped = False
-            if no_signal and sig == self._prev_sig:
+            if sig != self._prev_sig or (test_result.passed and not skipped):
+                # The plan changed, or the cycle produced passing tests: either
+                # one is progress, so the counter starts over.
+                self._no_progress = 0
+            elif no_signal:
+                # Same plan, tests still failing or skipped: no progress.
                 self._no_progress += 1
                 if self._no_progress >= 2:
                     self._stopped_reason = (
                         "no test runner detected" if skipped else "no progress"
                     )
                     guard_tripped = True
-            else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
-                    self._no_progress = 0
-                self._prev_sig = sig
+            self._prev_sig = sig
 
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
@@ -357,12 +359,7 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
