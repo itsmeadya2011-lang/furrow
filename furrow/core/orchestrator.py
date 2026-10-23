@@ -356,13 +356,16 @@ class Orchestrator:
                         pt.status = "failed"
                 elif old.status == "blocked":
                     pt.status = "blocked"
+                elif old.status == "skipped":
+                    # A skipped task (already completed with the same work) stays
+                    # skipped: it is not re-executed, no attempt is consumed, and
+                    # its recorded result/error is preserved.
+                    pt.status = "skipped"
+                    self._skip_ids.add(pt.id)
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Any other status (pending, running, ...) is treated as
+                    # fresh work: reset to pending and let the worker run it.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
