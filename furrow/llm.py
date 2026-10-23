@@ -148,20 +148,45 @@ def to_anthropic_messages(messages: list[dict]) -> list[dict]:
 
 
 def to_openai_messages(messages: list[dict]) -> list[dict]:
-    """Convert neutral messages to OpenAI chat completions format."""
+    """Convert neutral messages to OpenAI chat completions format.
+
+    Preserves the ordering of text and tool_use blocks within an assistant
+    message by emitting them as separate OpenAI message entries, so the model
+    sees the same sequence of content.
+    """
     converted: list[dict] = []
     for message in messages:
         role = message["role"]
         content = message.get("content")
         if role == "assistant" and isinstance(content, list):
-            text_parts: list[str] = []
-            tool_calls: list[dict] = []
+            # Emit each block as a separate message to preserve ordering.
+            # Consecutive text blocks are merged; consecutive tool_use blocks
+            # are merged; text and tool_use blocks alternate as needed.
+            pending_text: list[str] = []
+            pending_tools: list[dict] = []
+
             for block in content:
                 btype = block.get("type")
                 if btype == "text":
-                    text_parts.append(block.get("text", ""))
+                    # Flush any pending tools before starting a new text run.
+                    if pending_tools:
+                        converted.append(
+                            {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": pending_tools,
+                            }
+                        )
+                        pending_tools = []
+                    pending_text.append(block.get("text", ""))
                 elif btype == "tool_use":
-                    tool_calls.append(
+                    # Flush any pending text before starting a new tool run.
+                    if pending_text:
+                        converted.append(
+                            {"role": "assistant", "content": "\n".join(pending_text)}
+                        )
+                        pending_text = []
+                    pending_tools.append(
                         {
                             "id": block["id"],
                             "type": "function",
@@ -171,13 +196,18 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
                             },
                         }
                     )
-            converted.append(
-                {
-                    "role": "assistant",
-                    "content": "\n".join(text_parts) if text_parts else None,
-                    "tool_calls": tool_calls,
-                }
-            )
+            if pending_text:
+                converted.append(
+                    {"role": "assistant", "content": "\n".join(pending_text)}
+                )
+            if pending_tools:
+                converted.append(
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": pending_tools,
+                    }
+                )
         elif role == "user" and isinstance(content, list):
             user_text: list[str] = []
             for block in content:

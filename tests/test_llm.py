@@ -150,10 +150,14 @@ def test_to_openai_messages_assistant_text_and_tool_use():
             ],
         }
     ]
+    # When both text and tool_calls are present, they are emitted as two
+    # separate assistant messages to preserve the order in which the blocks
+    # appeared in the original content.
     assert to_openai_messages(messages) == [
+        {"role": "assistant", "content": "I will edit the file."},
         {
             "role": "assistant",
-            "content": "I will edit the file.",
+            "content": None,
             "tool_calls": [
                 {
                     "id": "t1",
@@ -164,7 +168,7 @@ def test_to_openai_messages_assistant_text_and_tool_use():
                     },
                 }
             ],
-        }
+        },
     ]
 
 
@@ -191,6 +195,94 @@ def test_to_openai_messages_user_tool_result_with_text():
         {"role": "tool", "tool_call_id": "t1", "content": "tool output"},
         {"role": "user", "content": "here is the result"},
     ]
+
+
+def test_to_openai_messages_assistant_tool_only():
+    """An assistant message with only tool_use blocks is emitted as a single message."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "write_file",
+                    "input": {"path": "a.txt", "content": "hi"},
+                },
+            ],
+        }
+    ]
+    assert to_openai_messages(messages) == [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "t1",
+                    "type": "function",
+                    "function": {
+                        "name": "write_file",
+                        'arguments': '{"path": "a.txt", "content": "hi"}',
+                    },
+                }
+            ],
+        }
+    ]
+
+
+def test_to_openai_messages_assistant_text_only():
+    """An assistant message with only text blocks is emitted as a single message."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "thinking..."},
+                {"type": "text", "text": "more text"},
+            ],
+        }
+    ]
+    assert to_openai_messages(messages) == [
+        {"role": "assistant", "content": "thinking...\nmore text"},
+    ]
+
+
+def test_to_openai_messages_preserves_block_ordering():
+    """When text and tool_use blocks are interleaved, order is preserved.
+
+    The original implementation collapsed text and tool_calls into a single
+    assistant message, which lost the ordering information. The new
+    implementation emits them as separate assistant messages to preserve the
+    sequence in which the blocks appeared.
+    """
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "first"},
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "read_file",
+                    "input": {"path": "a.txt"},
+                },
+                {"type": "text", "text": "second"},
+                {
+                    "type": "tool_use",
+                    "id": "t2",
+                    "name": "write_file",
+                    "input": {"path": "b.txt", "content": "x"},
+                },
+            ],
+        }
+    ]
+    result = to_openai_messages(messages)
+    # The blocks are emitted in order: text, tool_call, text, tool_call.
+    assert len(result) == 4
+    assert result[0] == {"role": "assistant", "content": "first"}
+    assert result[1]["role"] == "assistant"
+    assert result[1]["tool_calls"][0]["id"] == "t1"
+    assert result[2] == {"role": "assistant", "content": "second"}
+    assert result[3]["tool_calls"][0]["id"] == "t2"
 
 
 def test_parse_tool_arguments_dict():

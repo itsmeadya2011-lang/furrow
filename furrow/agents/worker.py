@@ -48,6 +48,12 @@ DENIED_PROGRAMS = frozenset(
     }
 )
 
+# Shell interpreters that are dangerous as pipe targets.
+_SHELL_INTERPRETERS = ("sh", "bash", "zsh", "dash", "fish")
+
+# Download tools that are dangerous when piped to a shell.
+_DOWNLOAD_TOOLS = ("curl", "wget")
+
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
@@ -210,6 +216,31 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     return any(token.lower() == "-f" for token in _shell_tokens(segment))
 
 
+def _has_download_pipe_to_shell(command: str) -> bool:
+    """Report whether *command* pipes a download tool into a shell interpreter.
+
+    The segment splitter already separates on ``|``, so ``curl … | sh`` becomes
+    the segments ``["curl …", "sh"]``.  This check walks the segment list and
+    flags any download-tool segment immediately followed by a shell
+    interpreter segment.
+    """
+    segments = _split_command_segments(command)
+    for i in range(len(segments) - 1):
+        current = segments[i]
+        nxt = segments[i + 1]
+        cur_program = _get_program_basename(current)
+        if cur_program is None:
+            continue
+        cur_program = cur_program.lower()
+        if cur_program not in _DOWNLOAD_TOOLS:
+            continue
+        # The next segment must start with a shell interpreter.
+        next_tokens = _shell_tokens(nxt.strip())
+        if next_tokens and next_tokens[0].lower() in _SHELL_INTERPRETERS:
+            return True
+    return False
+
+
 def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
@@ -245,6 +276,10 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
         return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
+        return True
+    # Piping a download tool into a shell interpreter is checked across the
+    # whole command because the pipe splits the text into segments.
+    if _has_download_pipe_to_shell(text):
         return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
