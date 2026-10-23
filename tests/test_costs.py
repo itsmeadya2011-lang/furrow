@@ -138,3 +138,46 @@ def test_estimate_cost_never_raises() -> None:
 
     assert estimate_cost("gpt-4o", _Weird()) == 0.0
     assert estimate_cost("gpt-4o", None) == 0.0  # type: ignore[arg-type]
+
+
+def test_default_pricing_covers_new_models() -> None:
+    """The pricing table includes entries for recently released models."""
+    for model in (
+        "claude-sonnet-4-5",
+        "claude-haiku-4",
+        "gpt-4.5",
+        "gpt-4.5-mini",
+        "gpt-4.5-nano",
+        "deepseek-chat",
+        "gemini-2.0-flash",
+        "gemini-2.5-pro",
+        "llama-3.3-70b",
+        "mistral-large",
+        "qwen-2.5-coder",
+    ):
+        assert model in DEFAULT_PRICING, model
+
+
+def test_price_for_model_resolves_new_model_prefixes() -> None:
+    """Dated IDs for new models resolve through their family prefix."""
+    price = price_for_model("claude-sonnet-4-5-20250615")
+    assert price is not None
+    assert price == price_for_model("claude-sonnet-4-5")
+
+    price = price_for_model("gpt-4.5-20250615")
+    assert price is not None
+    assert price == price_for_model("gpt-4.5")
+
+
+def test_estimate_cost_for_deepseek() -> None:
+    """DeepSeek models have their own pricing."""
+    usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000, calls=1)
+    cost = estimate_cost("deepseek-chat", usage)
+    assert cost == 0.42  # 0.14 + 0.28
+
+
+def test_estimate_cost_for_gemini() -> None:
+    """Gemini models have their own pricing."""
+    usage = Usage(input_tokens=1_000_000, output_tokens=1_000_000, calls=1)
+    cost = estimate_cost("gemini-2.0-flash", usage)
+    assert cost == 0.5  # 0.1 + 0.4

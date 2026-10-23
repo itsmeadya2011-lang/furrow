@@ -411,6 +411,29 @@ class Orchestrator:
                 workers[task.id] = worker
             return worker
 
+        def _emit_task_finished(task: TaskModel, success: bool, summary: str) -> None:
+            self.event_bus.emit(
+                Event(
+                    type=EventType.TASK_FINISHED,
+                    data={"task": task.id, "success": success, "summary": summary},
+                )
+            )
+
+        def _report_task_outcome(task: TaskModel) -> None:
+            task_id = self._escape(task.id)
+            detail = self._escape(self._one_line(task.error or "unknown error"))
+            if task.status == "completed":
+                self._say(f"[green]Task {task_id} completed[/green]")
+            elif task.status == "pending":
+                self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
+                self.event_bus.emit(
+                    Event(type=EventType.LOG,
+                          message=f"task {task.id} failed, retrying "
+                                  f"(attempt {task.attempts} of {max_retries + 1})")
+                )
+            else:
+                self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+
         async def run_one(task: TaskModel) -> None:
             if task.id in self._skip_ids:
                 self.event_bus.emit(Event(type=EventType.LOG,
@@ -440,27 +463,8 @@ class Orchestrator:
                                   "attempts": task.attempts},
                         )
                     )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    _emit_task_finished(task, False, str(task.error or ""))
+                    _report_task_outcome(task)
                     return
                 try:
                     success = bool(getattr(result, "success", False))
@@ -477,29 +481,9 @@ class Orchestrator:
                         task.status = "pending"
                     else:
                         task.status = "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": task.status == "completed",
-                                "summary": str(task.result or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error or "unknown error"))
-                    if task.status == "completed":
-                        self._say(f"[green]Task {task_id} completed[/green]")
-                    elif task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    _emit_task_finished(task, task.status == "completed",
+                                        str(task.result or ""))
+                    _report_task_outcome(task)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -515,27 +499,8 @@ class Orchestrator:
                                   "attempts": task.attempts},
                         )
                     )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    _emit_task_finished(task, False, str(task.error or ""))
+                    _report_task_outcome(task)
 
         async def run_tasks(tasks: list[TaskModel]) -> None:
             """Run tasks concurrently, never swallowing a cancellation.

@@ -77,6 +77,25 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "o3": ModelPricing(input_per_million=2.0, output_per_million=8.0),
     "o3-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o4-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    # Additional commonly used models
+    "claude-sonnet-4-5": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-haiku-4": ModelPricing(input_per_million=1.0, output_per_million=5.0),
+    "gpt-4.5": ModelPricing(input_per_million=2.0, output_per_million=8.0),
+    "gpt-4.5-mini": ModelPricing(input_per_million=0.4, output_per_million=1.6),
+    "gpt-4.5-nano": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+    "deepseek-chat": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "deepseek-reasoner": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "gemini-2.0-flash": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+    "gemini-2.0-flash-lite": ModelPricing(input_per_million=0.05, output_per_million=0.2),
+    "gemini-2.5-pro": ModelPricing(input_per_million=1.25, output_per_million=10.0),
+    "gemini-2.5-flash": ModelPricing(input_per_million=0.15, output_per_million=0.6),
+    "llama-3.3-70b": ModelPricing(input_per_million=0.35, output_per_million=0.4),
+    "mistral-large": ModelPricing(input_per_million=2.0, output_per_million=6.0),
+    "mistral-small": ModelPricing(input_per_million=0.04, output_per_million=0.12),
+    "mixtral-8x7b": ModelPricing(input_per_million=0.24, output_per_million=0.24),
+    "qwen-2.5-coder": ModelPricing(input_per_million=0.1, output_per_million=0.1),
+    "qwen-2.5-math": ModelPricing(input_per_million=0.1, output_per_million=0.1),
+    "qwq-32b": ModelPricing(input_per_million=0.1, output_per_million=0.1),
 }
 
 #: Provider prefixes that are stripped from a model id before it is looked up.
