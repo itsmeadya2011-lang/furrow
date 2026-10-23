@@ -66,6 +66,20 @@ def test_detect_cargo(tmp_path):
     assert cmd is not None and "cargo" in cmd
 
 
+def test_detect_deno(tmp_path):
+    (tmp_path / "deno.json").write_text('{"tasks": {"test": "deno test"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "deno" in cmd
+
+
+def test_detect_bun(tmp_path):
+    (tmp_path / "bun.lockb").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "bun" in cmd
+
+
 def test_detect_empty(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())

@@ -230,6 +230,14 @@ class TesterAgent:
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
+        # Deno projects: deno.json / deno.jsonc
+        if any((self.workspace / m).is_file() for m in ("deno.json", "deno.jsonc")):
+            return ["deno", "test", "--allow-all", "--no-check"]
+
+        # Bun projects: bun.lockb
+        if (self.workspace / "bun.lockb").is_file():
+            return ["bun", "test"]
+
         python_markers = [
             "pyproject.toml",
             "pytest.ini",

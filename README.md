@@ -6,7 +6,7 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 
 - Plans tasks with dependency tracking and parallel execution
 - Worker actually implements code using file and command tools
-- Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go)
+- Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go, deno, bun)
 - Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header, and per-task panels)
 - Finished work is not redone: a task that already completed is skipped when the next plan describes the same work
 - Bounded event queues: a subscriber that stops draining loses its oldest events, never the newest ones
@@ -104,6 +104,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` price overrides |
 
 A `.env` file is read automatically via pydantic-settings.
 
@@ -120,7 +121,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens, call counts and estimated USD cost for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Cost is estimated from a built-in per-1,000,000-token price table (a snapshot that goes stale) and can be overridden or extended with the `FURROW_MODEL_PRICING` environment variable, which takes a JSON object mapping model ids to prices.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
