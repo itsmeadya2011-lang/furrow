@@ -245,6 +245,12 @@ class TesterAgent:
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
 
+        # Generic Unix test runners
+        if (self.workspace / "Makefile").is_file():
+            return ["make", "test"]
+        if (self.workspace / "justfile").is_file():
+            return ["just", "test"]
+
         return None
 
     def _finalize(
