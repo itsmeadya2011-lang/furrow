@@ -62,8 +62,14 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
-_REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+# The target of a redirection: "> file", ">> file", or a quoted target such
+# as > "out file.txt".  Quoted targets may contain spaces, so the regex captures
+# a double-quoted, single-quoted or bare-token target and the caller picks the
+# group that matched.  A quoted target that escapes the workspace must be denied
+# just like an unquoted one.
+_REDIRECT_RE = re.compile(
+    r'>>?\s*(?:"([^"]*)"|\'([^\']*)\'|([^\s;|&<>]+))'
+)
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -190,7 +196,10 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
 def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
     """Report whether a segment redirects output outside of the workspace."""
     for match in _REDIRECT_RE.finditer(segment):
-        target = match.group(1).strip().strip("\"'")
+        # The first non-None group is the redirection target, whether it was
+        # bare, double-quoted or single-quoted.
+        target = next((g for g in match.groups() if g), "")
+        target = target.strip().strip("\"'")
         if not target:
             continue
         if not _target_inside_workspace(target, workspace):
@@ -465,25 +474,16 @@ class WorkerAgent:
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
         try:
-            if os.name == "posix":
-                proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-            else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+            # Always run through a shell so that ordinary shell constructs
+            # (cd dir && pytest, pipes, variable assignments, redirections)
+            # work on every platform, not only on POSIX.
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:

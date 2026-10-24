@@ -15,7 +15,7 @@ class PlannerAgent:
     async def plan(self, goal: str, context: str = "") -> Plan:
         prompt = PLANNER_PROMPT + "\n\nGoal: " + goal
         if context:
-            prompt += "\n\nContext:\n" + context
+            prompt += "\n\n" + context
 
         model = self.settings.planner_model
         response = await self.client.complete(prompt, system=PLANNER_SYSTEM, model=model)

@@ -271,6 +271,17 @@ class Orchestrator:
                     self._no_progress = 0
                 self._prev_sig = sig
 
+            # A cost budget, when configured, is a hard stop: once the
+            # accumulated spend reaches it the loop ends regardless of the
+            # no-progress guard.
+            budget = float(getattr(self.settings, "max_cost_usd", 0.0) or 0.0)
+            if not guard_tripped and budget > 0 and self._usage.cost_usd >= budget:
+                self._stopped_reason = (
+                    f"cost budget exceeded: ${self._usage.cost_usd:.4f} "
+                    f">= ${budget:.4f}"
+                )
+                guard_tripped = True
+
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
                              usage=self._usage, no_progress=self._no_progress,
@@ -357,12 +368,9 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending / running / unknown: the task is in flight or
+                    # fresh, so let the new plan re-run it.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies

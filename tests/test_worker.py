@@ -584,6 +584,13 @@ def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     """A redirect whose target stays inside the workspace is allowed."""
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
 
+def test_is_command_denied_quoted_redirect_target(tmp_path):
+    """Quoted redirect targets with spaces are checked like bare targets."""
+    # quoted target escaping the workspace is denied
+    assert is_command_denied('echo hi > "../../out file.txt"', tmp_path) is True
+    # quoted target inside the workspace is allowed
+    assert is_command_denied('echo hi > "out file.txt"', tmp_path) is False
+
 
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):

@@ -977,3 +977,21 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_stops_run(tmp_path, monkeypatch):
+    from furrow.config import Usage
+
+    class FakeClient:
+        def __init__(self):
+            self.total_usage = Usage(input_tokens=10, output_tokens=20, calls=1, cost_usd=1.0)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = Settings(_env_file=None, workspace=tmp_path, max_cycles=1, max_cost_usd=0.05)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=FakeClient())
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.stopped_reason.startswith("cost budget exceeded")

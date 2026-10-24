@@ -71,6 +71,7 @@ def test_context_included():
     agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
     run(agent.plan("g", context="FAILING TESTS"))
     assert "FAILING TESTS" in client.prompts[0]
+    assert "Context:" not in client.prompts[0]
 
 
 def test_uses_planner_model():

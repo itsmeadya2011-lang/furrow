@@ -2,6 +2,8 @@ from __future__ import annotations
 
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
+The repository is at the workspace root. Read files from there to understand
+the structure before you plan.
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Independent when possible
 - Completable in 1-3 tool call rounds by a worker
