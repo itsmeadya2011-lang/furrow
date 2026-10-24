@@ -14,12 +14,35 @@ from furrow.core.state import StateStore
 
 
 class FakeWorker:
-    def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+    def __init__(self, task, client=None, settings=None, workspace=None, goal="", acceptance=""):
         self.task = task
+        self.acceptance = acceptance
         self._order = None
 
     async def run(self):
         return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+
+@pytest.mark.asyncio
+async def test_acceptance_is_passed_to_worker(tmp_path, monkeypatch):
+    """The orchestrator passes task.acceptance to the worker it creates."""
+    captured = {}
+
+    class AW(FakeWorker):
+        def __init__(self, task, client=None, settings=None, workspace=None, goal="", acceptance=""):
+            super().__init__(task, client, settings, workspace, goal, acceptance)
+            captured["acceptance"] = acceptance
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", AW)
+    settings = Settings(workspace=tmp_path, max_cycles=1)
+    planner = FakePlanner(tasks=[
+        TaskModel(id="t1", description="do t1", acceptance="tests pass"),
+    ])
+    orch = Orchestrator(goal="test", settings=settings, state_store=StateStore(tmp_path / "state.json"))
+    orch.planner = planner
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    assert captured.get("acceptance") == "tests pass"
 
 
 class FakePlanner:
@@ -41,7 +64,8 @@ class FakePlanner:
             raise RuntimeError("boom")
         return Plan(
             tasks=[
-                TaskModel(id=t.id, description=t.description, dependencies=list(t.dependencies))
+                TaskModel(id=t.id, description=t.description, dependencies=list(t.dependencies),
+                          acceptance=getattr(t, "acceptance", ""))
                 for t in self.tasks
             ],
             rationale="r",

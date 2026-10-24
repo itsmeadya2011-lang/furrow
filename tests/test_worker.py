@@ -888,3 +888,178 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_done_tool_success(tmp_path):
+    """The `done` tool returns a successful WorkerResult and stops the loop."""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something")
+    client = FakeLLMClient([
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="call_1", name="done",
+                                 arguments={"summary": "Implemented X", "success": True})],
+        ),
+    ])
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.summary == "Implemented X"
+    assert result.iterations == 1
+    # No further LLM calls were made after `done`.
+    assert len(client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_done_tool_failure(tmp_path):
+    """The `done` tool with success=false reports a failure."""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something")
+    client = FakeLLMClient([
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="call_1", name="done",
+                                 arguments={"summary": "Could not find the file",
+                                           "success": False})],
+        ),
+    ])
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is False
+    assert result.error is None  # `done` does not set an error, success=False is enough
+    assert "Could not find the file" in result.summary
+
+
+@pytest.mark.asyncio
+async def test_done_tool_default_summary(tmp_path):
+    """An empty summary on `done` falls back to 'Task completed.'"""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something")
+    client = FakeLLMClient([
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="call_1", name="done", arguments={})],
+        ),
+    ])
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.summary == "Task completed."
+
+
+@pytest.mark.asyncio
+async def test_done_tool_no_further_calls(tmp_path):
+    """After `done` the worker must not make additional LLM calls."""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something")
+    client = LoopingLLMClient(
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="call_1", name="done",
+                                 arguments={"summary": "Done"})],
+        )
+    )
+    settings = make_settings(tmp_path, iters=5)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.summary == "Done"
+    assert result.iterations == 1
+    # The LoopingLLMClient always returns the same response, so without the
+    # `done` guard the loop would have run all 5 iterations.
+    assert len(client.calls) == 1
+
+
+def test_done_tool_is_in_worker_tool_list():
+    """The `done` tool is part of the worker's available tools."""
+    tool_names = {t["name"] for t in WORKER_TOOLS}
+    assert "done" in tool_names
+    assert "read_file" in tool_names
+    assert "write_file" in tool_names
+    assert "list_files" in tool_names
+    assert "run_command" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_done_tool_strips_and_fills_summary(tmp_path):
+    """A `done` tool call with whitespace-only summary falls back to default."""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something")
+    client = FakeLLMClient([
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="call_1", name="done",
+                                 arguments={"summary": "   ", "success": True})],
+        ),
+    ])
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.summary == "Task completed."
+
+
+@pytest.mark.asyncio
+async def test_done_tool_returns_correct_files_changed(tmp_path):
+    """The `done` result includes files changed before the call."""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something")
+    client = FakeLLMClient([
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(id="call_1", name="write_file",
+                         arguments={"path": "a.py", "content": "x = 1\n"}),
+                ToolCall(id="call_2", name="done",
+                         arguments={"summary": "wrote a.py"}),
+            ],
+        ),
+    ])
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == ["a.py"]
+    assert result.iterations == 1
+
+
+@pytest.mark.asyncio
+async def test_initial_text_includes_acceptance(tmp_path):
+    """The worker's initial message includes acceptance criteria when set."""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something", acceptance="tests must pass")
+    client = FakeLLMClient([
+        LLMResponse(text="done", tool_calls=[]),
+    ])
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path,
+                        acceptance="tests must pass")
+    text = agent._initial_text()
+    assert "tests must pass" in text
+    assert "Acceptance criteria: tests must pass" in text
+
+
+@pytest.mark.asyncio
+async def test_initial_text_omits_acceptance_when_empty(tmp_path):
+    """The worker's initial message omits acceptance when not set."""
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="do something")
+    client = FakeLLMClient([
+        LLMResponse(text="done", tool_calls=[]),
+    ])
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    text = agent._initial_text()
+    assert "Acceptance criteria" not in text

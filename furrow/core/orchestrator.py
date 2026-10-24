@@ -366,6 +366,7 @@ class Orchestrator:
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
+                old.acceptance = pt.acceptance
                 old.status = pt.status
                 # A freshly planned task carries result=None and error=None,
                 # so never let that wipe a result or error already recorded by
@@ -407,7 +408,8 @@ class Orchestrator:
             worker = workers.get(task.id)
             if worker is None:
                 worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
-                                     workspace=self.settings.workspace, goal=self.original_goal)
+                                     workspace=self.settings.workspace, goal=self.original_goal,
+                                     acceptance=task.acceptance)
                 workers[task.id] = worker
             return worker
 

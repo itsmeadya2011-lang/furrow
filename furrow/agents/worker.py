@@ -290,13 +290,16 @@ class WorkerAgent:
         settings: Settings | None = None,
         workspace: Path | None = None,
         goal: str = "",
+        acceptance: str = "",
     ) -> None:
         self.task = task
         self.settings = settings if settings is not None else global_settings
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
+        self.acceptance = acceptance
         self.files_changed: set[str] = set()
+        self._done_result: WorkerResult | None = None
 
     async def run(self) -> WorkerResult:
         try:
@@ -340,6 +343,9 @@ class WorkerAgent:
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
                 result = await self._execute_tool(tc)
+                if self._done_result is not None:
+                    self._done_result.iterations = iterations
+                    return self._done_result
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
@@ -362,6 +368,8 @@ class WorkerAgent:
             parts.append(f"Overall goal: {self.goal}")
         parts.append(f"Task: {self.task.description}")
         parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
+        if self.acceptance:
+            parts.append(f"Acceptance criteria: {self.acceptance}")
         parts.append(f"Workspace: {self.workspace}")
         return "\n".join(parts)
 
@@ -380,6 +388,18 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "done":
+            summary = str(args.get("summary", "")).strip()
+            success = bool(args.get("success", True))
+            if not summary:
+                summary = "Task completed."
+            self._done_result = WorkerResult(
+                summary=summary,
+                success=success,
+                files_changed=sorted(self.files_changed),
+                iterations=0,  # filled in by _run
+            )
+            return "Task marked as done. Stop calling tools now."
         return f"unknown tool: {name}"
 
     @staticmethod

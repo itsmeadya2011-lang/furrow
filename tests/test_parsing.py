@@ -108,3 +108,20 @@ def test_parse_test_result_heuristic_assertion_error():
 def test_parse_test_result_never_raises_on_empty_string():
     r = parsing.parse_test_result("")
     assert isinstance(r, TestResult)
+
+
+def test_parse_plan_accepts_acceptance_field():
+    """A plan with an `acceptance` field on a task is parsed correctly."""
+    text = (
+        '{"tasks": [{"id": "t1", "description": "x", "acceptance": "tests pass"}], '
+        '"rationale": "r"}'
+    )
+    plan = parsing.parse_plan(text)
+    assert plan.tasks[0].acceptance == "tests pass"
+
+
+def test_parse_plan_missing_acceptance_defaults_to_empty():
+    """A plan without an `acceptance` field yields an empty string."""
+    text = '{"tasks": [{"id": "t1", "description": "x"}], "rationale": "r"}'
+    plan = parsing.parse_plan(text)
+    assert plan.tasks[0].acceptance == ""

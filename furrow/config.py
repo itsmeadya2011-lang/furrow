@@ -29,6 +29,7 @@ class TaskModel(BaseModel):
     description: str
     files: list[str] = Field(default_factory=list)
     dependencies: list[str] = Field(default_factory=list)
+    acceptance: str = ""
     status: str = "pending"
     result: str | None = None
     error: str | None = None

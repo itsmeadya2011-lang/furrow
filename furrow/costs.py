@@ -55,7 +55,9 @@ class ModelPricing(BaseModel):
 DEFAULT_PRICING: dict[str, ModelPricing] = {
     "claude-opus-4": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-opus-4-1": ModelPricing(input_per_million=15.0, output_per_million=75.0),
+    "claude-opus-4-1-20250805": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-sonnet-4": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-sonnet-4-20250514": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-haiku-4-5": ModelPricing(input_per_million=1.0, output_per_million=5.0),
     "claude-3-7-sonnet": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-3-5-opus": ModelPricing(input_per_million=15.0, output_per_million=75.0),
@@ -68,6 +70,7 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "gpt-4.1-mini": ModelPricing(input_per_million=0.4, output_per_million=1.6),
     "gpt-4.1-nano": ModelPricing(input_per_million=0.1, output_per_million=0.4),
     "gpt-4o": ModelPricing(input_per_million=2.5, output_per_million=10.0),
+    "gpt-4o-2024-11-20": ModelPricing(input_per_million=2.5, output_per_million=10.0),
     "gpt-4o-mini": ModelPricing(input_per_million=0.15, output_per_million=0.6),
     "gpt-4": ModelPricing(input_per_million=30.0, output_per_million=60.0),
     "gpt-4-turbo": ModelPricing(input_per_million=10.0, output_per_million=30.0),
@@ -75,6 +78,7 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "o1": ModelPricing(input_per_million=15.0, output_per_million=60.0),
     "o1-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o3": ModelPricing(input_per_million=2.0, output_per_million=8.0),
+    "o3-pro": ModelPricing(input_per_million=15.0, output_per_million=60.0),
     "o3-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o4-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
 }
