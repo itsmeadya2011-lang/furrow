@@ -471,6 +471,10 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
         # "running" flag in sync with the run that is actually in flight.
         current = _CURRENT.get("task")
         _CURRENT["running"] = bool(current is not None and not current.done())
+        # Clear the stale references left behind by the finished run so that
+        # ``/api/status`` does not report the old orchestrator or result.
+        _CURRENT["orchestrator"] = None
+        _CURRENT["result"] = None
         return
     _CURRENT["running"] = False
     if task.cancelled():

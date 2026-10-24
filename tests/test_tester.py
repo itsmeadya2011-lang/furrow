@@ -53,10 +53,46 @@ def test_detect_pyproject(tmp_path):
 
 
 def test_detect_packagejson(tmp_path):
-    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None and "npm" in cmd
+
+
+def test_detect_packagejson_without_test_script_returns_none(tmp_path):
+    """A package.json without a test script has nothing to run.
+
+    The old code fell back to ``npm test`` unconditionally, which would fail
+    with a confusing error instead of reporting that no test runner is
+    available.
+    """
+    (tmp_path / "package.json").write_text('{"scripts": {"build": "tsc"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
+def test_detect_packagejson_with_test_script_uses_npm(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
+def test_detect_packagejson_with_test_script_uses_pnpm(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pnpm" in cmd
+
+
+def test_detect_packagejson_with_test_script_uses_yarn(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "yarn.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "yarn" in cmd
 
 
 def test_detect_cargo(tmp_path):

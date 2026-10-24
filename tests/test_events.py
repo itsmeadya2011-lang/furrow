@@ -132,3 +132,37 @@ async def test_emit_async_delivers_event_to_subscribers() -> None:
     await bus.emit_async(event)
     got = await queue.get()
     assert got is event
+
+
+@pytest.mark.asyncio
+async def test_emit_drops_oldest_when_queue_full() -> None:
+    """When the queue is full, the oldest event is dropped to make room.
+
+    The drop-oldest path is exercised by filling the queue exactly, then
+    emitting one more event: the first event must be gone and the newest
+    event must survive.
+    """
+    bus = EventBus()
+    queue = bus.subscribe()
+
+    # Fill the queue exactly to capacity.
+    for i in range(MAX_QUEUE_SIZE):
+        bus.emit(Event(type=EventType.LOG, message=str(i)))
+    assert queue.qsize() == MAX_QUEUE_SIZE
+
+    # Emit one more event: the queue is full, so the oldest event ("0")
+    # must be dropped to make room for the new one.
+    bus.emit(Event(type=EventType.LOG, message="newest"))
+
+    # The queue should still hold MAX_QUEUE_SIZE events.
+    assert queue.qsize() == MAX_QUEUE_SIZE
+
+    # The oldest event ("0") was dropped; "newest" is the last one.
+    drained: list[Event] = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    assert len(drained) == MAX_QUEUE_SIZE
+    assert drained[-1].message == "newest"
+    assert all(e.message != "0" for e in drained)
+    assert bus.dropped_count == 1
+    assert bus.dropped_for(queue) == 1

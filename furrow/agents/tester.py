@@ -211,11 +211,13 @@ class TesterAgent:
                         return ["yarn", "test", "--silent"]
                     return ["npm", "test", "--silent"]
             # Check package.json for test script
+            has_test_script = False
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
+                    has_test_script = True
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
@@ -223,12 +225,14 @@ class TesterAgent:
                     return ["npm", "test", "--silent"]
             except Exception:
                 pass
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            # Fallback: only run the package manager test command when a test
+            # script is actually defined; otherwise there is nothing to run.
+            if has_test_script:
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
 
         python_markers = [
             "pyproject.toml",

@@ -466,6 +466,8 @@ class WorkerAgent:
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
         try:
             if os.name == "posix":
+                # POSIX: run through /bin/sh so shell features (pipes,
+                # redirections, command substitution, ...) work as documented.
                 proc = await asyncio.create_subprocess_exec(
                     "/bin/sh", "-c", command,
                     cwd=str(self.workspace),
@@ -474,6 +476,10 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
+                # Non-POSIX: there is no guaranteed shell, so the command is
+                # tokenised with shlex and run directly. Shell features such
+                # as pipes or redirections are therefore not available on
+                # these platforms.
                 parts = shlex.split(command)
                 if not parts:
                     return "error: empty command"

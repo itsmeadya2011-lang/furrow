@@ -8,6 +8,7 @@ temporary directory.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -592,3 +593,46 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_on_run_done_clears_stale_registry_fields_when_not_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a run finishes but another run owns the registry, the stale
+    orchestrator/result references left by the finished run must be cleared
+    so that ``/api/status`` does not report the old run's data.
+    """
+    import asyncio
+
+    async def _make_long_running_task() -> None:
+        # A task that stays pending long enough for the test to observe it.
+        await asyncio.sleep(30)
+
+    async def _run_test() -> None:
+        finished = asyncio.create_task(asyncio.sleep(0))
+        owner = asyncio.create_task(_make_long_running_task())
+        # Let `finished` complete so it is done but not cancelled.
+        await asyncio.sleep(0)
+
+        server._CURRENT.update(
+            {
+                "running": True,
+                "orchestrator": "stale-orchestrator",
+                "result": "stale-result",
+                "task": owner,
+                "error": None,
+            }
+        )
+
+        server._on_run_done(finished)
+
+        assert server._CURRENT["running"] is True  # owner still running
+        assert server._CURRENT["orchestrator"] is None  # stale ref cleared
+        assert server._CURRENT["result"] is None  # stale ref cleared
+        assert server._CURRENT["task"] is owner  # owner untouched
+
+        owner.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await owner
+
+    asyncio.run(_run_test())
