@@ -221,10 +221,24 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
     html = client.get("/").text
     script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
 
-    for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage"):
+    for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage", "cost"):
         assert f"getElementById('{element_id}')" in script, (
             f"script does not bind to #{element_id}"
         )
+
+
+def test_index_contains_cost_element(client: TestClient) -> None:
+    """The served page exposes a cost hook in the status header."""
+    html = client.get("/").text
+    assert 'id="cost"' in html
+
+
+def test_index_script_displays_cost(client: TestClient) -> None:
+    """The script renders the estimated cost into the status header."""
+    script = _inline_script(client)
+    assert "cost_usd" in script
+    assert "toFixed(6)" in script
+    assert "costEl.textContent" in script
 
 
 def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> None:

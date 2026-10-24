@@ -363,6 +363,66 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "out 421" in output
 
 
+def test_summary_prints_cost_when_carried(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+):
+    """The summary prints the estimated cost when the result carries a non-zero cost."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.123456),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "Estimated cost:" in output
+    assert "$0.123456" in output
+
+
+def test_summary_omits_cost_when_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+):
+    """A run with zero estimated cost does not print a cost line."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "Estimated cost:" not in output
+
+
+def test_status_prints_persisted_cost(
+    runner: CliRunner, tmp_path: Path
+):
+    """The status command prints the estimated cost persisted in the run state."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.25),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "LLM usage:" in result.output
+    assert "Estimated cost:" in result.output
+    assert "$0.250000" in result.output
+
+
 def test_summary_skips_usage_line_when_zero_calls(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
