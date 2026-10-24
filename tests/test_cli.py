@@ -363,6 +363,44 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "out 421" in output
 
 
+def test_summary_prints_cost_when_present(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the estimated cost when cost_usd > 0."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(calls=5, input_tokens=1000, output_tokens=500, cost_usd=0.001234),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "$0.001234" in output
+
+
+def test_summary_omits_cost_when_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary omits cost when cost_usd is 0.0."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(calls=5, input_tokens=1000, output_tokens=500, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "$0.000000" not in output
+    # No $ cost suffix appears in the output
+    assert "$" not in output.split("LLM usage:")[1] if "LLM usage:" in output else True
+
+
 def test_summary_skips_usage_line_when_zero_calls(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

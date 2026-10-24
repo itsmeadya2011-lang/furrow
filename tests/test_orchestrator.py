@@ -252,6 +252,22 @@ async def test_events(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_done_event_emitted_at_end_of_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    events = drain(q)
+    done_events = [e for e in events if e.type == EventType.DONE]
+    assert len(done_events) == 1
+    assert done_events[0].data["passed"] == result.passed
+
+
+@pytest.mark.asyncio
 async def test_planner_valueerror(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -295,6 +311,22 @@ async def test_status_snapshot(tmp_path, monkeypatch):
     assert isinstance(status["tasks"], list)
     assert status["tasks"]
     assert all(isinstance(task, dict) for task in status["tasks"])
+
+
+@pytest.mark.asyncio
+async def test_status_includes_test_and_file_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    status = orch.status()
+    assert status["tests_run"] >= 1
+    assert status["skipped"] is False
+    assert status["passed"] is True
+    assert isinstance(status["files_changed"], list)
 
 
 @pytest.mark.asyncio

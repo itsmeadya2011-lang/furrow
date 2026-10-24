@@ -96,6 +96,9 @@ class Orchestrator:
 
     def status(self) -> dict[str, Any]:
         """Return a snapshot of the current run."""
+        active = (
+            [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
+        )
         return {
             "goal": self.goal,
             "original_goal": self.original_goal,
@@ -103,6 +106,10 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "tests_run": self._tests_run,
+            "skipped": bool(self._tests_skipped),
+            "passed": bool(self._last_test_passed),
+            "files_changed": sorted({f for t in active for f in (getattr(t, "files_changed", None) or [])}),
         }
 
     def _console(self) -> Any:
@@ -312,7 +319,7 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
-        return RunResult(
+        result = RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
             tasks_completed=completed,
@@ -325,6 +332,10 @@ class Orchestrator:
             usage=self._usage,
             files_changed=files_changed,
         )
+        self.event_bus.emit(
+            Event(type=EventType.DONE, data=result.model_dump(mode="json"))
+        )
+        return result
 
     def _context(self) -> str:
         if self._feedback:

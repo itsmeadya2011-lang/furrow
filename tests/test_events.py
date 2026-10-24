@@ -78,6 +78,10 @@ def test_eventtype_cycle_started_value() -> None:
     assert EventType.CYCLE_STARTED.value == "cycle_started"
 
 
+def test_eventtype_done_value() -> None:
+    assert EventType.DONE.value == "done"
+
+
 def test_subscriber_queue_is_bounded() -> None:
     bus = EventBus()
     queue = bus.subscribe()

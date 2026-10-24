@@ -22,6 +22,7 @@ class EventType(str, Enum):
 
     CYCLE_STARTED = "cycle_started"
     CYCLE_FINISHED = "cycle_finished"
+    DONE = "done"
     PLAN_CREATED = "plan_created"
     TASK_STARTED = "task_started"
     TASK_FINISHED = "task_finished"
