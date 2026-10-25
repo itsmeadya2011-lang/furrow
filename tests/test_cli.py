@@ -363,6 +363,53 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "out 421" in output
 
 
+def test_summary_prints_cost_when_present(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the LLM cost line when the result carries a cost."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.012345),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "LLM cost:" in output
+    assert "$0.012345" in output
+
+
+def test_summary_omits_cost_line_when_zero_cost(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A run with no cost does not print a misleading zero cost line."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "LLM cost" not in output
+
+
+def test_version_command(runner: CliRunner) -> None:
+    """The `version` command prints the package version."""
+    result = runner.invoke(main, ["version"])
+
+    assert result.exit_code == 0
+    assert "furrow " in result.output
+
+
 def test_summary_skips_usage_line_when_zero_calls(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

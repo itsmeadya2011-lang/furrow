@@ -80,6 +80,13 @@ A task status comes from the LLM-planned task, so it is untrusted input: the UI 
 
 The web API refuses to start a second run while one is already in progress — both through `POST /api/start` and through the websocket.
 
+### `furrow version`
+Show the Furrow package version.
+
+```bash
+furrow version
+```
+
 ## Configuration
 
 Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file if present). Available settings:
@@ -101,9 +108,12 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TASK_RETRIES` | `1` | Times a failed task is retried before it is marked failed |
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
 | `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Worker command timeout in seconds |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Test suite timeout in seconds |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_MODEL_PRICING` | (none) | JSON object mapping model ids to per-million-token prices, overrides the built-in cost table |
 
 A `.env` file is read automatically via pydantic-settings.
 
@@ -120,7 +130,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Cost estimation in USD per model is implemented via `furrow/costs.py` (a built-in pricing table overridable through `FURROW_MODEL_PRICING`), and the per-call cost is tracked in `Usage.cost_usd` and displayed in the run summary.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 

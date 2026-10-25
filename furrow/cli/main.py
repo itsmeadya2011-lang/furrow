@@ -25,6 +25,11 @@ from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
+try:
+    from furrow import __version__
+except ImportError:  # pragma: no cover - version always present when installed
+    __version__ = "unknown"
+
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
 
@@ -80,6 +85,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if usage.cost_usd > 0:
+            click.echo(f"  LLM cost:        ${usage.cost_usd:.6f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -253,6 +260,12 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+def version() -> None:
+    """Show the Furrow version."""
+    click.echo(f"furrow {__version__}")
 
 
 if __name__ == "__main__":
