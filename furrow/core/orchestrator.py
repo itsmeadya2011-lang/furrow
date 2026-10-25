@@ -171,7 +171,6 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
-                self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
@@ -192,16 +191,14 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
-                self.cycles -= 1
                 break
             try:
-                test_result = await self.tester.run(self.original_goal, self.tasks)
+                test_result = await self.tester.run(self.original_goal)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
-                self.cycles -= 1
                 break
             self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
@@ -269,7 +266,7 @@ class Orchestrator:
             else:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
                     self._no_progress = 0
-                self._prev_sig = sig
+            self._prev_sig = sig
 
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
@@ -294,12 +291,6 @@ class Orchestrator:
                                         data={"path": str(self.state_store.path)}))
             if guard_tripped:
                 break
-
-        if not self._stopped_reason:
-            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
-                self._stopped_reason = "max_cycles reached"
-            else:
-                self._stopped_reason = "goal complete"
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
@@ -357,12 +348,9 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Unrecognized / pending / running states always become
+                    # pending so the task is re-evaluated this cycle.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
@@ -377,6 +365,10 @@ class Orchestrator:
                 plan.tasks[index] = old
             else:
                 self.tasks.append(pt)
+        # Remove tasks that existed before this cycle's plan but are absent
+        # from it: they are stale and should not pollute status/history.
+        plan_ids = {t.id for t in plan.tasks}
+        self.tasks[:] = [t for t in self.tasks if t.id in plan_ids]
         self._active_ids = {t.id for t in plan.tasks}
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:

@@ -324,7 +324,7 @@ class TesterAgent:
         summary = " ".join(part for part in notes if part).strip()
         return TestResult(passed=passed, summary=summary, failures=failures)
 
-    async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+    async def run(self, goal: str) -> TestResult:
         try:
             cmd = await self.detect_command()
             if cmd is None:

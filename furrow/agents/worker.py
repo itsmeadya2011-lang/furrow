@@ -36,6 +36,8 @@ DENIED_COMMANDS = (
 # segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
 DENIED_PROGRAMS = frozenset(
     {
+        "cd",
+        "chdir",
         "dd",
         "fdisk",
         "halt",
@@ -62,12 +64,14 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
-_REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+# The target of a redirection: "> file" or ">> file", and also <, 2>, 1>, >&.
+_REDIRECT_RE = re.compile(r"(?:>>?|[012]>>?|>&|&>|<)\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
-_MAX_SUBSTITUTION_DEPTH = 3
+_MAX_SUBSTITUTION_DEPTH = 10
+# Cap total substitutions to prevent DoS from explosive nesting/expansion.
+_MAX_SUBSTITUTIONS_TOTAL = 200
 
 
 def _normalize_command(command: str) -> str:
@@ -127,6 +131,7 @@ def _extract_command_substitutions(command: str) -> list[str]:
 
     The shell runs the substituted text, so it has to be checked with the
     very same rules as the command itself.
+    Also extract process substitutions ``<(...)`` and ``>(...)``.
     """
     substitutions: list[str] = []
     index = 0
@@ -144,6 +149,25 @@ def _extract_command_substitutions(command: str) -> list[str]:
             continue
         if char == "$" and command[index + 1 : index + 2] == "(":
             # Walk to the matching closing parenthesis, nested ones included.
+            depth = 0
+            cursor = index + 1
+            while cursor < length:
+                if command[cursor] == "(":
+                    depth += 1
+                elif command[cursor] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                cursor += 1
+            if cursor >= length:
+                break  # unbalanced parentheses
+            text = command[index + 2 : cursor]
+            if text.strip():
+                substitutions.append(text)
+            index = cursor + 1
+            continue
+        # Process substitution: <(...) or >(...)
+        if char in "<>" and command[index + 1 : index + 2] == "(":
             depth = 0
             cursor = index + 1
             while cursor < length:
@@ -248,7 +272,10 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
         return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
-        for substitution in _extract_command_substitutions(text):
+        substitutions = _extract_command_substitutions(text)
+        if len(substitutions) > _MAX_SUBSTITUTIONS_TOTAL:
+            return True
+        for substitution in substitutions:
             if _text_is_denied(substitution, workspace, depth + 1):
                 return True
     return False
@@ -263,20 +290,21 @@ def is_command_denied(command: str, workspace: Path) -> bool:
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
-    workspace = workspace.resolve()
+    base = workspace.resolve()
     if not path:
         return None
     p = Path(path)
     if p.is_absolute():
+        resolved = p.resolve()
         try:
-            p.relative_to(workspace)
+            resolved.relative_to(base)
         except ValueError:
             return None
-        return p
+        return resolved
     # reject traversal
-    candidate = (workspace / p).resolve()
+    candidate = (base / p).resolve()
     try:
-        candidate.relative_to(workspace)
+        candidate.relative_to(base)
     except ValueError:
         return None
     return candidate
@@ -489,7 +517,36 @@ class WorkerAgent:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            # Try to read partial output before killing
+            try:
+                if proc.stdout:
+                    try:
+                        partial_out = await asyncio.wait_for(proc.stdout.read(), timeout=1.0)
+                    except Exception:
+                        partial_out = b""
+                else:
+                    partial_out = b""
+            except Exception:
+                partial_out = b""
+            try:
+                if proc.stderr:
+                    try:
+                        partial_err = await asyncio.wait_for(proc.stderr.read(), timeout=1.0)
+                    except Exception:
+                        partial_err = b""
+                else:
+                    partial_err = b""
+            except Exception:
+                partial_err = b""
             await self._kill_process_tree(proc, new_session)
+            out = partial_out.decode("utf-8", errors="replace") if partial_out else ""
+            err = partial_err.decode("utf-8", errors="replace") if partial_err else ""
+            combined = out + "\n[stderr]\n" + err if err.strip() else out
+            if combined.strip():
+                cap = 20000
+                if len(combined) > cap:
+                    combined = "[... output truncated ...]\n" + combined[-cap:]
+                return combined + "\n[command timed out]"
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
@@ -519,3 +576,5 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
