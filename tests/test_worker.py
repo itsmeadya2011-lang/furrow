@@ -851,10 +851,14 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
+
+@pytest.mark.asyncio
+async def test_list_files_runs_in_thread_pool(tmp_path):
+    """_list_files must not block the event loop: it runs in a thread via asyncio.to_thread."""
     import threading
 
     for i in range(5):
-        (tmp_path / f"f{i}.txt").write_text("x")
+        (tmp_path / f"f{i:04d}.txt").write_text("x")
 
     client = FakeLLMClient([])
     settings = make_settings(tmp_path)
@@ -869,8 +873,10 @@ async def test_run_command_stderr_newline_format(tmp_path):
     def slow_list(directory):
         seen["tid"] = threading.get_ident()
         import time
+
         time.sleep(0.1)
         from pathlib import Path as _P
+
         return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
 
     client.list_files = slow_list
