@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from furrow.config import RunResult, Settings, settings
-from furrow.core.events import Event, EventBus
+from furrow.core.events import Event, EventBus, EventType
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
 
@@ -248,6 +248,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      const filesChanged = text(task.files_changed);
+      if (filesChanged) {
+        const filesEl = document.createElement('span');
+        filesEl.textContent = ' | files: ' + filesChanged;
+        meta.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -696,6 +702,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "error": None,
             }
         )
+        seen_done = False
         while True:
             if run_task.done() and queue.empty():
                 break
@@ -704,6 +711,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 continue
             await websocket.send_json(event.to_dict())
+            if event.type == EventType.DONE:
+                seen_done = True
         if run_task is None:  # pragma: no cover - defensive
             return
         # The run is over: clear the flag right away instead of waiting for the
@@ -716,14 +725,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             logger.error("Furrow run failed: %s", exc)
             await _send_error(websocket, f"run failed: {exc}")
             return
-        result = run_task.result()
-        await websocket.send_json(
-            {
-                "type": "done",
-                "message": result.summary,
-                "data": result.model_dump(mode="json"),
-            }
-        )
+        # A real orchestrator already streamed a DONE event via the event bus;
+        # only fall back to a manual done message when none was seen (e.g. a
+        # test double that never emits one).
+        if not seen_done:
+            result = run_task.result()
+            await websocket.send_json(
+                {
+                    "type": "done",
+                    "message": result.summary,
+                    "data": result.model_dump(mode="json"),
+                }
+            )
     except asyncio.CancelledError:
         # The client went away (or the server is shutting down): stop the run
         # and make sure the server does not stay stuck in the "running" state.
