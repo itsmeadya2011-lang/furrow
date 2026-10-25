@@ -10,8 +10,11 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
+import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -147,8 +150,24 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
 
 
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
-    """Run the orchestrator and print the summary of the result."""
+    """Run the orchestrator and print the summary of the result.
+
+    A PID file is written next to the state file while a run is in progress so
+    that ``furrow stop`` (or an operator) can signal the running process to
+    stop.  The file is removed when the run ends, whatever the outcome.
+    """
     store = StateStore(run_settings.state_path())
+    pid_path = run_settings.state_path().parent / "run.pid"
+    pid_written = False
+    try:
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text(str(os.getpid()), encoding="utf-8")
+        pid_written = True
+    except OSError:
+        # Best effort: without a PID file, ``furrow stop`` cannot signal this
+        # run, but the run itself still works.
+        pass
+
     orchestrator = Orchestrator(
         goal=goal,
         settings=run_settings,
@@ -163,6 +182,10 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+    finally:
+        if pid_written:
+            with contextlib.suppress(OSError):  # pragma: no cover - best effort cleanup
+                pid_path.unlink()
     _print_summary(result)
     skipped = bool(getattr(result, "skipped", False))
     tests_run = getattr(result, "tests_run", 0) or 0
@@ -239,6 +262,43 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         sys.exit(1)
     goal = state.original_goal or state.goal
     _execute(goal=goal, run_settings=run_settings, resume=True)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def stop(workspace: Path | None) -> None:
+    """Stop a running Furrow run by sending it a stop signal.
+
+    Looks for a PID file next to the persisted state file (written by
+    ``furrow start`` while a run is in progress) and sends SIGINT to that
+    process, which causes the run to exit cleanly.
+    """
+    run_settings = _run_settings(workspace=workspace)
+    pid_path = run_settings.state_path().parent / "run.pid"
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        click.echo("No running Furrow run to stop.")
+        return
+    try:
+        os.kill(pid, signal.SIGINT)
+    except ProcessLookupError:
+        click.echo("No running Furrow run to stop (process already gone).")
+        with contextlib.suppress(OSError):
+            pid_path.unlink()
+        return
+    except PermissionError:
+        click.secho(f"Permission denied sending signal to pid {pid}.", fg="red")
+        sys.exit(1)
+    except OSError as exc:
+        click.secho(f"Could not stop Furrow run: {exc}", fg="red")
+        sys.exit(1)
+    click.echo(f"Sent stop signal to Furrow run (pid {pid}).")
 
 
 @main.command()
