@@ -25,6 +25,15 @@ def strip_code_fences(text: str) -> str:
     return result
 
 
+def _is_valid_json(candidate: str) -> bool:
+    """Return True if `candidate` parses as a JSON value (object or array)."""
+    try:
+        json.loads(candidate)
+        return True
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+
 def extract_json(text: str) -> str:
     """Return the first balanced JSON object or array substring found in `text`.
 
@@ -37,27 +46,40 @@ def extract_json(text: str) -> str:
 
     n = len(text)
     i = 0
+    in_string = False
     while i < n:
         ch = text[i]
+        if in_string:
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+            i += 1
+            continue
+        if ch == '"':
+            in_string = True
+            i += 1
+            continue
         if ch in "{[":
             start = i
             depth_brace = 0
             depth_bracket = 0
-            in_string = False
+            inner_string = False
             j = i
             while j < n:
                 c = text[j]
-                if in_string:
+                if inner_string:
                     if c == "\\":
                         j += 2
                         continue
                     if c == '"':
-                        in_string = False
+                        inner_string = False
                     j += 1
                     continue
                 else:
                     if c == '"':
-                        in_string = True
+                        inner_string = True
                         j += 1
                         continue
                     if c == "{":
@@ -73,7 +95,12 @@ def extract_json(text: str) -> str:
                             and text[start] == "{"
                             and text[j - 1] == "}"
                         ):
-                            return text[start:j]
+                            candidate = text[start:j]
+                            if _is_valid_json(candidate):
+                                return candidate
+                            # Balanced but not valid JSON (e.g. prose like "{x}").
+                            # Abandon this start position and keep scanning.
+                            break
                         continue
                     if c == "[":
                         depth_bracket += 1
@@ -88,7 +115,11 @@ def extract_json(text: str) -> str:
                             and text[start] == "["
                             and text[j - 1] == "]"
                         ):
-                            return text[start:j]
+                            candidate = text[start:j]
+                            if _is_valid_json(candidate):
+                                return candidate
+                            # Balanced but not valid JSON; keep scanning.
+                            break
                         continue
                     j += 1
                     continue

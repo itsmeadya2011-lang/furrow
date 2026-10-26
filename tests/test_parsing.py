@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from furrow.agents import parsing
@@ -51,6 +53,26 @@ def test_escaped_quotes_inside_strings():
 def test_extract_json_raises_on_no_json():
     with pytest.raises(ValueError):
         parsing.extract_json("no json here")
+
+
+def test_extract_json_ignores_brace_inside_unquoted_text_before_real_json():
+    """A bare { or [ in prose before the real JSON must not start the scan."""
+    text = 'prefix { here {"a": 1}'
+    result = parsing.extract_json(text)
+    assert json.loads(result) == {"a": 1}
+
+
+def test_extract_json_ignores_brace_inside_string_before_real_json():
+    """A { appearing inside a string literal before the real JSON must be skipped."""
+    text = 'The value is "{" and then {"a": 1}'
+    result = parsing.extract_json(text)
+    assert json.loads(result) == {"a": 1}
+
+
+def test_extract_json_array_after_prose_with_brace():
+    text = 'note {x} then [1, 2, 3]'
+    result = parsing.extract_json(text)
+    assert json.loads(result) == [1, 2, 3]
 
 
 def test_parse_json_raises_valueerror_not_jsondecodeerror_on_malformed():

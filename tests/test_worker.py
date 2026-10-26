@@ -393,6 +393,32 @@ def test_resolve_in_workspace():
     assert inside == ws / "a.py"
 
 
+def test_resolve_in_workspace_blocks_symlink_escape(tmp_path):
+    """An absolute path that is a symlink pointing outside the workspace must be rejected."""
+    outside = tmp_path.parent / "outside_target"
+    outside.mkdir(exist_ok=True)
+    (outside / "secret.txt").write_text("secret")
+    link = tmp_path / "escape_link"
+    link.symlink_to(outside)
+
+    ws = tmp_path.resolve()
+    # The symlink lives inside the workspace, but its target does not.
+    assert resolve_in_workspace(ws, str(link)) is None
+
+
+def test_resolve_in_workspace_allows_internal_symlink(tmp_path):
+    """A symlink whose target stays inside the workspace is allowed."""
+    real = tmp_path / "real.txt"
+    real.write_text("data")
+    link = tmp_path / "link.txt"
+    link.symlink_to(real)
+
+    ws = tmp_path.resolve()
+    result = resolve_in_workspace(ws, str(link))
+    assert result is not None
+    assert result.resolve() == real.resolve()
+
+
 @pytest.mark.asyncio
 async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
     """Table-driven test with commands that MUST be denied.

@@ -268,11 +268,14 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
         return None
     p = Path(path)
     if p.is_absolute():
+        # Resolve symlinks so a symlink inside the workspace that points
+        # outside cannot escape the sandbox.
         try:
-            p.relative_to(workspace)
+            resolved = p.resolve()
+            resolved.relative_to(workspace)
         except ValueError:
             return None
-        return p
+        return resolved
     # reject traversal
     candidate = (workspace / p).resolve()
     try:
