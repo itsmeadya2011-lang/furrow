@@ -33,6 +33,7 @@ def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    goal: str | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +47,8 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if goal is not None:
+        updates["goal"] = goal
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -198,8 +201,11 @@ def start(
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
+        # FURROW_GOAL environment variable allows non-interactive/scheduled runs
+        goal = settings.goal
+    if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace, goal=goal)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 

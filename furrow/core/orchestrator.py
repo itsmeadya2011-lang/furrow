@@ -103,6 +103,11 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "no_progress": self._no_progress,
+            "prev_sig": self._prev_sig,
+            "last_passed": self._last_test_passed,
+            "tests_run": self._tests_run,
+            "tests_skipped": self._tests_skipped,
         }
 
     def _console(self) -> Any:
@@ -357,12 +362,7 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies

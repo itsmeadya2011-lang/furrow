@@ -131,6 +131,7 @@ class Settings(BaseSettings):
     test_timeout: float = Field(default=600.0, gt=0)
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
+    goal: str = ""
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
     def state_path(self, workspace: Path | None = None) -> Path:
