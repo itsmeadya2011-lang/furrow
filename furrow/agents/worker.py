@@ -45,14 +45,41 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "curl",
+        "wget",
+        "ssh",
+        "scp",
+        "sftp",
+        "nc",
+        "netcat",
+        "ncat",
+        "socat",
+        "eval",
+        "exec",
+        "source",
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
+    }
+)
+        "sftp",
+        "nc",
+        "netcat",
+        "ncat",
+        "socat",
+        "eval",
+        "exec",
+        "source",
+        "bash",
+        "sh",
+        "zsh",
+        "dash",
     }
 )
 
-# Maximum number of entries returned by the ``list_files`` tool.
-MAX_LIST_ENTRIES = 500
-
 # Shell separators a command is split on.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r|\$\(|`|<\(|>\()+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
@@ -242,6 +269,12 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+        return True
+    if "<(" in text or ">(" in text:
+        return True
+    if "$anthropic_api_key" in normalized or "$openai_api_key" in normalized:
+        return True
+    if re.search(r"\benv\b", normalized):
         return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):

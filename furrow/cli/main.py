@@ -160,6 +160,9 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)
+    except asyncio.CancelledError:
+        click.echo("Furrow stopped by user.")
+        sys.exit(130)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
@@ -253,6 +256,41 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+def version() -> None:
+    """Show the Furrow version."""
+    from furrow import __version__
+
+    click.echo(__version__)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def config(workspace: Path | None) -> None:
+    """Show effective configuration."""
+    run_settings = _run_settings(workspace=workspace)
+    data = run_settings.model_dump()
+    for key in sorted(data.keys()):
+        click.echo(f"{key}={data[key]}")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def stop(workspace: Path | None) -> None:
+    """Request stopping a running Furrow instance."""
+    click.echo("Stop requested (no running daemon detected in this CLI). Use Ctrl+C to stop a running process.")
 
 
 if __name__ == "__main__":
