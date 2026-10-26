@@ -520,7 +520,7 @@ def test_api_start_releases_the_llm_client_when_the_run_finishes(
 
     assert response.status_code == 200
     assert len(recording_orchestrator.instances) == 1
-    recorder = cast(RecordingClient, recording_orchestrator.instances[0].client)
+    recorder = cast(RecordingClient, recording_orchestrator.instances[0].client)  # type: ignore[attr-defined]
     assert _wait_until(lambda: recorder.closed), "the run never released the client"
 
 
