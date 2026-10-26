@@ -851,6 +851,9 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
+
+@pytest.mark.asyncio
+async def test_list_files_runs_off_event_loop(tmp_path):
     import threading
 
     for i in range(5):
@@ -869,8 +872,10 @@ async def test_run_command_stderr_newline_format(tmp_path):
     def slow_list(directory):
         seen["tid"] = threading.get_ident()
         import time
+
         time.sleep(0.1)
         from pathlib import Path as _P
+
         return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
 
     client.list_files = slow_list
