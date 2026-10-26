@@ -255,5 +255,23 @@ def web(host: str, port: int) -> None:
         sys.exit(1)
 
 
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def clear(workspace: Path | None) -> None:
+    """Remove the persisted Furrow run state file for a workspace."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    store.clear()
+    click.echo("Furrow run state cleared.")
+
+
 if __name__ == "__main__":
     main()
