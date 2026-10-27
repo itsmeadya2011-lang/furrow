@@ -74,8 +74,8 @@ def test_price_for_model_unknown_model_returns_none() -> None:
 
 
 def test_price_for_model_never_raises() -> None:
-    assert price_for_model("gpt-4o", {"broken": "not-a-price"}) is not None
-    assert price_for_model(None) is None  # type: ignore[arg-type]
+    assert price_for_model("gpt-4o", {"broken": "not-a-price"}) is not None  # type: ignore[dict-item]
+    assert price_for_model(None) is None
 
 
 def test_price_for_model_overrides_beat_the_built_in_table() -> None:
@@ -137,4 +137,4 @@ def test_estimate_cost_never_raises() -> None:
         output_tokens = "not-a-number"
 
     assert estimate_cost("gpt-4o", _Weird()) == 0.0
-    assert estimate_cost("gpt-4o", None) == 0.0  # type: ignore[arg-type]
+    assert estimate_cost("gpt-4o", None) == 0.0

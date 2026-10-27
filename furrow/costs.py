@@ -17,12 +17,9 @@ circular.  Token counts are therefore read by duck typing instead.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-
-if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a circular import
-    from furrow.config import Usage
 
 
 class ModelPricing(BaseModel):
@@ -139,7 +136,7 @@ def _merged_pricing(pricing: Mapping[str, ModelPricing] | None) -> dict[str, Mod
 
 
 def price_for_model(
-    model: str, pricing: Mapping[str, ModelPricing] | None = None
+    model: Any, pricing: Mapping[str, ModelPricing] | None = None
 ) -> ModelPricing | None:
     """Resolve a model id to its price, or ``None`` when the model is unknown.
 
@@ -185,7 +182,7 @@ def _token_count(usage: Any, field: str) -> float:
 
 
 def estimate_cost(
-    model: str, usage: Usage, pricing: Mapping[str, ModelPricing] | None = None
+    model: str, usage: Any, pricing: Mapping[str, ModelPricing] | None = None
 ) -> float:
     """Estimate the USD cost of *usage* for *model*.
 
