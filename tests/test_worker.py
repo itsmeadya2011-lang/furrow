@@ -393,6 +393,24 @@ def test_resolve_in_workspace():
     assert inside == ws / "a.py"
 
 
+def test_resolve_in_workspace_rejects_symlinked_absolute_path(tmp_path: Path) -> None:
+    """An absolute path that escapes through a symlink must be rejected.
+
+    The check resolves symlinks -- including the final component of an absolute
+    path -- so a worker cannot read or write outside the workspace by reaching
+    through a symlink.
+    """
+    ws = tmp_path.resolve()
+    escape_dir = tmp_path.parent / "furrow_escape_target"
+    escape_dir.mkdir(exist_ok=True)
+    (escape_dir / "secret.txt").write_text("secret")
+    try:
+        (ws / "link").symlink_to(escape_dir)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not supported in this environment")
+    assert resolve_in_workspace(ws, str(ws / "link" / "secret.txt")) is None
+
+
 @pytest.mark.asyncio
 async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
     """Table-driven test with commands that MUST be denied.

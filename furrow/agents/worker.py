@@ -262,17 +262,24 @@ def is_command_denied(command: str, workspace: Path) -> bool:
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
-    """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
+    """Return the absolute path for `path` inside `workspace`, or None when it escapes.
+
+    The resolved path is returned so that a symlink -- including one reached via
+    an absolute path -- is followed consistently with the check: the check and
+    the path handed to the worker resolve the same symlinks, so a symlink that
+    escapes the workspace can never be reached through this function.
+    """
     workspace = workspace.resolve()
     if not path:
         return None
     p = Path(path)
     if p.is_absolute():
+        resolved = p.resolve()
         try:
-            p.relative_to(workspace)
+            resolved.relative_to(workspace)
         except ValueError:
             return None
-        return p
+        return resolved
     # reject traversal
     candidate = (workspace / p).resolve()
     try:
