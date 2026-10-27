@@ -80,6 +80,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if usage.cost_usd:
+            click.echo(f"  LLM cost:        ${usage.cost_usd:,.6f} USD")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +105,8 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        if usage.cost_usd:
+            click.echo(f"  LLM cost:        ${usage.cost_usd:,.6f} USD")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
@@ -201,6 +205,36 @@ def start(
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def costs(workspace: Path | None) -> None:
+    """Show estimated LLM costs for the persisted run."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+    usage = getattr(state, "usage", None)
+    if usage is None or usage.calls == 0:
+        click.echo("No LLM usage recorded.")
+        return
+    click.echo("Furrow cost estimate")
+    click.echo(f"  Calls:           {usage.calls}")
+    click.echo(f"  Input tokens:    {usage.input_tokens}")
+    click.echo(f"  Output tokens:   {usage.output_tokens}")
+    click.echo(f"  Total tokens:    {usage.total_tokens}")
+    if usage.cost_usd:
+        click.echo(f"  Estimated cost:  ${usage.cost_usd:,.6f} USD")
+    else:
+        click.echo("  Estimated cost:  $0.000000 USD (no pricing for the models used)")
 
 
 @main.command()

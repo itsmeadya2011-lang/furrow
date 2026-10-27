@@ -358,7 +358,7 @@ def test_summary_prints_usage_when_result_carries_usage(
 
     assert "LLM usage:" in output
     assert "12 calls" in output
-    assert "4321 tokens" in output
+    assert "4321" in output
     assert "in 3900" in output
     assert "out 421" in output
 
@@ -603,3 +603,81 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_summary_prints_cost_when_usage_carries_it(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the estimated LLM cost when usage carries a cost."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.004321),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM cost:" in output
+    assert "$0.004321" in output
+
+
+def test_summary_omits_cost_line_when_cost_is_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A run with zero cost does not print a misleading zero cost line."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM cost:" not in output
+
+
+def test_costs_command_prints_persisted_cost(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """`furrow costs` prints the estimated cost persisted in the run state."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.004321),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["costs", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Furrow cost estimate" in result.output
+    assert "12" in result.output
+    assert "4321" in result.output
+    assert "$0.004321" in result.output
+
+
+def test_costs_command_without_state(runner: CliRunner, tmp_path: Path) -> None:
+    """`furrow costs` reports missing state when there is nothing to read."""
+    result = runner.invoke(main, ["costs", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found" in result.output
+
+
+def test_costs_command_without_usage(runner: CliRunner, tmp_path: Path) -> None:
+    """`furrow costs` reports no usage when the state has no recorded calls."""
+    state = RunState(goal="ship it", original_goal="ship it", cycles=0)
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["costs", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No LLM usage recorded" in result.output

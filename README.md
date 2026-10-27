@@ -46,6 +46,18 @@ If `goal` is omitted, Furrow will prompt for it.
 
 The command exits with status `1` when the run ends `FAILED` (tests ran and did not pass) and with status `0` for `PASSED` (all tests passed), `SKIPPED` (no test runner detected) and `NOT RUN` (no tests were executed).
 
+### `furrow costs`
+Show estimated LLM costs for the persisted run.
+
+```bash
+furrow costs
+furrow costs --workspace /path/to/project
+```
+
+The cost is computed from the token usage reported by the provider and the
+pricing table in `furrow/costs.py` (overridable with `FURROW_MODEL_PRICING`).
+When the model used has no known price the cost is reported as zero.
+
 ### `furrow status`
 Show the persisted state of the last run for a workspace.
 
@@ -91,6 +103,9 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_PLANNER_MODEL` | `claude-3-5-haiku-20241022` | Model for the planner |
 | `FURROW_WORKER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the worker |
 | `FURROW_TESTER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the tester |
+| `FURROW_PLANNER_PROVIDER` | (inherits `FURROW_PROVIDER`) | Provider for the planner |
+| `FURROW_WORKER_PROVIDER` | (inherits `FURROW_PROVIDER`) | Provider for the worker |
+| `FURROW_TESTER_PROVIDER` | (inherits `FURROW_PROVIDER`) | Provider for the tester |
 | `FURROW_ANTHROPIC_API_KEY` | (none) | Anthropic API key |
 | `FURROW_OPENAI_API_KEY` | (none) | OpenAI API key |
 | `FURROW_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama OpenAI-compatible base URL |

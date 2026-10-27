@@ -868,3 +868,64 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+def test_provider_for_returns_default_when_no_override():
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    assert client.provider_for("planner") == Provider.ANTHROPIC
+    assert client.provider_for("worker") == Provider.ANTHROPIC
+    assert client.provider_for("tester") == Provider.ANTHROPIC
+    assert client.provider_for("unknown") == Provider.ANTHROPIC
+
+
+def test_provider_for_returns_per_agent_override():
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.ANTHROPIC,
+            planner_provider=Provider.OPENAI,
+            worker_provider=Provider.OLLAMA,
+            tester_provider=Provider.OPENAI,
+        )
+    )
+    assert client.provider_for("planner") == Provider.OPENAI
+    assert client.provider_for("worker") == Provider.OLLAMA
+    assert client.provider_for("tester") == Provider.OPENAI
+    assert client.provider_for("unknown") == Provider.ANTHROPIC
+
+
+async def test_complete_uses_per_agent_provider_override():
+    """A per-agent provider override routes the call through the right client."""
+    fake_anthropic = _FakeOpenAI("anthropic-result")
+    fake_openai = _FakeOpenAI("openai-result")
+
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.ANTHROPIC,
+            planner_provider=Provider.OPENAI,
+        )
+    )
+    client._anthropic = fake_anthropic
+    client._openai = fake_openai
+
+    result = await client.complete("hi", provider=client.provider_for("planner"))
+    assert result == "openai-result"
+
+
+async def test_chat_uses_per_agent_provider_override():
+    fake_anthropic = _FakeOpenAI("anthropic-result")
+    fake_openai = _FakeOpenAI("openai-result")
+
+    client = LLMClient(
+        settings=Settings(
+            provider=Provider.ANTHROPIC,
+            worker_provider=Provider.OPENAI,
+        )
+    )
+    client._anthropic = fake_anthropic
+    client._openai = fake_openai
+
+    result = await client.chat(
+        [{"role": "user", "content": "hi"}],
+        provider=client.provider_for("worker"),
+    )
+    assert result.text == "openai-result"

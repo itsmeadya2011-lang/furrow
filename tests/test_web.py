@@ -592,3 +592,17 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_index_script_surfaces_cost_when_usage_carries_it(client: TestClient) -> None:
+    """The inline script renders the cost when usage carries a cost_usd."""
+    script = _inline_script(client)
+    assert "cost_usd" in script
+    assert "cost.toFixed(6)" in script
+    assert "USD)" in script
+
+
+def test_index_script_omits_cost_when_zero(client: TestClient) -> None:
+    """The inline script omits the cost when cost_usd is zero."""
+    script = _inline_script(client)
+    assert "if (cost > 0)" in script

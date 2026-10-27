@@ -302,19 +302,20 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(self, prompt: str, system: str = "", model: str | None = None,
+                       provider: Provider | None = None) -> str:
         model = model or self.settings.model
-        provider = self.settings.provider
+        effective_provider = provider if provider is not None else self.settings.provider
 
         async def call() -> str:
-            if provider == Provider.ANTHROPIC:
+            if effective_provider == Provider.ANTHROPIC:
                 response = await self._complete_anthropic(prompt, system, model)
-            elif provider == Provider.OPENAI:
+            elif effective_provider == Provider.OPENAI:
                 response = await self._complete_openai(self.openai, prompt, system, model)
-            elif provider == Provider.OLLAMA:
+            elif effective_provider == Provider.OLLAMA:
                 response = await self._complete_openai(self.ollama, prompt, system, model)
             else:
-                raise ValueError(f"Unsupported provider: {provider}")
+                raise ValueError(f"Unsupported provider: {effective_provider}")
             return response.text
 
         return await self._retry(call)
@@ -325,24 +326,39 @@ class LLMClient:
         tools: list[dict] | None = None,
         system: str = "",
         model: str | None = None,
+        provider: Provider | None = None,
     ) -> LLMResponse:
         model = model or self.settings.model
-        provider = self.settings.provider
+        effective_provider = provider if provider is not None else self.settings.provider
 
         async def call() -> LLMResponse:
-            if provider == Provider.ANTHROPIC:
+            if effective_provider == Provider.ANTHROPIC:
                 return await self._chat_anthropic(messages, tools, system, model)
-            elif provider == Provider.OPENAI:
+            elif effective_provider == Provider.OPENAI:
                 return await self._chat_openai_compatible(
                     self.openai, messages, tools, system, model
                 )
-            elif provider == Provider.OLLAMA:
+            elif effective_provider == Provider.OLLAMA:
                 return await self._chat_openai_compatible(
                     self.ollama, messages, tools, system, model
                 )
-            raise ValueError(f"Unsupported provider: {provider}")
+            raise ValueError(f"Unsupported provider: {effective_provider}")
 
         return await self._retry(call)
+
+    def provider_for(self, agent: str) -> Provider:
+        """Resolve the provider to use for a named agent.
+
+        Agents may route through a different provider than the default one
+        (``FURROW_PROVIDER``).  ``agent`` is one of ``"planner"``, ``"worker"``,
+        ``"tester"`` or any other name; an unknown agent falls back to the
+        default provider.
+        """
+        attr = f"{agent}_provider"
+        override = getattr(self.settings, attr, None)
+        if override is not None:
+            return override
+        return self.settings.provider
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(

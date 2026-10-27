@@ -114,6 +114,25 @@ def test_settings_provider_default():
     assert s.provider == Provider.ANTHROPIC
 
 
+def test_settings_per_agent_provider_defaults_to_none():
+    s = Settings()
+    assert s.planner_provider is None
+    assert s.worker_provider is None
+    assert s.tester_provider is None
+
+
+def test_settings_per_agent_provider_can_be_overridden(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FURROW_WORKER_PROVIDER", "openai")
+    s = Settings(_env_file=None)
+    assert s.worker_provider == Provider.OPENAI
+
+
+def test_settings_per_agent_provider_env_override(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FURROW_PLANNER_PROVIDER", "ollama")
+    s = Settings(_env_file=None)
+    assert s.planner_provider == Provider.OLLAMA
+
+
 def test_run_result_new_defaults():
     r = RunResult()
     assert r.tasks_blocked == 0

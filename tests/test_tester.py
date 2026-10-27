@@ -12,10 +12,16 @@ class FakeLLMClient:
         self.raises = raises
         self.prompts = []
         self.models = []
+        self.providers = []
 
-    async def complete(self, prompt, system="", model=None):
+    def provider_for(self, agent: str):
+        from furrow.config import Provider
+        return Provider.ANTHROPIC
+
+    async def complete(self, prompt, system="", model=None, provider=None):
         self.prompts.append(prompt)
         self.models.append(model)
+        self.providers.append(provider)
         if self.raises:
             raise self.raises
         return self.response

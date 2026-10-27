@@ -391,9 +391,11 @@ class TesterAgent:
             if not spawn_failed:
                 # A runner that never started has no output worth summarising.
                 prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+                provider = self.client.provider_for("tester")
                 try:
                     response = await self.client.complete(
-                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model,
+                        provider=provider
                     )
                     llm_result = parse_test_result(response)
                 except Exception:
