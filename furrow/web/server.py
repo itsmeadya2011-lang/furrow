@@ -566,6 +566,12 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
     await websocket.close(code=1008)
 
 
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    """Liveness check for the Furrow web server."""
+    return {"status": "ok"}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """The single page UI."""

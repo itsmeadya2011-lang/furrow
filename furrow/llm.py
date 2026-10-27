@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+
+logger = logging.getLogger(__name__)
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -358,7 +361,8 @@ class LLMClient:
         usage = _extract_anthropic_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
+        except Exception as exc:
+            logger.debug("Could not estimate cost for model %s: %s", model, exc)
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
@@ -385,7 +389,8 @@ class LLMClient:
         usage = _extract_openai_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
+        except Exception as exc:
+            logger.debug("Could not estimate cost for model %s: %s", model, exc)
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
@@ -420,7 +425,8 @@ class LLMClient:
         usage = _extract_anthropic_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
+        except Exception as exc:
+            logger.debug("Could not estimate cost for model %s: %s", model, exc)
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(
@@ -471,7 +477,8 @@ class LLMClient:
         usage = _extract_openai_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
+        except Exception as exc:
+            logger.debug("Could not estimate cost for model %s: %s", model, exc)
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(

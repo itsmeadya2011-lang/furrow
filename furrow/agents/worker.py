@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -14,6 +15,8 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+
+logger = logging.getLogger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -452,6 +455,7 @@ class WorkerAgent:
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            logger.debug("Denied command: %r", command)
             return "error: command denied"
         try:
             shlex.split(command)

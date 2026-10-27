@@ -69,6 +69,33 @@ class RunState(BaseModel):
     last_summary: str = ""
 
 
+def _migrate_state(data: dict) -> dict:
+    """Migrate a raw state dict to the current schema version.
+
+    The state file carries a ``version`` field. When a saved state was written
+    by an older version of Furrow its schema may differ, so the raw dict is
+    migrated field-by-field up to :data:`STATE_VERSION` before it is validated.
+    """
+    if not isinstance(data, dict):
+        return data
+    version = data.get("version", 0)
+    try:
+        version = int(version)
+    except (TypeError, ValueError):
+        version = 0
+    if version >= STATE_VERSION:
+        data.setdefault("version", STATE_VERSION)
+        return data
+    # Migration from earlier versions goes here. v1 is the first persisted
+    # schema, so there is nothing to transform yet, but the structure makes
+    # future migrations straightforward.
+    if version < 1:
+        # Reserved for future use: e.g. renaming fields, adding defaults.
+        pass
+    data["version"] = STATE_VERSION
+    return data
+
+
 def state_path_for(
     workspace: str | Path, relative: str | Path = DEFAULT_STATE_RELATIVE_PATH
 ) -> Path:
@@ -100,7 +127,13 @@ class StateStore:
             logger.warning("Could not read state file %s: %s", self.path, exc)
             return None
         try:
-            return RunState.model_validate_json(raw)
+            data = json.loads(raw)
+        except (ValueError, TypeError) as exc:
+            logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
+            return None
+        try:
+            data = _migrate_state(data)
+            return RunState.model_validate(data)
         except (ValidationError, ValueError) as exc:
             logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
             return None
