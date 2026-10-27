@@ -247,6 +247,37 @@ class TesterAgent:
 
         return None
 
+    @staticmethod
+    def detect_lint_command(workspace: Path) -> list[str] | None:
+        """Detect a lint command for the project.
+
+        Returns ``["ruff", "check", "."]`` when ruff configuration or a
+        pyproject.toml is present, otherwise None.
+        """
+        ruff_markers = ["ruff.toml", "pyproject.toml", ".ruff.toml"]
+        if any((workspace / m).is_file() for m in ruff_markers):
+            # Only use ruff if it is actually installed.
+            import shutil
+
+            if shutil.which("ruff"):
+                return ["ruff", "check", "."]
+        return None
+
+    @staticmethod
+    def detect_typecheck_command(workspace: Path) -> list[str] | None:
+        """Detect a type-check command for the project.
+
+        Returns ``["mypy", "."]`` when mypy configuration or a pyproject.toml
+        is present, otherwise None.
+        """
+        mypy_markers = ["mypy.ini", "pyproject.toml", "setup.cfg"]
+        if any((workspace / m).is_file() for m in mypy_markers):
+            import shutil
+
+            if shutil.which("mypy"):
+                return ["mypy", "."]
+        return None
+
     def _finalize(
         self,
         *,
@@ -324,14 +355,83 @@ class TesterAgent:
         summary = " ".join(part for part in notes if part).strip()
         return TestResult(passed=passed, summary=summary, failures=failures)
 
+    async def _run_command(
+        self,
+        cmd: list[str],
+        timeout: float,
+        label: str,
+    ) -> dict[str, Any]:
+        """Run a single command and return a result dict.
+
+        The dict contains: ``returncode``, ``combined`` (stdout+stderr),
+        ``spawn_failed``, ``spawn_error``, ``timed_out``, ``timeout``.
+        """
+        spawn_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            spawn_kwargs["start_new_session"] = True
+
+        spawn_failed = False
+        spawn_error = ""
+        timed_out = False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
+        except Exception as exc:
+            spawn_failed = True
+            message = str(exc)
+            spawn_error = f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+            returncode = 1
+            stdout = b""
+            stderr = b""
+        else:
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await self._kill_process_tree(proc)
+                timed_out = True
+                returncode = 1
+                stdout = b""
+                stderr = f"{label} command timed out after {timeout:g}s.".encode()
+            else:
+                returncode = proc.returncode if proc.returncode is not None else 0
+
+        combined = (
+            stdout.decode("utf-8", errors="replace")
+            + "\n"
+            + stderr.decode("utf-8", errors="replace")
+        )
+        if len(combined) > 20000:
+            combined = "[... output truncated ...]\n" + combined[-20000:]
+
+        return {
+            "returncode": returncode,
+            "combined": combined,
+            "spawn_failed": spawn_failed,
+            "spawn_error": spawn_error,
+            "timed_out": timed_out,
+            "timeout": timeout,
+        }
+
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         try:
-            cmd = await self.detect_command()
-            if cmd is None:
+            # Detect all applicable commands: tests, lint, type-check.
+            test_cmd = await self.detect_command()
+            lint_cmd = self.detect_lint_command(self.workspace)
+            typecheck_cmd = self.detect_typecheck_command(self.workspace)
+
+            if test_cmd is None and lint_cmd is None and typecheck_cmd is None:
                 return TestResult(
                     passed=True,
                     skipped=True,
-                    summary="No test runner detected for this project (tests skipped).",
+                    summary=(
+                        "No test runner, linter, or type checker detected "
+                        "for this project (all skipped)."
+                    ),
                     failures=[],
                 )
 
@@ -340,74 +440,122 @@ class TesterAgent:
             # suite may legitimately run for minutes.
             timeout = resolve_test_timeout(self.settings)
 
-            spawn_kwargs: dict[str, Any] = {}
-            if os.name == "posix":
-                spawn_kwargs["start_new_session"] = True
+            results: list[tuple[str, dict[str, Any]]] = []
 
-            spawn_failed = False
-            spawn_error = ""
-            timed_out = False
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-            except Exception as exc:
-                # The runner could not even be started.  That is an
-                # infrastructure error, not a test failure, and it has to be
-                # distinguishable from "the tests ran and failed".
-                spawn_failed = True
-                message = str(exc)
-                spawn_error = (
-                    f"{type(exc).__name__}: {message}" if message else type(exc).__name__
-                )
-                returncode = 1
-                stdout = b""
-                stderr = b""
-            else:
-                try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    await self._kill_process_tree(proc)
-                    timed_out = True
-                    returncode = 1
-                    stdout = b""
-                    stderr = f"Test command timed out after {timeout:g}s.".encode()
-                else:
-                    returncode = proc.returncode if proc.returncode is not None else 0
-
-            combined = (
-                stdout.decode("utf-8", errors="replace")
-                + "\n"
-                + stderr.decode("utf-8", errors="replace")
-            )
-            if len(combined) > 20000:
-                combined = "[... output truncated ...]\n" + combined[-20000:]
-
-            llm_result: TestResult | None = None
-            if not spawn_failed:
-                # A runner that never started has no output worth summarising.
-                prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
-                try:
-                    response = await self.client.complete(
-                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+            # --- Tests ---
+            if test_cmd is not None:
+                result = await self._run_command(test_cmd, timeout, "test")
+                llm_result: TestResult | None = None
+                if not result["spawn_failed"]:
+                    prompt = (
+                        TESTER_PROMPT
+                        + "\n\nGoal: "
+                        + goal
+                        + "\n\nTest output:\n"
+                        + result["combined"]
                     )
-                    llm_result = parse_test_result(response)
-                except Exception:
-                    llm_result = None
+                    try:
+                        response = await self.client.complete(
+                            prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                        )
+                        llm_result = parse_test_result(response)
+                    except Exception:
+                        llm_result = None
+                result["llm_result"] = llm_result
+                results.append(("tests", result))
 
-            return self._finalize(
-                llm_result=llm_result,
-                returncode=returncode,
-                combined=combined,
-                spawn_failed=spawn_failed,
-                spawn_error=spawn_error,
-                timed_out=timed_out,
-                timeout=timeout,
-            )
+            # --- Lint ---
+            if lint_cmd is not None:
+                result = await self._run_command(lint_cmd, timeout, "lint")
+                results.append(("lint", result))
+
+            # --- Type check ---
+            if typecheck_cmd is not None:
+                result = await self._run_command(typecheck_cmd, timeout, "type-check")
+                results.append(("type-check", result))
+
+            # Combine all results. Exit status is ground truth for every
+            # command; the LLM verdict only refines the test result.
+            passed = True
+            notes: list[str] = []
+            failures: list[str] = []
+
+            for label, result in results:
+                rc = result["returncode"]
+                combined = result["combined"]
+                spawn_failed = result["spawn_failed"]
+                spawn_error = result["spawn_error"]
+                timed_out = result["timed_out"]
+                llm_result = result.get("llm_result")
+
+                if spawn_failed:
+                    passed = False
+                    notes.append(
+                        f"{label}: the {label} runner could not be started: {spawn_error}. "
+                        f"The {label} run did not run."
+                    )
+                    failures.append(f"{label} runner could not be started: {spawn_error}")
+                    continue
+
+                if timed_out:
+                    passed = False
+                    notes.append(
+                        f"{label}: timed out after {result['timeout']:g}s and was killed; "
+                        f"the {label} run did not finish."
+                    )
+                    failures.append(f"{label} timed out")
+                    continue
+
+                if rc != 0:
+                    passed = False
+                    notes.append(
+                        f"{label}: exited with status {rc}; the {label} run failed."
+                    )
+                    if llm_result is not None and llm_result.failures:
+                        failures.extend(llm_result.failures)
+                    else:
+                        # LLM unavailable or unhelpful: extract failures from raw output.
+                        extracted = _extract_failures(combined)
+                        if extracted:
+                            failures.extend(extracted)
+                        else:
+                            failures.append(f"{label} exited with status {rc}")
+                    # Include a sample of the raw output in the summary so the
+                    # user can see what went wrong even without the LLM.
+                    sample = combined.strip()[:500]
+                    if sample:
+                        notes.append(sample)
+                    continue
+
+                # Exit status 0.
+                if llm_result is not None:
+                    # Tests: LLM verdict refines the zero-exit result.
+                    if not llm_result.passed:
+                        passed = False
+                        notes.append(
+                            f"{label}: the command exited with status 0, but the LLM "
+                            "reported a failure."
+                        )
+                    if llm_result.summary:
+                        notes.append(llm_result.summary)
+                    if llm_result.failures:
+                        failures.extend(llm_result.failures)
+                else:
+                    # No LLM verdict: check the raw output for failure keywords.
+                    if _has_failure_keywords(combined):
+                        passed = False
+                        extracted = _extract_failures(combined)
+                        if extracted:
+                            failures.extend(extracted)
+                        notes.append(combined.strip()[:500])
+                    else:
+                        notes.append(f"{label}: exited with status 0.")
+
+            if not failures and not passed:
+                failures = ["one or more checks did not pass"]
+
+            summary = " ".join(part for part in notes if part).strip()
+            return TestResult(passed=passed, summary=summary, failures=failures)
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
             return TestResult(
