@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
+import logging
 import os
 import re
 import shlex
-import signal
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +13,11 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.process import kill_process_tree
+
+logger = logging.getLogger(__name__)
+
+MAX_OUTPUT_BYTES = 20000
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -345,9 +349,8 @@ class WorkerAgent:
                 )
             messages.append({"role": "user", "content": result_blocks})
 
-        # budget exhausted: the worker was truncated, so this is NOT a success.
-        # Reporting success here would make the orchestrator mark the task as
-        # completed instead of retrying it.
+        # budget exhausted
+        logger.warning("Worker iteration budget exhausted")
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -409,8 +412,8 @@ class WorkerAgent:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        if len(content) > 20000:
-            content = content[:20000] + "\n[... output truncated ...]"
+        if len(content) > MAX_OUTPUT_BYTES:
+            content = content[:MAX_OUTPUT_BYTES] + "\n[... output truncated ...]"
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -452,6 +455,7 @@ class WorkerAgent:
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            logger.warning("Command denied: %s", command)
             return "error: command denied"
         try:
             shlex.split(command)
@@ -468,7 +472,7 @@ class WorkerAgent:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
                     "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
+                    cwd=str(self.workspace.resolve()),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
@@ -479,7 +483,7 @@ class WorkerAgent:
                     return "error: empty command"
                 proc = await asyncio.create_subprocess_exec(
                     *parts,
-                    cwd=str(self.workspace),
+                    cwd=str(self.workspace.resolve()),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
@@ -489,33 +493,13 @@ class WorkerAgent:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            await self._kill_process_tree(proc, new_session)
+            logger.warning("Command timed out")
+            await kill_process_tree(proc, new_session)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
-        cap = 20000
+        cap = MAX_OUTPUT_BYTES
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
-
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
-        """Kill a timed-out command together with every process it spawned."""
-        if new_session:
-            try:
-                pgid = os.getpgid(proc.pid)
-            except (OSError, AttributeError):
-                pgid = None
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (OSError, AttributeError):
-                    pass
-                else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
-        # Fallback: no process group available (or killing it failed).
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()

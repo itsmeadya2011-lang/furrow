@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
+import logging
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,6 +14,11 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.process import kill_process_tree
+
+logger = logging.getLogger(__name__)
+
+MAX_OUTPUT_BYTES = 20000
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
@@ -170,21 +174,6 @@ class TesterAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
 
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-        """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
-
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
@@ -328,6 +317,7 @@ class TesterAgent:
         try:
             cmd = await self.detect_command()
             if cmd is None:
+                logger.warning("No test runner detected")
                 return TestResult(
                     passed=True,
                     skipped=True,
@@ -350,7 +340,7 @@ class TesterAgent:
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
-                    cwd=str(self.workspace),
+                    cwd=str(self.workspace.resolve()),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
@@ -361,6 +351,7 @@ class TesterAgent:
                 # distinguishable from "the tests ran and failed".
                 spawn_failed = True
                 message = str(exc)
+                logger.warning("Spawn failed: %s", message)
                 spawn_error = (
                     f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 )
@@ -371,7 +362,7 @@ class TesterAgent:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    await self._kill_process_tree(proc)
+                    await kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
                     stdout = b""
@@ -384,8 +375,8 @@ class TesterAgent:
                 + "\n"
                 + stderr.decode("utf-8", errors="replace")
             )
-            if len(combined) > 20000:
-                combined = "[... output truncated ...]\n" + combined[-20000:]
+            if len(combined) > MAX_OUTPUT_BYTES:
+                combined = "[... output truncated ...]\n" + combined[-MAX_OUTPUT_BYTES:]
 
             llm_result: TestResult | None = None
             if not spawn_failed:
@@ -396,7 +387,8 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                except Exception as exc:
+                    logger.warning("LLM call failed: %s", exc)
                     llm_result = None
 
             return self._finalize(

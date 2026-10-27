@@ -10,7 +10,6 @@ Commands:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import sys
 from pathlib import Path
@@ -21,6 +20,7 @@ import click
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
+from furrow.lifecycle import _run_orchestrator
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -115,37 +115,6 @@ def _print_state(state: RunState) -> None:
         click.echo("Tasks:  (none)")
 
 
-async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
-
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
-
-
-async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
-    """Run an orchestrator and release its LLM client afterwards.
-
-    The client is closed in a ``finally`` block, so its HTTP connections are
-    released even when the run raises.
-    """
-    try:
-        return await orchestrator.run()
-    finally:
-        await _release_client(getattr(orchestrator, "client", None))
-
-
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
@@ -156,7 +125,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         resume=resume,
     )
     try:
-        result = asyncio.run(_run_and_release(orchestrator))
+        result = asyncio.run(_run_orchestrator(orchestrator))
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)

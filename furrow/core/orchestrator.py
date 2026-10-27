@@ -12,6 +12,9 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 _UNSET = object()
 
@@ -169,6 +172,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                logger.error("planner failed", error=str(e))
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
@@ -199,6 +203,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                logger.error("tester failed", error=str(e))
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
@@ -282,7 +287,8 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                # The state was NOT written: report the failure (including the
+                logger.error("state save failed", path=str(self.state_store.path), error=str(e))
+                # The state was NOT written
                 # path that could not be written) and do NOT emit STATE_SAVED,
                 # which would tell consumers the state was saved when it was not.
                 self.event_bus.emit(
@@ -357,12 +363,7 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
@@ -393,9 +394,44 @@ class Orchestrator:
             waves.append(wave)
             for t in wave:
                 done.add(t.id)
-            remaining = [t for t in remaining if t not in wave]
+            wave_ids = {t.id for t in wave}
+            remaining = [t for t in remaining if t.id not in wave_ids]
         return waves
 
+    def _handle_task_failure(self, task: TaskModel, exc: Exception, max_retries: int) -> None:
+        task.attempts += 1
+        task.error = f"{type(exc).__name__}: {exc}"
+        task.finished_at = datetime.now(timezone.utc).isoformat()
+        task.status = "pending" if task.attempts <= max_retries else "failed"
+        self.event_bus.emit(
+            Event(
+                type=EventType.ERROR,
+                message=f"task {task.id} raised: {task.error}",
+                data={"task": task.id, "error": task.error,
+                      "attempts": task.attempts},
+            )
+        )
+        self.event_bus.emit(
+            Event(
+                type=EventType.TASK_FINISHED,
+                data={
+                    "task": task.id,
+                    "success": False,
+                    "summary": str(task.error or ""),
+                },
+            )
+        )
+        task_id = self._escape(task.id)
+        detail = self._escape(self._one_line(task.error))
+        if task.status == "pending":
+            self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
+            self.event_bus.emit(
+                Event(type=EventType.LOG,
+                     message=f"task {task.id} failed, retrying "
+                             f"(attempt {task.attempts} of {max_retries + 1})")
+            )
+        else:
+            self._say(f"[red]Task {task_id} failed: {detail}[/red]")
     async def _execute(self, plan: Plan) -> None:
         waves = self._plan_waves(plan.tasks)
         sem = asyncio.Semaphore(self.settings.max_parallel_tasks)
@@ -425,42 +461,7 @@ class Orchestrator:
                 except asyncio.CancelledError:
                     raise  # cancellation is not a task failure
                 except Exception as exc:
-                    # A raised exception is handled exactly like a worker that
-                    # returned success=False: it consumes one attempt and follows
-                    # the same retry / terminal-failure path.
-                    task.attempts += 1
-                    task.error = f"{type(exc).__name__}: {exc}"
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
-                    )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    self._handle_task_failure(task, exc, max_retries)
                     return
                 try:
                     success = bool(getattr(result, "success", False))
@@ -503,39 +504,7 @@ class Orchestrator:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    task.attempts += 1
-                    task.error = f"{type(exc).__name__}: {exc}"
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
-                    )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    self._handle_task_failure(task, exc, max_retries)
 
         async def run_tasks(tasks: list[TaskModel]) -> None:
             """Run tasks concurrently, never swallowing a cancellation.

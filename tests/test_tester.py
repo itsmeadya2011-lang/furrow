@@ -446,6 +446,8 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert res.failures
     assert any("RuntimeError" in f for f in res.failures)
 
+
+def test_truncation_keeps_tail_not_head(tmp_path, monkeypatch):
     """Old head-only behaviour is gone - beginning of output is not kept."""
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 

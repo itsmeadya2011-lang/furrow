@@ -23,6 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 from furrow.config import RunResult, settings
 from furrow.core.events import Event, EventType
 from furrow.core.state import RunState, StateStore
+from furrow.lifecycle import _run_orchestrator
 from furrow.web import server
 
 
@@ -529,7 +530,7 @@ async def test_run_orchestrator_releases_the_client_when_the_run_raises() -> Non
     orchestrator = FailingOrchestrator(goal="build it")
 
     with pytest.raises(RuntimeError):
-        await server._run_orchestrator(cast(Any, orchestrator))
+        await _run_orchestrator(cast(Any, orchestrator))
 
     assert orchestrator.client.closed is True
 
@@ -538,7 +539,7 @@ async def test_run_orchestrator_releases_the_client_when_the_run_is_cancelled() 
     """A cancelled run (e.g. the websocket client left) releases the client."""
     orchestrator = HangingClientOrchestrator(goal="build it")
 
-    task = asyncio.create_task(server._run_orchestrator(cast(Any, orchestrator)))
+    task = asyncio.create_task(_run_orchestrator(cast(Any, orchestrator)))
     await asyncio.sleep(0)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

@@ -45,6 +45,16 @@ class Event:
         if not self.timestamp:
             self.timestamp = datetime.now(timezone.utc).isoformat()
 
+    def __repr__(self) -> str:
+        msg = self.message
+        if len(msg) > 40:
+            msg = msg[:37] + "..."
+        data = self.data
+        data_repr = repr(data)
+        if len(data_repr) > 40:
+            data_repr = data_repr[:37] + "..."
+        return f"Event(type={self.type!r}, message={msg!r}, data={data_repr})"
+
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serialisable representation of the event."""
         return {
