@@ -193,9 +193,13 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_python_tests = has_tests_dir and any(
+            f.suffix == ".py" for f in self.workspace.glob("tests/**/*.py")
+        )
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
+        # Python projects with actual Python test files always use pytest,
+        # even if a package.json is also present (common for tooling).
+        if has_python_tests and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
             return [sys.executable, "-m", "pytest", "-q"]

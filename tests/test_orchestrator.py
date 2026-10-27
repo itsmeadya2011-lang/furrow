@@ -147,6 +147,29 @@ async def test_dependency_ordering(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_dependency_cycle_blocks_remaining_tasks(tmp_path, monkeypatch):
+    """A cycle in the plan leaves the cyclic tasks blocked and logs a warning."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    t1 = TaskModel(id="1", description="one", dependencies=["2"])
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    t1o = next(t for t in orch.tasks if t.id == "1")
+    t2o = next(t for t in orch.tasks if t.id == "2")
+    assert t1o.status == "blocked"
+    assert t2o.status == "blocked"
+    events = drain(q)
+    assert any(
+        e.type == EventType.LOG and "dependency cycle" in e.message for e in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_failed_dep_blocked(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):

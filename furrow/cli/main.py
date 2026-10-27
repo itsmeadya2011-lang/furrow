@@ -13,10 +13,16 @@ import asyncio
 import inspect
 import logging
 import sys
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
 import click
+
+try:
+    __version__ = _pkg_version("furrow")
+except Exception:  # pragma: no cover - package metadata not installed
+    __version__ = "0.1.0"
 
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
@@ -173,6 +179,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)

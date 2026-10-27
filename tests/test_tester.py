@@ -59,6 +59,28 @@ def test_detect_packagejson(tmp_path):
     assert cmd is not None and "npm" in cmd
 
 
+def test_detect_mixed_python_js_prefers_pytest(tmp_path):
+    """A project with both package.json and Python tests uses pytest."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_example.py").write_text("def test_ok():\n    assert True\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_mixed_python_js_without_python_tests_prefers_npm(tmp_path):
+    """A project with package.json but no Python test files uses npm."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "tests").mkdir()
+    # no .py files in tests/
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
 def test_detect_cargo(tmp_path):
     (tmp_path / "Cargo.toml").write_text("[package]\n")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
