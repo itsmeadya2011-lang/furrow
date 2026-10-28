@@ -519,3 +519,5 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+        with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError, OSError):
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
