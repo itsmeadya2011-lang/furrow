@@ -4,6 +4,7 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow clear           delete the persisted run state
     furrow web             serve the web UI
 """
 
@@ -22,6 +23,13 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
+
+try:
+    from importlib.metadata import version as _pkg_version
+
+    __version__ = _pkg_version("furrow")
+except Exception:  # pragma: no cover - fallback when package metadata is missing
+    __version__ = "0.1.0"
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +88,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if usage.cost_usd > 0:
+            click.echo(f"  Est. cost:       ${usage.cost_usd:.6f} USD")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -173,6 +183,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)
