@@ -38,6 +38,9 @@ furrow start "Add JWT auth to the API"
 
 Options:
 - `--model` — override the LLM model
+- `--planner-model` — override the planner model
+- `--worker-model` — override the worker model
+- `--tester-model` — override the tester model
 - `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
 - `--workspace PATH` — project directory to work in
 - `--resume` — resume the persisted run instead of starting fresh
@@ -120,7 +123,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Estimated cost in USD is tracked per model (using the built-in pricing table, overridable via `FURROW_MODEL_PRICING`) and shown alongside the token counts when it is non-zero.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
