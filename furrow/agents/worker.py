@@ -378,6 +378,11 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "grep_files":
+            return await self._grep_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -443,6 +448,42 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _grep_files(self, pattern: str, path: str) -> str:
+        if not pattern:
+            return "error: empty pattern"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not resolved.exists():
+            return f"error: path not found: {path}"
+        matches: list[str] = []
+        base = self.workspace.resolve()
+        files = await asyncio.to_thread(self.client.list_files, resolved)
+        for entry in files[:MAX_LIST_ENTRIES]:
+            fpath = Path(entry)
+            if not fpath.is_absolute():
+                fpath = resolved / fpath
+            if not fpath.is_file():
+                continue
+            try:
+                content = await self.client.read_file(fpath)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                if regex.search(line):
+                    try:
+                        rel = str(fpath.relative_to(base))
+                    except ValueError:
+                        rel = str(fpath)
+                    matches.append(f"{rel}:{line_no}: {line.rstrip()}")
+                    if len(matches) >= 200:
+                        return "\n".join(matches)
+        return "\n".join(matches) if matches else "no matches"
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

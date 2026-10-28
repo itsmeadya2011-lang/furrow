@@ -311,6 +311,40 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_grep_files_finds_matches(tmp_path):
+    (tmp_path / "hello.txt").write_text("alpha\nbeta\ngamma\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_files",
+                    arguments={"pattern": "beta", "path": "."},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "beta" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
 async def test_list_files_caps_at_500_entries(tmp_path):
     for i in range(520):
         (tmp_path / f"f{i:04d}.txt").write_text("x")
@@ -375,8 +409,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["grep_files", "list_files", "read_file", "run_command", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]

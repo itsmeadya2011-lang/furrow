@@ -80,6 +80,19 @@ WORKER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "grep_files",
+        "description": "search file contents under a workspace directory for a regex pattern; "
+        "returns matching lines as `path:line: content`.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
         "name": "run_command",
         "description": "run a shell command in the workspace and return its output.",
         "parameters": {
