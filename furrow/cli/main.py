@@ -23,6 +23,13 @@ from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
 
+try:
+    from importlib.metadata import version as _pkg_version
+
+    VERSION = _pkg_version("furrow")
+except Exception:  # pragma: no cover - package metadata not installed
+    VERSION = "0.1.0"
+
 logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
@@ -80,6 +87,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if getattr(usage, "cost_usd", 0.0):
+            click.echo(f"  Est. cost:       ${usage.cost_usd:.6f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +112,8 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        if getattr(usage, "cost_usd", 0.0):
+            click.echo(f"  Est. cost:       ${usage.cost_usd:.6f}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
@@ -173,6 +184,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(version=VERSION, prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)
