@@ -144,6 +144,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <div class="goal" id="goal-display">\u2014</div>
   <div class="meta" id="header-meta">
     <span>cycle <b id="cycle">\u2014</b></span>
+    <span>tests <b id="tests">0</b></span>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
@@ -157,6 +158,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const tasksEl = document.getElementById('tasks');
   const goalDisplayEl = document.getElementById('goal-display');
   const cycleEl = document.getElementById('cycle');
+  const testsEl = document.getElementById('tests');
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
@@ -196,6 +198,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
       text(status && status.cycles !== undefined ? status.cycles : '\u2014');
+    testsEl.textContent = text(status && status.tests_run !== undefined ? status.tests_run : '0');
     stateEl.textContent = running ? 'running' : 'stopped';
     const reason =
       text(status && status.stopped_reason) ||
