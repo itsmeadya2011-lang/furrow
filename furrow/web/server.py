@@ -206,7 +206,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    let usageText = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    if (cost > 0) { usageText += ', ~$' + cost.toFixed(4); }
+    usageEl.textContent = usageText;
   }
 
   function renderTasks(tasks) {
