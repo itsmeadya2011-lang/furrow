@@ -344,6 +344,40 @@ class LLMClient:
 
         return await self._retry(call)
 
+    @staticmethod
+    def _text_from_anthropic_response(response: Any) -> str:
+        """Extract the text content from an Anthropic messages response."""
+        text = ""
+        for block in response.content or []:
+            if block.type == "text":
+                text += block.text
+        return text
+
+    @staticmethod
+    def _text_from_openai_response(response: Any) -> str:
+        """Extract the text content from an OpenAI chat completions response."""
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise ValueError("provider response contained no choices")
+        message = getattr(choices[0], "message", None)
+        if message is None:
+            raise ValueError("provider response choice has no message")
+        return message.content or ""
+
+    def _usage_from_anthropic_response(self, response: Any) -> Usage:
+        return _extract_anthropic_usage(response)
+
+    def _usage_from_openai_response(self, response: Any) -> Usage:
+        return _extract_openai_usage(response)
+
+    def _accumulate_usage(self, model: str, usage: Usage) -> None:
+        """Estimate cost and accumulate usage into the client's running total."""
+        try:
+            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+        except Exception:
+            usage.cost_usd = 0.0
+        self.total_usage.add(usage)
+
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(
             model=model,
@@ -351,17 +385,11 @@ class LLMClient:
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
-        text = ""
-        for block in response.content or []:
-            if block.type == "text":
-                text += block.text
-        usage = _extract_anthropic_usage(response)
-        try:
-            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
-            usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        text = _text_from_anthropic_response(response)
+        usage = _usage_from_anthropic_response(response)
+        self._accumulate_usage(model, usage)
         return LLMResponse(text=text, raw=response, usage=usage)
+
 
     async def _complete_openai(
         self, client: AsyncOpenAI, prompt: str, system: str, model: str
@@ -374,20 +402,9 @@ class LLMClient:
                 {"role": "user", "content": prompt},
             ],
         )
-        choices = getattr(response, "choices", None) or []
-        if not choices:
-            raise ValueError("provider response contained no choices")
-        choice = choices[0]
-        message = getattr(choice, "message", None)
-        if message is None:
-            raise ValueError("provider response choice has no message")
-        text = message.content or ""
-        usage = _extract_openai_usage(response)
-        try:
-            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
-            usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        text = _text_from_openai_response(response)
+        usage = _usage_from_openai_response(response)
+        self._accumulate_usage(model, usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _chat_anthropic(
@@ -418,11 +435,7 @@ class LLMClient:
                     ToolCall(id=block.id, name=block.name, arguments=block.input or {})
                 )
         usage = _extract_anthropic_usage(response)
-        try:
-            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
-            usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._accumulate_usage(model, usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
@@ -469,11 +482,7 @@ class LLMClient:
                 )
             )
         usage = _extract_openai_usage(response)
-        try:
-            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
-            usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._accumulate_usage(model, usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
