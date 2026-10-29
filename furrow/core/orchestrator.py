@@ -357,12 +357,11 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # old.status is "pending" or "running" here (completed,
+                    # failed and blocked are handled above). Reset to pending so
+                    # the task is re-executed; its attempt counter is preserved
+                    # on the shared TaskModel object.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies

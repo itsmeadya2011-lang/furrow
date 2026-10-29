@@ -642,6 +642,26 @@ async def api_start(request: StartRequest) -> JSONResponse:
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
 
 
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the run that is currently in progress, if any.
+
+    Returns ``{"cancelled": true}`` when a run was cancelled, and
+    ``{"cancelled": false}`` when no run was in progress.  A cancelled run is
+    finalised by its done-callback (``_on_run_done``) which records the
+    cancellation in the registry, so the server never stays stuck in the
+    "running" state.
+    """
+    task = _CURRENT.get("task")
+    if task is None or task.done():
+        return JSONResponse(
+            status_code=200,
+            content={"cancelled": False, "error": "no run in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Run a goal and stream every event it emits to the client."""

@@ -297,6 +297,38 @@ def test_api_start_rejects_a_second_run(
     assert body["error"] == "a run is already in progress"
 
 
+def test_api_cancel_cancels_a_running_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cancelling a running run stops it and clears the running flag."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+
+    client.post("/api/start", json={"goal": "build it"})
+
+    assert _wait_until(lambda: server._CURRENT.get("running") is True), "the run never started"
+
+    response = client.post("/api/cancel")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelled"] is True
+
+    run_task = server._CURRENT.get("task")
+    assert run_task is not None
+    assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"
+    assert server._CURRENT.get("running") is False
+
+
+def test_api_cancel_when_no_run_in_progress(
+    client: TestClient,
+) -> None:
+    """Cancelling when nothing is running reports cancelled=false."""
+    response = client.post("/api/cancel")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelled"] is False
+    assert body["error"] == "no run in progress"
+
+
 def test_api_status(client: TestClient, fake_orchestrator: type[FakeOrchestrator]) -> None:
     client.post("/api/start", json={"goal": "build it"})
 

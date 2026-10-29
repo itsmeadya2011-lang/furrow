@@ -382,6 +382,44 @@ def test_summary_skips_usage_line_when_zero_calls(
     assert "LLM usage" not in output
 
 
+def test_summary_prints_cost_when_usage_carries_cost(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the LLM cost line when the result carries a cost."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.001234),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "$0.001234" in output
+
+
+def test_summary_omits_cost_when_cost_is_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A zero cost does not print a misleading cost line."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "$" not in output
+
+
 def test_summary_prints_files_changed_when_present(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

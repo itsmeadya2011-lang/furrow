@@ -667,6 +667,29 @@ async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, mo
     assert plan.tasks[0].error == "new error"
 
 
+async def test_merge_plan_resets_running_task_to_pending(tmp_path, monkeypatch):
+    """A task left in "running" (e.g. an interrupted previous cycle) is reset to
+    "pending" when re-planned, so it can be re-executed."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    # Simulate a task that was left mid-flight by a previous cycle.
+    task.status = "running"
+    task.attempts = 1
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+    assert plan.tasks[0].attempts == 1, "the attempt counter is preserved"
+
+
 @pytest.mark.asyncio
 async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
