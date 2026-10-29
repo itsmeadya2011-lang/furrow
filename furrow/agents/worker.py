@@ -453,10 +453,6 @@ class WorkerAgent:
         # the workspace.
         if is_command_denied(command, self.workspace):
             return "error: command denied"
-        try:
-            shlex.split(command)
-        except ValueError:
-            return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)

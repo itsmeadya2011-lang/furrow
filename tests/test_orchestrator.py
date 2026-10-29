@@ -977,3 +977,31 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_state_store_save_exception_emits_error_not_state_saved_and_continues(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+
+    def boom(state):
+        raise Exception("save failed")
+
+    monkeypatch.setattr(store, "save", boom)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    assert isinstance(result, RunResult)
+    assert result.cycles == 3
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    state_saved = [e for e in events if e.type == EventType.STATE_SAVED]
+    errors = [e for e in events if e.type == EventType.ERROR]
+    assert len(state_saved) == 0
+    assert len(errors) >= 1

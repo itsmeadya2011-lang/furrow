@@ -42,8 +42,17 @@ returned as JSON."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
-workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+workspace using the available tools.
+
+Work thoroughly and reliably:
+- Read existing files before modifying them so you understand the current code.
+- Make minimal, targeted changes; do not refactor unrelated code.
+- If a task adds a feature, also add or update tests.
+- Use write_file for new files and to overwrite existing ones.
+- After making changes, run the relevant tests or commands to verify your work.
+- Check your work by running relevant commands before finishing.
+- When done, respond with a clear summary of what was done and no further
+  tool calls."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -51,7 +60,7 @@ You determine whether tests passed or failed and return JSON."""
 WORKER_TOOLS: list[dict] = [
     {
         "name": "read_file",
-        "description": "read a UTF-8 text file from the workspace.",
+        "description": "read an existing UTF-8 text file from the workspace before modifying it.",
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
@@ -60,7 +69,7 @@ WORKER_TOOLS: list[dict] = [
     },
     {
         "name": "write_file",
-        "description": "create or overwrite a file in the workspace.",
+        "description": "create a new file or overwrite an existing one in the workspace.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -81,7 +90,7 @@ WORKER_TOOLS: list[dict] = [
     },
     {
         "name": "run_command",
-        "description": "run a shell command in the workspace and return its output.",
+        "description": "run a shell command (e.g. tests) in the workspace and return its output.",
         "parameters": {
             "type": "object",
             "properties": {"command": {"type": "string"}},

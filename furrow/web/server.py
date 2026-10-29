@@ -3,7 +3,7 @@
 The server exposes a tiny JSON API plus a websocket that streams every
 orchestrator event to the browser:
 
-    GET  /            single page UI (inline HTML/CSS/JS)
+    GET  /            single page UI (static HTML/CSS/JS in furrow/web/static/index.html)
     GET  /api/state  persisted run state
     GET  /api/status status of the currently active run
     POST /api/start  start a background run
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -48,369 +49,6 @@ _CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
 # while they are still pending.
 _TASKS: set[asyncio.Task[RunResult]] = set()
 
-INDEX_HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Furrow</title>
-<style>
-  :root { color-scheme: dark; }
-  body {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    margin: 0; padding: 1.25rem; background: #10131a; color: #d7dae0;
-  }
-  h1 {
-    font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
-    margin: 0 0 1rem; color: #f0f2f5;
-  }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-  input {
-    flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
-    border: 1px solid #2b3240; border-radius: 6px; font: inherit;
-  }
-  button {
-    padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
-    background: #1d2430; color: inherit; font: inherit; cursor: pointer;
-  }
-  button:hover { border-color: #4c8dff; }
-  #log {
-    background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
-    padding: .75rem; height: 20rem; overflow: auto;
-    white-space: pre-wrap; word-break: break-word; margin: 0;
-  }
-  .header {
-    border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
-    margin-bottom: 1rem; background: #171b23;
-  }
-  .header .goal {
-    font-size: 1.1rem; font-weight: 700; color: #f0f2f5;
-    word-break: break-word;
-  }
-  .header .meta {
-    display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .5rem;
-    font-size: .9rem; color: #8a93a5;
-  }
-  .header .meta b { color: #d7dae0; }
-  .header .reason { color: #f0b367; }
-  .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
-  .panel {
-    border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
-    background: #171b23;
-  }
-  .panel-head {
-    display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
-  }
-  .panel-id { font-size: .85rem; color: #8a93a5; }
-  .panel-status {
-    font-size: .8rem; font-weight: 700; text-transform: uppercase;
-    padding: .05rem .4rem; border-radius: 3px;
-  }
-  .panel-desc {
-    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
-    word-break: break-word;
-  }
-  .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
-    margin-bottom: .4rem; flex-wrap: wrap;
-  }
-  .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
-    white-space: pre-wrap;
-  }
-  .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
-  }
-  .panel-empty {
-    color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
-  }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
-</style>
-</head>
-<body>
-<h1>Furrow</h1>
-<div class="bar">
-  <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
-  <button id="resume">Resume</button>
-</div>
-<div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
-  </div>
-</div>
-<pre id="log"></pre>
-<div class="panels" id="tasks"></div>
-<script>
-  const logEl = document.getElementById('log');
-  const goalEl = document.getElementById('goal');
-  const tasksEl = document.getElementById('tasks');
-  const goalDisplayEl = document.getElementById('goal-display');
-  const cycleEl = document.getElementById('cycle');
-  const stateEl = document.getElementById('state');
-  const stoppedReasonEl = document.getElementById('stopped-reason');
-  const usageEl = document.getElementById('usage');
-  let socket = null;
-  let lastSummary = null;
-
-  function append(line) {
-    logEl.textContent += line + '\n';
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-
-  function text(value) {
-    return value === undefined || value === null ? '' : String(value);
-  }
-
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
-  const SAFE_STATUSES = {
-    pending: 'pending',
-    running: 'running',
-    completed: 'completed',
-    failed: 'failed',
-    blocked: 'blocked',
-    skipped: 'skipped',
-    unknown: 'unknown'
-  };
-
-  function statusClass(status) {
-    const key = text(status).trim().toLowerCase();
-    if (Object.prototype.hasOwnProperty.call(SAFE_STATUSES, key)) {
-      return SAFE_STATUSES[key];
-    }
-    return 'unknown';
-  }
-
-  function renderStatus(status, result, running) {
-    goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
-    cycleEl.textContent =
-      text(status && status.cycles !== undefined ? status.cycles : '\u2014');
-    stateEl.textContent = running ? 'running' : 'stopped';
-    const reason =
-      text(status && status.stopped_reason) ||
-      text(result && result.stopped_reason) || '';
-    stoppedReasonEl.textContent = reason;
-    stoppedReasonEl.style.display = reason ? '' : 'none';
-    const usage = (status && status.usage) || (result && result.usage) || {};
-    const calls = Number(usage.calls) || 0;
-    const total = (Number(usage.input_tokens) || 0) +
-      (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
-  }
-
-  function renderTasks(tasks) {
-    while (tasksEl.firstChild) {
-      tasksEl.removeChild(tasksEl.firstChild);
-    }
-    const list = tasks || [];
-    if (list.length === 0) {
-      const hint = document.createElement('p');
-      hint.className = 'panel-empty';
-      hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
-      tasksEl.appendChild(hint);
-      return;
-    }
-    list.forEach(function (task) {
-      const status = text(task.status) || 'pending';
-
-      const panel = document.createElement('div');
-      panel.className = 'panel';
-      panel.id = 'task-' + text(task.id);
-
-      const head = document.createElement('div');
-      head.className = 'panel-head';
-      const idEl = document.createElement('span');
-      idEl.className = 'panel-id';
-      idEl.textContent = '#' + text(task.id);
-      const statusEl = document.createElement('span');
-      statusEl.className = 'panel-status status-' + statusClass(status);
-      statusEl.textContent = status;
-      head.appendChild(idEl);
-      head.appendChild(statusEl);
-
-      const desc = document.createElement('div');
-      desc.className = 'panel-desc';
-      desc.textContent = text(task.description);
-
-      const meta = document.createElement('div');
-      meta.className = 'panel-meta';
-      const attempts = document.createElement('span');
-      attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
-      meta.appendChild(attempts);
-
-      panel.appendChild(head);
-      panel.appendChild(desc);
-      panel.appendChild(meta);
-
-      const result = text(task.result);
-      const error = text(task.error);
-      if (result) {
-        const resultEl = document.createElement('div');
-        resultEl.className = 'panel-result';
-        resultEl.textContent = result;
-        panel.appendChild(resultEl);
-      }
-      if (error) {
-        const errorEl = document.createElement('div');
-        errorEl.className = 'panel-error';
-        errorEl.textContent = error;
-        panel.appendChild(errorEl);
-      }
-
-      tasksEl.appendChild(panel);
-    });
-  }
-
-  async function loadState() {
-    try {
-      const res = await fetch('/api/state');
-      const body = await res.json();
-      if (body.state && body.state.tasks) { renderTasks(body.state.tasks); }
-    } catch (err) {
-      append('! could not load state');
-    }
-  }
-
-  async function loadStatus() {
-    try {
-      const res = await fetch('/api/status');
-      const body = await res.json();
-      const running = body.running === true;
-      const status = body.status || null;
-      const result = body.result || null;
-      renderStatus(status, result, running);
-      if (status && status.tasks) { renderTasks(status.tasks); }
-      if (body.result) {
-        const summary = text(body.result.summary);
-        if (summary && summary !== lastSummary) {
-          append('-- ' + summary);
-          lastSummary = summary;
-        }
-      }
-    } catch (err) {
-      append('! could not load status');
-    }
-  }
-
-  function connect(payload) {
-    if (socket) { socket.close(); }
-    const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-    socket = new WebSocket(scheme + '://' + location.host + '/ws');
-    socket.onopen = function () {
-      append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
-      lastSummary = null;
-      socket.send(JSON.stringify(payload));
-    };
-    function truncate(value, max) {
-      const s = text(value);
-      return s.length > max ? s.slice(0, max) + '\u2026' : s;
-    }
-
-    function eventTime(msg) {
-      const ts = msg && msg.timestamp;
-      if (!ts) { return '--:--:--'; }
-      const m = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
-      return m ? m[1] : '--:--:--';
-    }
-
-    function renderEvent(msg) {
-      const type = msg && msg.type;
-      const data = (msg && msg.data) || {};
-      const time = eventTime(msg);
-      let line = '';
-      let color = '#8a93a5';
-      if (type === 'cycle_started') {
-        line = 'cycle ' + text(data.cycle) + ' started';
-      } else if (type === 'plan_created') {
-        line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
-      } else if (type === 'task_started') {
-        line = 'task ' + text(data.task) + ' started';
-      } else if (type === 'task_finished') {
-        const ok = data.success === true;
-        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
-          truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
-      } else if (type === 'test_started') {
-        line = 'running tests...';
-      } else if (type === 'test_finished') {
-        const ok = data.passed === true;
-        line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
-      } else if (type === 'state_saved') {
-        line = 'state saved';
-      } else if (type === 'log') {
-        line = text(msg.message);
-      } else if (type === 'error') {
-        line = 'ERROR: ' + text(msg.message);
-        color = '#e0685f';
-      } else if (type === 'done') {
-        line = 'finished: ' + text(msg.message);
-        color = '#57d38c';
-      } else {
-        try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
-      }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
-      logEl.scrollTop = logEl.scrollHeight;
-      return line;
-    }
-
-    socket.onmessage = function (ev) {
-      let msg;
-      try {
-        msg = JSON.parse(ev.data);
-      } catch (err) {
-        append(ev.data);
-        return;
-      }
-      renderEvent(msg);
-      if (msg.type === 'task_started' || msg.type === 'task_finished') {
-        loadStatus();
-      }
-      if (msg.type === 'done') {
-        loadStatus();
-      }
-    };
-    socket.onclose = function () {
-      append('-- closed');
-      socket = null;
-      loadStatus();
-    };
-    socket.onerror = function () {
-      append('!! websocket error');
-    };
-  }
-
-  document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
-  };
-  document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
-  };
-
-  loadState();
-  loadStatus();
-</script>
-</body>
-</html>
-"""
-
 
 class StartRequest(BaseModel):
     """Body of the ``POST /api/start`` endpoint."""
@@ -426,6 +64,18 @@ class SocketRequest(BaseModel):
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
+
+
+_INDEX_HTML: str | None = None
+
+
+def _get_index_html() -> str:
+    """Load the index HTML from static files, cached after first read."""
+    global _INDEX_HTML
+    if _INDEX_HTML is None:
+        html_path = Path(__file__).parent / "static" / "index.html"
+        _INDEX_HTML = html_path.read_text(encoding="utf-8")
+    return _INDEX_HTML
 
 
 def _reset_registry() -> None:
@@ -569,7 +219,7 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """The single page UI."""
-    return HTMLResponse(content=INDEX_HTML)
+    return HTMLResponse(content=_get_index_html())
 
 
 @app.get("/api/state")
