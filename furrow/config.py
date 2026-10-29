@@ -65,6 +65,7 @@ class TestResult(BaseModel):
 
 
 class WorkerResult(BaseModel):
+    __test__ = False
     summary: str = ""
     success: bool = True
     files_changed: list[str] = Field(default_factory=list)
