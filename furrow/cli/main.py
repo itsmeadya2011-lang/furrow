@@ -61,6 +61,24 @@ def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[st
     return ("FAILED - tests did not pass.", "red")
 
 
+def _format_cost(cost: float) -> str:
+    """Format a USD amount for display, trimming trailing zeros.
+
+    ``$0.00`` for a free/unknown run, ``$3.00`` for whole dollars and
+    ``$0.001234`` for fractional sub-cent amounts.
+    """
+    try:
+        amount = float(cost)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount <= 0:
+        return "$0.00"
+    text = f"{amount:.6f}".rstrip("0")
+    if text.endswith("."):
+        text += "00"
+    return f"${text}"
+
+
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
     click.echo("Run summary")
@@ -80,6 +98,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+        click.echo(f"  Cost:            {_format_cost(cost)}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +123,8 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+        click.echo(f"  Cost:            {_format_cost(cost)}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:

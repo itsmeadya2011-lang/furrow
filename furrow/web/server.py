@@ -141,14 +141,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="resume">Resume</button>
 </div>
 <div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <div class="goal" id="goal-display">\u2014</div>
+    <div class="meta" id="header-meta">
+      <span>cycle <b id="cycle">\u2014</b></span>
+      <span>state <b id="state">idle</b></span>
+      <span id="stopped-reason" class="reason"></span>
+      <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+      <span>cost <b id="cost">$0.00</b></span>
+    </div>
   </div>
-</div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
 <script>
@@ -160,6 +161,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const costEl = document.getElementById('cost');
   let socket = null;
   let lastSummary = null;
 
@@ -170,6 +172,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
+  }
+
+  function formatCost(cost) {
+    const amount = Number(cost) || 0;
+    if (amount <= 0) { return '$0.00'; }
+    let text = amount.toFixed(6).replace(/0+$/, '');
+    if (text.endsWith('.')) { text += '00'; }
+    return '$' + text;
   }
 
   // The task status is planned by the LLM, so it is untrusted input: it is
@@ -207,6 +217,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    costEl.textContent = formatCost(usage.cost_usd);
   }
 
   function renderTasks(tasks) {

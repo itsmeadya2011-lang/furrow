@@ -552,6 +552,16 @@ def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:
     assert ".status-skipped" in html
 
 
+def test_index_contains_cost_element_and_binding(client: TestClient) -> None:
+    """The status header exposes a cost element bound by the script."""
+    html = client.get("/").text
+
+    assert 'id="cost"' in html
+    script = _inline_script(client)
+    assert "getElementById('cost')" in script, "the script does not bind to #cost"
+    assert "formatCost" in script, "the script has no cost formatter"
+
+
 def test_start_request_rejects_negative_max_cycles(client: TestClient) -> None:
     response = client.post("/api/start", json={"goal": "x", "max_cycles": -1})
     assert response.status_code == 422
