@@ -474,15 +474,11 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
+                proc = await asyncio.create_subprocess_shell(
+                    command,
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"

@@ -223,12 +223,8 @@ class TesterAgent:
                     return ["npm", "test", "--silent"]
             except Exception:
                 pass
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            # No test script and no jest/vitest config: nothing to run.
+            return None
 
         python_markers = [
             "pyproject.toml",
