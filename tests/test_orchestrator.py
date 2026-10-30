@@ -623,6 +623,43 @@ async def test_merge_plan_retries_failed_with_attempts_left(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_merge_plan_resets_non_terminal_status_to_pending(tmp_path, monkeypatch):
+    """Any non-terminal status (running, skipped, unknown) resets to pending on merge.
+
+    The old code had redundant branches that both set pending; the simplified
+    version always resets non-terminal statuses to pending so the task can be
+    (re)executed.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+
+    # A "running" task (non-terminal) is reset to pending even with exhausted retries.
+    task.status = "running"
+    task.attempts = 999
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+
+    # A "skipped" task is also reset to pending.
+    task.status = "skipped"
+    plan2 = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan2)
+    assert plan2.tasks[0].status == "pending"
+
+
+@pytest.mark.asyncio
 async def test_merge_plan_keeps_recorded_result_and_error_when_plan_is_none(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
