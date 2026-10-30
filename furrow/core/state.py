@@ -112,6 +112,28 @@ class StateStore:
         flushed, fsync'ed and moved into place with ``os.replace``. If anything
         fails the temporary file is removed and the error is re-raised.
         """
+        self._write(state)
+
+    async def save_async(self, state: RunState) -> None:
+        """Async variant of :meth:`save`.
+
+        The synchronous file I/O (tempfile, fsync, ``os.replace``) is run in a
+        thread executor so the calling event loop is never blocked. A failure is
+        re-raised so callers can report it as an ERROR event. Delegates to
+        :meth:`save` so that tests can monkeypatch the synchronous entry point
+        and have their patched behaviour run in the executor as well.
+        """
+        import asyncio
+
+        await asyncio.to_thread(self.save, state)
+
+    def _write(self, state: RunState) -> None:
+        """Serialize state to JSON and write it ATOMICALLY.
+
+        The payload is written to a temporary file in the same directory, then
+        flushed, fsync'ed and moved into place with ``os.replace``. If anything
+        fails the temporary file is removed and the error is re-raised.
+        """
         state.updated_at = utcnow()
         payload = json.dumps(state.model_dump(mode="json"), indent=2)
 

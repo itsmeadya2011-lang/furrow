@@ -23,7 +23,7 @@ def _configure_stdlib_fallback(level: str = "INFO") -> None:
 try:
     import structlog
     _STRUCTLOG_AVAILABLE = True
-except ImportError:
+except ImportError:  # pragma: no cover - exercised only when structlog is missing
     structlog = None  # type: ignore[assignment]
     _STRUCTLOG_AVAILABLE = False
 

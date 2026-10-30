@@ -30,8 +30,11 @@ def extract_json(text: str) -> str:
 
     Scan character by character. Track depth of {} and [] together; ignore braces
     inside JSON string literals and respect backslash escapes inside strings.
-    Start at the first '{' or '[' that yields a balanced, non-empty value.
-    Raise ValueError('No JSON object or array found in output') when none exists."""
+    Start at the first '{' or '[' that yields a balanced, non-empty value. When
+    an opening bracket is never closed the scan resumes after it, so a later
+    balanced construct is still found. Raise
+    ValueError('No JSON object or array found in output') when none exists.
+    """
     if not isinstance(text, str):
         text = str(text)
 
@@ -39,60 +42,45 @@ def extract_json(text: str) -> str:
     i = 0
     while i < n:
         ch = text[i]
-        if ch in "{[":
-            start = i
-            depth_brace = 0
-            depth_bracket = 0
-            in_string = False
-            j = i
-            while j < n:
-                c = text[j]
-                if in_string:
-                    if c == "\\":
-                        j += 2
-                        continue
-                    if c == '"':
-                        in_string = False
-                    j += 1
+        if ch not in "{[":
+            i += 1
+            continue
+        start = i
+        open_ch = ch
+        depth_brace = 0
+        depth_bracket = 0
+        in_string = False
+        j = i
+        while j < n:
+            c = text[j]
+            if in_string:
+                if c == "\\":
+                    j += 2
                     continue
-                else:
-                    if c == '"':
-                        in_string = True
-                        j += 1
-                        continue
-                    if c == "{":
-                        depth_brace += 1
-                        j += 1
-                        continue
-                    if c == "}":
-                        depth_brace -= 1
-                        j += 1
-                        if (
-                            depth_brace == 0
-                            and depth_bracket == 0
-                            and text[start] == "{"
-                            and text[j - 1] == "}"
-                        ):
-                            return text[start:j]
-                        continue
-                    if c == "[":
-                        depth_bracket += 1
-                        j += 1
-                        continue
-                    if c == "]":
-                        depth_bracket -= 1
-                        j += 1
-                        if (
-                            depth_brace == 0
-                            and depth_bracket == 0
-                            and text[start] == "["
-                            and text[j - 1] == "]"
-                        ):
-                            return text[start:j]
-                        continue
-                    j += 1
-                    continue
-        i += 1
+                if c == '"':
+                    in_string = False
+                j += 1
+                continue
+            if c == '"':
+                in_string = True
+                j += 1
+                continue
+            if c == "{":
+                depth_brace += 1
+            elif c == "}":
+                depth_brace -= 1
+                if depth_brace == 0 and depth_bracket == 0 and open_ch == "{":
+                    return text[start : j + 1]
+            elif c == "[":
+                depth_bracket += 1
+            elif c == "]":
+                depth_bracket -= 1
+                if depth_brace == 0 and depth_bracket == 0 and open_ch == "[":
+                    return text[start : j + 1]
+            j += 1
+        # The opening bracket at `start` was never closed: resume the scan
+        # after it so a later balanced construct can still be found.
+        i = start + 1
 
     raise ValueError("No JSON object or array found in output")
 
