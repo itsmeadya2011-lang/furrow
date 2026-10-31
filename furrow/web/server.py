@@ -92,45 +92,46 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: .9rem; color: #8a93a5;
   }
   .header .meta b { color: #d7dae0; }
-  .header .reason { color: #f0b367; }
-  .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
-  .panel {
-    border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
-    background: #171b23;
-  }
-  .panel-head {
-    display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
-  }
-  .panel-id { font-size: .85rem; color: #8a93a5; }
-  .panel-status {
-    font-size: .8rem; font-weight: 700; text-transform: uppercase;
-    padding: .05rem .4rem; border-radius: 3px;
-  }
-  .panel-desc {
-    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
-    word-break: break-word;
-  }
-  .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
-    margin-bottom: .4rem; flex-wrap: wrap;
-  }
-  .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
-    white-space: pre-wrap;
-  }
-  .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
-  }
-  .panel-empty {
-    color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
-  }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+.header .reason { color: #f0b367; }
+    .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
+    .panel {
+        border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
+        background: #171b23;
+    }
+    .panel-head {
+        display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
+    }
+    .panel-id { font-size: .85rem; color: #8a93a5; }
+    .panel-status {
+        font-size: .8rem; font-weight: 700; text-transform: uppercase;
+        padding: .05rem .4rem; border-radius: 3px;
+    }
+    .panel-desc {
+        margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
+        word-break: break-word;
+    }
+    .panel-meta {
+        display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+        margin-bottom: .4rem; flex-wrap: wrap;
+    }
+    .panel-result {
+        margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
+        white-space: pre-wrap;
+    }
+    .panel-error {
+        margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+    }
+    .panel-empty {
+        color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
+    }
+    .status-pending { color: #8a93a5; }
+    .status-running { color: #4c8dff; }
+    .status-completed { color: #57d38c; }
+    .status-failed { color: #e0685f; }
+    .status-blocked { color: #f0b367; }
+    .status-skipped { color: #8a93a5; }
+    .status-unknown { color: #8a93a5; }
+    .cost { color: #f0b367; }
 </style>
 </head>
 <body>
@@ -142,12 +143,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
-  </div>
+<div class="meta" id="header-meta">
+        <span>cycle <b id="cycle">—</b></span>
+        <span>state <b id="state">idle</b></span>
+        <span id="stopped-reason" class="reason"></span>
+        <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+        <span id="cost" class="cost"></span>
+      </div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -202,12 +204,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
       text(result && result.stopped_reason) || '';
     stoppedReasonEl.textContent = reason;
     stoppedReasonEl.style.display = reason ? '' : 'none';
-    const usage = (status && status.usage) || (result && result.usage) || {};
-    const calls = Number(usage.calls) || 0;
-    const total = (Number(usage.input_tokens) || 0) +
-      (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
-  }
+const usage = (status && status.usage) || (result && result.usage) || {};
+        const calls = Number(usage.calls) || 0;
+        const total = (Number(usage.input_tokens) || 0) +
+          (Number(usage.output_tokens) || 0);
+        usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+        const cost = Number(usage.cost_usd) || 0;
+        if (cost > 0) {
+          const costEl = document.getElementById('cost');
+          if (costEl) {
+            costEl.textContent = '$' + cost.toFixed(6);
+            costEl.style.display = '';
+          }
+        }
+    }
 
   function renderTasks(tasks) {
     while (tasksEl.firstChild) {

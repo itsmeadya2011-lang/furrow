@@ -435,6 +435,7 @@ class WorkerAgent:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
+        truncated = len(entries) > MAX_LIST_ENTRIES
         rels = []
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
@@ -442,7 +443,10 @@ class WorkerAgent:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
-        return "\n".join(rels)
+        result = "\n".join(rels)
+        if truncated:
+            result += f"\n[... {len(entries) - MAX_LIST_ENTRIES} more entries truncated ...]"
+        return result
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
@@ -493,11 +497,13 @@ class WorkerAgent:
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
+        exit_code = proc.returncode if proc.returncode is not None else 0
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
-        return combined
+        suffix = f"\n[exit code: {exit_code}]"
+        return combined + suffix
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

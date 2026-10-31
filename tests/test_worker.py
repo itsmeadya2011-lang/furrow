@@ -322,7 +322,9 @@ async def test_list_files_caps_at_500_entries(tmp_path):
     agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
     out = await agent._list_files(".")
     lines = out.splitlines()
-    assert len(lines) == 500
+    # 500 entries + 1 truncation message line
+    assert len(lines) == 501
+    assert "20 more entries truncated" in out
 
 
 @pytest.mark.asyncio
@@ -851,6 +853,11 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
+
+@pytest.mark.asyncio
+async def test_list_files_runs_off_event_loop(tmp_path):
+    """The directory listing runs off the event loop so one big walk does not
+    stall every parallel task."""
     import threading
 
     for i in range(5):
@@ -888,3 +895,61 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_run_command_exit_code_suffix(tmp_path):
+    """run_command appends the process exit code as a suffix."""
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": "exit 3"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "[exit code: 3]" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_exit_code_zero(tmp_path):
+    """A successful command appends exit code 0."""
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": "true"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "[exit code: 0]" in content
+                    found = True
+    assert found

@@ -357,12 +357,11 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
+                    # pending or running: retry while attempts remain
+                    if old.attempts <= max_retries:
                         pt.status = "pending"
                     else:
-                        pt.status = "pending"
+                        pt.status = "failed"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
