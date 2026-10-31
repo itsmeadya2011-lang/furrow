@@ -194,10 +194,23 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
+        python_markers = [
+            "pyproject.toml",
+            "pytest.ini",
+            "setup.cfg",
+            "tox.ini",
+            "requirements.txt",
+        ]
+        has_python_markers = any((self.workspace / m).is_file() for m in python_markers)
+
         # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
-        ):
+        if has_tests_dir and has_python_markers:
+            return [sys.executable, "-m", "pytest", "-q"]
+
+        # Python projects with Python markers take priority over Node.js:
+        # a Python project may carry package.json for frontend tooling
+        # (Prettier, ESLint, ...) but its tests run under pytest.
+        if has_python_markers:
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -229,16 +242,6 @@ class TesterAgent:
             if (self.workspace / "yarn.lock").is_file():
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
-
-        python_markers = [
-            "pyproject.toml",
-            "pytest.ini",
-            "setup.cfg",
-            "tox.ini",
-            "requirements.txt",
-        ]
-        if any((self.workspace / m).is_file() for m in python_markers):
-            return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
