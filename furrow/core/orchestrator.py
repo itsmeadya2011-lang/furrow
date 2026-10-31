@@ -357,12 +357,13 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Any non-terminal status (pending, running, skipped, or
+                    # unknown) is reset to pending so the task can be executed
+                    # again.  max_retries is not consulted here: a task that
+                    # was never run (attempts == 0) or that is mid-flight
+                    # should simply be retried; the per-attempt budget is
+                    # enforced by _execute when the worker actually runs.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
