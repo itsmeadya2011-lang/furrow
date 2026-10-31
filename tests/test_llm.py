@@ -868,3 +868,59 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+async def test_read_file_returns_file_contents(tmp_path):
+    """LLMClient.read_file reads a file and returns its contents."""
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    p = tmp_path / "hello.txt"
+    p.write_text("hello world", encoding="utf-8")
+    content = await client.read_file(p)
+    assert content == "hello world"
+
+
+async def test_read_file_missing_raises_oserror(tmp_path):
+    """A missing file raises OSError from the underlying open."""
+    import pytest as _pytest
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    with _pytest.raises(OSError):
+        await client.read_file(tmp_path / "missing.txt")
+
+
+async def test_write_file_creates_file_and_directories(tmp_path):
+    """LLMClient.write_file writes content and creates parent directories."""
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    p = tmp_path / "nested" / "dir" / "out.txt"
+    await client.write_file(p, "payload")
+    assert p.read_text(encoding="utf-8") == "payload"
+
+
+async def test_write_file_overwrites_existing(tmp_path):
+    """LLMClient.write_file overwrites an existing file."""
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    p = tmp_path / "out.txt"
+    p.write_text("old", encoding="utf-8")
+    await client.write_file(p, "new")
+    assert p.read_text(encoding="utf-8") == "new"
+
+
+async def test_list_files_returns_relative_paths(tmp_path):
+    """LLMClient.list_files returns paths relative to the listed directory."""
+    (tmp_path / "a.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.txt").write_text("y", encoding="utf-8")
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    entries = client.list_files(tmp_path)
+    names = sorted(str(e) for e in entries)
+    assert "a.txt" in names
+    assert any("b.txt" in n for n in names)
+
+
+def test_list_files_missing_directory_returns_empty():
+    """A missing directory yields an empty list, not an exception."""
+    from pathlib import Path
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    assert client.list_files(Path("/nonexistent-dir-12345")) == []

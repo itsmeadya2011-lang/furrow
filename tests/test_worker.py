@@ -806,6 +806,63 @@ async def test_execute_tool_invalid_args_do_not_raise(tmp_path):
         assert out.startswith("error: ")
 
 
+def test_coerce_tool_args_none_returns_empty_dict():
+    """_coerce_tool_args(None) returns an empty dict."""
+    assert WorkerAgent._coerce_tool_args(None) == {}
+
+
+def test_coerce_tool_args_dict_returned_as_is():
+    """A dict argument is returned unchanged."""
+    d = {"path": "x.py", "content": "hi"}
+    assert WorkerAgent._coerce_tool_args(d) is d
+
+
+def test_coerce_tool_args_empty_string_returns_empty_dict():
+    """An empty (or whitespace-only) string returns an empty dict."""
+    assert WorkerAgent._coerce_tool_args("") == {}
+    assert WorkerAgent._coerce_tool_args("   ") == {}
+
+
+def test_coerce_tool_args_valid_json_dict_string():
+    """A JSON object string is parsed and returned as a dict."""
+    result = WorkerAgent._coerce_tool_args('{"path": "x.py"}')
+    assert result == {"path": "x.py"}
+
+
+def test_coerce_tool_args_invalid_json_string_returns_none():
+    """An invalid JSON string returns None (not an empty dict)."""
+    assert WorkerAgent._coerce_tool_args("not json") is None
+    assert WorkerAgent._coerce_tool_args("{bad") is None
+
+
+def test_coerce_tool_args_json_array_returns_none():
+    """A JSON array is not a valid tool argument dict, so None is returned."""
+    assert WorkerAgent._coerce_tool_args("[1, 2, 3]") is None
+
+
+def test_coerce_tool_args_json_scalar_returns_none():
+    """A JSON scalar (number, string, bool) is not a dict, so None is returned."""
+    assert WorkerAgent._coerce_tool_args("42") is None
+    assert WorkerAgent._coerce_tool_args('"hello"') is None
+    assert WorkerAgent._coerce_tool_args("true") is None
+    assert WorkerAgent._coerce_tool_args("null") is None
+
+
+def test_coerce_tool_args_non_dict_non_string_returns_none():
+    """Non-dict, non-string, non-None values return None."""
+    assert WorkerAgent._coerce_tool_args([1, 2]) is None
+    assert WorkerAgent._coerce_tool_args(42) is None
+    assert WorkerAgent._coerce_tool_args(3.14) is None
+    assert WorkerAgent._coerce_tool_args(True) is None
+    assert WorkerAgent._coerce_tool_args(False) is None
+
+
+def test_coerce_tool_args_json_object_with_nested_values():
+    """A JSON object string with nested values is parsed correctly."""
+    result = WorkerAgent._coerce_tool_args('{"path": "x.py", "content": "line\\nbreak"}')
+    assert result == {"path": "x.py", "content": "line\nbreak"}
+
+
 @pytest.mark.asyncio
 async def test_read_file_truncation_marker(tmp_path):
     big = "a" * 25000

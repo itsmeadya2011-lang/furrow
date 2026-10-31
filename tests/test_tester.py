@@ -481,3 +481,89 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
     assert head_start not in prompt
+
+
+def test_parse_test_output_pytest_failed_lines():
+    """pytest-style FAILED lines are extracted as structured failures."""
+    from furrow.agents.tester import parse_test_output
+
+    output = (
+        "=================================== FAILURES ===================================\n"
+        "FAILED tests/test_x.py::test_y - AssertionError: expected 1 got 2\n"
+        "FAILED tests/test_a.py::test_b - ValueError: bad value\n"
+        "=========================== 2 failed, 3 passed in 0.12s ===========================\n"
+    )
+    failures = parse_test_output(output)
+    assert len(failures) == 2
+    assert failures[0]["file"] == "tests/test_x.py"
+    assert failures[0]["test"] == "test_y"
+    assert "expected 1 got 2" in failures[0]["error"]
+    assert failures[1]["file"] == "tests/test_a.py"
+    assert failures[1]["test"] == "test_b"
+
+
+def test_parse_test_output_deduplicates_by_location():
+    """The same file:line location is not reported twice."""
+    from furrow.agents.tester import parse_test_output
+
+    output = (
+        "FAILED tests/test_x.py::test_y - boom\n"
+        "tests/test_x.py:12: some error\n"
+    )
+    failures = parse_test_output(output)
+    # The file:line entry at line 12 should not duplicate the FAILED entry.
+    assert len(failures) == 1
+
+
+def test_parse_test_output_file_line_col():
+    """file:line:col patterns are extracted as failures."""
+    from furrow.agents.tester import parse_test_output
+
+    output = "some error at src/foo.py:42:7\n"
+    failures = parse_test_output(output)
+    assert failures
+    assert failures[0]["file"] == "src/foo.py"
+    assert failures[0]["line"] == 42
+
+
+def test_parse_test_output_file_line_without_col():
+    """file:line patterns (without column) are extracted when no col pattern matched."""
+    from furrow.agents.tester import parse_test_output
+
+    output = "error at src/bar.py:99\n"
+    failures = parse_test_output(output)
+    assert failures
+    assert failures[0]["file"] == "src/bar.py"
+    assert failures[0]["line"] == 99
+
+
+def test_parse_test_output_exception_fallback():
+    """When no structured failures are found, exception types are used as a fallback."""
+    from furrow.agents.tester import parse_test_output
+
+    output = "RuntimeError: something broke\n"
+    failures = parse_test_output(output)
+    assert failures
+    assert "RuntimeError" in failures[0]["error"]
+    assert "something broke" in failures[0]["error"]
+
+
+def test_parse_test_output_empty():
+    """An empty output yields no failures."""
+    from furrow.agents.tester import parse_test_output
+
+    assert parse_test_output("") == []
+
+
+def test_parse_test_output_attaches_exception_to_first_blank_error():
+    """When structured failures exist but some have no error text, the first
+    exception message is attached to the first blank-error failure."""
+    from furrow.agents.tester import parse_test_output
+
+    output = (
+        "FAILED tests/test_x.py::test_y - \n"
+        "ValueError: bad value\n"
+    )
+    failures = parse_test_output(output)
+    assert failures
+    assert any("ValueError" in (f.get("error") or "") for f in failures)
