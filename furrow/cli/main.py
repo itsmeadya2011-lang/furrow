@@ -76,9 +76,10 @@ def _print_summary(result: RunResult) -> None:
     click.secho(f"  Result: {text}", fg=colour)
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
+        cost = f", ${usage.cost_usd:.6f}" if usage.cost_usd > 0 else ""
         click.echo(
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
-            f"(in {usage.input_tokens} / out {usage.output_tokens})"
+            f"(in {usage.input_tokens} / out {usage.output_tokens}){cost}"
         )
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
@@ -102,7 +103,8 @@ def _print_state(state: RunState) -> None:
     click.secho(f"  Result:        {text}", fg=colour)
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
-        click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        cost = f", ${usage.cost_usd:.6f}" if usage.cost_usd > 0 else ""
+        click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens{cost}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
