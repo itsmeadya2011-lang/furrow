@@ -62,9 +62,6 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
-_REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
-
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
 _MAX_SUBSTITUTION_DEPTH = 3
@@ -171,6 +168,73 @@ def _expand_home(target: str) -> str:
     return os.path.expanduser(_HOME_VAR_RE.sub(home, target))
 
 
+def _extract_redirect_targets(segment: str) -> list[str]:
+    """Return every redirection target in *segment*, with quotes stripped.
+
+    The old regex captured the target by stopping at the first whitespace,
+    which truncated quoted paths containing spaces (``> "file name.txt"``
+    produced ``file``).  This walks the segment character by character and
+    handles single/double quotes and backslash escapes so the whole target is
+    returned.
+    """
+    targets: list[str] = []
+    index = 0
+    length = len(segment)
+    while index < length:
+        char = segment[index]
+        if char != ">":
+            index += 1
+            continue
+        # Skip a second ``>`` (append mode) but not a ``>=`` or ``=>``.
+        if index + 1 < length and segment[index + 1] == ">":
+            index += 2
+        elif index + 1 < length and segment[index + 1] == "=":
+            index += 1
+            continue
+        else:
+            index += 1
+        # Skip whitespace between the operator and the target.
+        while index < length and segment[index].isspace():
+            index += 1
+        if index >= length:
+            break
+        # Read the target, honouring quotes and backslash escapes.
+        parts: list[str] = []
+        quote: str | None = None
+        while index < length:
+            char = segment[index]
+            if quote is not None:
+                if char == "\\" and index + 1 < length:
+                    parts.append(char)
+                    parts.append(segment[index + 1])
+                    index += 2
+                    continue
+                if char == quote:
+                    quote = None
+                    index += 1
+                    continue
+                parts.append(char)
+                index += 1
+                continue
+            if char in ("'", '"'):
+                quote = char
+                index += 1
+                continue
+            if char.isspace() or char in ";|&":
+                break
+            if char == "\\" and index + 1 < length:
+                parts.append(char)
+                parts.append(segment[index + 1])
+                index += 2
+                continue
+            parts.append(char)
+            index += 1
+        target = "".join(parts)
+        if target:
+            targets.append(target)
+    return targets
+
+
 def _target_inside_workspace(target: str, workspace: Path) -> bool:
     """Resolve a redirection target and report whether it stays in the workspace.
 
@@ -189,10 +253,7 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
 
 def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
     """Report whether a segment redirects output outside of the workspace."""
-    for match in _REDIRECT_RE.finditer(segment):
-        target = match.group(1).strip().strip("\"'")
-        if not target:
-            continue
+    for target in _extract_redirect_targets(segment):
         if not _target_inside_workspace(target, workspace):
             return True
     return False
