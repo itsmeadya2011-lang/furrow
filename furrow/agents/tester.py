@@ -168,7 +168,9 @@ class TesterAgent:
     ) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
-        self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self.workspace = (
+            Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        )
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:

@@ -293,7 +293,9 @@ class WorkerAgent:
     ) -> None:
         self.task = task
         self.settings = settings if settings is not None else global_settings
-        self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self.workspace = (
+            Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        )
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
