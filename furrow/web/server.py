@@ -147,6 +147,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>cost <b id="cost">$0.000000</b></span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -207,6 +208,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    const costEl = document.getElementById('cost');
+    if (costEl) {
+      costEl.textContent = '$' + cost.toFixed(6);
+    }
   }
 
   function renderTasks(tasks) {

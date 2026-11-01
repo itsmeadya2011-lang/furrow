@@ -33,8 +33,9 @@ class FakeLLMClient:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(content)
 
-    def list_files(self, directory):
-        return [str(p) for p in Path(directory).rglob("*") if p.is_file()]
+    def list_files(self, directory, limit=None):
+        entries = [str(p) for p in Path(directory).rglob("*") if p.is_file()]
+        return entries[:limit] if limit else entries
 
 
 class LoopingLLMClient(FakeLLMClient):
@@ -866,12 +867,13 @@ async def test_run_command_stderr_newline_format(tmp_path):
     loop_thread = threading.get_ident()
     seen = {}
 
-    def slow_list(directory):
+    def slow_list(directory, limit=None):
         seen["tid"] = threading.get_ident()
         import time
         time.sleep(0.1)
         from pathlib import Path as _P
-        return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
+        entries = [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
+        return entries[:limit] if limit else entries
 
     client.list_files = slow_list
 

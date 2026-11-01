@@ -492,8 +492,14 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
+    def list_files(self, directory: str | Path, limit: int | None = None) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        result: list[str] = []
+        for f in p.rglob("*"):
+            if f.is_file():
+                result.append(str(f.relative_to(p)))
+                if limit is not None and len(result) >= limit:
+                    break
+        return result

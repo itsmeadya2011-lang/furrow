@@ -274,7 +274,13 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
             return None
         return p
     # reject traversal
-    candidate = (workspace / p).resolve()
+    candidate = (workspace / p)
+    try:
+        candidate = candidate.resolve()
+    except (OSError, RuntimeError):
+        # A broken symlink or a permission error on a parent must not crash
+        # the tool; the path is treated as if it escaped the workspace.
+        return None
     try:
         candidate.relative_to(workspace)
     except ValueError:
@@ -431,7 +437,9 @@ class WorkerAgent:
         if resolved is None:
             return "error: path escapes workspace"
         try:
-            entries = await asyncio.to_thread(self.client.list_files, resolved)
+            entries = await asyncio.to_thread(
+                self.client.list_files, resolved, MAX_LIST_ENTRIES
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
