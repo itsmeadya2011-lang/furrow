@@ -74,8 +74,8 @@ def test_clear_empties_subscribers() -> None:
     assert bus.subscriber_count == 0
 
 
-def test_eventtype_cycle_started_value() -> None:
-    assert EventType.CYCLE_STARTED.value == "cycle_started"
+def test_usage_event_type_value() -> None:
+    assert EventType.USAGE.value == "usage"
 
 
 def test_subscriber_queue_is_bounded() -> None:

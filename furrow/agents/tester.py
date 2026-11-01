@@ -193,12 +193,68 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_setup_py = (self.workspace / "setup.py").is_file()
+        has_makefile = (self.workspace / "Makefile").is_file() or (
+            self.workspace / "makefile"
+        ).is_file()
+        has_deno = (self.workspace / "deno.json").is_file() or (
+            self.workspace / "deno.jsonc"
+        ).is_file()
+        has_bun = (self.workspace / "bun.lockb").is_file() or (
+            self.workspace / "bun.lock"
+        ).is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
             return [sys.executable, "-m", "pytest", "-q"]
+
+        # 1. tox - if tox.ini exists
+        if has_tox_ini:
+            return [sys.executable, "-m", "tox"]
+
+        # 2. Makefile with a test target
+        if has_makefile:
+            makefile_path = (
+                self.workspace / "Makefile"
+                if (self.workspace / "Makefile").is_file()
+                else self.workspace / "makefile"
+            )
+            try:
+                with open(makefile_path) as fh:
+                    for line in fh:
+                        # Check for line starting with test: (possibly with leading whitespace)
+                        stripped = line.lstrip()
+                        if stripped.startswith("test:"):
+                            return ["make", "test"]
+            except Exception:
+                pass
+
+        # 6. pytest.ini / setup.cfg with pytest config
+        if has_pytest_ini:
+            return [sys.executable, "-m", "pytest", "-q"]
+        if has_setup_cfg:
+            try:
+                with open(self.workspace / "setup.cfg") as fh:
+                    cfg_content = fh.read()
+                if "[tool:pytest]" in cfg_content:
+                    return [sys.executable, "-m", "pytest", "-q"]
+            except Exception:
+                pass
+
+        # 3. setup.py / unittest - if setup.py exists (and no pytest markers), 
+        # return unittest if tests dir also exists
+        if has_setup_py and has_tests_dir:
+            return [sys.executable, "-m", "unittest", "discover", "-s", "tests"]
+
+        # 4. deno
+        if has_deno:
+            return ["deno", "test", "-A"]
+
+        # 5. bun
+        if has_bun:
+            return ["bun", "test"]
 
         # Check for Node.js test runners
         if has_package:

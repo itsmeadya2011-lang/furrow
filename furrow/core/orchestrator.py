@@ -245,6 +245,7 @@ class Orchestrator:
             )
             self._usage.add(cycle_usage)
             self._usage_seen = cumulative
+            self.event_bus.emit(Event(type=EventType.USAGE, data={"usage": cycle_usage.model_dump()}))
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],

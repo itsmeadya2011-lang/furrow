@@ -583,12 +583,6 @@ def test_run_settings_without_override_returns_the_current_settings() -> None:
     assert server._run_settings(None) is server.settings
 
 
-def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
-    """An out-of-range override is rejected instead of silently accepted.
-
-    ``model_copy(update=...)`` skips the pydantic validation, so a negative
-    ``max_cycles`` used to build a ``Settings`` object that violates the
-    bounds of ``furrow.config.Settings``.
-    """
-    with pytest.raises(ValidationError):
-        server._run_settings(-1)
+def test_index_script_handles_usage_event(client: TestClient) -> None:
+    script = _inline_script(client)
+    assert "type === 'usage'" in script

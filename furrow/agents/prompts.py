@@ -41,8 +41,7 @@ You break the user's goal into a small set of parallelizable coding tasks,
 returned as JSON."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
-You implement the assigned task by reading, writing, and running code in the
-workspace using the available tools. Make minimal, targeted changes. When done,
+You implement the assigned task by reading, writing, searching, and editing files in the workspace using the available tools. Make minimal, targeted changes. When done,
 respond with a concise summary and no further tool calls."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
@@ -86,6 +85,31 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"command": {"type": "string"}},
             "required": ["command"],
+        },
+    },
+    {
+        "name": "search_files",
+        "description": "search files in the workspace for a literal string and return matching lines.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "replace the first occurrence of old_string with new_string in a file.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+            },
+            "required": ["path", "old_string", "new_string"],
         },
     },
 ]

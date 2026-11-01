@@ -206,7 +206,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    let usageText = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    if (cost > 0) { usageText += ', $' + (Math.round(cost * 1000000) / 1000000); }
+    usageEl.textContent = usageText;
   }
 
   function renderTasks(tasks) {
@@ -351,6 +354,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
         color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'state_saved') {
         line = 'state saved';
+      } else if (type === 'usage') {
+        line = 'usage: ' + (data.usage ? (data.usage.calls + ' calls, ' + (Number(data.usage.input_tokens)+Number(data.usage.output_tokens)) + ' tokens') : '');
       } else if (type === 'log') {
         line = text(msg.message);
       } else if (type === 'error') {
@@ -384,6 +389,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         loadStatus();
       }
       if (msg.type === 'done') {
+        loadStatus();
+      }
+      if (msg.type === 'usage') {
         loadStatus();
       }
     };

@@ -51,6 +51,11 @@ DENIED_PROGRAMS = frozenset(
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
+# Maximum number of matches returned by the ``search_files`` tool.
+MAX_SEARCH_MATCHES = 200
+# Maximum number of characters returned by the ``search_files`` tool.
+MAX_SEARCH_CHARS = 20000
+
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
 
@@ -378,6 +383,17 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+            )
+        if name == "edit_file":
+            return await self._edit_file(
+                str(args.get("path", "")),
+                str(args.get("old_string", "")),
+                str(args.get("new_string", "")),
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -443,6 +459,73 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _search_files(self, pattern: str, path: str = ".") -> str:
+        if not pattern:
+            return "error: empty pattern"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+
+        def _search() -> list[str]:
+            matches: list[str] = []
+            base = self.workspace.resolve()
+            try:
+                entries = list(resolved.rglob("*"))
+            except OSError:
+                return matches
+            for entry in entries:
+                if len(matches) >= MAX_SEARCH_MATCHES:
+                    break
+                if not entry.is_file():
+                    continue
+                try:
+                    with entry.open("r", encoding="utf-8") as fh:
+                        for lineno, line in enumerate(fh, start=1):
+                            if pattern in line:
+                                rel = entry.relative_to(base)
+                                matches.append(f"{rel}:{lineno}: {line.rstrip('\n')}")
+                                if len(matches) >= MAX_SEARCH_MATCHES:
+                                    break
+                except (OSError, UnicodeDecodeError):
+                    continue
+            return matches
+
+        try:
+            matches = await asyncio.to_thread(_search)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if not matches:
+            return "no matches"
+        text = "\n".join(matches)
+        if len(text) > MAX_SEARCH_CHARS:
+            text = text[:MAX_SEARCH_CHARS] + "\n[... output truncated ...]"
+        return text
+
+    async def _edit_file(self, path: str, old_string: str, new_string: str) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if old_string == "":
+            return "error: old_string must not be empty"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        count = content.count(old_string)
+        if count == 0:
+            return "error: old_string not found in file"
+        if count > 1:
+            return f"error: old_string is ambiguous; it occurs {count} times, provide a unique match"
+        content = content.replace(old_string, new_string, 1)
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path} (replaced 1 occurrence)"
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

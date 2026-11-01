@@ -375,14 +375,125 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == [
+        "edit_file",
+        "list_files",
+        "read_file",
+        "run_command",
+        "search_files",
+        "write_file",
+    ]
+    assert len(WORKER_TOOLS) == 6
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
         assert p["type"] == "object"
         assert "properties" in p
         assert "required" in p
+
+
+@pytest.mark.asyncio
+async def test_search_files_finds_matches(tmp_path):
+    (tmp_path / "notes.txt").write_text("alpha\nneedle in haystack\nbeta\nanother needle\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("needle")
+    assert "notes.txt:2:needle in haystack" in out
+    assert "notes.txt:4:another needle" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_empty_pattern(tmp_path):
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("")
+    assert out.startswith("error:")
+
+
+@pytest.mark.asyncio
+async def test_search_files_path_escape(tmp_path):
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("needle", "../outside")
+    assert out == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_search_files_no_match(tmp_path):
+    (tmp_path / "notes.txt").write_text("alpha\nbeta\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("needle")
+    assert not out.startswith("error:")
+    assert "no matches" in out
+
+
+@pytest.mark.asyncio
+async def test_edit_file_replaces_first_occurrence(tmp_path):
+    (tmp_path / "x.txt").write_text("a\nb\na\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._edit_file("x.txt", "a", "c")
+    assert "edited" in out
+    assert (tmp_path / "x.txt").read_text() == "c\nb\na\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_old_string_not_found(tmp_path):
+    (tmp_path / "x.txt").write_text("hello\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._edit_file("x.txt", "zzz", "aaa")
+    assert "error: old_string not found" in out
+
+
+@pytest.mark.asyncio
+async def test_edit_file_ambiguous(tmp_path):
+    (tmp_path / "x.txt").write_text("a\na\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._edit_file("x.txt", "a", "c")
+    assert "error: old_string is ambiguous" in out
+
+
+@pytest.mark.asyncio
+async def test_edit_file_path_escape(tmp_path):
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._edit_file("../x.txt", "a", "c")
+    assert out == "error: path escapes workspace"
 
 
 def test_resolve_in_workspace():

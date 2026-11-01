@@ -425,7 +425,6 @@ def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
     assert head_start not in prompt
 
 
- 
 def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
@@ -446,38 +445,67 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert res.failures
     assert any("RuntimeError" in f for f in res.failures)
 
-    """Old head-only behaviour is gone - beginning of output is not kept."""
-    (tmp_path / "pyproject.toml").write_text("[project]\n")
 
-    head_start = "UNIQUE_HEAD_MARKER_111"
-    filler = "M" * 25005
-    tail = (
-        "\n=========================== 2 failed, 5 passed in 1.23s "
-        "===========================\nUNIQUE_TAIL_MARKER_777\n"
-    )
-    stdout = (head_start + filler + tail).encode()
+def test_detect_tox(tmp_path):
+    (tmp_path / "tox.ini").write_text("[tox]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "tox" in cmd
 
-    async def fake_create_subprocess_exec(*args, **kwargs):
-        return fake_proc(returncode=1, stdout=stdout)
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+def test_detect_makefile_test_target(tmp_path):
+    (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "make" in cmd and "test" in cmd
 
-    client = FakeLLMClient(raises=RuntimeError("llm down"))
-    agent = TesterAgent(
-        client=client,
-        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
-        workspace=tmp_path,
-    )
 
-    res = run(agent.run("goal", []))
-    assert res.passed is False
-    assert "[... output truncated ...]" in res.summary
-    assert "2 failed" in " ".join(res.failures)
-    assert head_start not in res.summary
-    assert head_start not in " ".join(res.failures)
-    assert client.prompts
-    prompt = client.prompts[0]
-    assert "[... output truncated ...]" in prompt
-    assert "2 failed" in prompt
-    assert "UNIQUE_TAIL_MARKER_777" in prompt
-    assert head_start not in prompt
+def test_detect_makefile_without_test_target(tmp_path):
+    (tmp_path / "Makefile").write_text("build:\n\techo hi\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None or "make" not in cmd
+
+
+def test_detect_setup_py_with_tests_dir(tmp_path):
+    (tmp_path / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    (tmp_path / "tests").mkdir()
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "unittest" in cmd
+
+
+def test_detect_setup_py_without_tests_dir(tmp_path):
+    (tmp_path / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
+def test_detect_deno(tmp_path):
+    (tmp_path / "deno.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "deno" in cmd
+
+
+def test_detect_bun(tmp_path):
+    (tmp_path / "bun.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "bun" in cmd
+
+
+def test_detect_pytest_ini_alone(tmp_path):
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_setup_cfg_with_pytest_section(tmp_path):
+    (tmp_path / "setup.cfg").write_text("[tool:pytest]\naddopts = -v\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+

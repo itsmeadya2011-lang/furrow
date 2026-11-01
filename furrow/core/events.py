@@ -28,6 +28,7 @@ class EventType(str, Enum):
     TEST_STARTED = "test_started"
     TEST_FINISHED = "test_finished"
     STATE_SAVED = "state_saved"
+    USAGE = "usage"
     LOG = "log"
     ERROR = "error"
 
