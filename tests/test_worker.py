@@ -585,6 +585,53 @@ def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
 
 
+def test_is_command_denied_redirects_inside_workspace_with_cd(tmp_path):
+    """A redirect after cd into a workspace subdir stays allowed."""
+    assert is_command_denied("cd subdir && echo hi > out.txt", tmp_path) is False
+
+
+def test_is_command_denied_redirects_outside_workspace_with_cd(tmp_path):
+    """A redirect after cd .. escapes the workspace and is denied."""
+    assert is_command_denied("cd .. && echo hi > out.txt", tmp_path) is True
+
+
+def test_is_command_denied_nested_command_substitution(tmp_path):
+    """Nested command substitutions are checked recursively."""
+    assert is_command_denied("echo $(echo $(rm -rf /))", tmp_path) is True
+    assert is_command_denied("echo `echo $(rm -rf /)`", tmp_path) is True
+
+
+def test_is_command_denied_safe_substitution(tmp_path):
+    """Safe command substitutions are allowed."""
+    assert is_command_denied("echo $(pwd)", tmp_path) is False
+    assert is_command_denied("echo `ls`", tmp_path) is False
+
+
+def test_is_command_denied_empty_command(tmp_path):
+    """Empty or whitespace-only commands are never denied."""
+    assert is_command_denied("", tmp_path) is False
+    assert is_command_denied("   ", tmp_path) is False
+    assert is_command_denied("\t\n", tmp_path) is False
+
+
+def test_is_command_denied_case_insensitive(tmp_path):
+    """Denial is case-insensitive."""
+    assert is_command_denied("RM -RF /", tmp_path) is True
+    assert is_command_denied("ChMoD -R 777 /", tmp_path) is True
+    assert is_command_denied("GIT PUSH --FORCE", tmp_path) is True
+
+
+def test_is_command_denied_allows_force_with_lease_explicit(tmp_path):
+    """--force-with-lease is denied but --force-with-lease=<ref> is also caught."""
+    assert is_command_denied("git push --force-with-lease", tmp_path) is True
+    assert is_command_denied("git push --force-with-lease=main", tmp_path) is True
+
+
+def test_is_command_denied_allows_ordinary_ls_f(tmp_path):
+    """``ls -f`` must not be mistaken for a force push (short -f only counts as a token)."""
+    assert is_command_denied("ls -f", tmp_path) is False
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel

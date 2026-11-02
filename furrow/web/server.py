@@ -110,10 +110,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
     margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
     word-break: break-word;
   }
-  .panel-meta {
+.panel-meta {
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
-  }
+}
+.panel-files {
+    font-size: .8rem; color: #5a6275; margin-top: .4rem;
+    word-break: break-all;
+}
+.panel-files b { color: #8a93a5; }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -248,6 +253,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      const files = Array.isArray(task.files_changed) ? task.files_changed : [];
+      if (files.length) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        filesEl.textContent = 'files: ' + files.join(', ');
+        panel.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);

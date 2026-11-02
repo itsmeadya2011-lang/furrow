@@ -171,29 +171,28 @@ def _expand_home(target: str) -> str:
     return os.path.expanduser(_HOME_VAR_RE.sub(home, target))
 
 
-def _target_inside_workspace(target: str, workspace: Path) -> bool:
-    """Resolve a redirection target and report whether it stays in the workspace.
-
-    An absolute target is resolved as it is, a relative one against the
-    workspace.
+def _target_inside_workspace(target: str, cwd: Path, workspace: Path) -> bool:
+    """Resolve a redirection target against ``cwd`` and report whether it stays
+    in ``workspace``.
     """
-    base = workspace.resolve()
+    base = cwd.resolve()
+    root = workspace.resolve()
     path = Path(_expand_home(target))
     resolved = path if path.is_absolute() else base / path
     try:
-        resolved.resolve().relative_to(base)
+        resolved.resolve().relative_to(root)
     except ValueError:
         return False
     return True
 
 
-def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
+def _redirects_outside_workspace(segment: str, cwd: Path, workspace: Path) -> bool:
     """Report whether a segment redirects output outside of the workspace."""
     for match in _REDIRECT_RE.finditer(segment):
         target = match.group(1).strip().strip("\"'")
         if not target:
             continue
-        if not _target_inside_workspace(target, workspace):
+        if not _target_inside_workspace(target, cwd, workspace):
             return True
     return False
 
@@ -210,7 +209,7 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     return any(token.lower() == "-f" for token in _shell_tokens(segment))
 
 
-def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
+def _is_dangerous_segment(segment: str, workspace: Path, cwd: Path | None = None) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
     if not normalized:
@@ -231,8 +230,10 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if _is_force_push(segment, normalized):
         return True
 
+    if cwd is None:
+        cwd = workspace
     # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    return bool(_redirects_outside_workspace(segment, cwd, workspace))
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
@@ -243,9 +244,19 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
-    # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
-        return True
+    # Every segment of the text is checked on its own, tracking the current
+    # working directory across ``cd`` commands so redirects are resolved
+    # against the directory the shell would actually be in.
+    cwd = workspace
+    for segment in _split_command_segments(text):
+        if _is_dangerous_segment(segment, workspace, cwd):
+            return True
+        tokens = _shell_tokens(segment.strip())
+        if tokens and os.path.basename(tokens[0]).lower() == "cd" and len(tokens) >= 2:
+            arg = tokens[1]
+            candidate = Path(arg) if Path(arg).is_absolute() else cwd / arg
+            with contextlib.suppress(OSError, RuntimeError):
+                cwd = candidate.resolve()
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
