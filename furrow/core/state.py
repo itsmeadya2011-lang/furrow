@@ -64,6 +64,7 @@ class RunState(BaseModel):
     no_progress: int = 0
     prev_sig: str = ""
     tests_run: int = 0
+    max_cycles: int = 0
     last_passed: bool | None = None
     last_skipped: bool = False
     last_summary: str = ""

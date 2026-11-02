@@ -50,6 +50,7 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._max_cycles = self.settings.max_cycles
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -79,6 +80,12 @@ class Orchestrator:
                     self._tests_run = int(getattr(st, "tests_run", 0) or 0)
                 except Exception:
                     self._tests_run = 0
+                # Restore the cycle limit so a resumed run honours the cap
+                # that was in effect when it was persisted.
+                try:
+                    self._max_cycles = int(getattr(st, "max_cycles", 0) or 0)
+                except Exception:
+                    self._max_cycles = self.settings.max_cycles
             else:
                 self._resume_state_missing = True
 
@@ -158,7 +165,7 @@ class Orchestrator:
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
         while True:
-            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
+            if self._max_cycles and self.cycles >= self._max_cycles:
                 self._stopped_reason = "max_cycles reached"
                 break
             self.cycles += 1
@@ -272,11 +279,12 @@ class Orchestrator:
                 self._prev_sig = sig
 
             state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
+                              cycles=self.cycles, tasks=self.tasks, history=self.history,
+                              usage=self._usage, no_progress=self._no_progress,
+                              prev_sig=self._prev_sig, tests_run=self._tests_run,
+                              max_cycles=self._max_cycles,
+                              last_passed=test_result.passed, last_skipped=skipped,
+                              last_summary=test_result.summary)
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:
@@ -287,7 +295,7 @@ class Orchestrator:
                 # which would tell consumers the state was saved when it was not.
                 self.event_bus.emit(
                     Event(type=EventType.ERROR,
-                         message=f"could not save state to {self.state_store.path}: {e}")
+                          message=f"could not save state to {self.state_store.path}: {e}")
                 )
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
@@ -296,7 +304,7 @@ class Orchestrator:
                 break
 
         if not self._stopped_reason:
-            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
+            if self._max_cycles and self.cycles >= self._max_cycles:
                 self._stopped_reason = "max_cycles reached"
             else:
                 self._stopped_reason = "goal complete"
@@ -357,12 +365,8 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending/running/unknown states are reset to pending for re-execution
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies

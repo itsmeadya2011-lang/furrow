@@ -48,6 +48,35 @@ DENIED_PROGRAMS = frozenset(
     }
 )
 
+# Network-exfiltration programs. These are checked against every token in a
+# segment (not just the first), so a command like ``cat file | curl …`` is
+# caught even though ``curl`` is not the leading token.
+_NETWORK_TOOLS = frozenset(
+    {
+        "curl",
+        "wget",
+        "nc",
+        "ncat",
+        "telnet",
+        "ssh",
+        "scp",
+        "rsync",
+        "ftp",
+        "sftp",
+        "sshpass",
+        "httpie",
+        "wxdownload",
+    }
+)
+
+# Match a network tool used as a standalone command token (word-boundary).
+_NETWORK_TOOL_RE = re.compile(
+    r"(?<![\w-])(?:"
+    + "|".join(re.escape(t) for t in _NETWORK_TOOLS)
+    + r")(?![\w-])",
+    re.IGNORECASE,
+)
+
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
@@ -222,6 +251,11 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
         program = program.lower()
         if program in DENIED_PROGRAMS or program.startswith("mkfs."):
             return True
+
+    # DENY network-exfiltration tools anywhere in the segment (including
+    # after a pipe, e.g. ``cat file | curl …``).
+    if _NETWORK_TOOL_RE.search(normalized):
+        return True
 
     # DENY by PATTERN
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):

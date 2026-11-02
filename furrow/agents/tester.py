@@ -237,6 +237,12 @@ class TesterAgent:
             "tox.ini",
             "requirements.txt",
         ]
+        # uv and poetry projects manage their own venvs; prefer their runners
+        # over a bare `python -m pytest` so the project's pinned deps are used.
+        if (self.workspace / "uv.lock").is_file():
+            return ["uv", "run", "pytest", "-q"]
+        if (self.workspace / "poetry.lock").is_file():
+            return ["poetry", "run", "pytest", "-q"]
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
