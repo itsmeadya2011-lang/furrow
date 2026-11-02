@@ -244,12 +244,18 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
 @main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind the web server to.")
 @click.option("--port", type=int, default=8000, help="Port to bind the web server to.")
-def web(host: str, port: int) -> None:
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def web(host: str, port: int, workspace: Path | None) -> None:
     """Run the Furrow web server."""
     from furrow.web.server import run
 
     try:
-        run(host=host, port=port)
+        run(host=host, port=port, workspace=workspace)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)

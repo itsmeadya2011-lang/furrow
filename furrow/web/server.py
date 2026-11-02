@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -439,7 +440,7 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
+def _run_settings(max_cycles: int | None, workspace: Path | None = None) -> Settings:
     """Settings for a run, with an optional ``max_cycles`` override.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
@@ -447,9 +448,12 @@ def _run_settings(max_cycles: int | None) -> Settings:
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
+    base = settings
+    if workspace is not None:
+        base = base.model_copy(update={"workspace": Path(workspace)})
     if max_cycles is None:
-        return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+        return base
+    return Settings.model_validate({**base.model_dump(), "max_cycles": max_cycles})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -548,13 +552,14 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, bus: EventBus, workspace: Path | None = None
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
+    run_settings = _run_settings(max_cycles, workspace)
     return Orchestrator(
         goal=goal,
-        settings=_run_settings(max_cycles),
-        state_store=StateStore(settings.state_path()),
+        settings=run_settings,
+        state_store=StateStore(run_settings.state_path()),
         event_bus=bus,
         resume=resume,
     )
@@ -737,6 +742,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         bus.unsubscribe(queue)
 
 
-def run(host: str = "127.0.0.1", port: int = 8000) -> None:
-    """Start the Furrow web server."""
+def run(host: str = "127.0.0.1", port: int = 8000, workspace: Path | None = None) -> None:
+    """Start the Furrow web server.
+
+    When ``workspace`` is given, the run settings for this server instance are
+    built with that workspace as the base directory, so state files and command
+    execution use it instead of the current working directory.
+    """
+    if workspace is not None:
+        global settings
+        settings = settings.model_copy(update={"workspace": Path(workspace)})
     uvicorn.run(app, host=host, port=port)
