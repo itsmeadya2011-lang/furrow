@@ -52,6 +52,7 @@ class FakeOrchestrator:
         }
         self.goal = goal
         self.event_bus = event_bus
+        self.client = client  # Some tests may look for client
         self._status: dict[str, Any] = {
             "goal": goal,
             "original_goal": goal,

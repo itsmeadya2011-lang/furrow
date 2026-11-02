@@ -109,7 +109,7 @@ class RunResult(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env", extra='ignore')
 
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
@@ -132,6 +132,22 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    def __init__(self, _env_file: str | Path | None = None, **kwargs):
+        if _env_file is None:
+            # Temporarily override model_config to not read env file
+            original_config = self.model_config
+            object.__setattr__(
+                self,
+                "model_config",
+                SettingsConfigDict(env_prefix="FURROW_", env_file=None, extra="ignore"),
+            )
+            try:
+                super().__init__(**kwargs)
+            finally:
+                object.__setattr__(self, "model_config", original_config)
+        else:
+            super().__init__(**kwargs)
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

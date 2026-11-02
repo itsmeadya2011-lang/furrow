@@ -137,4 +137,4 @@ def test_estimate_cost_never_raises() -> None:
         output_tokens = "not-a-number"
 
     assert estimate_cost("gpt-4o", _Weird()) == 0.0
-    assert estimate_cost("gpt-4o", None) == 0.0  # type: ignore[arg-type]
+    assert estimate_cost("gpt-4o", None) == 0.0
