@@ -249,6 +249,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
 
+      const filesChanged = text(task.files_changed);
+      if (filesChanged) {
+        const fc = document.createElement('span');
+        fc.textContent = 'files: ' + filesChanged;
+        meta.appendChild(fc);
+      }
+
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);

@@ -439,9 +439,13 @@ class WorkerAgent:
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
             try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
+                rel = str(Path(e).relative_to(base)) if Path(e).is_absolute() else e
             except ValueError:
-                rels.append(str(e))
+                rel = str(e)
+            # Never surface the run-state directory to the worker.
+            if rel.split("/")[0] == ".furrow" or rel.split("\\")[0] == ".furrow":
+                continue
+            rels.append(rel)
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:
