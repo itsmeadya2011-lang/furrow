@@ -977,3 +977,68 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_task_error_preserved_on_retry_without_error(tmp_path, monkeypatch):
+    """A retry that returns success=False with error=None must not wipe a
+    previously recorded error message (WorkerResult defaults error=None)."""
+    attempts = {"n": 0}
+
+    class FW(FakeWorker):
+        async def run(self):
+            attempts["n"] += 1
+            if attempts["n"] == 1:
+                return WorkerResult(
+                    summary="first try failed",
+                    success=False,
+                    files_changed=[],
+                    error="boom on first try",
+                )
+            # Retry returns without an error: the old error must be preserved.
+            return WorkerResult(summary="second try also failed", success=False, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    assert task.attempts == 2
+    assert task.error == "boom on first try", (
+        "old error must not be wiped by a retry with error=None"
+    )
+    assert task.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_resets_pending_running_skipped_to_pending(tmp_path, monkeypatch):
+    """Any non-terminal task status (pending, running, skipped) is reset to
+    pending when the plan is merged (the previously redundant if/else)."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    task = orch.tasks[0]
+    # Simulate a task left in a non-terminal state.
+    for status in ("pending", "running", "skipped"):
+        task.status = status
+        task.attempts = 0
+        plan = Plan(
+            tasks=[
+                TaskModel(
+                    id=task.id,
+                    description=task.description,
+                    dependencies=task.dependencies,
+                )
+            ],
+            rationale="r",
+        )
+        orch._merge_plan(plan)
+        assert plan.tasks[0].status == "pending", f"status {status!r} should reset to pending"

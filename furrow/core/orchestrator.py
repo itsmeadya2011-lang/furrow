@@ -357,12 +357,9 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Any other status (pending, running, skipped): reset to pending
+                    # so the task can be attempted again.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
@@ -465,7 +462,11 @@ class Orchestrator:
                 try:
                     success = bool(getattr(result, "success", False))
                     task.result = getattr(result, "summary", None)
-                    task.error = getattr(result, "error", None)
+                    # Only adopt a non-None error: a retry that returns without
+                    # an error must not wipe a previously recorded error message
+                    # (WorkerResult defaults error to None).
+                    if getattr(result, "error", None) is not None:
+                        task.error = result.error
                     task.attempts += 1
                     task.files_changed = sorted(
                         {str(p) for p in (getattr(result, "files_changed", None) or [])}
