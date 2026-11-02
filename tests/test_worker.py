@@ -820,7 +820,6 @@ async def test_read_file_truncation_marker(tmp_path):
     assert "[... output truncated ...]" in out
 
 
- 
 @pytest.mark.asyncio
 async def test_run_command_stderr_newline_format(tmp_path):
     from furrow.config import TaskModel
