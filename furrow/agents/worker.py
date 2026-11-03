@@ -30,6 +30,14 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    "sudo ",
+    "sudo\t",
+    "sudo\n",
+    "eval ",
+    "eval\t",
+    "eval\n",
+    "eval(",
+    "eval{",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,7 +53,22 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "sudo",
     }
+)
+
+# Shells that are dangerous to pipe an untrusted download into.
+_DANGEROUS_SHELLS = frozenset({"sh", "bash", "ash", "dash", "zsh", "ksh", "fish", "csh", "tcsh"})
+
+# A pipe (or chain of pipes) whose right-hand side is a shell interpreter.
+# Matches ``curl ... | sh``, ``wget -O - | bash``, ``curl ... && sh``,
+# ``curl ... ; dash``, etc.  The download side may contain anything.
+_PIPE_TO_SHELL_RE = re.compile(
+    r"(?:\||&&|\|\||;)\s*"
+    r"(?:\S+\s+)*"            # optional flags / args before the shell name
+    r"(?P<shell>" + "|".join(_DANGEROUS_SHELLS) + r")"
+    r"(?:\s|$)",
+    re.IGNORECASE,
 )
 
 # Maximum number of entries returned by the ``list_files`` tool.
@@ -229,6 +252,10 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
 
     # DENY a force push
     if _is_force_push(segment, normalized):
+        return True
+
+    # DENY a pipe-to-shell (curl | sh, wget -O - | bash, ...)
+    if _PIPE_TO_SHELL_RE.search(normalized):
         return True
 
     # DENY a redirection that escapes the workspace

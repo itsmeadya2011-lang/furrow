@@ -271,6 +271,15 @@ class Orchestrator:
                     self._no_progress = 0
                 self._prev_sig = sig
 
+            # Cost budget guard: stop the run once the accumulated spend
+            # crosses the configured cap. 0.0 means "no cap".
+            max_cost = float(getattr(self.settings, "max_cost_usd", 0.0) or 0.0)
+            if max_cost > 0.0 and self._usage.cost_usd >= max_cost:
+                self._stopped_reason = (
+                    f"cost budget exceeded: ${self._usage.cost_usd:.4f} >= ${max_cost:.2f}"
+                )
+                guard_tripped = True
+
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
                              usage=self._usage, no_progress=self._no_progress,

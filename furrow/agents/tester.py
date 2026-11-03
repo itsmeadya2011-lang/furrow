@@ -193,10 +193,12 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_setup_py = (self.workspace / "setup.py").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
+            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini
+            or has_requirements or has_setup_py
         ):
             return [sys.executable, "-m", "pytest", "-q"]
 
@@ -236,6 +238,7 @@ class TesterAgent:
             "setup.cfg",
             "tox.ini",
             "requirements.txt",
+            "setup.py",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
@@ -244,6 +247,9 @@ class TesterAgent:
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+
+        # Rust without Cargo.toml but with a src/ dir is unusual; skip.
+        # Go without go.mod is unusual; skip.
 
         return None
 
