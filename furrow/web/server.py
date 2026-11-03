@@ -131,6 +131,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .cost { color: #b8c2d0; margin-left: .5rem; font-size: .85rem; }
 </style>
 </head>
 <body>
@@ -147,6 +148,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span id="usage-cost" class="cost"></span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -160,6 +162,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const usageCostEl = document.getElementById('usage-cost');
   let socket = null;
   let lastSummary = null;
 
@@ -207,6 +210,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    if (cost > 0) {
+      usageCostEl.textContent = '  $' + cost.toFixed(6);
+      usageCostEl.style.display = '';
+    } else {
+      usageCostEl.style.display = 'none';
+    }
   }
 
   function renderTasks(tasks) {
