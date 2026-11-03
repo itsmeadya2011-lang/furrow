@@ -194,10 +194,20 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
+        # A ``tests/`` directory alongside any Python project marker is a
+        # strong signal that pytest is the runner, even when a package.json
+        # is also present.
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            return [sys.executable, "-m", "pytest", "-q"]
+
+        # A pyproject.toml that declares a pytest configuration table is an
+        # equally strong signal: it marks the project as Python even when the
+        # tests live somewhere other than a ``tests/`` directory (e.g. inline
+        # or under ``test_*.py`` at the root). Prefer it over a Node runner
+        # rather than letting a co-located package.json win.
+        if has_pyproject and self._pyproject_has_pytest_config(self.workspace):
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -226,7 +236,7 @@ class TesterAgent:
             # Fallback: npm test if package.json exists (Python case handled above)
             if (self.workspace / "pnpm-lock.yaml").is_file():
                 return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
+            if (self.workspace / "yarn-lock.yaml").is_file():
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
@@ -246,6 +256,24 @@ class TesterAgent:
             return ["go", "test", "./..."]
 
         return None
+
+    @staticmethod
+    def _pyproject_has_pytest_config(workspace: Path) -> bool:
+        """Report whether ``pyproject.toml`` declares a pytest configuration.
+
+        A plain text scan is enough here: the ``[tool.pytest.ini_options]``
+        table heading is the signal that the project uses pytest, and it is
+        not something a non-Python project would carry. This lets a Python
+        project win over a co-located ``package.json`` even when the tests do
+        not live in a ``tests/`` directory.
+        """
+        try:
+            with open(workspace / "pyproject.toml", "rb") as fh:
+                data = fh.read()
+        except OSError:
+            return False
+        text = data.decode("utf-8", errors="ignore")
+        return "[tool.pytest.ini_options]" in text
 
     def _finalize(
         self,

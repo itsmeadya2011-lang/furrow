@@ -16,7 +16,9 @@ from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
-# case-insensitively against the normalized command.
+# case-insensitively against the normalized command. These catch specific
+# dangerous spellings that a program-name check alone would miss (e.g. a
+# destructive pattern embedded in the middle of a pipeline).
 DENIED_COMMANDS = (
     "rm -rf /",
     "rm -fr /",
@@ -24,7 +26,6 @@ DENIED_COMMANDS = (
     "rm -rf ~",
     "rm -rf $home",
     ":(){:|:&};:",
-    "mkfs",
     "dd if=",
     "shutdown",
     "reboot",
@@ -33,7 +34,8 @@ DENIED_COMMANDS = (
 )
 
 # Programs that are denied by name: the basename of the first token of a
-# segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
+# segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well
+# via the ``startswith("mkfs.")`` check in ``_is_dangerous_segment``.
 DENIED_PROGRAMS = frozenset(
     {
         "dd",
@@ -453,10 +455,6 @@ class WorkerAgent:
         # the workspace.
         if is_command_denied(command, self.workspace):
             return "error: command denied"
-        try:
-            shlex.split(command)
-        except ValueError:
-            return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
@@ -490,6 +488,17 @@ class WorkerAgent:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
+            # Verify the process actually exited; if the kill above failed to
+            # take (e.g. the process group could not be reached) we try the
+            # direct child once more and report a lingering process instead of
+            # silently returning.
+            if proc.returncode is None:
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    proc.kill()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+            if proc.returncode is None:
+                return "command timed out (process could not be killed)"
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
