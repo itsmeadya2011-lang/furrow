@@ -592,3 +592,11 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_index_html_includes_cost_display_in_usage_line(client: TestClient) -> None:
+    """The status header usage line can display an estimated USD cost."""
+    html = client.get("/").text
+    assert "cost_usd" in html or "cost.toFixed" in html or "costStr" in html, (
+        "the inline script must read cost_usd from the usage object"
+    )

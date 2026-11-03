@@ -17,6 +17,10 @@ _UNSET = object()
 
 _MAX_TEXT = 120
 
+#: Maximum number of cycle history entries retained in memory. Older entries are
+#: dropped so a run with ``max_cycles=0`` (unlimited) cannot grow without bound.
+_MAX_HISTORY = 100
+
 
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None,
@@ -252,6 +256,9 @@ class Orchestrator:
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
             ))
+            # Cap the in-memory history so an unbounded run does not grow forever.
+            if len(self.history) > _MAX_HISTORY:
+                self.history = self.history[-_MAX_HISTORY:]
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
@@ -357,12 +364,8 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending/running/skipped: always reset to pending for re-execution.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
