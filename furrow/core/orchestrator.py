@@ -96,6 +96,9 @@ class Orchestrator:
 
     def status(self) -> dict[str, Any]:
         """Return a snapshot of the current run."""
+        files_changed = sorted(
+            {f for t in self.tasks for f in (getattr(t, "files_changed", None) or [])}
+        )
         return {
             "goal": self.goal,
             "original_goal": self.original_goal,
@@ -103,6 +106,7 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "files_changed": files_changed,
         }
 
     def _console(self) -> Any:
@@ -357,12 +361,8 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending or running: re-execute in this cycle
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
