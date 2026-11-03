@@ -170,6 +170,7 @@ def test_index_contains_ui_hooks(client: TestClient) -> None:
     # Goal input, Start/Resume buttons and the log still exist.
     for hook in (
         'id="goal"',
+        'id="max-cycles"',
         'id="start"',
         'id="resume"',
         'id="log"',
@@ -413,6 +414,25 @@ def test_websocket_applies_a_valid_max_cycles_override(
     assert fake_orchestrator.instances, "the run must have started"
     run_settings = fake_orchestrator.init_kwargs["settings"]
     assert run_settings.max_cycles == 2
+
+
+def test_index_script_sends_max_cycles_from_the_input(client: TestClient) -> None:
+    """The start/resume onclick handlers read the max-cycles input and include it in the payload.
+
+    Regression test for the web UI never exposing max_cycles even though the
+    API and websocket already accept it.
+    """
+    script = _inline_script(client)
+    # The input value is read and included (as undefined when empty, as an int otherwise).
+    assert "max_cycles: maxCycles" in script, (
+        "the connect payload does not include max_cycles from the input"
+    )
+    assert "maxCyclesEl.value.trim()" in script, (
+        "the max-cycles input value is not read"
+    )
+    assert "parseInt(maxCyclesEl.value, 10)" in script, (
+        "the max-cycles value is not parsed as an integer"
+    )
 
 
 def test_api_status_reports_not_running_after_run(

@@ -137,6 +137,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <h1>Furrow</h1>
 <div class="bar">
   <input id="goal" placeholder="What should Furrow build?" autofocus />
+  <input id="max-cycles" type="number" min="0" placeholder="Max cycles (0 = unlimited)" />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
 </div>
@@ -154,6 +155,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
+  const maxCyclesEl = document.getElementById('max-cycles');
   const tasksEl = document.getElementById('tasks');
   const goalDisplayEl = document.getElementById('goal-display');
   const cycleEl = document.getElementById('cycle');
@@ -398,10 +400,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+    const maxCycles = maxCyclesEl.value.trim() ? parseInt(maxCyclesEl.value, 10) : undefined;
+    connect({ goal: goalEl.value, max_cycles: maxCycles, resume: false });
   };
   document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+    const maxCycles = maxCyclesEl.value.trim() ? parseInt(maxCyclesEl.value, 10) : undefined;
+    connect({ goal: goalEl.value, max_cycles: maxCycles, resume: true });
   };
 
   loadState();
