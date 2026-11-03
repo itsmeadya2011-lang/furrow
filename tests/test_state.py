@@ -188,4 +188,3 @@ def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Pa
     loaded = store.load()
     assert loaded is not None
     assert loaded.tests_run == 0
-

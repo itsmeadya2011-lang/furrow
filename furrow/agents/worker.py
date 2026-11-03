@@ -89,7 +89,7 @@ def _normalize_command(command: str) -> str:
     # Canonicalize every spelling of the HOME variable to "$home".
     cmd = _HOME_VAR_RE.sub("$home", cmd)
     # Collapse runs of whitespace to single space
-    cmd = re.sub(r'\s+', ' ', cmd)
+    cmd = re.sub(r"\s+", " ", cmd)
     return cmd
 
 
@@ -467,7 +467,9 @@ class WorkerAgent:
         try:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
+                    "/bin/sh",
+                    "-c",
+                    command,
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,

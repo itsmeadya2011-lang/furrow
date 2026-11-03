@@ -24,11 +24,7 @@ class FakeWorker:
 
 class FakePlanner:
     def __init__(self, tasks=None, raise_valueerror=False, raise_runtimeerror=False):
-        self.tasks = (
-            [TaskModel(id="t1", description="do t1")]
-            if tasks is None
-            else list(tasks)
-        )
+        self.tasks = [TaskModel(id="t1", description="do t1")] if tasks is None else list(tasks)
         self.raise_valueerror = raise_valueerror
         self.raise_runtimeerror = raise_runtimeerror
         self.calls = 0
@@ -54,8 +50,7 @@ class FakeTester:
         self.skipped = skipped
 
     async def run(self, goal, tasks):
-        return TestResult(passed=self.passed, summary="s", failures=["fail"],
-                          skipped=self.skipped)
+        return TestResult(passed=self.passed, summary="s", failures=["fail"], skipped=self.skipped)
 
 
 class BoomConsole:
@@ -82,9 +77,13 @@ class RecordingConsole:
 
 
 def make_settings(tmp_path, max_cycles=3, max_parallel_tasks=2, max_task_retries=1):
-    return Settings(_env_file=None, workspace=tmp_path, max_cycles=max_cycles,
-                    max_parallel_tasks=max_parallel_tasks,
-                    max_task_retries=max_task_retries)
+    return Settings(
+        _env_file=None,
+        workspace=tmp_path,
+        max_cycles=max_cycles,
+        max_parallel_tasks=max_parallel_tasks,
+        max_task_retries=max_task_retries,
+    )
 
 
 @pytest.mark.asyncio
@@ -658,8 +657,15 @@ async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, mo
     task.result = "old result"
     task.error = "old error"
     plan = Plan(
-        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies,
-                         result="new result", error="new error")],
+        tasks=[
+            TaskModel(
+                id=task.id,
+                description=task.description,
+                dependencies=task.dependencies,
+                result="new result",
+                error="new error",
+            )
+        ],
         rationale="r",
     )
     orch._merge_plan(plan)
@@ -687,7 +693,9 @@ async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_completed_task_is_not_executed_again_when_the_plan_is_unchanged(tmp_path, monkeypatch):  # noqa: E501
+async def test_completed_task_is_not_executed_again_when_the_plan_is_unchanged(
+    tmp_path, monkeypatch
+):  # noqa: E501
     calls = []
 
     class CW(FakeWorker):
@@ -755,6 +763,7 @@ async def test_failed_task_with_an_exhausted_budget_stays_failed(tmp_path, monke
     # retry budget is still "failed" (not reset to "pending").`
     task = orch.tasks[0]
     assert task.status == "failed"
+
     # blocked task stays blocked and is not run in next cycle
     class FW2(FakeWorker):
         async def run(self):
@@ -938,8 +947,7 @@ async def test_worker_result_attribute_access_failure_marks_task_failed(tmp_path
     events = drain(q)
     assert any(e.type == EventType.ERROR for e in events)
     assert any(
-        e.type == EventType.TASK_FINISHED and not e.data.get("success", True)
-        for e in events
+        e.type == EventType.TASK_FINISHED and not e.data.get("success", True) for e in events
     )
 
 

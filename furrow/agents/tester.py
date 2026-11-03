@@ -67,9 +67,7 @@ def parse_test_output(output: str) -> list[dict]:
     seen_locations = set()
 
     # Patterns for pytest-style failures
-    pytest_failed_pattern = re.compile(
-        r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE
-    )
+    pytest_failed_pattern = re.compile(r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE)
     for match in pytest_failed_pattern.finditer(output):
         test_path = match.group(1)
         test_name = match.group(2)
@@ -273,9 +271,7 @@ class TesterAgent:
         if spawn_failed:
             # The runner never started: this is an infrastructure error, not a
             # test failure, and it must be reported as such.
-            summary = (
-                f"The test runner could not be started: {spawn_error}. The tests did not run."
-            )
+            summary = f"The test runner could not be started: {spawn_error}. The tests did not run."
             return TestResult(
                 passed=False,
                 summary=summary,
@@ -361,9 +357,7 @@ class TesterAgent:
                 # distinguishable from "the tests ran and failed".
                 spawn_failed = True
                 message = str(exc)
-                spawn_error = (
-                    f"{type(exc).__name__}: {message}" if message else type(exc).__name__
-                )
+                spawn_error = f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 returncode = 1
                 stdout = b""
                 stderr = b""

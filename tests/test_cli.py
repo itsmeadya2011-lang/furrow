@@ -179,9 +179,7 @@ def test_resume_max_cycles_negative_rejected(
 ) -> None:
     _write_state(tmp_path)
 
-    result = runner.invoke(
-        main, ["resume", "--workspace", str(tmp_path), "--max-cycles", "-1"]
-    )
+    result = runner.invoke(main, ["resume", "--workspace", str(tmp_path), "--max-cycles", "-1"])
 
     assert result.exit_code != 0
 
@@ -476,9 +474,7 @@ def test_summary_handles_a_result_without_the_new_fields(
     assert "PASSED" in output
 
 
-def test_status_shows_per_task_files_changed(
-    runner: CliRunner, tmp_path: Path
-) -> None:
+def test_status_shows_per_task_files_changed(runner: CliRunner, tmp_path: Path) -> None:
     state = RunState(
         goal="ship it",
         original_goal="ship it",

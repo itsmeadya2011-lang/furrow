@@ -215,9 +215,7 @@ def test_settings_model_pricing_defaults_to_empty(monkeypatch: pytest.MonkeyPatc
 
 def test_settings_accepts_model_pricing_as_a_dict():
     s = Settings(
-        model_pricing={
-            "my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)
-        }
+        model_pricing={"my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)}
     )
     assert s.model_pricing["my-model"].input_per_million == 1.0
     assert s.model_pricing["my-model"].output_per_million == 2.0
@@ -227,9 +225,7 @@ def test_settings_accepts_model_pricing_as_a_dict():
 
 
 def test_settings_accepts_model_pricing_as_a_plain_dict():
-    s = Settings(
-        model_pricing={"my-model": {"input_per_million": 1.0, "output_per_million": 2.0}}
-    )
+    s = Settings(model_pricing={"my-model": {"input_per_million": 1.0, "output_per_million": 2.0}})
     assert s.model_pricing["my-model"].input_per_million == 1.0
     assert s.model_pricing["my-model"].output_per_million == 2.0
 
@@ -251,11 +247,8 @@ def test_settings_reads_model_pricing_from_the_environment(
 
 def test_pricing_overrides_returns_a_copy():
     s = Settings(
-        model_pricing={
-            "my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)
-        }
+        model_pricing={"my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)}
     )
     overrides = s.pricing_overrides()
     overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
     assert s.model_pricing["my-model"].input_per_million == 1.0
-

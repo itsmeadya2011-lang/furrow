@@ -128,9 +128,7 @@ def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
 
 
 @pytest.fixture(autouse=True)
-def isolated_server(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Iterator[Path]:
+def isolated_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     """Point the server at a temporary workspace and reset the run registry."""
     run_settings = settings.model_copy(update={"workspace": tmp_path})
     monkeypatch.setattr(server, "settings", run_settings)
@@ -222,9 +220,7 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
     script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
 
     for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage"):
-        assert f"getElementById('{element_id}')" in script, (
-            f"script does not bind to #{element_id}"
-        )
+        assert f"getElementById('{element_id}')" in script, f"script does not bind to #{element_id}"
 
 
 def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> None:

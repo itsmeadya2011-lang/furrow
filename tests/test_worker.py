@@ -425,7 +425,7 @@ async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
         "echo $(rm -rf /)",
         "echo `rm -rf /`",
         # every spelling of the HOME variable
-        "rm -rf \"$HOME\"",
+        'rm -rf "$HOME"',
         "rm -rf ${HOME}",
         "rm -rf '$HOME'",
         # redirections that escape the workspace
@@ -450,9 +450,7 @@ async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
         responses = [
             LLMResponse(
                 text="",
-                tool_calls=[
-                    ToolCall(id="t1", name="run_command", arguments={"command": test_cmd})
-                ],
+                tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": test_cmd})],
             ),
             LLMResponse(text="done", tool_calls=[]),
         ]
@@ -499,9 +497,7 @@ async def test_allowed_command_table(tmp_path):
         responses = [
             LLMResponse(
                 text="",
-                tool_calls=[
-                    ToolCall(id="t1", name="run_command", arguments={"command": cmd})
-                ],
+                tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": cmd})],
             ),
             LLMResponse(text="done", tool_calls=[]),
         ]
@@ -820,7 +816,6 @@ async def test_read_file_truncation_marker(tmp_path):
     assert "[... output truncated ...]" in out
 
 
- 
 @pytest.mark.asyncio
 async def test_run_command_stderr_newline_format(tmp_path):
     from furrow.config import TaskModel
@@ -869,8 +864,10 @@ async def test_run_command_stderr_newline_format(tmp_path):
     def slow_list(directory):
         seen["tid"] = threading.get_ident()
         import time
+
         time.sleep(0.1)
         from pathlib import Path as _P
+
         return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
 
     client.list_files = slow_list

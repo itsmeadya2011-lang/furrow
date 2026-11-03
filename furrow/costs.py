@@ -35,12 +35,8 @@ class ModelPricing(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    input_per_million: float = Field(
-        default=0.0, description="USD per 1,000,000 input tokens"
-    )
-    output_per_million: float = Field(
-        default=0.0, description="USD per 1,000,000 output tokens"
-    )
+    input_per_million: float = Field(default=0.0, description="USD per 1,000,000 input tokens")
+    output_per_million: float = Field(default=0.0, description="USD per 1,000,000 output tokens")
 
 
 # DEFAULT SNAPSHOT of published per-1,000,000-token USD prices.
@@ -196,12 +192,9 @@ def estimate_cost(
         entry = price_for_model(model, pricing)
         if entry is None:
             return 0.0
-        cost = (
-            _token_count(usage, "input_tokens") / 1_000_000.0
-            * float(entry.input_per_million)
-            + _token_count(usage, "output_tokens") / 1_000_000.0
-            * float(entry.output_per_million)
-        )
+        cost = _token_count(usage, "input_tokens") / 1_000_000.0 * float(
+            entry.input_per_million
+        ) + _token_count(usage, "output_tokens") / 1_000_000.0 * float(entry.output_per_million)
         if cost <= 0:
             return 0.0
         return round(cost, 6)

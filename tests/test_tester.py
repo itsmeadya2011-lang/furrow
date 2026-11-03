@@ -394,8 +394,7 @@ def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
     head_start = "START_OF_ORIGINAL_OUTPUT_ABCDEFG"
     padding = ("Y" * 10000) + ("Z" * 20000)
     summary = (
-        "\n=========================== 2 failed, 3 passed in 1.23s "
-        "===========================\n"
+        "\n=========================== 2 failed, 3 passed in 1.23s ===========================\n"
     )
     stdout = (head_start + padding + summary).encode()
 
@@ -425,7 +424,6 @@ def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
     assert head_start not in prompt
 
 
- 
 def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
