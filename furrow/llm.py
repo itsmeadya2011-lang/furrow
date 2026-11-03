@@ -482,18 +482,98 @@ class LLMClient:
             usage=usage,
         )
 
+    #: Extensions that are never useful as text for an agent.
+_BINARY_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp",
+        ".pdf", ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz",
+        ".7z", ".rar", ".mp3", ".mp4", ".wav", ".ogg", ".flac",
+        ".mov", ".avi", ".mkv", ".exe", ".dll", ".so", ".dylib",
+        ".bin", ".o", ".a", ".lib", ".class", ".jar", ".war",
+        ".wasm", ".pyc", ".pyo",
+    }
+)
+
+
+#: Maximum number of files returned by :meth:`LLMClient.list_files`.
+MAX_LIST_FILES = 500
+
+#: Maximum size (in bytes) of a single file read by :meth:`LLMClient.read_file`.
+MAX_READ_BYTES = 20000
+
+#: Maximum size (in bytes) of a single file written by :meth:`LLMClient.write_file`.
+MAX_WRITE_BYTES = 200000
+
+
+def _is_text_file(path: Path) -> bool:
+    """Heuristic: treat a file as text unless it has a binary extension."""
+    suffix = path.suffix.lower()
+    if suffix in _BINARY_EXTENSIONS:
+        return False
+    return True
+
+
+def _normalize_path(path: str | Path) -> Path:
+    """Return the absolute, resolved path for *path*."""
+    p = Path(path)
+    return p.resolve() if p.is_absolute() else p.absolute().resolve()
+
+
+def _read_file_limited(path: Path, limit: int) -> str:
+    """Read up to *limit* bytes of *path* as UTF-8 text.
+
+    A marker is appended when the file exceeds *limit* so the caller never
+    receives a partial line at the boundary.
+    """
+    raw = path.read_bytes()
+    if len(raw) > limit:
+        raw = raw[:limit]
+        return raw.decode("utf-8", errors="replace") + "\n[... output truncated ...]"
+    return raw.decode("utf-8", errors="replace")
+
+
+def _write_file_limited(path: Path, content: str, limit: int) -> None:
+    """Write *content* to *path*, refusing payloads larger than *limit* bytes."""
+    encoded = content.encode("utf-8")
+    if len(encoded) > limit:
+        raise ValueError(
+            f"content too large: {len(encoded)} bytes exceeds limit of {limit}"
+        )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(encoded)
+
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path) as f:
-            return await f.read()
+        """Read a UTF-8 text file from *path*.
+
+        Binary files are refused and large files are truncated at
+        :data:`MAX_READ_BYTES` so a single file cannot flood the agent's
+        context window.
+        """
+        resolved = _normalize_path(path)
+        if not resolved.is_file():
+            raise FileNotFoundError(f"not a file: {path}")
+        if not _is_text_file(resolved):
+            raise ValueError(f"refusing to read binary file: {path}")
+        return _read_file_limited(resolved, MAX_READ_BYTES)
 
     async def write_file(self, path: str | Path, content: str) -> None:
-        p = Path(path)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
-            await f.write(content)
+        """Write *content* to *path*, refusing payloads larger than
+        :data:`MAX_WRITE_BYTES` so a runaway agent cannot exhaust disk space.
+        """
+        resolved = _normalize_path(path)
+        _write_file_limited(resolved, content, MAX_WRITE_BYTES)
 
     def list_files(self, directory: str | Path) -> list[str]:
-        p = Path(directory)
-        if not p.exists():
+        """List every file under *directory* (relative paths), capped at
+        :data:`MAX_LIST_FILES` entries.
+        """
+        resolved = _normalize_path(directory)
+        if not resolved.is_dir():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        out: list[str] = []
+        for entry in resolved.rglob("*"):
+            if entry.is_file():
+                out.append(str(entry.relative_to(resolved)))
+                if len(out) >= MAX_LIST_FILES:
+                    break
+        return out

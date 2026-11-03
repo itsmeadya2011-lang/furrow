@@ -502,6 +502,7 @@ class WorkerAgent:
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
         """Kill a timed-out command together with every process it spawned."""
+        killed_group = False
         if new_session:
             try:
                 pgid = os.getpgid(proc.pid)
@@ -510,12 +511,18 @@ class WorkerAgent:
             if pgid is not None:
                 try:
                     os.killpg(pgid, signal.SIGKILL)
+                    killed_group = True
                 except (OSError, AttributeError):
                     pass
-                else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
-        # Fallback: no process group available (or killing it failed).
+
+        # Always ensure the direct child is dead, even when the process-group
+        # kill succeeded: the child may have already been reaped by the event
+        # loop, or it may have escaped the group.  The fallback path also covers
+        # the case where the group kill failed.
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+        # Wait for the child to exit so it does not leak as a zombie.  A timeout
+        # bounds how long we spend here; a stuck child is abandoned rather than
+        # hanging the whole run.
+        with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+            await asyncio.wait_for(proc.wait(), timeout=5.0)
