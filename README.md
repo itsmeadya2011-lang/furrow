@@ -29,6 +29,10 @@ pip install -e ".[dev]"
 
 ## Usage
 
+### `furrow --version`
+
+Print the installed Furrow version.
+
 ### `furrow start "<goal>"`
 Start (or resume) a run for the specified goal.
 

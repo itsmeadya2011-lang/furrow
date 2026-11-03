@@ -1,16 +1,28 @@
+# Furrow run state - local scratch state, never commit
+.furrow/
+
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
+.eggs/
 build/
 dist/
+*.egg
+
+# Virtual environments
 .venv/
 venv/
-.env
-.env.*
-!.env.example
-.furrow/
-.pytest_cache/
+env/
+
+# Type checking / coverage
 .mypy_cache/
+.pytest_cache/
 .ruff_cache/
 .coverage
 htmlcov/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store

@@ -23,6 +23,13 @@ from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
 
+try:
+    from importlib.metadata import version as _pkg_version
+
+    VERSION = _pkg_version("furrow")
+except Exception:  # pragma: no cover - package not installed
+    VERSION = "0.1.0"
+
 logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
@@ -173,6 +180,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(version=VERSION, prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)

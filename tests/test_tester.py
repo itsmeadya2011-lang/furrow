@@ -66,6 +66,23 @@ def test_detect_cargo(tmp_path):
     assert cmd is not None and "cargo" in cmd
 
 
+def test_detect_uv_lock(tmp_path):
+    """A uv.lock file signals a uv-managed Python project."""
+    (tmp_path / "uv.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "uv" in cmd and "pytest" in cmd
+
+
+def test_detect_uv_lock_takes_precedence_over_package_json(tmp_path):
+    """uv.lock is a stronger signal than package.json for a Python project."""
+    (tmp_path / "uv.lock").write_text("")
+    (tmp_path / "package.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "uv" in cmd
+
+
 def test_detect_empty(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())

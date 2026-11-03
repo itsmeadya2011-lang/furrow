@@ -193,12 +193,17 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_uv_lock = (self.workspace / "uv.lock").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
             return [sys.executable, "-m", "pytest", "-q"]
+
+        # uv projects: uv.lock is the strongest signal for a uv-managed Python project
+        if has_uv_lock:
+            return ["uv", "run", "pytest", "-q"]
 
         # Check for Node.js test runners
         if has_package:

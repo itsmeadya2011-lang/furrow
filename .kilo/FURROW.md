@@ -105,4 +105,4 @@ A Furrow run works in a disposable workspace, so a change is only durable once i
 - Richer web UI with per-agent panels — delivered (status header with cycle/state/usage, per-task panels, timestamped event log).
 - A richer `furrow` package plugin system
 - Multi-provider model routing
-- Cost accounting: token accounting is delivered (per-call, per-cycle and per-run counts, persisted in state and printed by the CLI); currency cost estimation is still missing.
+- Cost accounting: delivered. Token accounting is tracked per-call, per-cycle and per-run (persisted in state and printed by the CLI). Currency cost estimation is implemented in `furrow.costs` using a per-model USD pricing table with `FURROW_MODEL_PRICING` overrides.
