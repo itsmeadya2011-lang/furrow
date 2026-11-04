@@ -337,47 +337,49 @@ class Orchestrator:
         max_retries = max(0, self.settings.max_task_retries)
         for index, pt in enumerate(plan.tasks):
             old = by_id.get(pt.id)
-            if old is not None:
-                old_desc = old.description
-                old_files = list(old.files)
-                # Preserve terminal states; only retry-eligible failed tasks may
-                # be reset to pending. Blocked tasks must remain blocked so that
-                # retry budgets and dependency outcomes are not lost across cycles.
-                if old.status == "completed":
-                    if old_desc == pt.description and old_files == pt.files:
-                        pt.status = "completed"
-                        self._skip_ids.add(pt.id)
-                    else:
-                        pt.status = "pending"
-                elif old.status == "failed":
-                    if old.attempts <= max_retries:
-                        pt.status = "pending"
-                    else:
-                        pt.status = "failed"
-                elif old.status == "blocked":
-                    pt.status = "blocked"
-                else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
-                old.description = pt.description
-                old.files = pt.files
-                old.dependencies = pt.dependencies
-                old.status = pt.status
-                # A freshly planned task carries result=None and error=None,
-                # so never let that wipe a result or error already recorded by
-                # a previous cycle. Only adopt non-None values from the plan.
-                if pt.result is not None:
-                    old.result = pt.result
-                if pt.error is not None:
-                    old.error = pt.error
-                plan.tasks[index] = old
-            else:
+            if old is None:
                 self.tasks.append(pt)
+                continue
+            # Preserve terminal states; only retry-eligible failed tasks may
+            # be reset to pending. Blocked tasks must remain blocked so that
+            # retry budgets and dependency outcomes are not lost across cycles.
+            pt.status = self._merge_status(old, pt, max_retries)
+            if pt.status == "completed":
+                self._skip_ids.add(pt.id)
+            # Carry forward the fields the planner re-supplied, but never let a
+            # freshly planned task (result=None, error=None) wipe a result or
+            # error already recorded by a previous cycle.
+            old.description = pt.description
+            old.files = pt.files
+            old.dependencies = pt.dependencies
+            old.status = pt.status
+            if pt.result is not None:
+                old.result = pt.result
+            if pt.error is not None:
+                old.error = pt.error
+            plan.tasks[index] = old
         self._active_ids = {t.id for t in plan.tasks}
+
+    @staticmethod
+    def _merge_status(old: TaskModel, planned: TaskModel, max_retries: int) -> str:
+        """Decide the merged status for a task that appeared in a previous cycle.
+
+        * ``completed`` stays completed only when the plan describes the same
+          work (same description and files); otherwise it is re-opened.
+        * ``failed`` is reset to ``pending`` while attempts remain, otherwise it
+          stays failed so the retry budget is not silently reset.
+        * ``blocked`` stays blocked.
+        * Anything else (``pending``, ``running``, ``skipped``) is re-opened.
+        """
+        if old.status == "completed":
+            if old.description == planned.description and list(old.files) == planned.files:
+                return "completed"
+            return "pending"
+        if old.status == "failed":
+            return "pending" if old.attempts <= max_retries else "failed"
+        if old.status == "blocked":
+            return "blocked"
+        return "pending"
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}

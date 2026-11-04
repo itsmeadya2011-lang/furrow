@@ -20,6 +20,15 @@ from furrow.llm import LLMClient
 # available (the setting is read defensively, see ``resolve_test_timeout``).
 DEFAULT_TEST_TIMEOUT = 600.0
 
+# Markers that, when present alongside a ``tests/`` directory, imply pytest.
+_PYTHON_MARKERS = (
+    "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "requirements.txt",
+)
+
 # Keywords that mark a line as reporting a failure.
 _FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
 
@@ -185,67 +194,63 @@ class TesterAgent:
         with contextlib.suppress(Exception):
             await proc.wait()
 
-    async def detect_command(self) -> list[str] | None:
-        has_package = (self.workspace / "package.json").is_file()
-        has_pyproject = (self.workspace / "pyproject.toml").is_file()
-        has_tests_dir = (self.workspace / "tests").is_dir()
-        has_pytest_ini = (self.workspace / "pytest.ini").is_file()
-        has_setup_cfg = (self.workspace / "setup.cfg").is_file()
-        has_tox_ini = (self.workspace / "tox.ini").is_file()
-        has_requirements = (self.workspace / "requirements.txt").is_file()
+async def detect_command(self) -> list[str] | None:
+        """Detect the test runner for the project, or None when there is none.
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
-        ):
+        The lock-file checks (``pnpm-lock.yaml``, ``yarn.lock``) are factored
+        into :meth:`_node_test_command` so the detection logic is shared by
+        every code path that inspects ``package.json``.
+        """
+        has_tests_dir = (self.workspace / "tests").is_dir()
+        if has_tests_dir and self._has_python_project_marker(self.workspace):
             return [sys.executable, "-m", "pytest", "-q"]
 
-        # Check for Node.js test runners
-        if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
-            try:
-                with open(self.workspace / "package.json") as fh:
-                    pkg_data = json.load(fh)
-                scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            except Exception:
-                pass
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+        if (self.workspace / "package.json").is_file():
+            return self._node_test_command()
 
-        python_markers = [
-            "pyproject.toml",
-            "pytest.ini",
-            "setup.cfg",
-            "tox.ini",
-            "requirements.txt",
-        ]
-        if any((self.workspace / m).is_file() for m in python_markers):
+        if self._has_python_project_marker(self.workspace):
             return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
-
         return None
+
+    @staticmethod
+    def _has_python_project_marker(workspace: Path) -> bool:
+        """True when the workspace carries a marker that implies pytest."""
+        return any((workspace / m).is_file() for m in _PYTHON_MARKERS)
+
+    def _node_test_command(self) -> list[str]:
+        """Pick the node test runner for the workspace, falling back to npm.
+
+        The lock-file checks are centralised here so every code path that
+        inspects ``package.json`` shares the same resolution order.
+        """
+        ws = self.workspace
+        # jest/vitest configs imply a test runner is configured.
+        for pattern in ("jest.config.*", "vitest.config.*"):
+            if any(ws.glob(pattern)):
+                return self._node_lock_command()
+        # A "test" script in package.json implies the runner is wired up.
+        try:
+            with open(ws / "package.json") as fh:
+                pkg_data = json.load(fh)
+            if "test" in pkg_data.get("scripts", {}):
+                return self._node_lock_command()
+        except Exception:
+            pass
+        return self._node_lock_command()
+
+    def _node_lock_command(self) -> list[str]:
+        """Resolve the lock file to a concrete test runner, defaulting to npm."""
+        ws = self.workspace
+        if (ws / "pnpm-lock.yaml").is_file():
+            return ["pnpm", "test", "--silent"]
+        if (ws / "yarn.lock").is_file():
+            return ["yarn", "test", "--silent"]
+        return ["npm", "test", "--silent"]
 
     def _finalize(
         self,

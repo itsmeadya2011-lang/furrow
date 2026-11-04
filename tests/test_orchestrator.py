@@ -977,3 +977,87 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+# ---------------------------------------------------------------------------
+# Tests for the refactored _merge_status helper
+# ---------------------------------------------------------------------------
+
+def _task(status: str, attempts: int = 0, description: str = "d",
+          files: list[str] | None = None) -> TaskModel:
+    return TaskModel(id="1", description=description, files=files or [],
+                     status=status, attempts=attempts)
+
+
+def test_merge_status_completed_unchanged_stays_completed():
+    old = _task("completed")
+    planned = _task("pending", description="d", files=[])
+    assert Orchestrator._merge_status(old, planned, max_retries=1) == "completed"
+
+
+def test_merge_status_completed_with_changed_description_is_reopened():
+    old = _task("completed", description="do thing")
+    planned = _task("pending", description="do other thing")
+    assert Orchestrator._merge_status(old, planned, max_retries=1) == "pending"
+
+
+def test_merge_status_completed_with_changed_files_is_reopened():
+    old = _task("completed", files=["a.py"])
+    planned = _task("pending", files=["b.py"])
+    assert Orchestrator._merge_status(old, planned, max_retries=1) == "pending"
+
+
+def test_merge_status_failed_with_attempts_left_is_reopened():
+    old = _task("failed", attempts=1)
+    planned = _task("pending")
+    assert Orchestrator._merge_status(old, planned, max_retries=2) == "pending"
+
+
+def test_merge_status_failed_with_exhausted_budget_stays_failed():
+    old = _task("failed", attempts=3)
+    planned = _task("pending")
+    assert Orchestrator._merge_status(old, planned, max_retries=2) == "failed"
+
+
+def test_merge_status_blocked_stays_blocked():
+    old = _task("blocked")
+    planned = _task("pending")
+    assert Orchestrator._merge_status(old, planned, max_retries=1) == "blocked"
+
+
+def test_merge_status_pending_is_reopened():
+    old = _task("pending", attempts=5)
+    planned = _task("pending")
+    assert Orchestrator._merge_status(old, planned, max_retries=1) == "pending"
+
+
+def test_merge_status_running_is_reopened():
+    old = _task("running")
+    planned = _task("pending")
+    assert Orchestrator._merge_status(old, planned, max_retries=1) == "pending"
+
+
+def test_merge_plan_skips_completed_unchanged_tasks(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    old = _task("completed", description="do thing", files=["a.py"])
+    orch.tasks = [old]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"])],
+                rationale="r")
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "completed"
+    assert "1" in orch._skip_ids
+
+
+def test_merge_plan_reopens_completed_task_with_changed_files(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    old = _task("completed", description="do thing", files=["a.py"])
+    orch.tasks = [old]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["b.py"])],
+                rationale="r")
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+    assert "1" not in orch._skip_ids

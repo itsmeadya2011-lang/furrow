@@ -481,3 +481,62 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
     assert head_start not in prompt
+
+
+# ---------------------------------------------------------------------------
+# Tests for the refactored detect_command / lock-file resolution
+# ---------------------------------------------------------------------------
+
+def test_detect_tests_dir_with_pyproject_uses_pytest(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_without_python_marker_falls_through(tmp_path):
+    """A tests/ dir alone (no python marker) should not force pytest."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "echo ok"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
+def test_detect_pnpm_lock_uses_pnpm(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pnpm" in cmd
+
+
+def test_detect_yarn_lock_uses_yarn(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "yarn.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "yarn" in cmd
+
+
+def test_detect_jest_config_uses_lock_command(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "jest.config.js").write_text("module.exports = {}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
+def test_detect_test_script_in_package_json(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "echo ok"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
+def test_detect_python_marker_without_tests_dir_uses_pytest(tmp_path):
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
