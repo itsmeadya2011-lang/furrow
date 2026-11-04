@@ -375,8 +375,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["grep_file", "list_files", "read_file", "run_command", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -888,3 +888,185 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_grep_file_finds_matches(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "mod.py").write_text("def foo():\n    return 1\n\ndef bar():\n    return 2\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "mod.py", "pattern": "def "},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "1: def foo():" in content
+                    assert "4: def bar():" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_file_no_matches(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "mod.py").write_text("def foo():\n    return 1\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "mod.py", "pattern": "baz"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert content == ""
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_file_path_escape(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "../evil.py", "pattern": "x"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "escapes workspace" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_file_missing_file(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "nope.py", "pattern": "x"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "no such file" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_file_invalid_pattern(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "mod.py").write_text("def foo():\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "mod.py", "pattern": "(["},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "invalid pattern" in b["content"]
+                    found = True
+    assert found
+
+
+def test_worker_tools_includes_grep_file():
+    names = [t["name"] for t in WORKER_TOOLS]
+    assert "grep_file" in names
+    grep_tool = next(t for t in WORKER_TOOLS if t["name"] == "grep_file")
+    p = grep_tool["parameters"]
+    assert p["type"] == "object"
+    assert set(p["required"]) == {"path", "pattern"}
+    assert "path" in p["properties"]
+    assert "pattern" in p["properties"]

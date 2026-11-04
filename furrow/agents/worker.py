@@ -378,6 +378,10 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "grep_file":
+            return await self._grep_file(
+                str(args.get("path", "")), str(args.get("pattern", ""))
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -443,6 +447,36 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _grep_file(self, path: str, pattern: str) -> str:
+        """Search *path* for lines matching *pattern* and return them with line numbers.
+
+        The file must live inside the workspace. Matches are returned as
+        ``<line_number>: <line_text>`` entries; when nothing matches the result
+        is an empty string. The tool result is capped so a huge match set cannot
+        flood the context.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not resolved.is_file():
+            return f"error: no such file: {path}"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid pattern: {exc}"
+        matches = []
+        for index, line in enumerate(content.splitlines(), start=1):
+            if compiled.search(line):
+                matches.append(f"{index}: {line}")
+                if len(matches) >= 200:
+                    matches.append("[... output truncated ...]")
+                    break
+        return "\n".join(matches)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

@@ -400,6 +400,44 @@ def test_summary_prints_files_changed_when_present(
     assert "furrow/core/orchestrator.py, furrow/config.py" in output
 
 
+def test_summary_prints_cost_when_nonzero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the LLM cost when it is non-zero."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=1_000_000, output_tokens=1_000_000, calls=12, cost_usd=0.75),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM cost:" in output
+    assert "$0.750000" in output
+
+
+def test_summary_omits_cost_when_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary does not print a cost line when cost is zero."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM cost:" not in output
+    assert "LLM usage:" in output
+
+
 def test_summary_omits_files_changed_when_empty(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

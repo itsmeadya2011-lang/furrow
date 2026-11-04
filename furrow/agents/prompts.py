@@ -88,4 +88,16 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "grep_file",
+        "description": "search a workspace file for lines matching a regex pattern",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "pattern": {"type": "string"},
+            },
+            "required": ["path", "pattern"],
+        },
+    },
 ]
