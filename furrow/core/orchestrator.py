@@ -356,13 +356,14 @@ class Orchestrator:
                         pt.status = "failed"
                 elif old.status == "blocked":
                     pt.status = "blocked"
+                elif old.status == "skipped":
+                    # A skipped task keeps its status so it is not re-attempted
+                    # needlessly across cycles.
+                    pt.status = "skipped"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending, running, or any other non-terminal status is
+                    # reset to pending so the task can be attempted again.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
