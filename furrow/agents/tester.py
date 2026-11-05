@@ -52,8 +52,10 @@ def resolve_test_timeout(settings: Settings) -> float:
     that do not define the setting yet.
     """
     raw = getattr(settings, "test_timeout", None)
+    if raw is None:
+        return DEFAULT_TEST_TIMEOUT
     try:
-        timeout = float(raw)  # type: ignore[arg-type]
+        timeout = float(raw)
     except (TypeError, ValueError):
         timeout = DEFAULT_TEST_TIMEOUT
     if timeout <= 0:
