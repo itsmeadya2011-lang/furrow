@@ -492,8 +492,16 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
-    def list_files(self, directory: str | Path) -> list[str]:
+    async def list_files(self, directory: str | Path) -> list[str]:
+        """Return relative paths of every file under *directory*.
+
+        The filesystem walk runs in a worker thread so it never blocks the
+        event loop.  Returns an empty list when the directory does not exist.
+        """
         p = Path(directory)
         if not p.exists():
             return []
+        return await asyncio.to_thread(self._list_files_sync, p)
+
+    def _list_files_sync(self, p: Path) -> list[str]:
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]

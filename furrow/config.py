@@ -134,9 +134,21 @@ class Settings(BaseSettings):
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
     def state_path(self, workspace: Path | None = None) -> Path:
-        """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
+        """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file
+
+        An absolute ``state_file`` is rejected: it would silently escape the
+        intended workspace directory (``Path(base) / Path("/abs")`` resolves to
+        ``/abs`` on POSIX), so a misconfiguration could not be detected.  Use a
+        relative path instead.
+        """
         base = Path(workspace) if workspace is not None else Path(self.workspace)
-        return base / Path(self.state_file)
+        state_file = Path(self.state_file)
+        if state_file.is_absolute():
+            raise ValueError(
+                "state_file must be relative to the workspace, got absolute path: "
+                f"{state_file}"
+            )
+        return (base / state_file).resolve()
 
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""

@@ -33,7 +33,7 @@ class FakeLLMClient:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         Path(path).write_text(content)
 
-    def list_files(self, directory):
+    async def list_files(self, directory):
         return [str(p) for p in Path(directory).rglob("*") if p.is_file()]
 
 
@@ -866,7 +866,7 @@ async def test_run_command_stderr_newline_format(tmp_path):
     loop_thread = threading.get_ident()
     seen = {}
 
-    def slow_list(directory):
+    async def slow_list(directory):
         seen["tid"] = threading.get_ident()
         import time
         time.sleep(0.1)
@@ -886,5 +886,32 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await agent._list_files(".")
     progress["done"] = True
     await t
-    assert seen["tid"] != loop_thread
-    assert progress["n"] > 0
+    # The fake slow_list runs on the event loop, but the real LLMClient.list_files
+    # offloads the filesystem walk to a worker thread. Verify the offloading
+    # happens inside the client method itself.
+    from furrow.llm import LLMClient
+
+    real_client = LLMClient(settings=settings)
+    real_seen = {}
+
+    def real_slow(p):
+        real_seen["tid"] = threading.get_ident()
+        import time
+        time.sleep(0.05)
+        from pathlib import Path as _P
+        return [str(f.relative_to(p)) for f in _P(p).rglob("*") if _P(f).is_file()]
+
+    real_client._list_files_sync = real_slow
+    real_progress = {"n": 0}
+
+    async def real_ticker():
+        while not real_progress.get("done"):
+            real_progress["n"] += 1
+            await asyncio.sleep(0.01)
+
+    rt = asyncio.ensure_future(real_ticker())
+    await real_client.list_files(tmp_path)
+    real_progress["done"] = True
+    await rt
+    assert real_seen["tid"] != loop_thread
+    assert real_progress["n"] > 0

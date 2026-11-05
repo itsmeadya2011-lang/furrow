@@ -431,7 +431,7 @@ class WorkerAgent:
         if resolved is None:
             return "error: path escapes workspace"
         try:
-            entries = await asyncio.to_thread(self.client.list_files, resolved)
+            entries = await self.client.list_files(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
