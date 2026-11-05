@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -820,7 +821,6 @@ async def test_read_file_truncation_marker(tmp_path):
     assert "[... output truncated ...]" in out
 
 
- 
 @pytest.mark.asyncio
 async def test_run_command_stderr_newline_format(tmp_path):
     from furrow.config import TaskModel
@@ -851,8 +851,9 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
-    import threading
 
+@pytest.mark.asyncio
+async def test_list_files_offloads_to_thread(tmp_path):
     for i in range(5):
         (tmp_path / f"f{i}.txt").write_text("x")
 
