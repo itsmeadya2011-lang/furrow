@@ -61,6 +61,18 @@ def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[st
     return ("FAILED - tests did not pass.", "red")
 
 
+def _format_usage(usage: Any) -> str:
+    """Human-readable token and estimated-cost summary for CLI output."""
+    parts = [
+        f"{usage.calls} calls, {usage.total_tokens} tokens "
+        f"(in {usage.input_tokens} / out {usage.output_tokens})"
+    ]
+    cost_usd = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+    if cost_usd > 0.0:
+        parts.append(f"est. ${cost_usd:.6f} USD")
+    return ", ".join(parts)
+
+
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
     click.echo("Run summary")
@@ -76,10 +88,7 @@ def _print_summary(result: RunResult) -> None:
     click.secho(f"  Result: {text}", fg=colour)
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
-        click.echo(
-            f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
-            f"(in {usage.input_tokens} / out {usage.output_tokens})"
-        )
+        click.echo(f"  LLM usage:       {_format_usage(usage)}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -102,7 +111,7 @@ def _print_state(state: RunState) -> None:
     click.secho(f"  Result:        {text}", fg=colour)
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
-        click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        click.echo(f"  LLM usage:       {_format_usage(usage)}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
