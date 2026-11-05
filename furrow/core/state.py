@@ -29,6 +29,16 @@ logger = get_logger(__name__)
 
 STATE_VERSION = 1
 
+__all__ = [
+    "STATE_VERSION",
+    "DEFAULT_STATE_RELATIVE_PATH",
+    "utcnow",
+    "HistoryEntry",
+    "RunState",
+    "state_path_for",
+    "StateStore",
+]
+
 DEFAULT_STATE_RELATIVE_PATH = Path(".furrow/state.json")
 
 

@@ -29,6 +29,18 @@ RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
 
+__all__ = [
+    "ToolCall",
+    "LLMResponse",
+    "LLMClient",
+    "RETRYABLE_STATUS_CODES",
+    "to_anthropic_tools",
+    "to_openai_tools",
+    "to_anthropic_messages",
+    "to_openai_messages",
+    "parse_tool_arguments",
+]
+
 
 @dataclass(slots=True)
 class ToolCall:

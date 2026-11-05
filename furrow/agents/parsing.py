@@ -6,6 +6,14 @@ from typing import Any
 
 from furrow.config import Plan, TaskModel, TestResult
 
+__all__ = [
+    "strip_code_fences",
+    "extract_json",
+    "parse_json",
+    "parse_plan",
+    "parse_test_result",
+]
+
 
 def strip_code_fences(text: str) -> str:
     """Remove ```json ... ``` / ``` ... ``` fences. If the text contains exactly one
