@@ -27,4 +27,5 @@ Return a JSON object (not wrapped in markdown) with this shape:
 - 1-5 tasks maximum per plan.
 - Tasks must be independent when possible.
 - Each task should be completable in 1-3 tool call rounds by a worker.
+- Include test files in `files` when a task changes behavior, so workers verify them.
 - If the goal is too large for one cycle, say so in rationale and break it into the most critical first slice.
