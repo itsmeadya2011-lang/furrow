@@ -111,6 +111,9 @@ class StateStore:
         The payload is written to a temporary file in the same directory, then
         flushed, fsync'ed and moved into place with ``os.replace``. If anything
         fails the temporary file is removed and the error is re-raised.
+
+        The caller's ``updated_at`` is updated in place to the timestamp that
+        was written, so the caller can inspect the value that was persisted.
         """
         state.updated_at = utcnow()
         payload = json.dumps(state.model_dump(mode="json"), indent=2)

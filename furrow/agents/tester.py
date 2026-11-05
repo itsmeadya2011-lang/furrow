@@ -14,6 +14,7 @@ from furrow.agents.parsing import parse_test_result
 from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
+from furrow.core.events import Event, EventBus, EventType
 from furrow.llm import LLMClient
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
@@ -165,10 +166,12 @@ class TesterAgent:
         client: LLMClient | None = None,
         settings: Settings | None = None,
         workspace: Path | None = None,
+        event_bus: EventBus | None = None,
     ) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self.event_bus = event_bus
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
@@ -186,13 +189,19 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
-        has_package = (self.workspace / "package.json").is_file()
-        has_pyproject = (self.workspace / "pyproject.toml").is_file()
-        has_tests_dir = (self.workspace / "tests").is_dir()
-        has_pytest_ini = (self.workspace / "pytest.ini").is_file()
-        has_setup_cfg = (self.workspace / "setup.cfg").is_file()
-        has_tox_ini = (self.workspace / "tox.ini").is_file()
-        has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_package = await asyncio.to_thread(
+            (self.workspace / "package.json").is_file
+        )
+        has_pyproject = await asyncio.to_thread(
+            (self.workspace / "pyproject.toml").is_file
+        )
+        has_tests_dir = await asyncio.to_thread((self.workspace / "tests").is_dir)
+        has_pytest_ini = await asyncio.to_thread((self.workspace / "pytest.ini").is_file)
+        has_setup_cfg = await asyncio.to_thread((self.workspace / "setup.cfg").is_file)
+        has_tox_ini = await asyncio.to_thread((self.workspace / "tox.ini").is_file)
+        has_requirements = await asyncio.to_thread(
+            (self.workspace / "requirements.txt").is_file
+        )
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
@@ -204,29 +213,42 @@ class TesterAgent:
         if has_package:
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                for _f in await asyncio.to_thread(self.workspace.glob, pattern):
+                    if await asyncio.to_thread(
+                        (self.workspace / "pnpm-lock.yaml").is_file
+                    ):
                         return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
+                    if await asyncio.to_thread(
+                        (self.workspace / "yarn-lock.yaml").is_file
+                    ):
                         return ["yarn", "test", "--silent"]
                     return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
-                with open(self.workspace / "package.json") as fh:
-                    pkg_data = json.load(fh)
+                pkg_path = self.workspace / "package.json"
+
+                def _read_pkg() -> dict[str, Any]:
+                    with open(pkg_path) as fh:
+                        return json.load(fh)
+
+                pkg_data = await asyncio.to_thread(_read_pkg)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                    if await asyncio.to_thread(
+                        (self.workspace / "pnpm-lock.yaml").is_file
+                    ):
                         return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
+                    if await asyncio.to_thread(
+                        (self.workspace / "yarn-lock.yaml").is_file
+                    ):
                         return ["yarn", "test", "--silent"]
                     return ["npm", "test", "--silent"]
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
+            if await asyncio.to_thread((self.workspace / "pnpm-lock.yaml").is_file):
                 return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
+            if await asyncio.to_thread((self.workspace / "yarn-lock.yaml").is_file):
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
@@ -237,12 +259,15 @@ class TesterAgent:
             "tox.ini",
             "requirements.txt",
         ]
-        if any((self.workspace / m).is_file() for m in python_markers):
+        results = await asyncio.gather(
+            *[asyncio.to_thread((self.workspace / m).is_file) for m in python_markers]
+        )
+        if any(results):
             return [sys.executable, "-m", "pytest", "-q"]
 
-        if (self.workspace / "Cargo.toml").is_file():
+        if await asyncio.to_thread((self.workspace / "Cargo.toml").is_file):
             return ["cargo", "test", "-q"]
-        if (self.workspace / "go.mod").is_file():
+        if await asyncio.to_thread((self.workspace / "go.mod").is_file):
             return ["go", "test", "./..."]
 
         return None
@@ -251,6 +276,7 @@ class TesterAgent:
         self,
         *,
         llm_result: TestResult | None,
+        llm_error: str | None,
         returncode: int,
         combined: str,
         spawn_failed: bool,
@@ -298,6 +324,8 @@ class TesterAgent:
             passed = returncode == 0 and not _has_failure_keywords(combined)
             failures = _extract_failures(combined)
             notes.append(combined[:500].strip())
+            if llm_error:
+                notes.append(f"LLM verdict unavailable: {llm_error}")
         else:
             failures = list(llm_result.failures)
             if llm_result.passed and returncode != 0:
@@ -388,6 +416,7 @@ class TesterAgent:
                 combined = "[... output truncated ...]\n" + combined[-20000:]
 
             llm_result: TestResult | None = None
+            llm_error: str | None = None
             if not spawn_failed:
                 # A runner that never started has no output worth summarising.
                 prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
@@ -396,11 +425,23 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                except Exception as exc:
+                    llm_error = f"{type(exc).__name__}: {exc}"
                     llm_result = None
+                    if self.event_bus is not None:
+                        self.event_bus.emit(
+                            Event(
+                                type=EventType.ERROR,
+                                message=(
+                                    "tester LLM verdict unavailable: "
+                                    f"{llm_error}; falling back to raw output"
+                                ),
+                            )
+                        )
 
             return self._finalize(
                 llm_result=llm_result,
+                llm_error=llm_error,
                 returncode=returncode,
                 combined=combined,
                 spawn_failed=spawn_failed,

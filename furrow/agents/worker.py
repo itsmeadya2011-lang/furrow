@@ -359,7 +359,10 @@ class WorkerAgent:
     def _initial_text(self) -> str:
         parts = []
         if self.goal:
-            parts.append(f"Overall goal: {self.goal}")
+            goal = self.goal
+            if len(goal) > 2000:
+                goal = goal[:1999].rstrip() + "…"
+            parts.append(f"Overall goal: {goal}")
         parts.append(f"Task: {self.task.description}")
         parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
         parts.append(f"Workspace: {self.workspace}")

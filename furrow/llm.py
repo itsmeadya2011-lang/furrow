@@ -244,7 +244,9 @@ class LLMClient:
     @property
     def ollama(self) -> AsyncOpenAI:
         if self._ollama is None:
-            base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
+            base_url = self.settings.ollama_base_url
+            if not base_url.endswith("/v1"):
+                base_url = base_url.rstrip("/") + "/v1"
             self._ollama = AsyncOpenAI(
                 api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
             )
@@ -316,6 +318,29 @@ class LLMClient:
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
+
+        return await self._retry(call)
+
+    async def complete_with_usage(
+        self, prompt: str, system: str = "", model: str | None = None
+    ) -> LLMResponse:
+        """Like :meth:`complete` but returns the full :class:`LLMResponse`.
+
+        ``complete`` discards per-call usage and tool-call data; this variant
+        exposes it so callers (e.g. the tester agent) can inspect token usage
+        or the raw response without re-implementing the provider dispatch.
+        """
+        model = model or self.settings.model
+        provider = self.settings.provider
+
+        async def call() -> LLMResponse:
+            if provider == Provider.ANTHROPIC:
+                return await self._complete_anthropic(prompt, system, model)
+            elif provider == Provider.OPENAI:
+                return await self._complete_openai(self.openai, prompt, system, model)
+            elif provider == Provider.OLLAMA:
+                return await self._complete_openai(self.ollama, prompt, system, model)
+            raise ValueError(f"Unsupported provider: {provider}")
 
         return await self._retry(call)
 

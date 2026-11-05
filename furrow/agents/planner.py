@@ -13,6 +13,9 @@ class PlannerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
 
     async def plan(self, goal: str, context: str = "") -> Plan:
+        if not goal or not goal.strip():
+            raise ValueError("goal must be a non-empty string")
+
         prompt = PLANNER_PROMPT + "\n\nGoal: " + goal
         if context:
             prompt += "\n\nContext:\n" + context
@@ -20,7 +23,7 @@ class PlannerAgent:
         model = self.settings.planner_model
         response = await self.client.complete(prompt, system=PLANNER_SYSTEM, model=model)
         try:
-            return parse_plan(response)
+            plan = parse_plan(response)
         except ValueError as first:
             stricter = (
                 prompt
@@ -29,10 +32,32 @@ class PlannerAgent:
             )
             response2 = await self.client.complete(stricter, system=PLANNER_SYSTEM, model=model)
             try:
-                return parse_plan(response2)
+                plan = parse_plan(response2)
             except ValueError as second:
                 raw = response2 if isinstance(response2, str) else str(response2)
                 raise ValueError(
                     "Planner output could not be parsed. "
                     f"attempt 1: {first}. attempt 2: {second}. Response: {raw[:500]}"
                 ) from second
+
+        self._validate_plan(plan)
+        return plan
+
+    @staticmethod
+    def _validate_plan(plan: Plan) -> None:
+        """Reject plans with duplicate IDs or dependencies that reference unknown tasks."""
+        ids = {t.id for t in plan.tasks}
+        if len(ids) != len(plan.tasks):
+            seen: set[str] = set()
+            dupes: list[str] = []
+            for t in plan.tasks:
+                if t.id in seen:
+                    dupes.append(t.id)
+                seen.add(t.id)
+            raise ValueError(f"plan contains duplicate task IDs: {sorted(set(dupes))}")
+        for t in plan.tasks:
+            for dep in t.dependencies:
+                if dep not in ids:
+                    raise ValueError(
+                        f"task {t.id} depends on unknown task {dep!r}"
+                    )

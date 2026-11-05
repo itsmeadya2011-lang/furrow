@@ -702,6 +702,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=POLL_INTERVAL)
             except asyncio.TimeoutError:
+                if run_task.done():
+                    break
                 continue
             await websocket.send_json(event.to_dict())
         if run_task is None:  # pragma: no cover - defensive
