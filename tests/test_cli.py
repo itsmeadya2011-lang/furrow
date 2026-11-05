@@ -603,3 +603,46 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_clear_without_state(runner: CliRunner, tmp_path: Path) -> None:
+    """Clearing a workspace with no state reports nothing to delete."""
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path), "--yes"])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found" in result.output
+
+
+def test_clear_with_state_and_yes_flag(runner: CliRunner, tmp_path: Path) -> None:
+    """``--yes`` skips the confirmation and deletes the state file."""
+    _write_state(tmp_path)
+    assert StateStore(tmp_path / ".furrow" / "state.json").exists()
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path), "--yes"])
+
+    assert result.exit_code == 0
+    assert "Cleared run state" in result.output
+    assert not StateStore(tmp_path / ".furrow" / "state.json").exists()
+
+
+def test_clear_with_state_and_confirm(runner: CliRunner, tmp_path: Path) -> None:
+    """Confirming the interactive prompt deletes the state file."""
+    _write_state(tmp_path)
+    assert StateStore(tmp_path / ".furrow" / "state.json").exists()
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)], input="y\n")
+
+    assert result.exit_code == 0
+    assert "Cleared run state" in result.output
+    assert not StateStore(tmp_path / ".furrow" / "state.json").exists()
+
+
+def test_clear_with_state_and_abort(runner: CliRunner, tmp_path: Path) -> None:
+    """Declining the interactive prompt keeps the state file."""
+    _write_state(tmp_path)
+    assert StateStore(tmp_path / ".furrow" / "state.json").exists()
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)], input="n\n")
+
+    assert result.exit_code != 0
+    assert StateStore(tmp_path / ".furrow" / "state.json").exists()

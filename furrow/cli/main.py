@@ -228,6 +228,29 @@ def status(workspace: Path | None) -> None:
     default=None,
     help=WORKSPACE_HELP,
 )
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def clear(workspace: Path | None, yes: bool) -> None:
+    """Delete the persisted Furrow run state for a workspace."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    if not yes:
+        click.confirm(
+            f"Delete the persisted run state at {store.path}?", abort=True
+        )
+    store.clear()
+    click.echo(f"Cleared run state at {store.path}.")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 def resume(workspace: Path | None, max_cycles: int | None) -> None:
     """Resume the persisted Furrow run."""
