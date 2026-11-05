@@ -152,6 +152,27 @@ def parse_test_result(text: str) -> TestResult:
         s = strip_code_fences(text) if isinstance(text, str) else str(text)
         lower = s.lower()
 
+        # Zero-count filtering patterns (shared with the failure-line filter
+        # below so that "5 passed, 0 failed" and "FAILED (errors=0)" are not
+        # read as failures).
+        zero_count_re = re.compile(
+            r"\b(?:0|no|none|zero)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
+            r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\b\s*[:=]?\s*(?:0|none|zero)\b"
+            r"(?=\s*[,;)]|\s*$)",
+            re.IGNORECASE,
+        )
+        all_zero_summary_re = re.compile(
+            r"\bfail(?:ed|ure|ures)?\b\s*\(\s*"
+            r"(?:\w+\s*[:=]\s*(?:0|none|zero)\s*[,;]?\s*)*\)",
+            re.IGNORECASE,
+        )
+
+        def _strip_zero_phrases(text: str) -> str:
+            """Remove zero-count phrases so surviving keywords are real failures."""
+            remainder = all_zero_summary_re.sub(" ", text)
+            remainder = zero_count_re.sub(" ", remainder)
+            return remainder
+
         passed = True
         m = re.search(r'"passed"\s*:\s*(true|false)', lower)
         if m:
@@ -171,9 +192,12 @@ def parse_test_result(text: str) -> TestResult:
                 if m_success:
                     passed = True
                 else:
+                    # Filter out zero-count / all-zero summary blocks before
+                    # deciding: "FAILED (failures=0, errors=0)" is a green run.
+                    filtered = _strip_zero_phrases(lower)
                     m_fail = re.search(
                         r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-                        lower,
+                        filtered,
                     )
                     passed = not m_fail
 
@@ -183,13 +207,27 @@ def parse_test_result(text: str) -> TestResult:
             r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
             re.IGNORECASE,
         )
+
+        def _looks_like_failure(line: str) -> bool:
+            text = line.strip()
+            if not text:
+                return False
+            if not any(k in text.lower() for k in (
+                "fail", "error", "traceback", "assertion"
+            )):
+                return False
+            remainder = _strip_zero_phrases(text)
+            return any(k in remainder.lower() for k in (
+                "fail", "error", "traceback", "assertion"
+            ))
+
         failures = []
         seen = set()
         for line in s.splitlines():
             line_stripped = line.strip()
             if not line_stripped:
                 continue
-            if failure_words.search(line_stripped):
+            if failure_words.search(line_stripped) and _looks_like_failure(line_stripped):
                 if line_stripped not in seen:
                     seen.add(line_stripped)
                     failures.append(line_stripped)

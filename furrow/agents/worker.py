@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 from pathlib import Path
 from typing import Any
@@ -474,16 +475,30 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+                # On non-POSIX platforms prefer a POSIX shell (sh) so that
+                # pipes, redirects and shell chaining work the same as on
+                # POSIX. Fall back to a direct exec of the first token only
+                # when no shell is available.
+                sh_path = shutil.which("sh") or shutil.which("bash")
+                if sh_path:
+                    proc = await asyncio.create_subprocess_exec(
+                        sh_path, "-c", command,
+                        cwd=str(self.workspace),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        **spawn_kwargs,
+                    )
+                else:
+                    parts = shlex.split(command)
+                    if not parts:
+                        return "error: empty command"
+                    proc = await asyncio.create_subprocess_exec(
+                        *parts,
+                        cwd=str(self.workspace),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        **spawn_kwargs,
+                    )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:
@@ -519,3 +534,5 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+        with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+            await asyncio.wait_for(proc.wait(), timeout=5.0)

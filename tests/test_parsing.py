@@ -108,3 +108,58 @@ def test_parse_test_result_heuristic_assertion_error():
 def test_parse_test_result_never_raises_on_empty_string():
     r = parsing.parse_test_result("")
     assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_zero_count_lines_not_reported_as_failures():
+    """Zero-count summary lines must not appear in the failures list."""
+    text = "5 passed, 0 failed, 0 errors"
+    r = parsing.parse_test_result(text)
+    assert r.passed is True
+    assert r.failures == []
+
+
+def test_parse_test_result_failed_with_zero_counter_not_a_failure():
+    text = "FAILED (failures=0, errors=0)"
+    r = parsing.parse_test_result(text)
+    assert r.passed is True
+    assert r.failures == []
+
+
+def test_parse_test_result_no_failures_phrase():
+    r = parsing.parse_test_result("no failures detected")
+    assert r.passed is True
+    assert r.failures == []
+
+
+def test_parse_test_result_real_failures_collected():
+    text = (
+        "FAILED tests/test_x.py::test_a - assertion error\n"
+        "FAILED tests/test_y.py::test_b - timeout\n"
+        "1 failed, 2 passed"
+    )
+    r = parsing.parse_test_result(text)
+    assert r.passed is False
+    assert len(r.failures) >= 2
+
+
+def test_parse_test_result_failure_cap_at_ten():
+    lines = "\n".join(f"FAILED tests/test_{i}.py::test_{i} - error" for i in range(15))
+    r = parsing.parse_test_result(lines)
+    assert len(r.failures) <= 10
+
+
+def test_parse_test_result_none_input():
+    r = parsing.parse_test_result(None)  # type: ignore[arg-type]
+    assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_non_string_input():
+    r = parsing.parse_test_result(12345)  # type: ignore[arg-type]
+    assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_code_fenced_json():
+    text = '```json\n{"passed": false, "summary": "x", "failures": ["a", "b"]}\n```'
+    r = parsing.parse_test_result(text)
+    assert r.passed is False
+    assert r.failures == ["a", "b"]

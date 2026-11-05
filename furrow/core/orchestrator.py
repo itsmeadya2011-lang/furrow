@@ -79,6 +79,14 @@ class Orchestrator:
                     self._tests_run = int(getattr(st, "tests_run", 0) or 0)
                 except Exception:
                     self._tests_run = 0
+                try:
+                    self._last_test_passed = bool(getattr(st, "last_passed", None))
+                except Exception:
+                    self._last_test_passed = None
+                try:
+                    self._tests_skipped = bool(getattr(st, "last_skipped", False))
+                except Exception:
+                    self._tests_skipped = False
             else:
                 self._resume_state_missing = True
 
@@ -357,12 +365,8 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending / running / skipped: retry-eligible, reset to pending
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies

@@ -960,6 +960,110 @@ async def test_cancelled_error_propagates_out_of_run(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_resume_restores_last_test_passed_and_tests_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False, skipped=False)
+    await orch.run()
+    # The persisted state should carry the last test outcome.
+    st = store.load()
+    assert st.last_passed is False
+    assert st.last_skipped is False
+    # A resumed run must restore both fields so that RunResult.passed is
+    # correct even if the resumed run stops immediately.
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2._last_test_passed is False
+    assert orch2._tests_skipped is False
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_last_test_passed_true_when_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=True)
+    await orch.run()
+    st = store.load()
+    assert st.last_passed is True
+    assert st.last_skipped is True
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2._last_test_passed is True
+    assert orch2._tests_skipped is True
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_keeps_blocked_task_blocked(tmp_path, monkeypatch):
+    """A blocked task must remain blocked across cycles so its dependents
+    stay blocked and the dependency outcome is not lost."""
+    calls = []
+
+    class FailingWorker:
+        def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+            self.task = task
+
+        async def run(self):
+            calls.append(self.task.id)
+            # t1 always fails, so t2 (which depends on t1) stays blocked.
+            return WorkerResult(
+                summary="fail", success=False, files_changed=[], error="boom"
+            )
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FailingWorker)
+    settings = make_settings(tmp_path, max_cycles=2, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    t1 = TaskModel(id="t1", description="one")
+    t2 = TaskModel(id="t2", description="two", dependencies=["t1"])
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    # t2 was blocked because t1 failed with an exhausted retry budget.
+    t2_state = next(t for t in orch.tasks if t.id == "t2")
+    assert t2_state.status == "blocked"
+    # Simulate a second cycle: the planner re-plans the same tasks.
+    orch2 = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch2.planner = FakePlanner(tasks=[t1, t2])
+    orch2.tester = FakeTester(passed=False)
+    # Manually invoke merge to verify blocked stays blocked.
+    plan = await orch2.planner.plan("g")
+    orch2.tasks = list(orch.tasks)
+    orch2._merge_plan(plan)
+    merged_t2 = next(t for t in orch2.tasks if t.id == "t2")
+    assert merged_t2.status == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_pending_running_skipped_resets_to_pending(tmp_path, monkeypatch):
+    """Tasks in pending/running/skipped states are retry-eligible and reset
+    to pending so they can be re-attempted in the next cycle."""
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    # Seed tasks with non-terminal statuses.
+    orch.tasks = [
+        TaskModel(id="t1", description="one", status="pending", attempts=0),
+        TaskModel(id="t2", description="two", status="running", attempts=1),
+        TaskModel(id="t3", description="three", status="skipped", attempts=0),
+    ]
+    plan = Plan(
+        tasks=[
+            TaskModel(id="t1", description="one"),
+            TaskModel(id="t2", description="two"),
+            TaskModel(id="t3", description="three"),
+        ],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    for t in orch.tasks:
+        assert t.status == "pending", f"task {t.id} should be pending, got {t.status}"
+
+
+@pytest.mark.asyncio
 async def test_usage_cost_carried(tmp_path, monkeypatch):
     from furrow.config import Usage
 
