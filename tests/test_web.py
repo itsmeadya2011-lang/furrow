@@ -502,6 +502,32 @@ def test_index_script_knows_every_status_and_falls_back_to_unknown(
     assert "return 'unknown';" in script, "statusClass() has no unknown fallback"
 
 
+def test_index_script_renders_cost_estimate_from_usage_payload(
+    client: TestClient,
+) -> None:
+    """The status header shows the estimated USD cost from ``usage.cost_usd``.
+
+    The cost is an estimate and ``0.0`` may mean unknown/unpriced, so the
+    rendering must format it with six decimals and never drop the field.
+    """
+    script = _inline_script(client)
+
+    assert "cost_usd" in script, "the script never reads usage.cost_usd"
+    assert re.search(r"Number\(usage\.cost_usd\)", script), (
+        "the script does not coerce usage.cost_usd to a number"
+    )
+    assert re.search(r"\bcost\.toFixed\(6\)", script), (
+        "the script does not format the cost with six decimals"
+    )
+    assert "est. $" in script, "the script does not display the cost estimate"
+
+    usage_text = re.search(r"usageEl\.textContent\s*=\s*(.+?);", script, re.DOTALL)
+    assert usage_text is not None, "the script never writes the usage element"
+    assert "calls" in usage_text.group(1)
+    assert "tokens" in usage_text.group(1)
+    assert "cost" in usage_text.group(1)
+
+
 @pytest.fixture
 def recording_orchestrator(
     monkeypatch: pytest.MonkeyPatch,

@@ -351,7 +351,7 @@ def test_summary_prints_usage_when_result_carries_usage(
         tasks_completed=1,
         summary="done",
         stopped_reason="goal complete",
-        usage=Usage(input_tokens=3900, output_tokens=421, calls=12),
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.123456),
     )
 
     output = runner.invoke(main, ["start", "build a thing"]).output
@@ -361,6 +361,7 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "4321 tokens" in output
     assert "in 3900" in output
     assert "out 421" in output
+    assert "est. $0.123456" in output
 
 
 def test_summary_skips_usage_line_when_zero_calls(
@@ -380,6 +381,25 @@ def test_summary_skips_usage_line_when_zero_calls(
     output = runner.invoke(main, ["start", "build a thing"]).output
 
     assert "LLM usage" not in output
+
+
+def test_summary_prints_zero_cost_as_estimate(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """An unknown/unpriced model still displays a cost estimate of $0.000000."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=100, output_tokens=50, calls=3, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "est. $0.000000" in output
 
 
 def test_summary_prints_files_changed_when_present(
@@ -506,7 +526,7 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
         goal="ship it",
         original_goal="ship it",
         cycles=2,
-        usage=Usage(input_tokens=3900, output_tokens=421, calls=12),
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.123456),
         tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
     )
     StateStore(tmp_path / ".furrow" / "state.json").save(state)
@@ -518,6 +538,7 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
     assert "LLM usage:" in result.output
     assert "12 calls" in result.output
     assert "4321 tokens" in result.output
+    assert "est. $0.123456" in result.output
 
 
 class RecordingClient:
