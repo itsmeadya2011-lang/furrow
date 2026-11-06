@@ -84,7 +84,13 @@ WORKER_TOOLS: list[dict] = [
         "description": "run a shell command in the workspace and return its output.",
         "parameters": {
             "type": "object",
-            "properties": {"command": {"type": "string"}},
+            "properties": {
+                "command": {"type": "string"},
+                "cwd": {
+                    "type": "string",
+                    "description": "directory (relative to the workspace) to run the command in, defaults to the workspace root",
+                },
+            },
             "required": ["command"],
         },
     },

@@ -379,7 +379,10 @@ class WorkerAgent:
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
         if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
+            return await self._run_command(
+                str(args.get("command", "")),
+                str(args.get("cwd", ".")) if args.get("cwd") is not None else ".",
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -444,14 +447,19 @@ class WorkerAgent:
                 rels.append(str(e))
         return "\n".join(rels)
 
-    async def _run_command(self, command: str) -> str:
+    async def _run_command(self, command: str, cwd: str = ".") -> str:
         if not command.strip():
             return "error: empty command"
+        # Resolve the working directory inside the workspace so a worker cannot
+        # escape the sandbox by specifying an absolute or traversal path.
+        resolved_cwd = resolve_in_workspace(self.workspace, cwd)
+        if resolved_cwd is None:
+            return "error: cwd escapes workspace"
         # The hardened check subsumes the legacy pattern list: it normalizes
         # the command, checks every segment against DENIED_COMMANDS and
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
-        if is_command_denied(command, self.workspace):
+        if is_command_denied(command, resolved_cwd):
             return "error: command denied"
         try:
             shlex.split(command)
@@ -468,7 +476,7 @@ class WorkerAgent:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
                     "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
+                    cwd=str(resolved_cwd),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
@@ -479,7 +487,7 @@ class WorkerAgent:
                     return "error: empty command"
                 proc = await asyncio.create_subprocess_exec(
                     *parts,
-                    cwd=str(self.workspace),
+                    cwd=str(resolved_cwd),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
