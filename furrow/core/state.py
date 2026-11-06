@@ -134,6 +134,19 @@ class StateStore:
                 tmp.flush()
                 os.fsync(tmp.fileno())
             os.replace(tmp_name, self.path)
+            # Best-effort directory fsync: makes the rename durable on filesystems
+            # that require it. Not all platforms/filesystems support this.
+            try:
+                dir_fd = os.open(parent, os.O_RDONLY)
+            except OSError:
+                dir_fd = None
+            if dir_fd is not None:
+                try:
+                    os.fsync(dir_fd)
+                except OSError:
+                    pass
+                finally:
+                    os.close(dir_fd)
             tmp_name = None
         finally:
             if tmp_name is not None:

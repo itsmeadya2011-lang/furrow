@@ -371,11 +371,40 @@ class TesterAgent:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
+                    # Best-effort: capture any buffered output before killing the process
+                    # group. Stream internals are not public and test doubles may omit
+                    # streams, so every access is defensive.
+                    partial_stdout = b""
+                    partial_stderr = b""
+                    for attr, dest in (("stdout", "stdout"), ("stderr", "stderr")):
+                        stream = getattr(proc, attr, None)
+                        if stream is None:
+                            continue
+                        try:
+                            buf = getattr(stream, "_buffer", None)
+                            if isinstance(buf, (bytearray, bytes)) and buf:
+                                data = bytes(buf)
+                            elif isinstance(buf, (list, tuple)) and buf:
+                                data = b"".join(bytes(chunk) for chunk in buf if chunk)
+                            else:
+                                data = b""
+                        except Exception:
+                            data = b""
+                        if dest == "stdout":
+                            partial_stdout = data
+                        else:
+                            partial_stderr = data
                     await self._kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
-                    stdout = b""
-                    stderr = f"Test command timed out after {timeout:g}s.".encode()
+                    stdout = partial_stdout
+                    note = f"Test command timed out after {timeout:g}s."
+                    if partial_stderr:
+                        stderr = partial_stderr + b"\n" + note.encode()
+                    elif partial_stdout:
+                        stderr = note.encode()
+                    else:
+                        stderr = note.encode()
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
 

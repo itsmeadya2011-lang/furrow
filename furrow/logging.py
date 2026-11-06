@@ -20,12 +20,14 @@ def _configure_stdlib_fallback(level: str = "INFO") -> None:
     )
 
 
+_structlog: Any = None
 try:
-    import structlog
-    _STRUCTLOG_AVAILABLE = True
+    import structlog as _structlog
 except ImportError:
-    structlog = None  # type: ignore[assignment]
-    _STRUCTLOG_AVAILABLE = False
+    _structlog = None
+
+structlog: Any = _structlog
+_STRUCTLOG_AVAILABLE = _structlog is not None
 
 
 def configure_logging(level: str = "INFO") -> None:
