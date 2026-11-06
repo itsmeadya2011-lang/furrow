@@ -363,6 +363,56 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "out 421" in output
 
 
+def test_summary_prints_estimated_cost_when_known(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary appends estimated cost when usage.cost_usd is positive."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.123456),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "est. $0.123456" in output
+
+
+def test_status_prints_estimated_cost_when_known(runner: CliRunner, tmp_path: Path) -> None:
+    """The status command appends estimated cost when persisted usage has cost."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.123456),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "LLM usage:" in result.output
+    assert "est. $0.123456" in result.output
+
+
+def test_web_rejects_port_out_of_range(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["web", "--port", "0"])
+
+    assert result.exit_code != 0
+    assert "port" in result.output.lower() or "range" in result.output.lower()
+
+
+def test_web_rejects_port_above_max(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["web", "--port", "65536"])
+
+    assert result.exit_code != 0
+
+
 def test_summary_skips_usage_line_when_zero_calls(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
