@@ -547,9 +547,13 @@ async def test_run_orchestrator_releases_the_client_when_the_run_is_cancelled() 
     assert orchestrator.client.closed is True
 
 
-def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:
+def test_index_usage_placeholder_includes_cost(client: TestClient) -> None:
+    """The status header usage placeholder includes an estimated USD cost."""
     html = client.get("/").text
-    assert ".status-skipped" in html
+    assert "$0.000000" in html
+    script = _inline_script(client)
+    assert "cost_usd" in script
+    assert "toFixed(6)" in script
 
 
 def test_start_request_rejects_negative_max_cycles(client: TestClient) -> None:

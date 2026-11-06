@@ -54,7 +54,7 @@ furrow status
 furrow status --workspace /path/to/project
 ```
 
-The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
+The status command shows the original goal, current goal, cycle count, last update time, token/cost usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage (tokens and estimated USD cost when available), files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
 
 ### `furrow resume`
 Continue the persisted run.
@@ -104,6 +104,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_MODEL_PRICING` | `{}` | JSON object overriding per-model USD pricing (`input_per_million`, `output_per_million`) |
 
 A `.env` file is read automatically via pydantic-settings.
 
@@ -118,9 +119,9 @@ The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0
 
 The loop is fail-safe: a planner error, an execution error, a tester error or a state-save error no longer crashes the run. A planner, execution or tester error emits an ERROR event, sets a stopped reason (`planner failed: ...`, `execute failed: ...`, `tester failed: ...`) and ends the loop cleanly with a normal run result; a state-save error emits an ERROR event with the path that could not be written and the run keeps going. Cancellation (`asyncio.CancelledError`) still propagates. An exception raised while handling a worker's result is converted into a task failure that consumes one attempt — it used to be swallowed by `asyncio.gather(..., return_exceptions=True)` — so a task is never left in an inconsistent state.
 
-## LLM token accounting
+## LLM token and cost accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens, call counts, and an estimated USD cost for every completion, and the orchestrator accumulates them per cycle and per run. Usage (tokens and cost) is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Cost estimation uses a built-in per-model price snapshot and can be overridden with `FURROW_MODEL_PRICING` (a JSON object mapping model IDs to `input_per_million`/`output_per_million` USD prices). Currency estimates are approximate and depend on provider pricing.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
