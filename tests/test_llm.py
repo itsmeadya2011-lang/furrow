@@ -868,3 +868,26 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+def test_list_files_returns_sorted_output(tmp_path):
+    """list_files returns files in sorted order for deterministic output."""
+    # Create files in non-sorted order
+    (tmp_path / "c.txt").write_text("c")
+    (tmp_path / "a.txt").write_text("a")
+    (tmp_path / "b.txt").write_text("b")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "z.txt").write_text("z")
+    (tmp_path / "sub" / "x.txt").write_text("x")
+
+    client = LLMClient()
+    result = client.list_files(tmp_path)
+
+    assert result == ["a.txt", "b.txt", "c.txt", "sub/x.txt", "sub/z.txt"]
+
+
+def test_list_files_missing_directory_returns_empty(tmp_path):
+    """list_files returns an empty list when the directory does not exist."""
+    client = LLMClient()
+    result = client.list_files(tmp_path / "nonexistent")
+    assert result == []

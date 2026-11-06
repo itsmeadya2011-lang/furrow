@@ -496,4 +496,4 @@ class LLMClient:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        return sorted(str(f.relative_to(p)) for f in p.rglob("*") if f.is_file())

@@ -977,3 +977,43 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_resets_skipped_task_to_pending(tmp_path, monkeypatch):
+    """A skipped task that is re-planned should be reset to pending and re-run."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "skipped"
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_resets_running_task_to_pending(tmp_path, monkeypatch):
+    """A running task that is re-planned should be reset to pending."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "running"
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"

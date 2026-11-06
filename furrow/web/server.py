@@ -74,6 +74,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -139,6 +140,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -207,6 +209,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    updateStopButton(running);
   }
 
   function renderTasks(tasks) {
@@ -404,6 +407,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
     connect({ goal: goalEl.value, resume: true });
   };
 
+  const stopBtn = document.getElementById('stop');
+
+  async function stopRun() {
+    try {
+      const res = await fetch('/api/stop', { method: 'POST' });
+      const body = await res.json();
+      if (body.stopped) {
+        append('> run stopped');
+      } else {
+        append('! could not stop run: ' + (body.error || 'unknown'));
+      }
+    } catch (err) {
+      append('! could not stop run');
+    }
+  }
+
+  stopBtn.onclick = function () {
+    stopRun();
+  };
+
+  function updateStopButton(running) {
+    stopBtn.disabled = !running;
+  }
+
   loadState();
   loadStatus();
 </script>
@@ -593,6 +620,20 @@ async def api_status() -> dict[str, Any]:
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
     }
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running run, if any."""
+    if not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run is in progress"},
+        )
+    task = _CURRENT.get("task")
+    if task is not None and not task.done():
+        _cancel_run(task)
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.post("/api/start")

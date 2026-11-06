@@ -592,3 +592,89 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_api_stop_without_running_run_returns_409(client: TestClient) -> None:
+    """Stopping a run that is not running returns 409."""
+    response = client.post("/api/stop")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["stopped"] is False
+    assert "no run is in progress" in body["error"]
+
+
+def test_api_stop_cancels_running_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The stop endpoint cancels the currently running run."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+
+    # Start a run via the API
+    start_response = client.post("/api/start", json={"goal": "x"})
+    assert start_response.status_code == 200
+
+    # Wait for the run to actually start
+    assert _wait_until(lambda: server._CURRENT.get("running") is True), "the run never started"
+
+    # Stop it
+    stop_response = client.post("/api/stop")
+    assert stop_response.status_code == 200
+    body = stop_response.json()
+    assert body["stopped"] is True
+
+    # The run should be cancelled
+    run_task = server._CURRENT.get("task")
+    assert run_task is not None
+    assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"
+
+
+def test_api_stop_does_not_affect_other_running_runs(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stopping a run only affects the run that owns the registry."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+
+    # Start a run
+    client.post("/api/start", json={"goal": "x"})
+    assert _wait_until(lambda: server._CURRENT.get("running") is True), "the run never started"
+
+    # Simulate another run owning the registry
+    server._CURRENT["task"] = None
+    server._CURRENT["running"] = True
+
+    # Stop should not clear the flag since we don't own the task
+    stop_response = client.post("/api/stop")
+    assert stop_response.status_code == 200
+    assert server._CURRENT["running"] is True, "the running flag was cleared"
+
+
+def test_index_contains_stop_button(client: TestClient) -> None:
+    """The served page exposes a Stop button hook."""
+    html = client.get("/").text
+    assert 'id="stop"' in html
+    assert ">Stop</button>" in html
+
+
+def test_index_stop_button_is_disabled_by_default(client: TestClient) -> None:
+    """The Stop button starts disabled and is enabled only while a run is active."""
+    html = client.get("/").text
+    assert "stopBtn.disabled = !running" in html or "stopBtn.disabled" in html
+
+
+def test_index_script_has_stop_handler(client: TestClient) -> None:
+    """The inline script defines a stopRun function and wires up the Stop button."""
+    script = _inline_script(client)
+    assert "stopRun" in script, "the script has no stopRun function"
+    assert "stopBtn.onclick" in script, "the script does not wire up the Stop button"
+    assert "fetch('/api/stop'" in script or "fetch(\"/api/stop\"" in script, (
+        "the script does not call the stop endpoint"
+    )
+
+
+def test_index_script_declares_stop_button_element(client: TestClient) -> None:
+    """The inline script declares the stop button element reference."""
+    script = _inline_script(client)
+    assert "stopBtn" in script, "the script does not reference stopBtn"
+    declared = set(re.findall(r"\bconst\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=", script))
+    assert "stopBtn" in declared, "stopBtn is not declared as a const"
