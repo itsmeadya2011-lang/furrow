@@ -888,3 +888,65 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+def test_is_command_denied_tee_outside_workspace(tmp_path, tmp_path_factory, monkeypatch):
+    """``echo hacked | tee /etc/passwd`` must be denied.
+
+    ``tee`` is not a shell redirection, so the old redirect check missed it.
+    The pipeline-target check inspects every argument of a known writer
+    program and denies the segment when any argument escapes the workspace.
+    """
+    fake_home = tmp_path_factory.mktemp("fake_home")
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    assert is_command_denied("echo hacked | tee /etc/passwd", tmp_path) is True
+    assert is_command_denied("echo hi | tee /etc/hosts", tmp_path) is True
+    assert is_command_denied("cat /etc/passwd | tee /tmp/out", tmp_path) is True
+
+
+def test_is_command_denied_tee_inside_workspace(tmp_path):
+    """``tee`` writing inside the workspace is allowed."""
+    assert is_command_denied("echo hi | tee out.txt", tmp_path) is False
+
+
+def test_is_command_denied_input_redirection(tmp_path):
+    """Input redirection ``<`` outside the workspace is denied."""
+    assert is_command_denied("cat < /etc/passwd", tmp_path) is True
+    assert is_command_denied("cat < out.txt", tmp_path) is False
+
+
+def test_is_command_denied_io_redirections(tmp_path):
+    """``>&`` and ``<>`` redirections escaping the workspace are denied."""
+    assert is_command_denied("echo hi >& /etc/passwd", tmp_path) is True
+    assert is_command_denied("echo hi <> /etc/passwd", tmp_path) is True
+
+
+def test_is_command_denied_pipe_target_with_dd(tmp_path):
+    """``dd`` in a pipeline writing outside the workspace is denied."""
+    assert is_command_denied("cat /dev/zero | dd of=/dev/sda", tmp_path) is True
+
+
+def test_is_command_denied_allows_safe_pipeline(tmp_path):
+    """A pipeline whose target writes inside the workspace is allowed."""
+    assert is_command_denied("echo hi | cat > out.txt", tmp_path) is False
+    assert is_command_denied("ls | grep foo", tmp_path) is False
+
+
+@pytest.mark.asyncio
+async def test_kill_process_tree_is_shared(tmp_path):
+    """The worker and the tester share the same ``kill_process_tree`` helper."""
+    from furrow.core.process import kill_process_tree
+
+    class FakeProc:
+        pid = 9999
+
+        async def wait(self):
+            return -9
+
+        def kill(self):
+            return None
+
+    # Should not raise even when the process group is unavailable.
+    await kill_process_tree(FakeProc(), new_session=False)

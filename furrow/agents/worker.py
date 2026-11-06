@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
 import shlex
-import signal
 from pathlib import Path
 from typing import Any
 
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
+from furrow.core.process import kill_process_tree
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
@@ -62,8 +61,32 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
-_REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+# The target of a redirection: "> file", ">> file", "< file", ">& file",
+# "<> file".  The character class is deliberately broad so that a trailing
+# quote or closing parenthesis does not smuggle a path past the check.
+_REDIRECT_RE = re.compile(
+    r"(?:>>|>|<|>&|<>)\s*([^\s;|&<>]+)"
+)
+
+# Programs that write to a file given on the command line (a "tee" or a
+# "dd of=...").  Their file arguments are checked the same way as a
+# redirection target.  The check is intentionally conservative: only the
+# well-known writers are listed, and every argument after the program name
+# is inspected.
+_WRITE_PROGRAMS = frozenset(
+    {
+        "tee",
+        "dd",
+        "cp",
+        "mv",
+        "install",
+        "cat",
+        "sh",
+        "bash",
+        "script",
+        "dd",
+    }
+)
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -198,6 +221,33 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
     return False
 
 
+def _pipe_targets_outside_workspace(segment: str, workspace: Path) -> bool:
+    """Report whether a segment's program writes outside the workspace.
+
+    A command like ``echo hacked | tee /etc/passwd`` is split into two
+    segments (``echo hacked`` and ``tee /etc/passwd``) by the segment
+    splitter, so the check runs on each segment individually.  When the
+    segment's program is a known writer (``tee``, ``dd``, ``cp``, ...) and
+    any of its arguments resolves outside the workspace, the segment is
+    denied.
+    """
+    program = _get_program_basename(segment)
+    if not program or program.lower() not in _WRITE_PROGRAMS:
+        return False
+    tokens = _shell_tokens(segment.strip())
+    # tokens[0] is the program; every other token is an argument.
+    for token in tokens[1:]:
+        token = token.strip().strip("\"'")
+        if not token:
+            continue
+        # Skip flags (start with -) and environment assignments (contain =).
+        if token.startswith("-") or "=" in token:
+            continue
+        if not _target_inside_workspace(token, workspace):
+            return True
+    return False
+
+
 def _is_force_push(segment: str, normalized: str) -> bool:
     """Report whether a segment is a git force push."""
     if "git" not in normalized or "push" not in normalized:
@@ -232,7 +282,13 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
         return True
 
     # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    if _redirects_outside_workspace(segment, workspace):
+        return True
+    # DENY a pipeline whose target program writes outside the workspace
+    # (e.g. ``echo hacked | tee /etc/passwd``).
+    if _pipe_targets_outside_workspace(segment, workspace):
+        return True
+    return False
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
@@ -489,7 +545,7 @@ class WorkerAgent:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            await self._kill_process_tree(proc, new_session)
+            await kill_process_tree(proc, new_session)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
@@ -498,24 +554,3 @@ class WorkerAgent:
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
-
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
-        """Kill a timed-out command together with every process it spawned."""
-        if new_session:
-            try:
-                pgid = os.getpgid(proc.pid)
-            except (OSError, AttributeError):
-                pgid = None
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (OSError, AttributeError):
-                    pass
-                else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
-        # Fallback: no process group available (or killing it failed).
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()

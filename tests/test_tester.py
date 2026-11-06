@@ -481,3 +481,60 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
     assert head_start not in prompt
+
+
+def test_tester_command_guard_denies_dangerous_runner(tmp_path, monkeypatch):
+    """A detected test command that violates the security policy is denied.
+
+    The tester builds its command from project files (package.json scripts,
+    Cargo.toml, ...), so a malicious manifest could otherwise run an
+    arbitrary command.  The detected command is routed through the same
+    policy the worker uses.
+    """
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        raise AssertionError("the test command must never be executed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    # Build a tester whose detected command would be dangerous.  We do this
+    # by patching ``detect_command`` to return a denied command.
+    agent = TesterAgent(
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    async def fake_detect():
+        return ["sh", "-c", "rm -rf /"]
+
+    monkeypatch.setattr(agent, "detect_command", fake_detect)
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is False
+    assert "denied" in res.summary.lower()
+    assert res.failures
+
+
+def test_node_runner_prefers_pnpm(tmp_path):
+    """``_node_runner`` returns pnpm when a pnpm-lock.yaml exists."""
+    from furrow.agents.tester import _node_runner
+
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    assert _node_runner(tmp_path) == ["pnpm", "test", "--silent"]
+
+
+def test_node_runner_prefers_yarn(tmp_path):
+    """``_node_runner`` returns yarn when only a yarn.lock exists."""
+    from furrow.agents.tester import _node_runner
+
+    (tmp_path / "yarn-lock.yaml").write_text("")
+    assert _node_runner(tmp_path) == ["yarn", "test", "--silent"]
+
+
+def test_node_runner_defaults_to_npm(tmp_path):
+    """``_node_runner`` returns npm when no lockfile is present."""
+    from furrow.agents.tester import _node_runner
+
+    assert _node_runner(tmp_path) == ["npm", "test", "--silent"]

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
-import signal
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
 from furrow.agents.parsing import parse_test_result
 from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
+from furrow.agents.worker import is_command_denied
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
+from furrow.core.process import kill_process_tree
 from furrow.llm import LLMClient
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
@@ -173,17 +174,7 @@ class TesterAgent:
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        await kill_process_tree(proc)
 
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
@@ -205,30 +196,18 @@ class TesterAgent:
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return _node_runner(self.workspace)
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return _node_runner(self.workspace)
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            return _node_runner(self.workspace)
 
         python_markers = [
             "pyproject.toml",
@@ -333,6 +312,21 @@ class TesterAgent:
                     skipped=True,
                     summary="No test runner detected for this project (tests skipped).",
                     failures=[],
+                )
+
+            # The test command is built from project files (package.json
+            # scripts, Cargo.toml, ...), so a malicious manifest could
+            # otherwise run an arbitrary command.  Route the detected
+            # command through the same policy the worker uses.
+            command_str = " ".join(shlex.quote(part) for part in cmd)
+            if is_command_denied(command_str, self.workspace):
+                return TestResult(
+                    passed=False,
+                    summary=(
+                        "The detected test command was denied by the security "
+                        f"policy: {command_str}"
+                    ),
+                    failures=[f"test command denied by security policy: {command_str}"],
                 )
 
             # The test-suite timeout is a separate concern from the LLM request
@@ -476,3 +470,16 @@ def _looks_like_failure(line: str) -> bool:
     remainder = _ALL_ZERO_SUMMARY_RE.sub(" ", text)
     remainder = _ZERO_COUNT_RE.sub(" ", remainder)
     return any(k in remainder.lower() for k in _FAILURE_KEYWORDS)
+
+
+def _node_runner(workspace: Path) -> list[str]:
+    """Return the Node.js test runner command for *workspace*.
+
+    The choice between ``pnpm``, ``yarn`` and ``npm`` is driven by the
+    presence of a lockfile; when none is present ``npm`` is the default.
+    """
+    if (workspace / "pnpm-lock.yaml").is_file():
+        return ["pnpm", "test", "--silent"]
+    if (workspace / "yarn-lock.yaml").is_file():
+        return ["yarn", "test", "--silent"]
+    return ["npm", "test", "--silent"]

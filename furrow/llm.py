@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -276,8 +277,14 @@ class LLMClient:
 
         The call is retried up to ``settings.max_retries`` attempts. Errors that
         are not retryable (see :func:`_is_retryable`) are raised immediately.
+
+        A hard timeout bounds every attempt: even when the HTTP client has its
+        own timeout, a hung SDK call (or a stuck event loop) must not hang the
+        run forever.  The timeout is ``request_timeout + 5`` seconds so the
+        HTTP-level timeout always fires first.
         """
         max_attempts = max(1, int(self.settings.max_retries))
+        hard_timeout = float(self.settings.request_timeout) + 5.0
 
         if _TENACITY_AVAILABLE:
             async for attempt_manager in AsyncRetrying(
@@ -287,17 +294,26 @@ class LLMClient:
                 reraise=True,
             ):
                 with attempt_manager:
-                    return await call()
+                    return await asyncio.wait_for(call(), timeout=hard_timeout)
+            raise RuntimeError("LLM retry loop exited unexpectedly")  # pragma: no cover
 
         last_exc: Exception | None = None
         for attempt_index in range(max_attempts):
             try:
-                return await call()
+                return await asyncio.wait_for(call(), timeout=hard_timeout)
+            except asyncio.TimeoutError as exc:
+                last_exc = exc
+                if attempt_index + 1 >= max_attempts:
+                    raise
             except Exception as exc:
                 last_exc = exc
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
-                await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
+            # Exponential backoff with jitter to avoid thundering herds when
+            # the provider is down (every client in the process retrying at
+            # the same moment).
+            base = min(20.0, float(2 ** attempt_index))
+            await asyncio.sleep(base * (0.5 + random.random()))
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
