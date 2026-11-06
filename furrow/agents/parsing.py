@@ -164,10 +164,10 @@ def parse_test_result(text: str) -> TestResult:
             elif m_true:
                 passed = True
             else:
-                m_success = re.search(
-                    r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
-                    lower,
-                )
+                    m_success = re.search(
+                        r"\b(no failures?|no errors?|0 failed|all tests passed|tests passed|success)\b",
+                        lower,
+                    )
                 if m_success:
                     passed = True
                 else:
@@ -189,7 +189,11 @@ def parse_test_result(text: str) -> TestResult:
             line_stripped = line.strip()
             if not line_stripped:
                 continue
-            if failure_words.search(line_stripped):
+            if failure_words.search(line_stripped) and not re.search(
+                r"\b(?:no|not|without)\s+(?:fail|failure|failed|error|errors|traceback|assertionerror|exception)\b",
+                line_stripped,
+                re.IGNORECASE,
+            ):
                 if line_stripped not in seen:
                     seen.add(line_stripped)
                     failures.append(line_stripped)

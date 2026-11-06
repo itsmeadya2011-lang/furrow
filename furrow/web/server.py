@@ -206,7 +206,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens, $' + cost.toFixed(4);
   }
 
   function renderTasks(tasks) {
@@ -448,7 +449,7 @@ def _run_settings(max_cycles: int | None) -> Settings:
     level ``settings`` object is never modified: a new one is built instead.
     """
     if max_cycles is None:
-        return settings
+        return settings.model_copy()
     return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
 
 

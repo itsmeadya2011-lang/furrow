@@ -27,7 +27,7 @@ _FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
 # e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",
 # "errors=0".  They describe a green run and must not be read as a failure.
 _ZERO_COUNT_RE = re.compile(
-    r"\b(?:0|no|none|zero)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
+    r"\b(?:0|no|none|zero|not|without)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
     r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\b\s*[:=]?\s*(?:0|none|zero)\b"
     r"(?=\s*[,;)]|\s*$)",
     re.IGNORECASE,
