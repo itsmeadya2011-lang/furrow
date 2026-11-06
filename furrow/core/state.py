@@ -97,12 +97,12 @@ class StateStore:
         try:
             raw = self.path.read_text(encoding="utf-8")
         except OSError as exc:
-            logger.warning("Could not read state file %s: %s", self.path, exc)
+            logger.warning(f"Could not read state file {self.path}: {exc}")
             return None
         try:
             return RunState.model_validate_json(raw)
         except (ValidationError, ValueError) as exc:
-            logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
+            logger.warning(f"Ignoring corrupt state file {self.path}: {exc}")
             return None
 
     def save(self, state: RunState) -> None:
@@ -140,7 +140,7 @@ class StateStore:
                 try:
                     os.unlink(tmp_name)
                 except OSError:  # pragma: no cover - best effort cleanup
-                    logger.warning("Could not remove temporary file %s", tmp_name)
+                    logger.warning(f"Could not remove temporary file {tmp_name}")
 
     def clear(self) -> None:
         """Delete the state file if it exists; never raise when it is already missing."""
@@ -149,4 +149,4 @@ class StateStore:
         except FileNotFoundError:
             pass
         except OSError as exc:  # pragma: no cover - best effort cleanup
-            logger.warning("Could not remove state file %s: %s", self.path, exc)
+            logger.warning(f"Could not remove state file {self.path}: {exc}")

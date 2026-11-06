@@ -851,15 +851,19 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
+
+@pytest.mark.asyncio
+async def test_list_files_runs_off_event_loop(tmp_path):
+    """Regression: list_files should not block the event loop."""
     import threading
+
+    from furrow.config import TaskModel
 
     for i in range(5):
         (tmp_path / f"f{i}.txt").write_text("x")
 
     client = FakeLLMClient([])
     settings = make_settings(tmp_path)
-    from furrow.config import TaskModel
-
     task = TaskModel(id="1", description="list")
     agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
 
@@ -869,8 +873,10 @@ async def test_run_command_stderr_newline_format(tmp_path):
     def slow_list(directory):
         seen["tid"] = threading.get_ident()
         import time
+
         time.sleep(0.1)
         from pathlib import Path as _P
+
         return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
 
     client.list_files = slow_list
