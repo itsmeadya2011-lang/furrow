@@ -174,7 +174,14 @@ class Orchestrator:
                 self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
-                                    data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
+                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
+            try:
+                self._validate_plan(plan)
+            except ValueError as e:
+                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                self._stopped_reason = f"planner failed: {e}"
+                self.cycles -= 1
+                break
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
@@ -395,6 +402,52 @@ class Orchestrator:
                 done.add(t.id)
             remaining = [t for t in remaining if t not in wave]
         return waves
+
+    def _validate_plan(self, plan: Plan) -> None:
+        """Reject plans that cannot be executed safely.
+
+        A planner is untrusted input, so its output is validated before it is
+        merged or executed:
+
+        * task ids must be unique within the plan (duplicate ids make the merge
+          ambiguous and can silently drop work);
+        * a task may not depend on itself (a self-cycle);
+        * the dependency graph must be acyclic (a cycle can never be scheduled,
+          so every task in it is blocked forever).
+
+        Raises :class:`ValueError` on the first problem found. The orchestrator
+        treats the raised error as a planner failure and ends the cycle cleanly
+        instead of corrupting run state.
+        """
+        seen: set[str] = set()
+        for t in plan.tasks:
+            if t.id in seen:
+                raise ValueError(f"plan has duplicate task id {t.id!r}")
+            seen.add(t.id)
+        ids = seen
+        for t in plan.tasks:
+            if t.id in t.dependencies:
+                raise ValueError(f"task {t.id!r} depends on itself")
+        # Cycle detection via DFS with a three-colour mark. The task index is
+        # built once so the recursive lookup is O(1).
+        by_id: dict[str, TaskModel] = {t.id: t for t in plan.tasks}
+        colour: dict[str, str] = {tid: "white" for tid in ids}
+
+        def visit(node: str, stack: list[str]) -> None:
+            colour[node] = "grey"
+            for dep in by_id[node].dependencies:
+                if dep not in ids:
+                    continue  # unknown dependency -> handled by _plan_waves
+                if colour[dep] == "grey":
+                    cycle = " -> ".join(stack + [dep, node])
+                    raise ValueError(f"dependency cycle: {cycle}")
+                if colour[dep] == "white":
+                    visit(dep, stack + [node])
+            colour[node] = "black"
+
+        for tid in ids:
+            if colour[tid] == "white":
+                visit(tid, [])
 
     async def _execute(self, plan: Plan) -> None:
         waves = self._plan_waves(plan.tasks)

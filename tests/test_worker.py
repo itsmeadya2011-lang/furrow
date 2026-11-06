@@ -888,3 +888,23 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_list_files_hides_furrow_state_dir(tmp_path):
+    """The worker must never expose the persisted run state (`.furrow/`)."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "real.py").write_text("print('hi')")
+    state_dir = tmp_path / ".furrow"
+    state_dir.mkdir()
+    (state_dir / "state.json").write_text('{"internal": true}')
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    assert "real.py" in out
+    assert "state.json" not in out
+    assert ".furrow" not in out.splitlines()

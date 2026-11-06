@@ -977,3 +977,71 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_plan_with_duplicate_task_ids_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    class DupPlanner:
+        async def plan(self, goal, context=""):
+            return Plan(
+                tasks=[TaskModel(id="1", description="a"),
+                       TaskModel(id="1", description="b")],
+                rationale="dup",
+            )
+
+    orch.planner = DupPlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    assert result.stopped_reason.startswith("planner failed")
+    assert "duplicate" in result.stopped_reason
+    events = drain(q)
+    assert any(e.type == EventType.ERROR for e in events)
+
+
+@pytest.mark.asyncio
+async def test_plan_with_self_dependency_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    class SelfPlanner:
+        async def plan(self, goal, context=""):
+            return Plan(
+                tasks=[TaskModel(id="1", description="a", dependencies=["1"])],
+                rationale="self",
+            )
+
+    orch.planner = SelfPlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.stopped_reason.startswith("planner failed")
+    assert "depends on itself" in result.stopped_reason
+
+
+@pytest.mark.asyncio
+async def test_plan_with_dependency_cycle_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    class CyclePlanner:
+        async def plan(self, goal, context=""):
+            return Plan(
+                tasks=[TaskModel(id="1", description="a", dependencies=["2"]),
+                       TaskModel(id="2", description="b", dependencies=["1"])],
+                rationale="cycle",
+            )
+
+    orch.planner = CyclePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.stopped_reason.startswith("planner failed")
+    assert "cycle" in result.stopped_reason

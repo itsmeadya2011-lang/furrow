@@ -437,9 +437,22 @@ class WorkerAgent:
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
         base = self.workspace.resolve()
+        # Never expose the persisted run state (`.furrow/`): it is internal
+        # bookkeeping, not project source, and leaking it would let a worker
+        # read or (via write_file) clobber its own orchestrator state.
+        state_dir = (base / ".furrow").resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
             try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
+                p = Path(e)
+                abs_p = p if p.is_absolute() else (resolved / p)
+                if abs_p.is_file():
+                    try:
+                        abs_p_resolved = abs_p.resolve()
+                    except OSError:
+                        abs_p_resolved = abs_p
+                    if state_dir == abs_p_resolved or state_dir in abs_p_resolved.parents:
+                        continue
+                rels.append(str(p.relative_to(base)) if p.is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
