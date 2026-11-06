@@ -240,6 +240,25 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Makefile with a test target
+        makefile = self.workspace / "Makefile"
+        if makefile.is_file():
+            try:
+                makefile_text = makefile.read_text(encoding="utf-8")
+                # Look for a test target (lines starting with "test:" at the start of a line)
+                if re.search(r"^test\s*:", makefile_text, re.MULTILINE):
+                    return ["make", "test"]
+            except OSError:
+                pass
+
+        # tox configuration
+        if (self.workspace / "tox.ini").is_file():
+            return ["tox"]
+
+        # nox configuration
+        if (self.workspace / "noxfile.py").is_file():
+            return ["nox"]
+
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():

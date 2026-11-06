@@ -84,7 +84,16 @@ WORKER_TOOLS: list[dict] = [
         "description": "run a shell command in the workspace and return its output.",
         "parameters": {
             "type": "object",
-            "properties": {"command": {"type": "string"}},
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {
+                    "type": "number",
+                    "description": (
+                        "Optional timeout in seconds. Defaults to "
+                        "the configured command_timeout (300s)."
+                    ),
+                },
+            },
             "required": ["command"],
         },
     },

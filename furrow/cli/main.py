@@ -2,6 +2,7 @@
 
 Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
+    furrow stop            stop a running Furrow process
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
     furrow web             serve the web UI
@@ -10,8 +11,11 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
+import os
+import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -106,8 +110,11 @@ def _print_state(state: RunState) -> None:
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
+            duration_s = getattr(task, "duration_s", None)
             files_changed = getattr(task, "files_changed", None) or []
             line = f"  {task.id}  {task.status}  {task.description}"
+            if duration_s is not None:
+                line += f"  ({duration_s:.2f}s)"
             if files_changed:
                 line += f"  [{', '.join(files_changed)}]"
             click.echo(line)
@@ -146,6 +153,31 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
+def _pid_path(run_settings: Settings) -> Path:
+    """Path of the PID file for a running Furrow process."""
+    return run_settings.state_path().parent / "run.pid"
+
+
+def _write_pid_file(run_settings: Settings) -> None:
+    """Record the current process PID so ``furrow stop`` can find it."""
+    path = _pid_path(run_settings)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass  # a missing PID file is not a failure
+
+
+def _remove_pid_file(run_settings: Settings) -> None:
+    """Delete the PID file when the run ends; never raise when it is already gone."""
+    try:
+        _pid_path(run_settings).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        pass
+
+
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
@@ -155,6 +187,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         state_store=store,
         resume=resume,
     )
+    _write_pid_file(run_settings)
     try:
         result = asyncio.run(_run_and_release(orchestrator))
     except KeyboardInterrupt:
@@ -163,6 +196,8 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+    finally:
+        _remove_pid_file(run_settings)
     _print_summary(result)
     skipped = bool(getattr(result, "skipped", False))
     tests_run = getattr(result, "tests_run", 0) or 0
@@ -253,6 +288,40 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def stop(workspace: Path | None) -> None:
+    """Stop a running Furrow process."""
+    run_settings = _run_settings(workspace=workspace)
+    pid_path = _pid_path(run_settings)
+    if not pid_path.is_file():
+        click.echo("No running Furrow process found.")
+        return
+    try:
+        pid = int(pid_path.read_text(encoding="utf-8").strip())
+    except (ValueError, OSError):
+        click.secho(f"Could not read PID from {pid_path}", fg="red")
+        sys.exit(1)
+        try:
+            os.kill(pid, signal.SIGINT)
+        except ProcessLookupError:
+            click.echo(f"Process {pid} is not running.")
+            with contextlib.suppress(OSError):
+                pid_path.unlink()
+            return
+    except PermissionError:
+        click.secho(f"Permission denied when signalling process {pid}.", fg="red")
+        sys.exit(1)
+    click.echo(f"Sent stop signal to Furrow process {pid}.")
+    with contextlib.suppress(OSError):
+        pid_path.unlink()
 
 
 if __name__ == "__main__":

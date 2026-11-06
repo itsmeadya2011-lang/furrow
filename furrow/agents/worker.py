@@ -379,7 +379,16 @@ class WorkerAgent:
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
         if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
+            raw_timeout = args.get("timeout")
+            cmd_timeout: float | None = None
+            if raw_timeout is not None:
+                try:
+                    cmd_timeout = float(raw_timeout)
+                except (TypeError, ValueError):
+                    cmd_timeout = None
+            return await self._run_command(
+                str(args.get("command", "")), timeout=cmd_timeout
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -444,7 +453,7 @@ class WorkerAgent:
                 rels.append(str(e))
         return "\n".join(rels)
 
-    async def _run_command(self, command: str) -> str:
+    async def _run_command(self, command: str, timeout: float | None = None) -> str:
         if not command.strip():
             return "error: empty command"
         # The hardened check subsumes the legacy pattern list: it normalizes
@@ -457,7 +466,10 @@ class WorkerAgent:
             shlex.split(command)
         except ValueError:
             return "error: could not parse command"
-        timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+        if timeout is None:
+            timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+        else:
+            timeout = float(timeout)
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
         # instead of leaking orphans. On other platforms we fall back to

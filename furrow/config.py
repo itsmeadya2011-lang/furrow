@@ -35,6 +35,7 @@ class TaskModel(BaseModel):
     attempts: int = 0
     started_at: str | None = None
     finished_at: str | None = None
+    duration_s: float | None = None
     files_changed: list[str] = Field(default_factory=list)
 
     @field_validator("status")

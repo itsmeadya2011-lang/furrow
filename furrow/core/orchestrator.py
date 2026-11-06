@@ -148,6 +148,24 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    @staticmethod
+    def _compute_duration(task: TaskModel) -> None:
+        """Populate ``task.duration_s`` from its ``started_at``/``finished_at`` pair.
+
+        Both timestamps are ISO-8601 strings written by the orchestrator; the
+        difference is expressed in seconds (float).  When either timestamp is
+        missing or cannot be parsed, ``duration_s`` is left as ``None`` rather
+        than raising -- a broken clock must never break the run loop.
+        """
+        if not task.started_at or not task.finished_at:
+            return
+        try:
+            start = datetime.fromisoformat(task.started_at)
+            end = datetime.fromisoformat(task.finished_at)
+            task.duration_s = max(0.0, (end - start).total_seconds())
+        except (ValueError, TypeError):
+            task.duration_s = None
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
@@ -431,6 +449,7 @@ class Orchestrator:
                     task.attempts += 1
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()
+                    Orchestrator._compute_duration(task)
                     task.status = "pending" if task.attempts <= max_retries else "failed"
                     self.event_bus.emit(
                         Event(
@@ -471,6 +490,7 @@ class Orchestrator:
                         {str(p) for p in (getattr(result, "files_changed", None) or [])}
                     )
                     task.finished_at = datetime.now(timezone.utc).isoformat()
+                    Orchestrator._compute_duration(task)
                     if success:
                         task.status = "completed"
                     elif task.attempts <= max_retries:
@@ -506,6 +526,7 @@ class Orchestrator:
                     task.attempts += 1
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()
+                    Orchestrator._compute_duration(task)
                     task.status = "pending" if task.attempts <= max_retries else "failed"
                     self.event_bus.emit(
                         Event(
