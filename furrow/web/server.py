@@ -566,6 +566,20 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
     await websocket.close(code=1008)
 
 
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Cancel the currently running run, if any."""
+    if not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=404,
+            content={"stopped": False, "error": "no run is in progress"},
+        )
+    task = _CURRENT.get("task")
+    if task is not None and not task.done():
+        _cancel_run(task)
+    return JSONResponse(status_code=200, content={"stopped": True})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """The single page UI."""
@@ -738,5 +752,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
-    """Start the Furrow web server."""
+    """Start the Furrow web server.
+
+    A SIGTERM/SIGINT signal cancels any in-flight run before the server shuts
+    down, so a running run is never abruptly terminated mid-cycle.
+    """
+    import signal
+
+    def _cancel_current_run(*_args: Any) -> None:
+        task = _CURRENT.get("task")
+        if task is not None and not task.done():
+            _cancel_run(task)
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _cancel_current_run)
+        except (ValueError, OSError):  # pragma: no cover - not in main thread
+            pass
     uvicorn.run(app, host=host, port=port)
