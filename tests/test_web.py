@@ -428,6 +428,21 @@ def test_api_status_reports_not_running_after_run(
     assert body["result"] is not None
 
 
+def test_api_status_reports_error_on_failed_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("furrow.web.server.Orchestrator", FailingOrchestrator)
+    client.post("/api/start", json={"goal": "build it"})
+
+    assert _wait_until(lambda: client.get("/api/status").json()["running"] is False), (
+        "the run never finished"
+    )
+    body = client.get("/api/status").json()
+    assert body["running"] is False
+    assert body["result"] is None
+    assert "boom" in str(body["error"])
+
+
 def test_websocket_disconnect_clears_the_running_flag(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -187,11 +187,15 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
     return True
 
 
+_SAFE_REDIRECT_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
 def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
     """Report whether a segment redirects output outside of the workspace."""
     for match in _REDIRECT_RE.finditer(segment):
         target = match.group(1).strip().strip("\"'")
         if not target:
+            continue
+        if target in _SAFE_REDIRECT_TARGETS:
             continue
         if not _target_inside_workspace(target, workspace):
             return True

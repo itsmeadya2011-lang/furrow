@@ -553,6 +553,8 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "echo hi > ~/x",
         "echo hi > $HOME/x",
         "echo hi > ${HOME}/x",
+        "echo hi > /dev/sda",
+        "echo hi > /tmp/outside_furrow_redirect_target",
     ]
     allowed_commands = [
         "pytest -q",
@@ -561,7 +563,16 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "rm -rf build",
         "echo hi > out.txt",
         "cd sub && ls",
+        "echo hi >/dev/null",
+        "pytest -q 2>/dev/null",
+        "echo hi >/dev/stdout",
+        "echo hi >/dev/stderr",
+        "echo hi > '/dev/null'",
     ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
     for cmd in denied_commands:
         assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"

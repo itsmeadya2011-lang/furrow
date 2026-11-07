@@ -592,6 +592,7 @@ async def api_status() -> dict[str, Any]:
         "running": bool(_CURRENT.get("running")),
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
+        "error": _CURRENT.get("error"),
     }
 
 

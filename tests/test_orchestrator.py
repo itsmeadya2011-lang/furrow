@@ -249,6 +249,27 @@ async def test_events(tmp_path, monkeypatch):
     assert EventType.CYCLE_STARTED in types
     assert EventType.TASK_STARTED in types
     assert EventType.TASK_FINISHED in types
+    assert EventType.TEST_STARTED in types
+    assert EventType.TEST_FINISHED in types
+
+
+@pytest.mark.asyncio
+async def test_test_started_emitted_before_test_finished(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    events = drain(q)
+    types = [e.type for e in events]
+    started = types.index(EventType.TEST_STARTED)
+    finished = types.index(EventType.TEST_FINISHED)
+    assert started < finished
+    finished_event = events[finished]
+    assert finished_event.data == {"passed": True, "summary": "s"}
 
 
 @pytest.mark.asyncio

@@ -194,6 +194,7 @@ class Orchestrator:
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 break
+            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -205,7 +206,6 @@ class Orchestrator:
                 break
             self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
-            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             self.event_bus.emit(
                 Event(
                     type=EventType.TEST_FINISHED,
