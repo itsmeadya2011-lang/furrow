@@ -9,6 +9,10 @@ object mapping model ids to prices::
 
     FURROW_MODEL_PRICING='{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}'
 
+Model ids are normalized and matched by longest key prefix (after stripping a
+known provider prefix), so dated ids like ``claude-sonnet-4-20250514`` resolve
+through family keys such as ``claude-sonnet-4``.
+
 This module must not import :mod:`furrow.config` at module scope -- the config
 module imports :class:`ModelPricing` from here, so a runtime import would be
 circular.  Token counts are therefore read by duck typing instead.

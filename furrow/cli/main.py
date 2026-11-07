@@ -76,10 +76,14 @@ def _print_summary(result: RunResult) -> None:
     click.secho(f"  Result: {text}", fg=colour)
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
+        cost_usd = getattr(usage, "cost_usd", 0.0) or 0.0
+        cost_str = f"${cost_usd:.6f}".rstrip("0").rstrip(".")
         click.echo(
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if cost_usd > 0:
+            click.echo(f"  LLM cost:        {cost_str}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -102,7 +106,11 @@ def _print_state(state: RunState) -> None:
     click.secho(f"  Result:        {text}", fg=colour)
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
+        cost_usd = getattr(usage, "cost_usd", 0.0) or 0.0
+        cost_str = f"${cost_usd:.6f}".rstrip("0").rstrip(".")
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        if cost_usd > 0:
+            click.echo(f"  LLM cost:        {cost_str}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
