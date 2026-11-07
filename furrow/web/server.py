@@ -7,6 +7,7 @@ orchestrator event to the browser:
     GET  /api/state  persisted run state
     GET  /api/status status of the currently active run
     POST /api/start  start a background run
+    POST /api/stop   cancel the currently running run
     WS   /ws         run a goal and stream its events
 """
 
@@ -593,6 +594,25 @@ async def api_status() -> dict[str, Any]:
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
     }
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Cancel the currently running run."""
+    if not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run is in progress"},
+        )
+    task = _CURRENT.get("task")
+    if task is None or task.done():
+        _CURRENT["running"] = False
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run is in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.post("/api/start")

@@ -592,3 +592,48 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_api_stop_returns_409_when_not_running(client: TestClient) -> None:
+    response = client.post("/api/stop", json={})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["stopped"] is False
+    assert "no run is in progress" in body["error"]
+
+
+def test_api_stop_cancels_running_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+
+    response = client.post("/api/start", json={"goal": "build it"})
+    assert response.status_code == 200
+
+    assert _wait_until(
+        lambda: server._CURRENT.get("running") is True, timeout=5.0
+    ), "the run never started"
+
+    stop_response = client.post("/api/stop", json={})
+    assert stop_response.status_code == 200
+    assert stop_response.json()["stopped"] is True
+
+    task = server._CURRENT.get("task")
+    assert task is not None
+    assert _wait_until(lambda: task.done(), timeout=5.0), "the run was not cancelled"
+    assert _wait_until(
+        lambda: server._CURRENT.get("running") is False, timeout=5.0
+    ), "the running flag stayed stuck"
+
+
+def test_api_stop_does_not_touch_a_different_run(client: TestClient) -> None:
+    server._CURRENT["running"] = True
+    server._CURRENT["task"] = object()
+
+    response = client.post("/api/stop", json={})
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["stopped"] is False
+    assert "no run is in progress" in body["error"]

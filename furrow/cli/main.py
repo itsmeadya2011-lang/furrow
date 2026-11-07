@@ -4,6 +4,8 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow stop            cancel the currently running web run
+    furrow clear           clear/reset the persisted run state
     furrow web             serve the web UI
 """
 
@@ -222,6 +224,7 @@ def status(workspace: Path | None) -> None:
 
 
 @main.command()
+@click.option("--model", default=None, help="Override the LLM model.")
 @click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
@@ -229,9 +232,9 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+def resume(workspace: Path | None, max_cycles: int | None, model: str | None) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
@@ -239,6 +242,50 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         sys.exit(1)
     goal = state.original_goal or state.goal
     _execute(goal=goal, run_settings=run_settings, resume=True)
+
+
+@main.command()
+@click.option(
+    "--host",
+    default="http://127.0.0.1:8000",
+    show_default=True,
+    help="Base URL of the Furrow web server.",
+)
+def stop(host: str) -> None:
+    """Cancel the currently running Furrow web run."""
+    import httpx
+
+    url = host.rstrip("/") + "/api/stop"
+    try:
+        response = httpx.post(url, timeout=10.0)
+    except httpx.RequestError as exc:
+        click.secho(f"Could not reach Furrow web server at {host}: {exc}", fg="red")
+        sys.exit(1)
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if response.status_code == 200 and payload.get("stopped"):
+        click.echo("Stopped the running Furrow run.")
+        return
+    error = payload.get("error") or f"request failed with status {response.status_code}"
+    click.secho(f"Could not stop run: {error}", fg="red")
+    sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def clear(workspace: Path | None) -> None:
+    """Clear/reset the persisted Furrow run state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    store.clear()
+    click.echo(f"Cleared Furrow state at {store.path}.")
 
 
 @main.command()

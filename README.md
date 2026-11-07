@@ -102,6 +102,9 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
 | `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Worker command timeout in seconds |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Tester command timeout in seconds |
+| `FURROW_MODEL_PRICING` | (none) | JSON object overriding USD per-million-token prices per model |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 
@@ -120,7 +123,13 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Each call's tokens are also converted to an estimated USD cost that is stored in `Usage.cost_usd` and accumulated per cycle and per run.
+
+Costs are priced in USD per 1,000,000 tokens using a built-in default table (a snapshot of published provider prices, see `furrow/costs.py`) and estimated by `furrow.costs.estimate_cost()`, which never raises and returns `0.0` for unknown models. Override or extend the built-in table with the `FURROW_MODEL_PRICING` environment variable, which takes a JSON object mapping model ids to `{input_per_million, output_per_million}`:
+
+    FURROW_MODEL_PRICING='{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}'
+
+Model ids are normalized (provider prefixes stripped, dots and underscores lowercased to dashes) and matched by longest prefix, so dated ids such as `claude-sonnet-4-20250514` resolve through `claude-sonnet-4`.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
