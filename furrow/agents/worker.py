@@ -497,6 +497,10 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        # Append the exit status on its own line so the worker can detect
+        # command success or failure instead of guessing from the output text.
+        status_line = f"exit={proc.returncode}"
+        combined = combined.rstrip() + "\n" + status_line if combined.strip() else status_line
         return combined
 
     @staticmethod

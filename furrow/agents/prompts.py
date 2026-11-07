@@ -81,7 +81,7 @@ WORKER_TOOLS: list[dict] = [
     },
     {
         "name": "run_command",
-        "description": "run a shell command in the workspace and return its output.",
+        "description": "run a shell command in the workspace and return its output. The exit status is appended on its own line as \"exit=N\" so the worker can detect success or failure without guessing from the output text.",  # noqa: E501
         "parameters": {
             "type": "object",
             "properties": {"command": {"type": "string"}},
