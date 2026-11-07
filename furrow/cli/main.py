@@ -25,6 +25,8 @@ from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
+__version__ = "0.1.0"
+
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
 
@@ -76,9 +78,11 @@ def _print_summary(result: RunResult) -> None:
     click.secho(f"  Result: {text}", fg=colour)
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
+        cost = getattr(usage, "cost_usd", 0.0) or 0.0
+        cost_text = f", ${cost:.6f}" if cost > 0 else ""
         click.echo(
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
-            f"(in {usage.input_tokens} / out {usage.output_tokens})"
+            f"(in {usage.input_tokens} / out {usage.output_tokens}){cost_text}"
         )
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
@@ -102,7 +106,11 @@ def _print_state(state: RunState) -> None:
     click.secho(f"  Result:        {text}", fg=colour)
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
-        click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        cost = getattr(usage, "cost_usd", 0.0) or 0.0
+        cost_text = f", ${cost:.6f}" if cost > 0 else ""
+        click.echo(
+            f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens{cost_text}"
+        )
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
@@ -173,6 +181,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(__version__, prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)

@@ -248,6 +248,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      const files = task.files_changed || [];
+      if (files.length) {
+        const filesEl = document.createElement('span');
+        filesEl.textContent = '  files: ' + files.join(', ');
+        meta.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
