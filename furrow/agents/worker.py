@@ -316,7 +316,9 @@ class WorkerAgent:
         for i in range(max_iters):
             iterations = i + 1
             response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM,
+                model=self.settings.worker_model,
+                provider=self.settings.provider_for("worker"),
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
@@ -474,16 +476,28 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+                # On non-POSIX platforms, prefer cmd.exe /c so shell features
+                # (pipes, redirections, &&, ||) work. Fall back to splitting
+                # only when cmd.exe is unavailable.
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "cmd.exe", "/c", command,
+                        cwd=str(self.workspace),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        **spawn_kwargs,
+                    )
+                except (OSError, FileNotFoundError):
+                    parts = shlex.split(command)
+                    if not parts:
+                        return "error: empty command"
+                    proc = await asyncio.create_subprocess_exec(
+                        *parts,
+                        cwd=str(self.workspace),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        **spawn_kwargs,
+                    )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:

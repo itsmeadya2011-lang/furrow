@@ -393,7 +393,8 @@ class TesterAgent:
                 prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
                 try:
                     response = await self.client.complete(
-                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model,
+                        provider=self.settings.provider_for("tester"),
                     )
                     llm_result = parse_test_result(response)
                 except Exception:

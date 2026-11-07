@@ -116,6 +116,12 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
+    # Per-agent provider overrides: when set, the named agent uses the given
+    # provider instead of the global ``provider`` setting. This lets you route
+    # the cheap planner through Ollama while keeping the worker on Anthropic.
+    planner_provider: Provider | None = None
+    worker_provider: Provider | None = None
+    tester_provider: Provider | None = None
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
@@ -141,6 +147,17 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def provider_for(self, agent: str) -> Provider:
+        """Return the provider to use for *agent* (planner/worker/tester).
+
+        Falls back to the global ``provider`` setting when no per-agent
+        override is configured.
+        """
+        override = getattr(self, f"{agent}_provider", None)
+        if override is not None:
+            return Provider(override)
+        return self.provider
 
 
 settings = Settings()
