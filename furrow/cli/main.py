@@ -107,7 +107,10 @@ def _print_state(state: RunState) -> None:
         click.echo("Tasks:")
         for task in state.tasks:
             files_changed = getattr(task, "files_changed", None) or []
-            line = f"  {task.id}  {task.status}  {task.description}"
+            task_id = getattr(task, "id", "?")
+            task_status = getattr(task, "status", "?")
+            task_description = getattr(task, "description", "?")
+            line = f"  {task_id}  {task_status}  {task_description}"
             if files_changed:
                 line += f"  [{', '.join(files_changed)}]"
             click.echo(line)

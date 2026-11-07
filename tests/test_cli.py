@@ -520,6 +520,27 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
     assert "4321 tokens" in result.output
 
 
+def test_status_does_not_crash_on_malformed_task(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A task missing id/status/description renders placeholders instead of raising."""
+    bad_task = SimpleNamespace(status="running")
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        tasks=[bad_task],
+    )
+    monkeypatch.setattr("furrow.cli.main.StateStore.load", lambda _store: state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Furrow run status" in result.output
+    assert "running" in result.output
+    assert "?" in result.output
+
+
 class RecordingClient:
     """Fake LLM client that records whether it was closed."""
 
