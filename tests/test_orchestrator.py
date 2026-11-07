@@ -668,6 +668,82 @@ async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_merge_plan_unblocks_when_the_description_changes(tmp_path, monkeypatch):
+    """A blocked task is reset to pending when the planner re-asks for new work.
+
+    A blocked task stays blocked only when the planner describes the *same*
+    work (same description and same files).  When either changes, the block
+    (which was caused by a failed dependency) does not apply to the new
+    description, so the task is unblocked and can run again in a later cycle
+    once its dependency is resolved.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "blocked"
+    task.description = "old description"
+    task.files = ["a.py"]
+    # Same description/files -> stays blocked.
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description="old description", files=["a.py"],
+                         dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "blocked"
+    # Different description -> unblocked.
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description="new description", files=["a.py"],
+                         dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+    # Different files -> unblocked.
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description="old description", files=["b.py"],
+                         dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_plan_signature_is_order_independent(tmp_path, monkeypatch):
+    """The no-progress signature is sorted so reordering does not trip it.
+
+    The guard compares the current plan signature against the previous one;
+    if the planner reorders the same tasks the signature must stay the same,
+    otherwise a benign reordering would look like progress and reset the
+    counter.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    # Two plans describing the same tasks in opposite orders must produce the
+    # same signature.
+    sig_a = orch._plan_signature([
+        TaskModel(id="t1", description="do t1"),
+        TaskModel(id="t2", description="do t2"),
+    ])
+    sig_b = orch._plan_signature([
+        TaskModel(id="t2", description="do t2"),
+        TaskModel(id="t1", description="do t1"),
+    ])
+    assert sig_a == sig_b
+
+
+@pytest.mark.asyncio
 async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

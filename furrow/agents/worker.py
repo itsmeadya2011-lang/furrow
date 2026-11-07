@@ -17,6 +17,11 @@ from furrow.llm import LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
+#
+# Patterns that end with a trailing slash (``rm -rf /``) anchor on the root
+# filesystem, so they are matched with a word boundary after the slash: this
+# keeps ``rm -rf /`` from matching ``rm -rf /tmp/something`` (which starts
+# with ``/`` but does not delete the root).
 DENIED_COMMANDS = (
     "rm -rf /",
     "rm -fr /",
@@ -31,6 +36,30 @@ DENIED_COMMANDS = (
     "chmod -R 777 /",
     "> /dev/sda",
 )
+
+#: Patterns from DENIED_COMMANDS that must be matched at a token boundary
+#: rather than as a plain substring (they end in ``/`` and would otherwise
+#: match any absolute path).
+_ROOT_ANCHORED_RE = re.compile(
+    r"(?:rm -rf /|rm -fr /|rm -rf /\*|chmod -R 777 /)(?=[\s;|&]|$)",
+    re.IGNORECASE,
+)
+
+
+def _has_denied_pattern(normalized: str) -> bool:
+    """Report whether *normalized* contains a denied pattern.
+
+    Plain substring matching is used for every pattern except the
+    root-anchored ones (``rm -rf /`` and friends), which must be matched at a
+    token boundary so that ``rm -rf /tmp/something`` is not mistaken for
+    ``rm -rf /``.
+    """
+    for denied in DENIED_COMMANDS:
+        if denied.endswith("/"):
+            continue
+        if denied.lower() in normalized:
+            return True
+    return bool(_ROOT_ANCHORED_RE.search(normalized))
 
 # Programs that are denied by name: the basename of the first token of a
 # segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
@@ -210,6 +239,48 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     return any(token.lower() == "-f" for token in _shell_tokens(segment))
 
 
+def _rm_targets_outside_workspace(segment: str, workspace: Path) -> bool:
+    """Report whether an ``rm`` command deletes outside the workspace.
+
+    ``rm -rf /`` and friends are already caught by the DENIED_COMMANDS
+    substring list; this check closes the gap for ``rm -rf <path>`` where
+    *path* is not the workspace root -- a worker must never be able to
+    delete arbitrary directories.  A target that does not exist yet is not
+    a deletion risk, so it is allowed (the rm will simply fail at runtime).
+    """
+    tokens = _shell_tokens(segment)
+    if not tokens:
+        return False
+    program = os.path.basename(tokens[0])
+    if program != "rm":
+        return False
+    # Collect the combined flag characters so that "rm -r -f" (two tokens) is
+    # recognised as recursive just like "rm -rf".
+    flags = "".join(tok for tok in tokens[1:] if tok.startswith("-"))
+    if "r" not in flags.lower():
+        return False
+    base = workspace.resolve()
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            continue
+        try:
+            target = Path(_expand_home(token))
+        except (OSError, ValueError):
+            return True
+        resolved = target if target.is_absolute() else base / target
+        # Only an existing target can actually be deleted, so only scope-check
+        # those.  A non-existent path is allowed -- rm will fail at runtime
+        # anyway, and denying it would block legitimate cleanup of paths the
+        # worker has not yet created.
+        if not resolved.exists():
+            continue
+        try:
+            resolved.resolve().relative_to(base)
+        except (ValueError, OSError):
+            return True
+    return False
+
+
 def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
@@ -224,11 +295,15 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
             return True
 
     # DENY by PATTERN
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+    if _has_denied_pattern(normalized):
         return True
 
     # DENY a force push
     if _is_force_push(segment, normalized):
+        return True
+
+    # DENY a recursive rm that deletes outside the workspace
+    if _rm_targets_outside_workspace(segment, workspace):
         return True
 
     # DENY a redirection that escapes the workspace
@@ -241,7 +316,7 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # The whole text is checked against the pattern list as well, so that a
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+    if _has_denied_pattern(normalized):
         return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
@@ -262,22 +337,30 @@ def is_command_denied(command: str, workspace: Path) -> bool:
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
-    """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
+    """Return the absolute path for `path` inside `workspace`, or None when it escapes.
+
+    The path is resolved through symlinks before the containment check, so a
+    symlink that points outside the workspace (e.g.
+    ``/workspace/app/link -> /etc``) is rejected just like a lexical ``../``
+    traversal.  Both the absolute and the relative branch therefore resolve
+    before comparing against the workspace.
+    """
     workspace = workspace.resolve()
     if not path:
         return None
     p = Path(path)
     if p.is_absolute():
         try:
-            p.relative_to(workspace)
-        except ValueError:
+            resolved = p.resolve()
+            resolved.relative_to(workspace)
+        except (ValueError, OSError):
             return None
-        return p
+        return resolved
     # reject traversal
     candidate = (workspace / p).resolve()
     try:
         candidate.relative_to(workspace)
-    except ValueError:
+    except (ValueError, OSError):
         return None
     return candidate
 

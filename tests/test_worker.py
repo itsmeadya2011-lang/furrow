@@ -888,3 +888,65 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+def test_is_command_denied_blocks_rm_outside_workspace(tmp_path):
+    """``rm -rf`` against a directory outside the workspace is denied.
+
+    ``rm -rf /`` is already covered by the DENIED_COMMANDS substring list, but
+    ``rm -rf /etc`` or ``rm -rf <outside>`` would have slipped through because
+    ``rm`` is not in DENIED_PROGRAMS.  The recursive-rm scope check closes
+    that gap.
+    """
+    outside = tmp_path.parent / "must_not_be_deleted"
+    outside.mkdir(exist_ok=True)
+    try:
+        assert is_command_denied(f"rm -rf {outside}", tmp_path) is True
+        assert is_command_denied("rm -rf /etc", tmp_path) is True
+        assert is_command_denied(f"rm -rf {tmp_path / 'build'}", tmp_path) is False
+        # Separate flag tokens ("rm -r -f") are recognised as recursive too.
+        assert is_command_denied(f"rm -r -f {outside}", tmp_path) is True
+        # Non-recursive rm is not scope-checked.
+        assert is_command_denied(f"rm {outside}", tmp_path) is False
+    finally:
+        outside.rmdir()
+
+
+def test_resolve_in_workspace_rejects_symlink_escape(tmp_path):
+    """A symlink that points outside the workspace is rejected.
+
+    The absolute-path branch used to compare the *unresolved* path against
+    the workspace, so ``/workspace/app/link -> /etc`` would have passed the
+    lexical containment check and then resolved outside.  Both branches now
+    resolve through symlinks before comparing.
+    """
+    outside = tmp_path.parent / "furrow_escape_target"
+    outside.mkdir(exist_ok=True)
+    link = tmp_path / "escape"
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+        assert resolve_in_workspace(tmp_path, str(link)) is None
+        # A symlink that stays inside the workspace is fine.
+        inside_link = tmp_path / "inside_link"
+        inside_target = tmp_path / "real_dir"
+        if not inside_target.exists():
+            inside_target = tmp_path
+        inside_link.symlink_to(inside_target)
+        assert resolve_in_workspace(tmp_path, str(inside_link)) is not None
+    finally:
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        if inside_link.exists() or inside_link.is_symlink():
+            inside_link.unlink()
+        outside.rmdir()
+
+
+def test_resolve_in_workspace_rejects_absolute_escape(tmp_path):
+    """An absolute path outside the workspace is rejected, resolved or not."""
+    outside = tmp_path.parent / "furrow_escape_target2"
+    outside.mkdir(exist_ok=True)
+    try:
+        assert resolve_in_workspace(tmp_path, str(outside)) is None
+        assert resolve_in_workspace(tmp_path, str(tmp_path / "ok.txt")) is not None
+    finally:
+        outside.rmdir()

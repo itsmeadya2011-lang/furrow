@@ -253,7 +253,9 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+            sig = "|".join(
+                f"{t.id}:{t.description}" for t in sorted(plan.tasks, key=lambda t: t.id)
+            )
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
@@ -331,6 +333,17 @@ class Orchestrator:
             return self._feedback
         return ""
 
+    def _plan_signature(self, tasks: list[TaskModel]) -> str:
+        """A stable signature for a plan, used by the no-progress guard.
+
+        Tasks are sorted by id before joining so that a planner that
+        reorders the same work produces the same signature -- otherwise a
+        benign reordering would look like progress and reset the counter.
+        """
+        return "|".join(
+            f"{t.id}:{t.description}" for t in sorted(tasks, key=lambda t: t.id)
+        )
+
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()
         by_id = {t.id: t for t in self.tasks}
@@ -355,7 +368,17 @@ class Orchestrator:
                     else:
                         pt.status = "failed"
                 elif old.status == "blocked":
-                    pt.status = "blocked"
+                    # A blocked task stays blocked only when the planner is
+                    # describing the same work.  When the description or the
+                    # files change, the planner is re-asking for new work and
+                    # the block (which was caused by a failed dependency) does
+                    # not apply to the new description -- reset it to pending
+                    # so it can be retried in a later cycle once its
+                    # dependency is resolved.
+                    if old_desc == pt.description and old_files == pt.files:
+                        pt.status = "blocked"
+                    else:
+                        pt.status = "pending"
                 else:
                     if old.attempts <= max_retries and (
                         old.status == "failed" or old.status in ("pending", "running")

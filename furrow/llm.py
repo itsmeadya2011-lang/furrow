@@ -492,8 +492,20 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
+    #: Maximum number of entries returned by :meth:`list_files`.  The caller
+    #: already caps the display, but collecting an unbounded list first would
+    #: still allocate memory proportional to the tree size, so the collection
+    #: itself is bounded too.
+    _MAX_LIST_ENTRIES = 500
+
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        entries: list[str] = []
+        for f in p.rglob("*"):
+            if f.is_file():
+                entries.append(str(f.relative_to(p)))
+                if len(entries) >= self._MAX_LIST_ENTRIES:
+                    break
+        return entries

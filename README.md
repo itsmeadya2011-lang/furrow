@@ -104,6 +104,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_MODEL_PRICING` | `{}` | JSON object mapping model ids to `{"input_per_million": <USD/1M tokens>, "output_per_million": <USD/1M tokens>}` to override or extend the built-in pricing table |
 
 A `.env` file is read automatically via pydantic-settings.
 
@@ -120,7 +121,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Token counts are tracked alongside a per-call cost estimate in USD, computed from a built-in pricing table (`furrow/costs.py`) that covers the configured providers and models; the table can be overridden or extended with the `FURROW_MODEL_PRICING` environment variable (a JSON object mapping model ids to `{"input_per_million": <USD per 1,000,000 input tokens>, "output_per_million": <USD per 1,000,000 output tokens>}`).
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
