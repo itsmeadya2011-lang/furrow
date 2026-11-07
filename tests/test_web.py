@@ -227,6 +227,15 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
         )
 
 
+def test_index_script_renders_usage_cost_and_cycle_finished(client: TestClient) -> None:
+    """The UI script renders estimated cost and cycle_finished events."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    assert "cost_usd" in script
+    assert "cycle_finished" in script
+
+
 def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> None:
     """Starting a run resets the summary tracker so every run logs its summary.
 

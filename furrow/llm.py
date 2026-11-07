@@ -271,6 +271,25 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
+
+async def release_client(client: Any) -> None:
+    """Release the HTTP resources of an LLM client, when it supports closing.
+
+    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
+    method, so it is looked up defensively and only awaited when the result is
+    awaitable.  A failing close is logged and ignored: closing must never turn
+    a successful run into a failed one.
+    """
+    closer = getattr(client, "aclose", None)
+    if closer is None:
+        return
+    try:
+        outcome = closer()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except Exception:  # pragma: no cover - defensive
+        return
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
