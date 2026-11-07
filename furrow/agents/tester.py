@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,6 +13,7 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.utils import kill_process_tree
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
@@ -169,21 +168,6 @@ class TesterAgent:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
-
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-        """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
@@ -371,7 +355,7 @@ class TesterAgent:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    await self._kill_process_tree(proc)
+                    await kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
                     stdout = b""
