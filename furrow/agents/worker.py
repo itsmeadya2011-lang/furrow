@@ -410,7 +410,7 @@ class WorkerAgent:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         if len(content) > 20000:
-            content = content[:20000] + "\n[... output truncated ...]"
+            content = "[... output truncated ...]\n" + content[-20000:]
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
