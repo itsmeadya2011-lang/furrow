@@ -205,30 +205,18 @@ class TesterAgent:
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return self._node_test_command()
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return self._node_test_command()
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            return self._node_test_command()
 
         python_markers = [
             "pyproject.toml",
@@ -246,6 +234,19 @@ class TesterAgent:
             return ["go", "test", "./..."]
 
         return None
+
+    def _node_test_command(self) -> list[str]:
+        """Return the test command for the Node.js package manager detected.
+
+        The lock file decides between pnpm, yarn and npm. The duplicated
+        checks live here so the call sites in :meth:`detect_command` stay
+        readable and a change to the package-manager logic has one home.
+        """
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            return ["pnpm", "test", "--silent"]
+        if (self.workspace / "yarn.lock").is_file():
+            return ["yarn", "test", "--silent"]
+        return ["npm", "test", "--silent"]
 
     def _finalize(
         self,

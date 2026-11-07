@@ -458,32 +458,21 @@ class WorkerAgent:
         except ValueError:
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
-        # On POSIX the command runs in its own session/process group so that a
-        # timeout can kill the whole tree (children and grandchildren included)
-        # instead of leaking orphans. On other platforms we fall back to
-        # killing the direct child only.
+        # The command runs through /bin/sh -c so ordinary shell constructs
+        # (cd dir && pytest, pipes, variable assignments, redirections) work
+        # on every platform. On POSIX the process runs in its own session so
+        # a timeout can kill the whole tree (children and grandchildren
+        # included) instead of leaking orphans.
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
         try:
-            if os.name == "posix":
-                proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-            else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/sh", "-c", command,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:
