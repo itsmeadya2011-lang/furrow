@@ -438,6 +438,27 @@ async def test_total_usage_accumulates_across_calls():
     assert client.total_usage.total_tokens == 30
 
 
+async def test_extract_openai_usage_accepts_input_output_tokens():
+    """Responses-style usage fields (input_tokens/output_tokens) are accepted."""
+    from furrow.config import Provider
+
+    class _ResponsesUsage:
+        input_tokens = 55
+        output_tokens = 21
+
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _ResponsesUsage()
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+
+    result = await client.complete("hi")
+
+    assert result == "ok"
+    assert client.total_usage.input_tokens == 55
+    assert client.total_usage.output_tokens == 21
+    assert client.total_usage.total_tokens == 76
+
+
 async def test_aclose_closes_created_clients():
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     fake = _FakeOpenAI("ok")

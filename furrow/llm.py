@@ -76,9 +76,17 @@ def _extract_openai_usage(response: Any) -> Usage:
     usage = getattr(response, "usage", None)
     if usage is None:
         return Usage(calls=1)
-    prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-    completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-    return Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens, calls=1)
+    prompt_tokens = getattr(usage, "prompt_tokens", None)
+    if prompt_tokens is None:
+        prompt_tokens = getattr(usage, "input_tokens", 0)
+    completion_tokens = getattr(usage, "completion_tokens", None)
+    if completion_tokens is None:
+        completion_tokens = getattr(usage, "output_tokens", 0)
+    return Usage(
+        input_tokens=int(prompt_tokens or 0),
+        output_tokens=int(completion_tokens or 0),
+        calls=1,
+    )
 
 
 def to_anthropic_tools(tools: list[dict]) -> list[dict]:
