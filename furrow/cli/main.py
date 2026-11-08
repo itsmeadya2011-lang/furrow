@@ -80,6 +80,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if usage.cost_usd > 0:
+            click.echo(f"  Est. cost:       ${usage.cost_usd:.4f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +105,8 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        if usage.cost_usd > 0:
+            click.echo(f"  Est. cost:       ${usage.cost_usd:.4f}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
@@ -253,6 +257,24 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def clear(workspace: Path | None) -> None:
+    """Delete the persisted Furrow run state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if store.exists():
+        store.clear()
+        click.echo("Furrow run state cleared.")
+    else:
+        click.echo("No furrow run state found.")
 
 
 if __name__ == "__main__":

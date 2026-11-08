@@ -592,3 +592,50 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_api_delete_state_when_state_exists(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """``DELETE /api/state`` removes the persisted state file."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        tasks=[],
+    )
+    store = StateStore(tmp_path / ".furrow" / "state.json")
+    store.save(state)
+    assert store.exists()
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(server.settings, "workspace", tmp_path)
+        response = client.delete("/api/state")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] is True
+    assert not store.exists()
+
+
+def test_api_delete_state_when_no_state_exists(
+    client: TestClient, tmp_path: Path
+) -> None:
+    """``DELETE /api/state`` is a safe no-op when there is no state to delete."""
+    store = StateStore(tmp_path / ".furrow" / "state.json")
+    assert not store.exists()
+
+    with pytest.MonkeyPatch().context() as mp:
+        mp.setattr(server.settings, "workspace", tmp_path)
+        response = client.delete("/api/state")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted"] is False
+
+
+def test_index_contains_clear_button(client: TestClient) -> None:
+    """The web UI exposes a Clear button bound to the delete endpoint."""
+    html = client.get("/").text
+    assert "clear" in html.lower()
+    assert "Clear" in html

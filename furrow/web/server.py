@@ -136,9 +136,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <body>
 <h1>Furrow</h1>
 <div class="bar">
-  <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
-  <button id="resume">Resume</button>
+    <input id="goal" placeholder="What should Furrow build?" autofocus />
+    <button id="start">Start</button>
+    <button id="resume">Resume</button>
+    <button id="clear">Clear</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -206,7 +207,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    const costStr = cost > 0 ? ' $' + cost.toFixed(4) : '';
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens' + costStr;
   }
 
   function renderTasks(tasks) {
@@ -403,6 +406,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('clear').onclick = async function () {
+    try {
+      await fetch('/api/state', { method: 'DELETE' });
+    } catch (err) {
+      append('! could not clear state');
+      return;
+    }
+    lastSummary = null;
+    tasksEl.textContent = '';
+    const hint = document.createElement('p');
+    hint.className = 'panel-empty';
+    hint.textContent = 'Run state cleared.';
+    tasksEl.appendChild(hint);
+    loadState();
+    loadStatus();
+  };
 
   loadState();
   loadStatus();
@@ -581,6 +600,15 @@ async def api_state() -> dict[str, Any]:
         "state": state.model_dump(mode="json") if state is not None else None,
         "exists": store.exists(),
     }
+
+
+@app.delete("/api/state")
+async def api_delete_state() -> dict[str, Any]:
+    """Delete the persisted run state, if there is one."""
+    store = _state_store()
+    existed = store.exists()
+    store.clear()
+    return {"deleted": existed, "path": str(store.path)}
 
 
 @app.get("/api/status")

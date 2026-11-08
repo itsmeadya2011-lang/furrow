@@ -603,3 +603,84 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_summary_prints_estimated_cost_when_usage_carries_cost(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints an estimated USD cost when the usage carries one."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0432),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "Est. cost:" in output
+    assert "$0.0432" in output
+
+
+def test_summary_omits_cost_line_when_cost_is_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A run with no cost estimate does not print a misleading zero line."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=100, output_tokens=50, calls=1, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "Est. cost:" not in output
+
+
+def test_clear_command_deletes_state(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """``furrow clear`` deletes the persisted run state."""
+    _write_state(tmp_path)
+    assert (tmp_path / ".furrow" / "state.json").exists()
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "cleared" in result.output.lower()
+    assert not (tmp_path / ".furrow" / "state.json").exists()
+
+
+def test_clear_command_when_no_state_exists(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """``furrow clear`` is a no-op when there is no state to delete."""
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found" in result.output
+
+
+def test_status_prints_estimated_cost(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """``furrow status`` prints the estimated USD cost persisted in the state."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0432),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Est. cost:" in result.output
+    assert "$0.0432" in result.output

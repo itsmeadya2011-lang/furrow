@@ -32,6 +32,38 @@ DENIED_COMMANDS = (
     "> /dev/sda",
 )
 
+# Substring patterns that deny *interactive* shell interpreters and
+# "download-and-execute" pipelines.  These are matched against the
+# normalized command, so ``curl ... | sh``, ``curl ... | bash``,
+# ``wget -O- ... | sh`` and ``eval "$(curl ...)`` are all caught.
+# The patterns are intentionally broad: they target the *combination* of
+# a downloader and a shell, or a bare ``eval``/``source`` of a substitution.
+DENIED_PATTERNS = (
+    # download-and-execute pipelines (curl/wget piped to a shell)
+    "| sh",
+    "| sh -",
+    "| bash",
+    "| bash -",
+    "| ${sh}",
+    "| ${bash}",
+    # eval/source of a command substitution
+    "eval $(",
+    "eval `",
+    "eval \"$(",
+    "eval \"`",
+    "source $(",
+    "source `",
+    "source \"$(",
+    "source \"`",
+    ". $(",
+    ". `",
+    ". \"$(",
+    ". \"`",
+    # bare eval/source of a variable that could hold arbitrary code
+    "eval $",
+    "source $",
+)
+
 # Programs that are denied by name: the basename of the first token of a
 # segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
 DENIED_PROGRAMS = frozenset(
@@ -45,6 +77,24 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+    }
+)
+
+# Programs that are denied when they appear *anywhere* in a segment, not just
+# as the first token.  ``curl`` and ``wget`` are allowed on their own (they
+# are ordinary downloaders) but are caught by DENIED_PATTERNS when piped to a
+# shell; ``sh``/``bash`` are denied when used as an interpreter of a
+# substitution or pipeline.
+DENIED_PROGRAMS_ANYWHERE = frozenset(
+    {
+        "sh",
+        "bash",
+        "ash",
+        "dash",
+        "zsh",
+        "ksh",
+        "csh",
+        "tcsh",
     }
 )
 
@@ -227,12 +277,40 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
 
+    # DENY download-and-execute / eval / source pipelines
+    if any(pattern in normalized for pattern in DENIED_PATTERNS):
+        return True
+
+    # DENY a shell interpreter used as a downstream consumer (curl | sh,
+    # echo "$(curl ...)" | bash, ...).  A bare ``sh -c '...'`` is still
+    # allowed because the worker itself runs commands through ``/bin/sh -c``
+    # and a developer may legitimately need a nested subshell.
+    if _shell_interpreter_downstream(segment):
+        return True
+
     # DENY a force push
     if _is_force_push(segment, normalized):
         return True
 
     # DENY a redirection that escapes the workspace
     return bool(_redirects_outside_workspace(segment, workspace))
+
+
+def _shell_interpreter_downstream(segment: str) -> bool:
+    """Report whether a segment feeds something into a shell interpreter.
+
+    A shell interpreter is "downstream" when it is not the first token of the
+    segment: ``sh -c '...'`` is fine (the worker itself uses ``/bin/sh -c``),
+    but ``curl ... | sh`` and ``echo "$(curl ...)" | bash`` are not.
+    """
+    tokens = _shell_tokens(segment.strip())
+    if len(tokens) < 2:
+        return False
+    for token in tokens[1:]:
+        name = os.path.basename(token).lower()
+        if name in DENIED_PROGRAMS_ANYWHERE:
+            return True
+    return False
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
@@ -242,6 +320,8 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+        return True
+    if any(pattern in normalized for pattern in DENIED_PATTERNS):
         return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
