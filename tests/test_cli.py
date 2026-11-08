@@ -116,6 +116,17 @@ def test_start_requires_goal_prompt(
     assert fake_orchestrator.init_kwargs == {}
 
 
+def test_version_flag_prints_version_and_exits_zero(runner: CliRunner) -> None:
+    """`furrow --version` prints the installed version and exits 0."""
+    from furrow import __version__
+
+    result = runner.invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert __version__ in result.output
+    assert "furrow" in result.output.lower()
+
+
 def test_start_prompts_and_uses_the_typed_goal(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

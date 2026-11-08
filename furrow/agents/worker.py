@@ -431,7 +431,17 @@ class WorkerAgent:
         if resolved is None:
             return "error: path escapes workspace"
         try:
-            entries = await asyncio.to_thread(self.client.list_files, resolved)
+            # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
+            # The call is wrapped in a timeout so a hung filesystem (a network mount
+            # that stops responding, a fuse daemon that wedges, ...) cannot block the
+            # worker's tool-calling loop forever.  A slow-but-responsive tree still
+            # returns whatever it has produced by the deadline.
+            timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+            entries = await asyncio.wait_for(
+                asyncio.to_thread(self.client.list_files, resolved), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            return "error: list_files timed out"
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
@@ -474,11 +484,11 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
+                # Non-POSIX platforms (Windows): run through cmd.exe so that
+                # ordinary shell constructs (chaining, pipes, redirections, env
+                # assignments) keep working the way they do on POSIX.
                 proc = await asyncio.create_subprocess_exec(
-                    *parts,
+                    "cmd.exe", "/c", command,
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,

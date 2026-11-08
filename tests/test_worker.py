@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -888,3 +890,149 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_list_files_timeout_returns_error_message(tmp_path, monkeypatch):
+    """A hung filesystem cannot block the worker's tool-calling loop forever.
+
+    The listing runs in a thread with a timeout derived from ``command_timeout``;
+    when the deadline expires the worker gets an ``error: list_files timed out``
+    message instead of hanging until the orchestrator's own timeout fires.
+    """
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("x")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 0.2})
+
+    def slow_list(directory):
+        import time
+        time.sleep(5)
+        return []
+
+    client.list_files = slow_list
+
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    assert "timed out" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_non_posix_command_runs_through_cmd_exe(tmp_path, monkeypatch):
+    """On non-POSIX platforms the command runs through ``cmd.exe /c``.
+
+    The POSIX branch uses ``/bin/sh -c``; the non-POSIX branch must keep the
+    same behaviour (chaining, pipes, redirections, env assignments) by delegating
+    to ``cmd.exe`` instead of shlex-splitting the command into a bare exec.
+    """
+    from furrow.config import TaskModel
+
+    recorded: dict[str, Any] = {}
+
+    class FakeProc:
+        pid = 9999
+        returncode = 0
+
+        async def communicate(self):
+            return b"hello from cmd", b""
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            return None
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        recorded["args"] = args
+        recorded["kwargs"] = kwargs
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr("furrow.agents.worker.os.name", "nt")
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("echo hi && echo bye")
+    assert "hello from cmd" in out
+    assert recorded["args"][0] == "cmd.exe"
+    assert recorded["args"][1] == "/c"
+    assert "echo hi && echo bye" in recorded["args"][2:][0]
+
+
+@pytest.mark.asyncio
+async def test_non_posix_command_denied_program_still_blocked(tmp_path, monkeypatch):
+    """The denial guard is independent of the platform used to run the command.
+
+    ``rm -rf /`` must be rejected on non-POSIX platforms just as it is on POSIX,
+    before any subprocess is spawned.
+    """
+    from furrow.config import TaskModel
+
+    spawned = {"v": False}
+
+    class FakeProc:
+        pid = 9999
+        returncode = 0
+
+        async def communicate(self):
+            spawned["v"] = True
+            return b"", b""
+
+        async def wait(self):
+            return 0
+
+        def kill(self):
+            return None
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr("os.name", "nt")
+    monkeypatch.setattr("furrow.agents.worker.os.name", "nt")
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("rm -rf /")
+    assert out == "error: command denied"
+    assert spawned["v"] is False, "a denied command must never be executed"
+
+
+@pytest.mark.asyncio
+async def test_list_files_runs_in_a_thread_not_the_event_loop(tmp_path, monkeypatch):
+    """``list_files`` is dispatched to a worker thread so a slow tree does not
+    block the event loop (the same guarantee the orchestrator relies on for
+    command execution).
+    """
+    for i in range(3):
+        (tmp_path / f"f{i}.txt").write_text("x")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    loop_thread = threading.get_ident()
+    seen: dict[str, Any] = {}
+
+    def slow_list(directory):
+        seen["tid"] = threading.get_ident()
+        import time
+        time.sleep(0.05)
+        from pathlib import Path as _P
+        return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
+
+    client.list_files = slow_list
+
+    await agent._list_files(".")
+    assert seen["tid"] != loop_thread
