@@ -227,6 +227,26 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
         )
 
 
+def test_index_render_status_includes_cost_when_present(client: TestClient) -> None:
+    """The status header shows the estimated USD cost when usage carries one."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    assert "cost_usd" in script, "renderStatus() never reads the cost field"
+    assert "toFixed(4)" in script, "renderStatus() does not format the cost"
+    assert "$" in script, "renderStatus() does not prefix the cost with a dollar sign"
+
+
+def test_index_render_status_omits_cost_when_zero(client: TestClient) -> None:
+    """The status header omits the cost when usage carries no cost estimate."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    # The cost is only appended conditionally: the branch must exist and the
+    # comparison must be against the cost field.
+    assert "if (cost > 0)" in script, "renderStatus() does not guard the cost"
+
+
 def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> None:
     """Starting a run resets the summary tracker so every run logs its summary.
 
