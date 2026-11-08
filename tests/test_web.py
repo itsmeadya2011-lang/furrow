@@ -8,6 +8,7 @@ temporary directory.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -592,3 +593,171 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_describe_validation_error_goal_branch() -> None:
+    from furrow.web.server import SocketRequest, _describe_validation_error
+
+    try:
+        SocketRequest.model_validate({"goal": 123})
+    except ValidationError as exc:
+        msg = _describe_validation_error(exc)
+    assert msg == "goal must be a string"
+
+
+def test_describe_validation_error_fallback() -> None:
+    from pydantic import BaseModel
+
+    from furrow.web.server import _describe_validation_error
+
+    # Trigger an error on an unexpected field location by constructing manually
+    class _Dummy(BaseModel):
+        other: int
+
+    try:
+        _Dummy.model_validate({"other": "nope"})
+    except ValidationError as exc:
+        msg = _describe_validation_error(exc)
+    assert msg == "invalid request payload"
+
+
+def test_api_start_empty_goal_without_resume_returns_400(client: TestClient) -> None:
+    response = client.post("/api/start", json={"goal": "", "resume": False})
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["started"] is False
+    assert body["error"] == "goal is required"
+
+
+def test_api_start_empty_goal_with_resume_no_state_returns_400(
+    client: TestClient, tmp_path: Path
+) -> None:
+    response = client.post("/api/start", json={"goal": "", "resume": True})
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["started"] is False
+    assert body["error"] == "no goal to resume"
+
+
+def test_websocket_non_json_receive_returns_error(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    messages: list[dict[str, Any]] = []
+    with client.websocket_connect("/ws") as ws:
+        ws.send_text("not-json")
+        try:
+            messages.append(ws.receive_json())
+        except WebSocketDisconnect:
+            messages.append({"type": "closed"})
+
+    assert messages
+    assert messages[0]["type"] == "error"
+    assert "expected a JSON object with a goal" in messages[0]["message"]
+
+
+def test_websocket_run_exception_sends_error_frame(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class BoomOrchestrator(FakeOrchestrator):
+        async def run(self) -> RunResult:
+            raise RuntimeError("kaboom")
+
+    monkeypatch.setattr("furrow.web.server.Orchestrator", BoomOrchestrator)
+    messages: list[dict[str, Any]] = []
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "g"})
+        for _ in range(20):
+            try:
+                msg = ws.receive_json()
+            except WebSocketDisconnect:
+                break
+            messages.append(msg)
+            if msg.get("type") == "error":
+                break
+
+    assert any(m.get("type") == "error" for m in messages)
+    error_msg = next(m for m in messages if m.get("type") == "error")
+    assert "run failed: kaboom" in error_msg["message"]
+
+
+def test_on_run_done_other_run_owns_registry() -> None:
+    """When another run owns the registry, _on_run_done must not clobber it."""
+    server._reset_registry()
+    loop = asyncio.new_event_loop()
+    try:
+
+        async def noop() -> None:
+            return None
+
+        other_task = loop.create_task(noop())
+        loop.run_until_complete(other_task)
+        server._CURRENT["task"] = other_task
+        server._CURRENT["running"] = True
+        server._CURRENT["error"] = "original"
+
+        async def failer() -> RunResult:
+            raise RuntimeError("x")
+
+        task = loop.create_task(failer())
+        loop.run_until_complete(asyncio.sleep(0))
+        with contextlib.suppress(RuntimeError):
+            loop.run_until_complete(task)
+        server._on_run_done(task)
+    finally:
+        loop.close()
+
+    # Original error preserved; other task is done so running becomes False
+    assert server._CURRENT["error"] == "original"
+    assert server._CURRENT["running"] is False
+    server._reset_registry()
+
+
+def test_on_run_done_cancelled_path() -> None:
+    server._reset_registry()
+    loop = asyncio.new_event_loop()
+    try:
+
+        async def hang() -> RunResult:
+            await asyncio.sleep(30)
+            return RunResult(passed=True)
+
+        task = loop.create_task(hang())
+        loop.run_until_complete(asyncio.sleep(0))
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            loop.run_until_complete(task)
+        server._CURRENT["task"] = task
+        server._CURRENT["running"] = True
+        server._on_run_done(task)
+    finally:
+        loop.close()
+
+    assert server._CURRENT["running"] is False
+    assert server._CURRENT["error"] == "run cancelled"
+    server._reset_registry()
+
+
+def test_on_run_done_exception_path() -> None:
+    server._reset_registry()
+    loop = asyncio.new_event_loop()
+    try:
+
+        async def failer() -> RunResult:
+            raise RuntimeError("oh no")
+
+        task = loop.create_task(failer())
+        loop.run_until_complete(asyncio.sleep(0))
+        with contextlib.suppress(RuntimeError):
+            loop.run_until_complete(task)
+        server._CURRENT["task"] = task
+        server._CURRENT["running"] = True
+        server._on_run_done(task)
+    finally:
+        loop.close()
+
+    assert server._CURRENT["running"] is False
+    assert server._CURRENT["error"] == "oh no"
+    server._reset_registry()

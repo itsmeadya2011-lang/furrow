@@ -603,3 +603,105 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_print_state_no_tasks_branch(runner: CliRunner, tmp_path: Path) -> None:
+    state = RunState(goal="g", original_goal="g", cycles=0, tasks=[])
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Tasks:  (none)" in result.output
+
+
+def test_print_state_no_usage_line_when_zero_calls(runner: CliRunner, tmp_path: Path) -> None:
+    state = RunState(
+        goal="g",
+        original_goal="g",
+        cycles=1,
+        usage=Usage(calls=0, input_tokens=100, output_tokens=50),
+        tasks=[TaskModel(id="t1", description="x", status="pending")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "LLM usage:" not in result.output
+
+
+def test_result_line_skipped() -> None:
+    from furrow.cli.main import _result_line
+
+    text, colour = _result_line(passed=False, skipped=True, tests_run=0)
+    assert "SKIPPED" in text
+    assert colour == "yellow"
+
+
+def test_result_line_passed() -> None:
+    from furrow.cli.main import _result_line
+
+    text, colour = _result_line(passed=True, skipped=False, tests_run=5)
+    assert "PASSED" in text
+    assert colour == "green"
+
+
+def test_result_line_not_run() -> None:
+    from furrow.cli.main import _result_line
+
+    text, colour = _result_line(passed=False, skipped=False, tests_run=0)
+    assert "NOT RUN" in text
+    assert colour == "yellow"
+
+
+def test_result_line_failed() -> None:
+    from furrow.cli.main import _result_line
+
+    text, colour = _result_line(passed=False, skipped=False, tests_run=3)
+    assert "FAILED" in text
+    assert colour == "red"
+
+
+@pytest.mark.asyncio
+async def test_release_client_without_aclose_does_not_raise() -> None:
+    from furrow.cli.main import _release_client
+
+    await _release_client(object())
+
+
+@pytest.mark.asyncio
+async def test_release_client_with_non_awaitable_aclose_does_not_raise() -> None:
+    from furrow.cli.main import _release_client
+
+    class SyncCloser:
+        def aclose(self) -> str:
+            return "done"
+
+    await _release_client(SyncCloser())
+
+
+@pytest.mark.asyncio
+async def test_release_client_with_awaitable_aclose() -> None:
+    from furrow.cli.main import _release_client
+
+    class AsyncCloser:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def aclose(self) -> None:
+            self.called = True
+
+    client = AsyncCloser()
+    await _release_client(client)
+    assert client.called is True
+
+
+def test_run_settings_with_model_override() -> None:
+    from furrow.cli.main import _run_settings
+    from furrow.config import settings as global_settings
+
+    original_model = global_settings.model
+    run_settings = _run_settings(model="test-model-xyz")
+    assert run_settings.model == "test-model-xyz"
+    assert global_settings.model == original_model

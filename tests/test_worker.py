@@ -851,6 +851,9 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
+
+@pytest.mark.asyncio
+async def test_list_files_runs_in_thread_pool(tmp_path):
     import threading
 
     for i in range(5):

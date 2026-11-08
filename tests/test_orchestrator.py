@@ -977,3 +977,161 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+def test_one_line_collapses_whitespace():
+    assert Orchestrator._one_line("a   b\tc\nd") == "a b c d"
+
+
+def test_clip():
+    assert Orchestrator._clip("short", 10) == "short"
+    assert Orchestrator._clip("a" * 10, 10) == "a" * 10
+    out = Orchestrator._clip("a" * 20, 10)
+    assert out.endswith("…")
+    assert len(out) == 10
+
+
+def test_escape():
+    assert Orchestrator._escape("a[b]") == r"a\[b]"
+
+
+def test_plan_waves_cyclic():
+    t1 = TaskModel(id="A", description="a", dependencies=["B"])
+    t2 = TaskModel(id="B", description="b", dependencies=["A"])
+    orch = Orchestrator.__new__(Orchestrator)
+    waves = orch._plan_waves([t1, t2])
+    assert waves == []
+    assert t1.status == "blocked"
+    assert t2.status == "blocked"
+
+
+def test_plan_waves_empty():
+    assert Orchestrator._plan_waves(None, []) == []
+
+
+def test_plan_waves_missing_deps():
+    t1 = TaskModel(id="A", description="a", dependencies=["zzz"])
+    orch = Orchestrator.__new__(Orchestrator)
+    waves = orch._plan_waves([t1])
+    assert len(waves) == 1
+    assert waves[0][0].id == "A"
+
+
+def test_plan_waves_linear():
+    t1 = TaskModel(id="A", description="a")
+    t2 = TaskModel(id="B", description="b", dependencies=["A"])
+    t3 = TaskModel(id="C", description="c", dependencies=["B"])
+    orch = Orchestrator.__new__(Orchestrator)
+    waves = orch._plan_waves([t1, t2, t3])
+    assert len(waves) == 3
+    assert [w[0].id for w in waves] == ["A", "B", "C"]
+
+
+def test_plan_waves_diamond():
+    t1 = TaskModel(id="A", description="a")
+    t2 = TaskModel(id="B", description="b", dependencies=["A"])
+    t3 = TaskModel(id="C", description="c", dependencies=["A"])
+    t4 = TaskModel(id="D", description="d", dependencies=["B", "C"])
+    orch = Orchestrator.__new__(Orchestrator)
+    waves = orch._plan_waves([t1, t2, t3, t4])
+    assert len(waves) == 3
+    assert {t.id for t in waves[0]} == {"A"}
+    assert {t.id for t in waves[1]} == {"B", "C"}
+    assert {t.id for t in waves[2]} == {"D"}
+
+
+
+@pytest.mark.asyncio
+async def test_context_empty_and_nonempty(tmp_path, monkeypatch):
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    assert orch._context() == ""
+    orch._feedback = "fb"
+    assert orch._context() == "fb"
+
+
+@pytest.mark.asyncio
+async def test_execute_failed_stopped_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    async def boom(plan):
+        raise RuntimeError("exec boom")
+    orch._execute = boom
+    result = await orch.run()
+    assert result.stopped_reason == "execute failed: exec boom"
+
+
+@pytest.mark.asyncio
+async def test_tester_failed_stopped_reason(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    class BoomTester:
+        async def run(self, goal, tasks):
+            raise RuntimeError("tester boom")
+    orch.tester = BoomTester()
+    result = await orch.run()
+    assert result.stopped_reason == "tester failed: tester boom"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_skipped_reset(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "skipped"
+    pt = TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)
+    plan = Plan(tasks=[pt], rationale="r")
+    orch._merge_plan(plan)
+    # source doesn't handle "skipped" explicitly -> falls to else -> pending
+    assert plan.tasks[0].status == "pending"
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_new_task_appended(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    plan = Plan(tasks=[TaskModel(id="newtask", description="new")], rationale="r")
+    orch._merge_plan(plan)
+    assert any(t.id == "newtask" for t in orch.tasks)
+
+
+@pytest.mark.asyncio
+async def test_planner_retry_success(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = 0
+        async def complete(self, prompt, system="", model=None):
+            self.calls += 1
+            if self.calls == 1:
+                return "not json"
+            return '{"tasks": [{"id": "t1", "description": "do t1"}], "rationale": "r"}'
+
+    client = FakeClient()
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=client)
+    from furrow.agents.planner import PlannerAgent
+    orch.planner = PlannerAgent(client=client, settings=settings)
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.cycles == 1

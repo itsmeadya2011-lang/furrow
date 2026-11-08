@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -868,3 +869,121 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+@pytest.mark.asyncio
+async def test_read_file_existing_file(tmp_path):
+    target = tmp_path / "hello.txt"
+    target.write_text("hello world", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    result = await client.read_file(str(target))
+
+    assert result == "hello world"
+
+
+@pytest.mark.asyncio
+async def test_read_file_nonexistent_raises(tmp_path):
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    missing = tmp_path / "missing.txt"
+
+    with pytest.raises(FileNotFoundError):
+        await client.read_file(str(missing))
+
+
+@pytest.mark.asyncio
+async def test_read_file_accepts_path_object(tmp_path):
+    target = tmp_path / "hello.txt"
+    target.write_text("path content", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    result = await client.read_file(Path(target))
+
+    assert result == "path content"
+
+
+@pytest.mark.asyncio
+async def test_write_file_creates_new_file(tmp_path):
+    target = tmp_path / "out.txt"
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    await client.write_file(str(target), "new content")
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "new content"
+
+
+@pytest.mark.asyncio
+async def test_write_file_creates_parent_directories(tmp_path):
+    target = tmp_path / "nested" / "deep" / "out.txt"
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    await client.write_file(str(target), "nested content")
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == "nested content"
+
+
+@pytest.mark.asyncio
+async def test_write_file_overwrites_existing(tmp_path):
+    target = tmp_path / "out.txt"
+    target.write_text("old", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    await client.write_file(str(target), "new")
+
+    assert target.read_text(encoding="utf-8") == "new"
+
+
+@pytest.mark.asyncio
+async def test_write_file_empty_content(tmp_path):
+    target = tmp_path / "empty.txt"
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    await client.write_file(str(target), "")
+
+    assert target.exists()
+    assert target.read_text(encoding="utf-8") == ""
+
+
+def test_list_files_known_directory(tmp_path):
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    (tmp_path / "b.txt").write_text("b", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    result = client.list_files(tmp_path)
+
+    assert sorted(result) == ["a.txt", "b.txt"]
+
+
+def test_list_files_nonexistent_directory_returns_empty(tmp_path):
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    missing = tmp_path / "nope"
+
+    result = client.list_files(missing)
+
+    assert result == []
+
+
+def test_list_files_returns_relative_paths(tmp_path):
+    (tmp_path / "a.txt").write_text("a", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    result = client.list_files(tmp_path)
+
+    assert result == ["a.txt"]
+    assert all(not Path(p).is_absolute() for p in result)
+
+
+def test_list_files_finds_files_recursively(tmp_path):
+    sub = tmp_path / "sub" / "deep"
+    sub.mkdir(parents=True)
+    (tmp_path / "root.txt").write_text("r", encoding="utf-8")
+    (sub / "leaf.txt").write_text("l", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    result = client.list_files(tmp_path)
+
+    assert "root.txt" in result
+    assert str(Path("sub") / "deep" / "leaf.txt") in result
+    assert all(not Path(p).is_absolute() for p in result)

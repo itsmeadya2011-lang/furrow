@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
+from furrow.agents.tester import (
+    TesterAgent,
+    _looks_like_failure,
+    parse_test_output,
+    resolve_test_timeout,
+)
 from furrow.config import Settings, TestResult
 
 
@@ -481,3 +486,231 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
     assert head_start not in prompt
+    assert "UNIQUE_TAIL_MARKER_777" in prompt
+
+
+def test_truncation_keeps_tail_with_summary_marker_second_case(tmp_path, monkeypatch):
+    """Old head-only behaviour is gone - beginning of output is not kept."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    head_start = "UNIQUE_HEAD_MARKER_111"
+    filler = "M" * 25005
+    tail = (
+        "\n=========================== 2 failed, 5 passed in 1.23s "
+        "===========================\nUNIQUE_TAIL_MARKER_777\n"
+    )
+    stdout = (head_start + filler + tail).encode()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stdout=stdout)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("llm down"))
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+    assert res.passed is False
+    assert "[... output truncated ...]" in res.summary
+    assert "2 failed" in " ".join(res.failures)
+    assert head_start not in res.summary
+    assert head_start not in " ".join(res.failures)
+    assert client.prompts
+    prompt = client.prompts[0]
+    assert "[... output truncated ...]" in prompt
+    assert "2 failed" in prompt
+    assert "UNIQUE_TAIL_MARKER_777" in prompt
+    assert head_start not in prompt
+
+# --- Appended tests ---
+
+def test_parse_test_output_pytest_failed():
+    output = "FAILED tests/test_x.py::test_y - AssertionError: expected 1 got 2"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    assert failures[0]["file"] == "tests/test_x.py"
+    assert failures[0]["test"] == "test_y"
+    assert "AssertionError: expected 1 got 2" in (failures[0].get("error") or "")
+
+
+def test_parse_test_output_file_line_col():
+    output = "src/foo.py:42:7: error message"
+    failures = parse_test_output(output)
+    assert failures
+    match = next((f for f in failures if f.get("file") == "src/foo.py"), None)
+    assert match is not None
+    assert match["line"] == 42
+
+
+def test_parse_test_output_file_line():
+    output = "src/foo.py:42"
+    failures = parse_test_output(output)
+    assert failures
+    match = next((f for f in failures if f.get("file") == "src/foo.py"), None)
+    assert match is not None
+    assert match["line"] == 42
+
+
+def test_parse_test_output_exception():
+    output = "FAILED tests/test_x.py::test_y\nValueError: bad value"
+    failures = parse_test_output(output)
+    assert failures
+    assert any("ValueError: bad value" in (f.get("error") or "") for f in failures)
+
+
+def test_parse_test_output_exception_when_no_other_failures():
+    output = "ValueError: bad value"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    assert failures[0].get("error") == "ValueError: bad value"
+
+
+def test_parse_test_output_dedup():
+    output = "FAILED tests/test_x.py::test_y - err\nFAILED tests/test_x.py::test_y - err again"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+
+
+def test_parse_test_output_empty():
+    assert parse_test_output("") == []
+
+
+def test_detect_tests_dir_with_pyproject(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_with_pytest_ini(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "pytest.ini").write_text("[pytest]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_with_setup_cfg(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "setup.cfg").write_text("[tool:pytest]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_with_tox_ini(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tox.ini").write_text("[tox]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_with_requirements(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "requirements.txt").write_text("pytest\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_jest_with_pnpm(tmp_path):
+    (tmp_path / "jest.config.js").write_text("module.exports = {};\n")
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["pnpm", "test", "--silent"]
+
+
+def test_detect_jest_with_yarn(tmp_path):
+    (tmp_path / "jest.config.js").write_text("module.exports = {};\n")
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "yarn.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["yarn", "test", "--silent"]
+
+
+def test_detect_package_json_test_script_pnpm(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts":{"test":"vitest"}}')
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["pnpm", "test", "--silent"]
+
+
+def test_detect_package_json_test_script_yarn(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts":{"test":"vitest"}}')
+    (tmp_path / "yarn.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["yarn", "test", "--silent"]
+
+
+def test_detect_go_mod(tmp_path):
+    (tmp_path / "go.mod").write_text("module example.com/foo\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["go", "test", "./..."]
+
+
+def test_detect_python_marker_without_tests_dir(tmp_path):
+    (tmp_path / "setup.cfg").write_text("[tool:pytest]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_package_json_invalid_json(tmp_path):
+    (tmp_path / "package.json").write_text("{not valid json")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    # Falls through to npm test fallback when package.json exists
+    assert cmd == ["npm", "test", "--silent"]
+
+
+def test_resolve_test_timeout_non_numeric():
+    settings = Settings(_env_file=None).model_copy(update={"test_timeout": "abc"})
+    assert resolve_test_timeout(settings) == 600.0
+
+
+def test_resolve_test_timeout_negative():
+    settings = Settings(_env_file=None).model_copy(update={"test_timeout": -5})
+    assert resolve_test_timeout(settings) == 600.0
+
+
+def test_resolve_test_timeout_zero():
+    settings = Settings(_env_file=None).model_copy(update={"test_timeout": 0})
+    assert resolve_test_timeout(settings) == 600.0
+
+
+def test_resolve_test_timeout_string_numeric():
+    settings = Settings(_env_file=None).model_copy(update={"test_timeout": "120.5"})
+    assert resolve_test_timeout(settings) == 120.5
+
+
+def test_looks_like_failure_zero_count_variants():
+    for line in [
+        "no error",
+        "none failed",
+        "zero failures",
+        "errors: 0",
+        "Failed: 0",
+        "errors=0",
+    ]:
+        assert _looks_like_failure(line) is False, line
+
+
+def test_looks_like_failure_all_zero_summary():
+    assert _looks_like_failure("FAILED (failures=0, errors=0)") is False
+
+
+def test_looks_like_failure_real_failures():
+    assert _looks_like_failure("1 failed, 4 passed") is True
+    assert _looks_like_failure("FAILED tests/test_x.py::test_y") is True

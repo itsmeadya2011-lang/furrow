@@ -189,3 +189,87 @@ def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Pa
     assert loaded is not None
     assert loaded.tests_run == 0
 
+
+def test_utcnow_returns_valid_iso8601() -> None:
+    from furrow.core.state import utcnow
+
+    value = utcnow()
+    parsed = datetime.fromisoformat(value)
+    assert parsed.tzinfo is not None
+
+
+def test_history_entry_timestamp_default_factory_is_valid() -> None:
+    entry = HistoryEntry(cycle=1)
+    parsed = datetime.fromisoformat(entry.timestamp)
+    assert parsed.tzinfo is not None
+    assert entry.cycle == 1
+
+
+def test_load_returns_none_on_read_text_oserror(tmp_path: Path, monkeypatch) -> None:
+    path = tmp_path / "s.json"
+    path.write_text('{"version": 1, "goal": "g"}', encoding="utf-8")
+    store = StateStore(path)
+
+    def boom(*args, **kwargs):
+        raise OSError("disk on fire")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    assert store.load() is None
+
+
+def test_save_raises_on_tempfile_creation_oserror(tmp_path: Path, monkeypatch) -> None:
+    import tempfile
+
+    store = StateStore(tmp_path / "s.json")
+
+    def boom(*args, **kwargs):
+        raise OSError("no space")
+
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", boom)
+    try:
+        store.save(RunState(goal="g"))
+        raised = False
+    except OSError as exc:
+        raised = True
+        assert "no space" in str(exc)
+    assert raised is True
+    # no stray temp files
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_save_raises_on_replace_oserror(tmp_path: Path, monkeypatch) -> None:
+    import os
+
+    store = StateStore(tmp_path / "s.json")
+
+    def boom(*args, **kwargs):
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(os, "replace", boom)
+    try:
+        store.save(RunState(goal="g"))
+        raised = False
+    except OSError as exc:
+        raised = True
+        assert "replace failed" in str(exc)
+    assert raised is True
+
+
+def test_clear_catches_non_file_not_found_oserror(tmp_path: Path, monkeypatch) -> None:
+    store = StateStore(tmp_path / "s.json")
+    store.save(RunState(goal="g"))
+    assert store.exists() is True
+
+    original_unlink = Path.unlink
+
+    def boom(self, *args, **kwargs):
+        if self == store.path:
+            raise PermissionError("denied")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", boom)
+    # Should not raise
+    store.clear()
+    # File still exists because unlink was blocked
+    assert store.path.is_file() is True
+
