@@ -11,6 +11,7 @@ from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.git import Git
 from furrow.llm import LLMClient
 
 _UNSET = object()
@@ -50,6 +51,7 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self.git = Git(workspace=self.settings.workspace)
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -292,6 +294,7 @@ class Orchestrator:
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
+            await self._maybe_commit()
             if guard_tripped:
                 break
 
@@ -378,6 +381,47 @@ class Orchestrator:
             else:
                 self.tasks.append(pt)
         self._active_ids = {t.id for t in plan.tasks}
+
+    async def _maybe_commit(self) -> None:
+        """Commit all changed files when the workspace is a git repo and there
+        is something to commit.
+
+        Follows the version-control rules from FURROW.md: commit at the end of
+        every cycle that produced changes, never force-push, describe the
+        change not the process.  Git failures are reported as events and never
+        crash the run.
+        """
+        try:
+            is_repo = await self.git.is_repo()
+        except Exception as exc:
+            self.event_bus.emit(Event(type=EventType.ERROR,
+                                      message=f"git: could not check repo: {exc}"))
+            return
+        if not is_repo:
+            return
+
+        files_changed = sorted(
+            {f for t in self.tasks for f in (getattr(t, "files_changed", None) or [])}
+        )
+        if not files_changed:
+            return
+
+        self.event_bus.emit(Event(type=EventType.LOG,
+                                  message="committing changes to git"))
+        commit_result = await self.git.commit(
+            f"furrow: cycle {self.cycles} - {self._one_line(self.goal)[:80]}"
+        )
+        if not commit_result.ok:
+            self.event_bus.emit(Event(type=EventType.ERROR,
+                                      message=f"git commit failed: {commit_result.error or commit_result.combined}"))
+            return
+        push_result = await self.git.push()
+        if not push_result.ok:
+            self.event_bus.emit(Event(type=EventType.ERROR,
+                                      message=f"git push failed: {push_result.error or push_result.combined}"))
+        else:
+            self.event_bus.emit(Event(type=EventType.LOG,
+                                      message="changes pushed to origin"))
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}

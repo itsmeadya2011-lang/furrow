@@ -93,6 +93,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  #usage-cost { color: #8a93a5; font-size: .9rem; margin-left: .5rem; }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
@@ -147,6 +148,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span id="usage-cost">$0.000000</span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -207,6 +209,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    const costEl = document.getElementById('usage-cost');
+    if (costEl) {
+      costEl.textContent = cost > 0 ? '$' + cost.toFixed(6) : '$0.000000';
+    }
   }
 
   function renderTasks(tasks) {
