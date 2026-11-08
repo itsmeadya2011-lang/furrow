@@ -152,35 +152,68 @@ def parse_test_result(text: str) -> TestResult:
         s = strip_code_fences(text) if isinstance(text, str) else str(text)
         lower = s.lower()
 
+        def _coerce_bool(value: Any) -> bool | None:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, (int, float)):
+                return bool(value)
+            if isinstance(value, str):
+                lv = value.strip().lower()
+                if lv in {"true", "yes", "y", "pass", "passed", "success", "ok", "green"}:
+                    return True
+                if lv in {"false", "no", "n", "fail", "failed", "failure", "error", "red"}:
+                    return False
+            return None
+
         passed = True
-        m = re.search(r'"passed"\s*:\s*(true|false)', lower)
-        if m:
+        m = re.search(r'"passed"\s*:\s*(true|false|null)', lower)
+        if m and m.group(1) in {"true", "false"}:
             passed = m.group(1) == "true"
         else:
-            m_true = re.search(r"\bpassed\b\s*[:=]\s*(true|yes|success)\b", lower)
-            m_false = re.search(r"\b(failed|failure)\b\s*[:=]\s*(true|yes)\b", lower)
-            if m_false:
-                passed = False
-            elif m_true:
-                passed = True
-            else:
-                m_success = re.search(
-                    r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
-                    lower,
-                )
-                if m_success:
+            # Try to salvage from near-JSON / non-standard fragments
+            kv = re.search(r'\bpassed\b\s*[:=]\s*"?([A-Za-z]+)"?', lower)
+            if kv:
+                coerced = _coerce_bool(kv.group(1))
+                if coerced is not None:
+                    passed = coerced
+                elif kv.group(1) in {"null", "none"}:
                     passed = True
+            else:
+                m_true = re.search(r"\bpassed\b\s*[:=]\s*(true|yes|success|ok)\b", lower)
+                m_false = re.search(r"\b(failed|failure|error)\b\s*[:=]\s*(true|yes)\b", lower)
+                status_m = re.search(r'\bstatus\b\s*[:=]\s*"?([A-Za-z ]+)"?', lower)
+                if m_false:
+                    passed = False
+                elif m_true:
+                    passed = True
+                elif status_m:
+                    coerced = _coerce_bool(status_m.group(1))
+                    passed = coerced if coerced is not None else True
                 else:
-                    m_fail = re.search(
-                        r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+                    # Zero-counter summaries indicate success
+                    zero_summary = re.search(
+                        r"\b(0\s+failed|0\s+failures?|0\s+errors?|no\s+failures?|all\s+tests?\s+passed|tests?\s+passed)\b",
                         lower,
                     )
-                    passed = not m_fail
+                    if zero_summary:
+                        passed = True
+                    else:
+                        fail_counts = re.findall(r"\b(\d+)\s+(?:failed|failures?|errors?)\b", lower)
+                        if any(int(n) > 0 for n in fail_counts):
+                            passed = False
+                        else:
+                            fail_phrases = re.search(
+                                r"\b(fail(?:ed|ure|ures)?|error(?:s)?|traceback|assertionerror|exception)\b",
+                                lower,
+                            )
+                            # Avoid treating "FAILED (errors=0)" as failure
+                            zero_re = r"errors?\s*[:=]\s*0|fail(?:ures?)?\s*[:=]\s*0"
+                            passed = not bool(fail_phrases and not re.search(zero_re, lower))
 
         summary = s.strip()[:500]
 
         failure_words = re.compile(
-            r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+            r"\b(fail(?:ed|ure|ures)?|error(?:s)?|traceback|assertionerror|exception)\b",
             re.IGNORECASE,
         )
         failures = []
@@ -190,6 +223,14 @@ def parse_test_result(text: str) -> TestResult:
             if not line_stripped:
                 continue
             if failure_words.search(line_stripped):
+                # Skip zero-count summary lines
+                if re.search(
+                    r"\b(0|no|none)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
+                    r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\s*[:=]\s*0\b",
+                    line_stripped,
+                    re.IGNORECASE,
+                ):
+                    continue
                 if line_stripped not in seen:
                     seen.add(line_stripped)
                     failures.append(line_stripped)

@@ -66,33 +66,58 @@ def parse_test_output(output: str) -> list[dict]:
     failures: list[dict] = []
     seen_locations = set()
 
-    # Patterns for pytest-style failures
+    # Patterns for pytest-style failures. Handles common forms:
+    #   FAILED path/to/test.py::test_name - AssertionError
+    #   FAILED path/to/test.py::TestClass::test_name[param] - msg
     pytest_failed_pattern = re.compile(
-        r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE
+        r"^FAILED\s+(\S+?)(?:::+(\S+))?\s*(?:-|:)?\s*(.*)$", re.MULTILINE
     )
     for match in pytest_failed_pattern.finditer(output):
         test_path = match.group(1)
-        test_name = match.group(2)
-        error_msg = match.group(3).strip() if match.group(3) else ""
+        test_name = (match.group(2) or "").strip()
+        error_msg = (match.group(3) or "").strip()
 
-        file_path = test_path
-        if "::" in file_path:
-            file_path = file_path.split("::")[0]
+        # If path itself contains '::' and no separate group captured, split
+        if not test_name and "::" in test_path:
+            parts = test_path.split("::", 1)
+            test_path = parts[0]
+            test_name = parts[1]
+        file_path = test_path.split("::")[0] if "::" in test_path else test_path
 
-        location_key = f"{file_path}::{test_name}"
+        location_key = f"{file_path}::{test_name or test_path}"
         if location_key not in seen_locations:
             failures.append(
                 {
                     "file": file_path,
                     "line": None,
-                    "test": test_name,
+                    "test": test_name or None,
                     "error": error_msg,
                 }
             )
             seen_locations.add(location_key)
 
-    # Pattern for file:line:col
-    file_line_col_pattern = re.compile(r"([^\s:]+\.py):(\d+):(\d+)")
+    # unittest: FAIL: test_name (module.TestClass)
+    unittest_fail_pattern = re.compile(
+        r"^FAIL:\s+([^\s(]+)\s*(?:\(([^)]+)\))?\s*$", re.MULTILINE
+    )
+    for match in unittest_fail_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        context = (match.group(2) or "").strip()
+        location_key = f"unittest::{context}::{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": f"{test_name} ({context})" if context else test_name,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Pattern for file:line:col (common in many runners)
+    exts = r"(?:py|js|ts|tsx|jsx|rb|php|go|rs)"
+    file_line_col_pattern = re.compile(rf"([^\s:()]+?\.{exts}):(\d+):(\d+)")
     for match in file_line_col_pattern.finditer(output):
         file_path = match.group(1)
         line_num = int(match.group(2))
@@ -109,7 +134,7 @@ def parse_test_output(output: str) -> list[dict]:
             seen_locations.add(location_key)
 
     # Pattern for file:line (without col)
-    file_line_pattern = re.compile(r"([^\s:]+\.py):(\d+)(?!\d*:)")
+    file_line_pattern = re.compile(rf"([^\s:()]+?\.{exts}):(\d+)(?!:?\d)")
     for match in file_line_pattern.finditer(output):
         file_path = match.group(1)
         line_num = int(match.group(2))
@@ -126,6 +151,10 @@ def parse_test_output(output: str) -> list[dict]:
                 }
             )
             seen_locations.add(location_key)
+
+    # "Ran N tests" summary lines (unittest / some runners) are not
+    # failures by themselves; keep parsing focused on failures.
+    _ran_tests_pattern = re.compile(r"\bRan\s+(\d+)\s+tests?\b", re.IGNORECASE)
 
     # Extract exception types and messages
     exception_pattern = re.compile(r"([A-Za-z]+Error|[A-Za-z]+Exception):\s*(.+)$", re.MULTILINE)
@@ -202,9 +231,14 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
+            # Check for specific JS/TS test runner configs (robust detection)
+            js_config_patterns = [
+                "vitest.config.*",
+                "playwright.config.*",
+                "jest.config.*",
+            ]
+            for pattern in js_config_patterns:
+                if any(self.workspace.glob(pattern)):
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
@@ -214,7 +248,7 @@ class TesterAgent:
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
-                scripts = pkg_data.get("scripts", {})
+                scripts = pkg_data.get("scripts", {}) if isinstance(pkg_data, dict) else {}
                 if "test" in scripts:
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
@@ -230,6 +264,19 @@ class TesterAgent:
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
+        # Django: manage.py test
+        if (self.workspace / "manage.py").is_file():
+            try:
+                manage_path = self.workspace / "manage.py"
+                manage_text = manage_path.read_text(
+                    encoding="utf-8", errors="ignore"
+                )
+                if "django" in manage_text.lower() or "DJANGO_SETTINGS_MODULE" in manage_text:
+                    return [sys.executable, "manage.py", "test"]
+            except Exception:
+                pass
+            return [sys.executable, "manage.py", "test"]
+
         python_markers = [
             "pyproject.toml",
             "pytest.ini",
@@ -239,6 +286,21 @@ class TesterAgent:
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
+
+        # Ruby: rspec or minitest
+        if (self.workspace / "Gemfile").is_file() or (self.workspace / "Rakefile").is_file():
+            if (self.workspace / "spec").is_dir() or any(self.workspace.glob("**/*_spec.rb")):
+                return ["bundle", "exec", "rspec"]
+            if (self.workspace / "test").is_dir() or any(self.workspace.glob("**/*_test.rb")):
+                return ["bundle", "exec", "rake", "test"]
+            return ["bundle", "exec", "rspec"]
+
+        # PHP: phpunit
+        for php_marker in ("phpunit.xml", "phpunit.xml.dist", "phpunit.dist.xml", "composer.json"):
+            if (self.workspace / php_marker).is_file():
+                if (self.workspace / "vendor" / "bin" / "phpunit").exists():
+                    return ["vendor/bin/phpunit"]
+                return ["phpunit"]
 
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
@@ -283,10 +345,20 @@ class TesterAgent:
             )
 
         if timed_out:
-            status = (
-                f"The test command timed out after {timeout:g}s and was killed; "
-                "the test run did not finish."
-            )
+            # Include last lines of combined output (without timeout sentinel) to
+            # give context on what was running when the timeout occurred.
+            running_hint = combined.strip()
+            if running_hint:
+                tail = "\n".join(running_hint.splitlines()[-12:])
+                status = (
+                    f"The test command timed out after {timeout:g}s and was killed; "
+                    f"the test run did not finish. Last output:\n{tail}"
+                )
+            else:
+                status = (
+                    f"The test command timed out after {timeout:g}s and was killed; "
+                    "the test run did not finish."
+                )
         elif returncode != 0:
             status = f"The test command exited with status {returncode}; the test run failed."
         else:

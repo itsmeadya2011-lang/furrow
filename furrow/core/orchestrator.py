@@ -349,20 +349,27 @@ class Orchestrator:
                         self._skip_ids.add(pt.id)
                     else:
                         pt.status = "pending"
+                        self.event_bus.emit(
+                            Event(type=EventType.LOG,
+                                  message=f"task {pt.id} changed - resetting to pending"))
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"
+                        self.event_bus.emit(
+                            Event(type=EventType.LOG,
+                                  message=f"task {pt.id} eligible for retry "
+                                          f"(attempt {old.attempts} of {max_retries + 1})"))
                     else:
                         pt.status = "failed"
+                        self.event_bus.emit(
+                            Event(type=EventType.LOG,
+                                  message=f"task {pt.id} retry budget exhausted - keeping failed"))
                 elif old.status == "blocked":
                     pt.status = "blocked"
+                    self.event_bus.emit(Event(type=EventType.LOG,
+                                            message=f"task {pt.id} remains blocked"))
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
@@ -378,6 +385,9 @@ class Orchestrator:
             else:
                 self.tasks.append(pt)
         self._active_ids = {t.id for t in plan.tasks}
+        self.event_bus.emit(Event(type=EventType.LOG,
+                                  message=f"plan merged: {len(plan.tasks)} tasks "
+                                          f"({len(self._skip_ids)} skipped as completed)"))
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}

@@ -144,12 +144,21 @@ def _extract_command_substitutions(command: str) -> list[str]:
             continue
         if char == "$" and command[index + 1 : index + 2] == "(":
             # Walk to the matching closing parenthesis, nested ones included.
+            # Backtick substitutions inside $(...) are skipped so that
+            # parentheses they contain are not mistaken for $(...) nesting.
             depth = 0
             cursor = index + 1
             while cursor < length:
-                if command[cursor] == "(":
+                c = command[cursor]
+                if c == "`":
+                    end = command.find("`", cursor + 1)
+                    if end == -1:
+                        break  # unclosed backtick inside $(...)
+                    cursor = end + 1
+                    continue
+                if c == "(":
                     depth += 1
-                elif command[cursor] == ")":
+                elif c == ")":
                     depth -= 1
                     if depth == 0:
                         break
@@ -407,8 +416,8 @@ class WorkerAgent:
             return "error: path escapes workspace"
         try:
             content = await self.client.read_file(resolved)
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+        except Exception as exc:  # handle generic errors gracefully
+            return f"error: could not read {path}: {exc}"
         if len(content) > 20000:
             content = content[:20000] + "\n[... output truncated ...]"
         return content
@@ -420,8 +429,8 @@ class WorkerAgent:
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+        except Exception as exc:  # handle generic errors gracefully
+            return f"error: could not write {path}: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
@@ -439,8 +448,13 @@ class WorkerAgent:
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
             try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
-            except ValueError:
+                entry = Path(e)
+                if entry.is_absolute():
+                    rels.append(str(entry.relative_to(base)))
+                else:
+                    rels.append(str(e))
+            except (ValueError, TypeError):
+                # Path escapes the workspace or is not a usable path: keep it as-is.
                 rels.append(str(e))
         return "\n".join(rels)
 
@@ -494,6 +508,8 @@ class WorkerAgent:
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
+        # Report the exit code so the worker can distinguish success from failure.
+        combined += f"\n[exit code: {proc.returncode}]"
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]

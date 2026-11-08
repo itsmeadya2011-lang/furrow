@@ -6,6 +6,7 @@ orchestrator event to the browser:
     GET  /            single page UI (inline HTML/CSS/JS)
     GET  /api/state  persisted run state
     GET  /api/status status of the currently active run
+    GET  /api/runs   recent run history
     POST /api/start  start a background run
     WS   /ws         run a goal and stream its events
 """
@@ -15,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
+from collections import deque
 from typing import Any
 
 import uvicorn
@@ -41,12 +44,138 @@ DEFAULT_CURRENT: dict[str, Any] = {
     "error": None,
 }
 
-# Registry of the run that is currently active (or of the last one that ran).
+# Backward-compatible view of the active run slot (tests and legacy code).
 _CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
 
 # Strong references to background tasks so they are never garbage collected
 # while they are still pending.
 _TASKS: set[asyncio.Task[RunResult]] = set()
+
+
+class RunRegistry:
+    """Tracks the active run and a bounded history of recent runs."""
+
+    def __init__(self, max_history: int = 10) -> None:
+        self._lock = asyncio.Lock()
+        self._history: deque[dict[str, Any]] = deque(maxlen=max_history)
+        self._run_seq = 0
+
+    def start_run(
+        self, orchestrator: Orchestrator, task: asyncio.Task[RunResult], goal: str
+    ) -> None:
+        self._run_seq += 1
+        run_id = self._run_seq
+        entry = {
+            "id": run_id,
+            "goal": goal,
+            "started_at": time.time(),
+            "finished_at": None,
+            "status": "running",
+            "result": None,
+            "error": None,
+        }
+        self._history.appendleft(entry)
+        _CURRENT.update(
+            {
+                "running": True,
+                "orchestrator": orchestrator,
+                "result": None,
+                "task": task,
+                "error": None,
+                "_run_id": run_id,
+            }
+        )
+
+    def get_active(self) -> dict[str, Any] | None:
+        if not _CURRENT.get("running"):
+            return None
+        return dict(_CURRENT)
+
+    def get_last_result(self) -> RunResult | None:
+        result = _CURRENT.get("result")
+        return result if isinstance(result, RunResult) else None
+
+    def is_running(self) -> bool:
+        task = _CURRENT.get("task")
+        if task is None:
+            return False
+        return not task.done()
+
+    def _history_entry_for_task(self, task: asyncio.Task[RunResult]) -> dict[str, Any] | None:
+        run_id = _CURRENT.get("_run_id")
+        if _CURRENT.get("task") is not task or run_id is None:
+            # Try to find by matching running entry if current slot moved on.
+            for entry in self._history:
+                if entry.get("status") == "running":
+                    return entry
+            return None
+        for entry in self._history:
+            if entry.get("id") == run_id:
+                return entry
+        return None
+
+    def complete_run(
+        self,
+        task: asyncio.Task[RunResult],
+        *,
+        result: RunResult | None = None,
+        error: str | None = None,
+        cancelled: bool = False,
+    ) -> bool:
+        """Finalize a run if *task* owns the active slot. Returns True if applied."""
+        if _CURRENT.get("task") is not task:
+            # Another run owns the registry: keep the "running" flag in sync.
+            current = _CURRENT.get("task")
+            _CURRENT["running"] = bool(current is not None and not current.done())
+            return False
+        _CURRENT["running"] = False
+        if cancelled:
+            _CURRENT["error"] = error or "run cancelled"
+        elif error is not None:
+            _CURRENT["error"] = error
+        elif result is not None:
+            _CURRENT["result"] = result
+        entry = self._history_entry_for_task(task)
+        if entry is not None:
+            entry["finished_at"] = time.time()
+            if cancelled:
+                entry["status"] = "cancelled"
+                entry["error"] = _CURRENT.get("error")
+            elif error is not None:
+                entry["status"] = "failed"
+                entry["error"] = error
+            else:
+                entry["status"] = "completed"
+                entry["result"] = result.model_dump(mode="json") if result is not None else None
+        return True
+
+    def clear_running_flag(self, task: asyncio.Task[RunResult]) -> None:
+        if _CURRENT.get("task") is task:
+            _CURRENT["running"] = False
+
+    def cancel_active(self, task: asyncio.Task[RunResult]) -> None:
+        task.cancel()
+        if _CURRENT.get("task") is task:
+            _CURRENT["running"] = False
+            _CURRENT["error"] = "run cancelled"
+            entry = self._history_entry_for_task(task)
+            if entry is not None and entry.get("status") == "running":
+                entry["finished_at"] = time.time()
+                entry["status"] = "cancelled"
+                entry["error"] = "run cancelled"
+
+    def recent_runs(self, limit: int = 10) -> list[dict[str, Any]]:
+        limit = max(1, min(limit, 50))
+        return list(self._history)[:limit]
+
+    def reset(self) -> None:
+        _CURRENT.clear()
+        _CURRENT.update(DEFAULT_CURRENT)
+        self._history.clear()
+        self._run_seq = 0
+
+
+_REGISTRY = RunRegistry()
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -430,8 +559,7 @@ class SocketRequest(BaseModel):
 
 def _reset_registry() -> None:
     """Forget the active run (used by the tests)."""
-    _CURRENT.clear()
-    _CURRENT.update(DEFAULT_CURRENT)
+    _REGISTRY.reset()
 
 
 def _state_store() -> StateStore:
@@ -466,36 +594,25 @@ def _describe_validation_error(exc: ValidationError) -> str:
 def _on_run_done(task: asyncio.Task[RunResult]) -> None:
     """Finalise the registry when a run ends."""
     _TASKS.discard(task)
-    if _CURRENT.get("task") is not task:
-        # Another run owns the registry: never clobber its data, but keep the
-        # "running" flag in sync with the run that is actually in flight.
-        current = _CURRENT.get("task")
-        _CURRENT["running"] = bool(current is not None and not current.done())
-        return
-    _CURRENT["running"] = False
     if task.cancelled():
-        _CURRENT["error"] = "run cancelled"
+        _REGISTRY.complete_run(task, cancelled=True, error="run cancelled")
         return
     exc = task.exception()
     if exc is not None:
         logger.error("Furrow run failed: %s", exc)
-        _CURRENT["error"] = str(exc)
+        _REGISTRY.complete_run(task, error=str(exc))
         return
-    _CURRENT["result"] = task.result()
+    _REGISTRY.complete_run(task, result=task.result())
 
 
 def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
     """Clear the "running" flag when ``task`` is the run that owns the registry."""
-    if _CURRENT.get("task") is task:
-        _CURRENT["running"] = False
+    _REGISTRY.clear_running_flag(task)
 
 
 def _cancel_run(task: asyncio.Task[RunResult]) -> None:
     """Cancel a run and make sure the server does not stay stuck in "running"."""
-    task.cancel()
-    if _CURRENT.get("task") is task:
-        _CURRENT["running"] = False
-        _CURRENT["error"] = "run cancelled"
+    _REGISTRY.cancel_active(task)
 
 
 async def _drain(queue: asyncio.Queue[Event]) -> None:
@@ -595,6 +712,12 @@ async def api_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/runs")
+async def api_runs(limit: int = 10) -> dict[str, Any]:
+    """Recent runs (most recent first)."""
+    return {"runs": _REGISTRY.recent_runs(limit=limit)}
+
+
 @app.post("/api/start")
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
@@ -630,15 +753,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
     run_task = asyncio.create_task(_run_and_drain(orchestrator, bus))
     _TASKS.add(run_task)
     run_task.add_done_callback(_on_run_done)
-    _CURRENT.update(
-        {
-            "running": True,
-            "orchestrator": orchestrator,
-            "result": None,
-            "task": run_task,
-            "error": None,
-        }
-    )
+    _REGISTRY.start_run(orchestrator, run_task, goal)
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
 
 
@@ -647,9 +762,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     """Run a goal and stream every event it emits to the client."""
     await websocket.accept()
     bus = EventBus()
-    queue = bus.subscribe()
+    queue: asyncio.Queue[Event] | None = None
     run_task: asyncio.Task[RunResult] | None = None
     try:
+        queue = bus.subscribe()
         try:
             payload = await websocket.receive_json()
         except WebSocketDisconnect:
@@ -687,15 +803,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         run_task = asyncio.create_task(_run_orchestrator(orchestrator))
         _TASKS.add(run_task)
         run_task.add_done_callback(_on_run_done)
-        _CURRENT.update(
-            {
-                "running": True,
-                "orchestrator": orchestrator,
-                "result": None,
-                "task": run_task,
-                "error": None,
-            }
-        )
+        _REGISTRY.start_run(orchestrator, run_task, goal)
         while True:
             if run_task.done() and queue.empty():
                 break
@@ -704,8 +812,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 continue
             await websocket.send_json(event.to_dict())
-        if run_task is None:  # pragma: no cover - defensive
-            return
         # The run is over: clear the flag right away instead of waiting for the
         # done-callback to be processed.
         _clear_running_flag(run_task)
@@ -734,7 +840,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if run_task is not None and not run_task.done():
             _cancel_run(run_task)
     finally:
-        bus.unsubscribe(queue)
+        if queue is not None:
+            bus.unsubscribe(queue)
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
