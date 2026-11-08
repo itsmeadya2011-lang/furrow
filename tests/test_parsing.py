@@ -108,3 +108,20 @@ def test_parse_test_result_heuristic_assertion_error():
 def test_parse_test_result_never_raises_on_empty_string():
     r = parsing.parse_test_result("")
     assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_unexpected_failure_falls_back_conservatively(monkeypatch):
+    class Boom:
+        def __str__(self):
+            raise RuntimeError("boom")
+
+    def boom_strip_code_fences(_text):
+        raise RuntimeError("strip failed")
+
+    monkeypatch.setattr(parsing, "strip_code_fences", boom_strip_code_fences)
+
+    r = parsing.parse_test_result(Boom())
+    assert isinstance(r, TestResult)
+    assert r.passed is False
+    assert r.failures
+    assert "parse" in r.summary.lower() or "unable" in r.summary.lower()

@@ -140,7 +140,13 @@ def parse_plan(text: str) -> Plan:
 
 
 def parse_test_result(text: str) -> TestResult:
-    """Parse a tester response into TestResult. NEVER raise."""
+    """Parse a tester response into TestResult.
+
+    This function never raises. It prefers structured JSON when present and
+    otherwise applies conservative heuristics over raw output. The outer
+    fallback must not fabricate a pass: if parsing fails unexpectedly, return
+    an un-passed result with a bounded summary of the original text.
+    """
     try:
         try:
             data = parse_json(text)
@@ -197,9 +203,14 @@ def parse_test_result(text: str) -> TestResult:
                     break
 
         return TestResult(passed=passed, summary=summary, failures=failures)
-    except (ValueError, TypeError):
+    except Exception:
         try:
             s = strip_code_fences(text) if isinstance(text, str) else str(text)
-        except (ValueError, TypeError):
+        except Exception:
             s = str(text) if text is not None else ""
-        return TestResult(passed=True, summary=s[:500], failures=[])
+        summary = s.strip()[:500] or "Unable to parse test result"
+        return TestResult(
+            passed=False,
+            summary=summary,
+            failures=["unable to parse test result"],
+        )
