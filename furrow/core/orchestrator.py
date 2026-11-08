@@ -340,9 +340,10 @@ class Orchestrator:
             if old is not None:
                 old_desc = old.description
                 old_files = list(old.files)
-                # Preserve terminal states; only retry-eligible failed tasks may
-                # be reset to pending. Blocked tasks must remain blocked so that
-                # retry budgets and dependency outcomes are not lost across cycles.
+                # Preserve terminal/blocking states across cycles. Completed tasks
+                # are skipped only when unchanged; failed tasks are retried only
+                # while their attempt budget remains; blocked tasks stay blocked so
+                # dependency outcomes are not lost.
                 if old.status == "completed":
                     if old_desc == pt.description and old_files == pt.files:
                         pt.status = "completed"
@@ -350,19 +351,12 @@ class Orchestrator:
                     else:
                         pt.status = "pending"
                 elif old.status == "failed":
-                    if old.attempts <= max_retries:
-                        pt.status = "pending"
-                    else:
-                        pt.status = "failed"
+                    pt.status = "pending" if old.attempts <= max_retries else "failed"
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Non-terminal states (pending/running/unknown) restart as pending.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
