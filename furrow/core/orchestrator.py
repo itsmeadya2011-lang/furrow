@@ -100,6 +100,9 @@ class Orchestrator:
             "goal": self.goal,
             "original_goal": self.original_goal,
             "cycles": self.cycles,
+            "tests_run": self._tests_run,
+            "passed": self._last_test_passed,
+            "skipped": self._tests_skipped,
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
@@ -357,12 +360,9 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Any remaining state (pending, running, skipped) is treated
+                    # as fresh work: reset to pending so it can be executed.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
