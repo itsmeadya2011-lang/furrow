@@ -13,6 +13,7 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 from typing import Any
@@ -711,19 +712,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         _clear_running_flag(run_task)
         if run_task.cancelled():
             return
-        exc = run_task.exception()
-        if exc is not None:
+        try:
+            exc = run_task.exception()
+            if exc is not None:
+                logger.error("Furrow run failed: %s", exc)
+                await _send_error(websocket, f"run failed: {exc}")
+                return
+            result = run_task.result()
+            await websocket.send_json(
+                {
+                    "type": "done",
+                    "message": result.summary,
+                    "data": result.model_dump(mode="json"),
+                }
+            )
+        except Exception as exc:
+            # A run that fails (or a client that disconnects) must never take
+            # the whole server down. Log, close the socket if it is still open,
+            # and let the handler exit cleanly.
             logger.error("Furrow run failed: %s", exc)
-            await _send_error(websocket, f"run failed: {exc}")
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011)
             return
-        result = run_task.result()
-        await websocket.send_json(
-            {
-                "type": "done",
-                "message": result.summary,
-                "data": result.model_dump(mode="json"),
-            }
-        )
     except asyncio.CancelledError:
         # The client went away (or the server is shutting down): stop the run
         # and make sure the server does not stay stuck in the "running" state.

@@ -497,6 +497,13 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        # Surface the exit status. A non-zero exit is normal for shell
+        # commands (a test runner, a linter, a build step), and without the
+        # code the worker only sees the text output and cannot tell a green
+        # "0 failures" from a red "1 failure" that both happened to print
+        # nothing to stdout. Appending it last means it is never lost to
+        # truncation.
+        combined += f"\n[exit {proc.returncode}]"
         return combined
 
     @staticmethod

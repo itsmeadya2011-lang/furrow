@@ -103,6 +103,15 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+    tests_run = getattr(state, "tests_run", 0) or 0
+    if tests_run:
+        last_passed = getattr(state, "last_passed", None)
+        last_skipped = bool(getattr(state, "last_skipped", False))
+        verdict, _ = _result_line(passed=last_passed, skipped=last_skipped, tests_run=tests_run)
+        click.echo(f"  Tests:           {tests_run} run, last: {verdict}")
+        last_summary = getattr(state, "last_summary", "") or ""
+        if last_summary:
+            click.echo(f"  Last test summary: {last_summary}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
