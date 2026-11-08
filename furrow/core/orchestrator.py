@@ -303,6 +303,14 @@ class Orchestrator:
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=self._stopped_reason,
+                data={"stopped_reason": self._stopped_reason, "cycles": self.cycles},
+            )
+        )
+
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
         )
@@ -357,12 +365,8 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending, running, or skipped: always re-run as pending
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
