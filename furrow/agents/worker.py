@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,27 @@ _REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
 _MAX_SUBSTITUTION_DEPTH = 3
+
+
+@dataclass
+class ToolUsage:
+    """Tracks usage statistics for a single tool during a worker run."""
+
+    name: str
+    calls: int = 0
+    successes: int = 0
+    failures: int = 0
+    total_latency_ms: float = 0.0
+
+
+@dataclass
+class IterationSummary:
+    """Summary of a single worker iteration."""
+
+    iteration: int
+    tool_calls: list[str] = field(default_factory=list)
+    tool_results: list[str] = field(default_factory=list)
+    had_errors: bool = False
 
 
 def _normalize_command(command: str) -> str:
@@ -297,12 +319,28 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._tool_usage: dict[str, ToolUsage] = {}
+        self._iteration_summaries: list[IterationSummary] = []
+
+    def _record_tool_call(self, tool_name: str, success: bool, latency_ms: float) -> None:
+        """Record a tool call for statistics."""
+        if tool_name not in self._tool_usage:
+            self._tool_usage[tool_name] = ToolUsage(name=tool_name)
+        usage = self._tool_usage[tool_name]
+        usage.calls += 1
+        usage.total_latency_ms += latency_ms
+        if success:
+            usage.successes += 1
+        else:
+            usage.failures += 1
 
     async def run(self) -> WorkerResult:
         try:
             return await self._run()
         except Exception as exc:  # pragma: no cover - defensive
-            return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
+            return WorkerResult(
+                summary=str(exc), success=False, error=str(exc), iterations=0
+            )
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
@@ -315,6 +353,7 @@ class WorkerAgent:
         iterations = 0
         for i in range(max_iters):
             iterations = i + 1
+            iter_summary = IterationSummary(iteration=iterations)
             response: LLMResponse = await self.client.chat(
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
@@ -325,6 +364,8 @@ class WorkerAgent:
                     success=True,
                     files_changed=sorted(self.files_changed),
                     iterations=iterations,
+                    tool_usage=self._format_tool_usage(),
+                    iteration_summaries=self._format_iteration_summaries(),
                 )
             # append assistant turn
             blocks: list[dict[str, Any]] = []
@@ -334,16 +375,26 @@ class WorkerAgent:
                 blocks.append(
                     {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
                 )
+                iter_summary.tool_calls.append(f"{tc.name}({tc.arguments})")
             messages.append({"role": "assistant", "content": blocks})
 
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
+                import time
+                start = time.monotonic()
                 result = await self._execute_tool(tc)
+                latency_ms = (time.monotonic() - start) * 1000
+                success = not result.startswith("error:")
+                self._record_tool_call(tc.name, success, latency_ms)
+                iter_summary.tool_results.append(f"{tc.name}: {'ok' if success else 'ERROR'} ({latency_ms:.0f}ms)")
+                if not success:
+                    iter_summary.had_errors = True
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
             messages.append({"role": "user", "content": result_blocks})
+            self._iteration_summaries.append(iter_summary)
 
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
@@ -354,7 +405,33 @@ class WorkerAgent:
             files_changed=sorted(self.files_changed),
             iterations=max_iters,
             error="worker iteration budget exhausted",
+            tool_usage=self._format_tool_usage(),
+            iteration_summaries=self._format_iteration_summaries(),
         )
+
+    def _format_tool_usage(self) -> dict[str, dict]:
+        """Format tool usage statistics for the result."""
+        return {
+            name: {
+                "calls": usage.calls,
+                "successes": usage.successes,
+                "failures": usage.failures,
+                "avg_latency_ms": round(usage.total_latency_ms / usage.calls, 1) if usage.calls > 0 else 0,
+            }
+            for name, usage in self._tool_usage.items()
+        }
+
+    def _format_iteration_summaries(self) -> list[dict]:
+        """Format iteration summaries for the result."""
+        return [
+            {
+                "iteration": s.iteration,
+                "tool_calls": s.tool_calls,
+                "tool_results": s.tool_results,
+                "had_errors": s.had_errors,
+            }
+            for s in self._iteration_summaries
+        ]
 
     def _initial_text(self) -> str:
         parts = []
@@ -363,6 +440,8 @@ class WorkerAgent:
         parts.append(f"Task: {self.task.description}")
         parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
         parts.append(f"Workspace: {self.workspace}")
+        if self.task.dependencies:
+            parts.append(f"Depends on: {', '.join(self.task.dependencies)}")
         return "\n".join(parts)
 
     async def _execute_tool(self, tc: ToolCall) -> str:

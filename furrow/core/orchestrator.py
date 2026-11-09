@@ -165,7 +165,12 @@ class Orchestrator:
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
-                plan = await self.planner.plan(self.goal, context=self._context())
+                plan = await self.planner.plan(
+                    self.goal,
+                    context=self._context(),
+                    history=self.history,
+                    tasks=self.tasks,
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -253,21 +258,53 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+
+            # Enhanced no-progress detection
+            # Build a richer signature that includes:
+            # - Task IDs and descriptions (current)
+            # - Files changed in this cycle
+            # - Test pass/fail status
+            # - Number of tasks completed/failed
+            files_changed_this_cycle = sorted(
+                {f for t in plan.tasks for f in (getattr(t, "files_changed", None) or [])}
+            )
+            completed_this_cycle = sum(1 for t in plan.tasks if t.status == "completed")
+            failed_this_cycle = sum(1 for t in plan.tasks if t.status == "failed")
+
+            sig_parts = [
+                "|".join(f"{t.id}:{t.description}" for t in plan.tasks),
+                f"files:{','.join(files_changed_this_cycle)}",
+                f"completed:{completed_this_cycle}",
+                f"failed:{failed_this_cycle}",
+                f"tests_passed:{test_result.passed}",
+            ]
+            sig = ";;".join(sig_parts)
+
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
             no_signal = (not test_result.passed) or skipped
+
+            # Track progress indicators
+            made_progress = (
+                sig != self._prev_sig
+                or (test_result.passed and not skipped)
+                or completed_this_cycle > 0
+                or len(files_changed_this_cycle) > 0
+            )
+
             guard_tripped = False
-            if no_signal and sig == self._prev_sig:
+            if no_signal and not made_progress:
                 self._no_progress += 1
+                # Also check if we're stuck in a loop of similar plans
                 if self._no_progress >= 2:
                     self._stopped_reason = (
                         "no test runner detected" if skipped else "no progress"
                     )
                     guard_tripped = True
             else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
+                # Reset no_progress counter if we made meaningful progress
+                if made_progress:
                     self._no_progress = 0
                 self._prev_sig = sig
 
@@ -470,6 +507,9 @@ class Orchestrator:
                     task.files_changed = sorted(
                         {str(p) for p in (getattr(result, "files_changed", None) or [])}
                     )
+                    # Capture tool usage and iteration summaries for observability
+                    task.tool_usage = getattr(result, "tool_usage", {}) or {}
+                    task.iteration_summaries = getattr(result, "iteration_summaries", []) or []
                     task.finished_at = datetime.now(timezone.utc).isoformat()
                     if success:
                         task.status = "completed"

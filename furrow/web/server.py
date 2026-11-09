@@ -114,6 +114,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-deps {
+    display: flex; gap: .4rem; font-size: .8rem; color: #4c8dff;
+    margin-bottom: .4rem; flex-wrap: wrap;
+  }
+  .panel-dep { background: #1d2430; padding: .1rem .4rem; border-radius: 3px; }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -121,6 +126,40 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-error {
     margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
   }
+  .panel-tool-usage {
+    margin-top: .4rem; font-size: .8rem; color: #8a93a5;
+    border-top: 1px solid #2b3240; padding-top: .4rem;
+  }
+  .panel-tool-usage summary {
+    cursor: pointer; color: #4c8dff;
+  }
+  .panel-tool-usage table {
+    width: 100%; border-collapse: collapse; margin-top: .3rem;
+    font-size: .75rem;
+  }
+  .panel-tool-usage th, .panel-tool-usage td {
+    text-align: left; padding: .2rem .4rem; border-bottom: 1px solid #2b3240;
+  }
+  .panel-tool-usage th { color: #d7dae0; }
+  .panel-files {
+    margin-top: .4rem; font-size: .8rem; color: #8a93a5;
+    border-top: 1px solid #2b3240; padding-top: .4rem;
+  }
+  .panel-files summary { cursor: pointer; color: #4c8dff; }
+  .panel-files ul { margin: .3rem 0 0 1rem; padding: 0; }
+  .panel-files li { color: #d7dae0; }
+  .panel-iterations {
+    margin-top: .4rem; font-size: .8rem; color: #8a93a5;
+    border-top: 1px solid #2b3240; padding-top: .4rem;
+  }
+  .panel-iterations summary { cursor: pointer; color: #4c8dff; }
+  .panel-iteration {
+    margin: .3rem 0; padding: .3rem; background: #10131a; border-radius: 4px;
+  }
+  .panel-iteration-header { font-weight: 700; color: #d7dae0; margin-bottom: .2rem; }
+  .panel-iteration-calls { font-size: .75rem; color: #8a93a5; }
+  .panel-iteration-results { font-size: .75rem; color: #57d38c; margin-top: .1rem; }
+  .panel-iteration-errors { font-size: .75rem; color: #e0685f; margin-top: .1rem; }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
@@ -249,6 +288,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
 
+      // Show dependencies
+      const deps = task.dependencies || [];
+      if (deps.length > 0) {
+        const depsEl = document.createElement('div');
+        depsEl.className = 'panel-deps';
+        deps.forEach(function (dep) {
+          const depEl = document.createElement('span');
+          depEl.className = 'panel-dep';
+          depEl.textContent = 'depends on: ' + dep;
+          depsEl.appendChild(depEl);
+        });
+        panel.appendChild(depsEl);
+      }
+
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
@@ -266,6 +319,100 @@ INDEX_HTML = r"""<!DOCTYPE html>
         errorEl.className = 'panel-error';
         errorEl.textContent = error;
         panel.appendChild(errorEl);
+      }
+
+      // Show files changed
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Files changed (' + filesChanged.length + ')';
+        filesEl.appendChild(summary);
+        const ul = document.createElement('ul');
+        filesChanged.forEach(function (f) {
+          const li = document.createElement('li');
+          li.textContent = f;
+          ul.appendChild(li);
+        });
+        filesEl.appendChild(ul);
+        panel.appendChild(filesEl);
+      }
+
+      // Show tool usage
+      const toolUsage = task.tool_usage || {};
+      if (Object.keys(toolUsage).length > 0) {
+        const toolEl = document.createElement('div');
+        toolEl.className = 'panel-tool-usage';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Tool usage';
+        toolEl.appendChild(summary);
+        const table = document.createElement('table');
+        const thead = document.createElement('thead');
+        const headRow = document.createElement('tr');
+        ['Tool', 'Calls', 'Successes', 'Failures', 'Avg latency (ms)'].forEach(function (h) {
+          const th = document.createElement('th');
+          th.textContent = h;
+          headRow.appendChild(th);
+        });
+        thead.appendChild(headRow);
+        table.appendChild(thead);
+        const tbody = document.createElement('tbody');
+        Object.entries(toolUsage).forEach(function (_ref) {
+          var tool = _ref[0], stats = _ref[1];
+          const row = document.createElement('tr');
+          const tdTool = document.createElement('td');
+          tdTool.textContent = tool;
+          row.appendChild(tdTool);
+          const tdCalls = document.createElement('td');
+          tdCalls.textContent = stats.calls || 0;
+          row.appendChild(tdCalls);
+          const tdSucc = document.createElement('td');
+          tdSucc.textContent = stats.successes || 0;
+          row.appendChild(tdSucc);
+          const tdFail = document.createElement('td');
+          tdFail.textContent = stats.failures || 0;
+          row.appendChild(tdFail);
+          const tdLat = document.createElement('td');
+          tdLat.textContent = stats.avg_latency_ms || 0;
+          row.appendChild(tdLat);
+          tbody.appendChild(row);
+        });
+        table.appendChild(tbody);
+        toolEl.appendChild(table);
+        panel.appendChild(toolEl);
+      }
+
+      // Show iteration summaries
+      const iterations = task.iteration_summaries || [];
+      if (iterations.length > 0) {
+        const iterEl = document.createElement('div');
+        iterEl.className = 'panel-iterations';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Iterations (' + iterations.length + ')';
+        iterEl.appendChild(summary);
+        iterations.forEach(function (iter) {
+          const iterDiv = document.createElement('div');
+          iterDiv.className = 'panel-iteration';
+          const header = document.createElement('div');
+          header.className = 'panel-iteration-header';
+          header.textContent = 'Iteration ' + iter.iteration + (iter.had_errors ? ' \u26a0' : '');
+          iterDiv.appendChild(header);
+          if (iter.tool_calls && iter.tool_calls.length > 0) {
+            const callsDiv = document.createElement('div');
+            callsDiv.className = 'panel-iteration-calls';
+            callsDiv.textContent = 'Calls: ' + iter.tool_calls.join(', ');
+            iterDiv.appendChild(callsDiv);
+          }
+          if (iter.tool_results && iter.tool_results.length > 0) {
+            const resultsDiv = document.createElement('div');
+            resultsDiv.className = iter.had_errors ? 'panel-iteration-errors' : 'panel-iteration-results';
+            resultsDiv.textContent = 'Results: ' + iter.tool_results.join('; ');
+            iterDiv.appendChild(resultsDiv);
+          }
+          iterEl.appendChild(iterDiv);
+        });
+        panel.appendChild(iterEl);
       }
 
       tasksEl.appendChild(panel);

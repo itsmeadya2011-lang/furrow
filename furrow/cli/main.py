@@ -242,6 +242,56 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
 
 
 @main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def config(workspace: Path | None) -> None:
+    """Show and validate the current Furrow configuration."""
+    run_settings = _run_settings(workspace=workspace)
+    model_info = run_settings.get_model_info()
+
+    click.echo("Furrow Configuration")
+    click.echo(f"  Provider:        {model_info['provider']}")
+    click.echo(f"  Model:           {model_info['model']}")
+    click.echo(f"  Planner Model:   {model_info['planner_model']}")
+    click.echo(f"  Worker Model:    {model_info['worker_model']}")
+    click.echo(f"  Tester Model:    {model_info['tester_model']}")
+    click.echo(f"  Workspace:       {run_settings.workspace}")
+    click.echo(f"  Max Parallel:    {run_settings.max_parallel_tasks}")
+    click.echo(f"  Max Cycles:      {run_settings.max_cycles or 'unlimited'}")
+    click.echo(f"  Worker Iters:    {run_settings.max_worker_iterations}")
+    click.echo(f"  Max Retries:     {run_settings.max_retries}")
+    click.echo(f"  Task Retries:    {run_settings.max_task_retries}")
+    click.echo(f"  Request Timeout: {run_settings.request_timeout}s")
+    click.echo(f"  Command Timeout: {run_settings.command_timeout}s")
+    click.echo(f"  Test Timeout:    {run_settings.test_timeout}s")
+    click.echo(f"  Max Tokens:      {run_settings.max_tokens}")
+    click.echo(f"  State File:      {run_settings.state_file}")
+    click.echo(f"  Log Level:       {run_settings.log_level}")
+
+    # Validate API keys
+    warnings = run_settings.validate_api_keys()
+    if warnings:
+        click.echo()
+        click.secho("Warnings:", fg="yellow")
+        for w in warnings:
+            click.secho(f"  ! {w}", fg="yellow")
+    else:
+        click.echo()
+        click.secho("All required API keys are configured.", fg="green")
+
+    # Show pricing overrides if any
+    if run_settings.model_pricing:
+        click.echo()
+        click.echo("Custom Model Pricing:")
+        for model, pricing in run_settings.model_pricing.items():
+            click.echo(f"  {model}: in=${pricing.input_per_million}/M, out=${pricing.output_per_million}/M")
+
+
+@main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind the web server to.")
 @click.option("--port", type=int, default=8000, help="Port to bind the web server to.")
 def web(host: str, port: int) -> None:
