@@ -21,7 +21,7 @@ from furrow.llm import LLMClient
 DEFAULT_TEST_TIMEOUT = 600.0
 
 # Keywords that mark a line as reporting a failure.
-_FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
+_FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion", "exception")
 
 # Counter phrases that mention a failure keyword but report *zero* failures,
 # e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",
@@ -40,6 +40,45 @@ _ALL_ZERO_SUMMARY_RE = re.compile(
     r"(?:\w+\s*[:=]\s*(?:0|none|zero)\s*[,;]?\s*)*\)",
     re.IGNORECASE,
 )
+
+# Patterns for various test frameworks
+_TEST_FRAMEWORK_PATTERNS = {
+    "pytest": [
+        re.compile(r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE),
+        re.compile(r"^PASSED\s+([^\s]+)::([^\s]+)", re.MULTILINE),
+        re.compile(r"=+\s*(\d+)\s+failed", re.MULTILINE),
+        re.compile(r"=+\s*(\d+)\s+passed", re.MULTILINE),
+    ],
+    "unittest": [
+        re.compile(r"^FAIL:\s+(\S+)\s*\((\S+)\)", re.MULTILINE),
+        re.compile(r"^ERROR:\s+(\S+)\s*\((\S+)\)", re.MULTILINE),
+        re.compile(r"^(\S+)\s+\.\.\.\s+(FAIL|ERROR)", re.MULTILINE),
+        re.compile(r"Ran\s+(\d+)\s+tests?\s+in", re.MULTILINE),
+        re.compile(r"(FAILED|OK)\s*\(.*\)", re.MULTILINE),
+    ],
+    "jest": [
+        re.compile(r"^\s*●\s+(\S+)", re.MULTILINE),
+        re.compile(r"Test Suites:\s+(\d+)\s+failed", re.MULTILINE),
+        re.compile(r"Tests:\s+(\d+)\s+failed", re.MULTILINE),
+        re.compile(r"Test Suites:\s+(\d+)\s+passed", re.MULTILINE),
+        re.compile(r"Tests:\s+(\d+)\s+passed", re.MULTILINE),
+    ],
+    "vitest": [
+        re.compile(r"^\s*×\s+(\S+)", re.MULTILINE),
+        re.compile(r"Test Files\s+(\d+)\s+failed", re.MULTILINE),
+        re.compile(r"Tests\s+(\d+)\s+failed", re.MULTILINE),
+    ],
+    "go_test": [
+        re.compile(r"^--- FAIL:\s+(\S+)", re.MULTILINE),
+        re.compile(r"^--- PASS:\s+(\S+)", re.MULTILINE),
+        re.compile(r"FAIL\s+\S+", re.MULTILINE),
+        re.compile(r"PASS\s+\S+", re.MULTILINE),
+    ],
+    "cargo_test": [
+        re.compile(r"^test\s+(\S+)\s+\.\.\.\s+(FAILED|ok)", re.MULTILINE),
+        re.compile(r"test result:\s+(FAILED|ok)\.", re.MULTILINE),
+    ],
+}
 
 
 def resolve_test_timeout(settings: Settings) -> float:
@@ -66,32 +105,13 @@ def parse_test_output(output: str) -> list[dict]:
     failures: list[dict] = []
     seen_locations = set()
 
-    # Patterns for pytest-style failures
-    pytest_failed_pattern = re.compile(
-        r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE
-    )
-    for match in pytest_failed_pattern.finditer(output):
-        test_path = match.group(1)
-        test_name = match.group(2)
-        error_msg = match.group(3).strip() if match.group(3) else ""
+    # Try each framework's patterns
+    for framework, patterns in _TEST_FRAMEWORK_PATTERNS.items():
+        for pattern in patterns:
+            for match in pattern.finditer(output):
+                _extract_failure_from_match(match, failures, seen_locations, framework)
 
-        file_path = test_path
-        if "::" in file_path:
-            file_path = file_path.split("::")[0]
-
-        location_key = f"{file_path}::{test_name}"
-        if location_key not in seen_locations:
-            failures.append(
-                {
-                    "file": file_path,
-                    "line": None,
-                    "test": test_name,
-                    "error": error_msg,
-                }
-            )
-            seen_locations.add(location_key)
-
-    # Pattern for file:line:col
+    # Pattern for file:line:col (generic fallback)
     file_line_col_pattern = re.compile(r"([^\s:]+\.py):(\d+):(\d+)")
     for match in file_line_col_pattern.finditer(output):
         file_path = match.group(1)
@@ -155,6 +175,94 @@ def parse_test_output(output: str) -> list[dict]:
                     break
 
     return failures
+
+
+def _extract_failure_from_match(
+    match: re.Match, failures: list[dict], seen_locations: set, framework: str
+) -> None:
+    """Extract failure info from a regex match based on the framework."""
+    groups = match.groups()
+    
+    if framework == "pytest":
+        if len(groups) >= 2:
+            test_path = groups[0]
+            test_name = groups[1]
+            error_msg = groups[2].strip() if len(groups) > 2 and groups[2] else ""
+
+            file_path = test_path
+            if "::" in file_path:
+                file_path = file_path.split("::")[0]
+
+            location_key = f"{file_path}::{test_name}"
+            if location_key not in seen_locations:
+                failures.append(
+                    {
+                        "file": file_path,
+                        "line": None,
+                        "test": test_name,
+                        "error": error_msg,
+                    }
+                )
+                seen_locations.add(location_key)
+    elif framework == "unittest":
+        if len(groups) >= 2:
+            test_name = groups[0]
+            class_name = groups[1]
+            location_key = f"{class_name}.{test_name}"
+            if location_key not in seen_locations:
+                failures.append(
+                    {
+                        "file": class_name.replace(".", "/") + ".py",
+                        "line": None,
+                        "test": test_name,
+                        "error": "",
+                    }
+                )
+                seen_locations.add(location_key)
+    elif framework in ("jest", "vitest"):
+        if len(groups) >= 1:
+            test_name = groups[0]
+            location_key = f"{framework}:{test_name}"
+            if location_key not in seen_locations:
+                failures.append(
+                    {
+                        "file": None,
+                        "line": None,
+                        "test": test_name,
+                        "error": "",
+                    }
+                )
+                seen_locations.add(location_key)
+    elif framework == "go_test":
+        if len(groups) >= 1:
+            test_name = groups[0]
+            location_key = f"go:{test_name}"
+            if location_key not in seen_locations:
+                failures.append(
+                    {
+                        "file": None,
+                        "line": None,
+                        "test": test_name,
+                        "error": "",
+                    }
+                )
+                seen_locations.add(location_key)
+    elif framework == "cargo_test":
+        if len(groups) >= 2:
+            test_name = groups[0]
+            status = groups[1]
+            if status == "FAILED":
+                location_key = f"rust:{test_name}"
+                if location_key not in seen_locations:
+                    failures.append(
+                        {
+                            "file": None,
+                            "line": None,
+                            "test": test_name,
+                            "error": "",
+                        }
+                    )
+                    seen_locations.add(location_key)
 
 
 class TesterAgent:

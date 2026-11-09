@@ -4,10 +4,11 @@ The server exposes a tiny JSON API plus a websocket that streams every
 orchestrator event to the browser:
 
     GET  /            single page UI (inline HTML/CSS/JS)
-    GET  /api/state  persisted run state
-    GET  /api/status status of the currently active run
-    POST /api/start  start a background run
-    WS   /ws         run a goal and stream its events
+    GET  /health      health check endpoint
+    GET  /api/state   persisted run state
+    GET  /api/status  status of the currently active run
+    POST /api/start   start a background run
+    WS   /ws          run a goal and stream its events
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import time
 from typing import Any
 
 import uvicorn
@@ -30,6 +32,9 @@ from furrow.core.state import StateStore
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Furrow")
+
+# Track server start time for uptime reporting
+_SERVER_START_TIME = time.time()
 
 POLL_INTERVAL = 0.05
 
@@ -47,6 +52,48 @@ _CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
 # Strong references to background tasks so they are never garbage collected
 # while they are still pending.
 _TASKS: set[asyncio.Task[RunResult]] = set()
+
+# Health check endpoint
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for monitoring."""
+    uptime = time.time() - _SERVER_START_TIME
+    return {
+        "status": "healthy",
+        "uptime_seconds": round(uptime, 2),
+        "running": bool(_CURRENT.get("running")),
+        "active_tasks": len(_TASKS),
+        "version": "1.0.0",
+    }
+
+
+@app.get("/health/detailed")
+async def health_detailed() -> dict[str, Any]:
+    """Detailed health check with more diagnostics."""
+    uptime = time.time() - _SERVER_START_TIME
+    orchestrator = _CURRENT.get("orchestrator")
+    result = _CURRENT.get("result")
+    
+    return {
+        "status": "healthy",
+        "uptime_seconds": round(uptime, 2),
+        "running": bool(_CURRENT.get("running")),
+        "active_tasks": len(_TASKS),
+        "version": "1.0.0",
+        "orchestrator": {
+            "cycles": orchestrator.cycles if orchestrator else None,
+            "tasks_count": len(orchestrator.tasks) if orchestrator else 0,
+            "stopped_reason": orchestrator._stopped_reason if orchestrator else None,
+        } if orchestrator else None,
+        "last_result": {
+            "passed": result.passed if result else None,
+            "cycles": result.cycles if result else None,
+            "tasks_completed": result.tasks_completed if result else None,
+            "tasks_failed": result.tasks_failed if result else None,
+            "stopped_reason": result.stopped_reason if result else None,
+        } if result else None,
+        "state_file_exists": StateStore(settings.state_path()).exists(),
+    }
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">

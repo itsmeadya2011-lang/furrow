@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -15,15 +16,22 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
-
     _TENACITY_AVAILABLE = True
 except ImportError:  # pragma: no cover - tenacity is a declared dependency
     _TENACITY_AVAILABLE = False
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+# Circuit breaker states
+_CIRCUIT_CLOSED = "closed"
+_CIRCUIT_OPEN = "open"
+_CIRCUIT_HALF_OPEN = "half_open"
+
+_logger = get_logger(__name__)
 
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
@@ -44,6 +52,48 @@ class LLMResponse:
     stop_reason: str | None = None
     raw: Any = None
     usage: Usage = field(default_factory=Usage)
+
+
+@dataclass
+class CircuitBreaker:
+    """Simple circuit breaker for provider failures."""
+    failure_count: int = 0
+    success_count: int = 0
+    last_failure_time: float = 0
+    state: str = _CIRCUIT_CLOSED
+    failure_threshold: int = 5
+    success_threshold: int = 2
+    timeout: float = 60.0  # seconds to wait before trying half-open
+
+    def record_success(self) -> None:
+        self.failure_count = 0
+        self.success_count += 1
+        if self.state == _CIRCUIT_HALF_OPEN and self.success_count >= self.success_threshold:
+            self.state = _CIRCUIT_CLOSED
+            _logger.info("circuit_breaker_closed", provider=self.__class__.__name__)
+
+    def record_failure(self) -> None:
+        self.failure_count += 1
+        self.success_count = 0
+        self.last_failure_time = time.time()
+        if self.state == _CIRCUIT_CLOSED and self.failure_count >= self.failure_threshold:
+            self.state = _CIRCUIT_OPEN
+            _logger.warning("circuit_breaker_opened", provider=self.__class__.__name__, failures=self.failure_count)
+        elif self.state == _CIRCUIT_HALF_OPEN:
+            self.state = _CIRCUIT_OPEN
+            _logger.warning("circuit_breaker_reopened", provider=self.__class__.__name__)
+
+    def can_execute(self) -> bool:
+        if self.state == _CIRCUIT_CLOSED:
+            return True
+        if self.state == _CIRCUIT_OPEN:
+            if time.time() - self.last_failure_time >= self.timeout:
+                self.state = _CIRCUIT_HALF_OPEN
+                _logger.info("circuit_breaker_half_open", provider=self.__class__.__name__)
+                return True
+            return False
+        # HALF_OPEN
+        return True
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -68,7 +118,15 @@ def _extract_anthropic_usage(response: Any) -> Usage:
         return Usage(calls=1)
     input_tokens = getattr(usage, "input_tokens", 0) or 0
     output_tokens = getattr(usage, "output_tokens", 0) or 0
-    return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1)
+    cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_read_tokens=cache_read_tokens,
+        calls=1,
+    )
 
 
 def _extract_openai_usage(response: Any) -> Usage:
@@ -78,7 +136,16 @@ def _extract_openai_usage(response: Any) -> Usage:
         return Usage(calls=1)
     prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
     completion_tokens = getattr(usage, "completion_tokens", 0) or 0
-    return Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens, calls=1)
+    # OpenAI doesn't currently report cache tokens separately
+    cache_write_tokens = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    cache_read_tokens = getattr(usage, "cache_read_input_tokens", 0) or 0
+    return Usage(
+        input_tokens=prompt_tokens,
+        output_tokens=completion_tokens,
+        cache_write_tokens=cache_write_tokens,
+        cache_read_tokens=cache_read_tokens,
+        calls=1,
+    )
 
 
 def to_anthropic_tools(tools: list[dict]) -> list[dict]:
@@ -218,6 +285,11 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        
+        # Circuit breakers for each provider
+        self._anthropic_circuit = CircuitBreaker()
+        self._openai_circuit = CircuitBreaker()
+        self._ollama_circuit = CircuitBreaker()
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -250,6 +322,16 @@ class LLMClient:
             )
         return self._ollama
 
+    def _get_circuit_breaker(self, provider: Provider) -> CircuitBreaker:
+        """Get the circuit breaker for the given provider."""
+        if provider == Provider.ANTHROPIC:
+            return self._anthropic_circuit
+        elif provider == Provider.OPENAI:
+            return self._openai_circuit
+        elif provider == Provider.OLLAMA:
+            return self._ollama_circuit
+        return self._anthropic_circuit  # default
+
     async def aclose(self) -> None:
         """Release any lazily-created provider clients.
 
@@ -271,33 +353,43 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
-    async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
-        """Run ``call`` and retry it while the error looks transient.
-
-        The call is retried up to ``settings.max_retries`` attempts. Errors that
-        are not retryable (see :func:`_is_retryable`) are raised immediately.
-        """
+    
+    async def _retry_with_circuit(
+        self, call: Callable[[], Awaitable[T]], provider: Provider
+    ) -> T:
+        """Run ``call`` with circuit breaker and retry logic."""
+        circuit = self._get_circuit_breaker(provider)
+        
+        if not circuit.can_execute():
+            raise RuntimeError(f"Circuit breaker open for {provider.value}")
+        
         max_attempts = max(1, int(self.settings.max_retries))
-
-        if _TENACITY_AVAILABLE:
-            async for attempt_manager in AsyncRetrying(
-                stop=stop_after_attempt(max_attempts),
-                wait=wait_exponential(multiplier=1, min=1, max=20),
-                retry=retry_if_exception(_is_retryable),
-                reraise=True,
-            ):
-                with attempt_manager:
-                    return await call()
-
         last_exc: Exception | None = None
+        
         for attempt_index in range(max_attempts):
             try:
-                return await call()
+                result = await call()
+                circuit.record_success()
+                return result
             except Exception as exc:
                 last_exc = exc
+                circuit.record_failure()
+                
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
-                await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
+                
+                # Exponential backoff with jitter
+                wait_time = min(20.0, float(2 ** attempt_index)) + (attempt_index * 0.1)
+                _logger.warning(
+                    "llm_retry_attempt",
+                    provider=provider.value,
+                    attempt=attempt_index + 1,
+                    max_attempts=max_attempts,
+                    wait_time=wait_time,
+                    error=str(exc),
+                )
+                await asyncio.sleep(wait_time)
+        
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
@@ -317,7 +409,7 @@ class LLMClient:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
 
-        return await self._retry(call)
+        return await self._retry_with_circuit(call, provider)
 
     async def chat(
         self,
@@ -342,7 +434,7 @@ class LLMClient:
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
-        return await self._retry(call)
+        return await self._retry_with_circuit(call, provider)
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(
