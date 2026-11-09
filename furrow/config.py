@@ -79,6 +79,8 @@ class Usage(BaseModel):
     output_tokens: int = 0
     calls: int = 0
     cost_usd: float = 0.0
+    # Per-agent breakdown (planner, worker, tester)
+    by_agent: dict[str, "AgentUsage"] = Field(default_factory=dict)
 
     @property
     def total_tokens(self) -> int:
@@ -87,6 +89,32 @@ class Usage(BaseModel):
 
     def add(self, other: Usage) -> Usage:
         """Accumulate *other* into this usage and return self."""
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens
+        self.calls += other.calls
+        self.cost_usd += other.cost_usd
+        # Merge per-agent breakdown
+        for agent, usage in other.by_agent.items():
+            if agent in self.by_agent:
+                self.by_agent[agent] = self.by_agent[agent].add(usage)
+            else:
+                self.by_agent[agent] = usage
+        return self
+
+
+class AgentUsage(BaseModel):
+    """Token usage for a specific agent type."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    calls: int = 0
+    cost_usd: float = 0.0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.input_tokens + self.output_tokens
+
+    def add(self, other: "AgentUsage") -> "AgentUsage":
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.calls += other.calls

@@ -14,6 +14,7 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -30,6 +31,23 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    # Additional dangerous patterns
+    "curl | sh",
+    "curl | bash",
+    "wget | sh",
+    "wget | bash",
+    "curl -fsSL | sh",
+    "curl -fsSL | bash",
+    "base64 -d | sh",
+    "base64 -d | bash",
+    "eval $",
+    "eval \"$",
+    "eval '$",
+    "source <(",
+    ". <(",
+    "process substitution",
+    "/dev/tcp/",
+    "/dev/udp/",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,11 +63,57 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        # Additional dangerous programs
+        "fdisk",
+        "cfdisk",
+        "sfdisk",
+        "gdisk",
+        "partprobe",
+        "kpartx",
+        "losetup",
+        "cryptsetup",
+        "lvm",
+        "vgcreate",
+        "lvcreate",
+        "mkfs.ext2",
+        "mkfs.ext3",
+        "mkfs.ext4",
+        "mkfs.xfs",
+        "mkfs.btrfs",
+        "mkfs.vfat",
+        "mkfs.ntfs",
+        "mkswap",
+        "swapon",
+        "swapoff",
+        "mount",
+        "umount",
+        "fsck",
+        "e2fsck",
+        "xfs_repair",
+        "btrfsck",
     }
+)
+
+# Patterns that indicate potential command injection or obfuscation
+SUSPICIOUS_PATTERNS = (
+    r"base64\s+-d\s*\|\s*(sh|bash)",
+    r"(curl|wget)\s+.*\s*\|\s*(sh|bash)",
+    r"eval\s+\$\{",
+    r"eval\s+\$\([^)]+\)",
+    r"source\s+<\(",
+    r"\.\s+<\(",
+    r"/dev/(tcp|udp)/",
+    r"bash\s+-c\s+.*base64",
+    r"sh\s+-c\s+.*base64",
+    r"python\s+-c\s+.*base64",
+    r"perl\s+-e\s+.*base64",
 )
 
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
+
+# Maximum number of matches returned by the ``search_files`` tool.
+MAX_SEARCH_MATCHES = 200
 
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
@@ -227,6 +291,12 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
 
+    # DENY by SUSPICIOUS PATTERNS (command injection/obfuscation)
+    import re
+    for pattern in SUSPICIOUS_PATTERNS:
+        if re.search(pattern, normalized, re.IGNORECASE):
+            return True
+
     # DENY a force push
     if _is_force_push(segment, normalized):
         return True
@@ -243,6 +313,11 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
+    # Check suspicious patterns on the whole text
+    import re
+    for pattern in SUSPICIOUS_PATTERNS:
+        if re.search(pattern, normalized, re.IGNORECASE):
+            return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
         return True
@@ -297,11 +372,17 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._logger = get_logger("furrow.worker").bind(task_id=task.id, task_desc=task.description[:100])
 
     async def run(self) -> WorkerResult:
+        self._logger.info("worker_started", max_iterations=self.settings.max_worker_iterations)
         try:
-            return await self._run()
+            result = await self._run()
+            self._logger.info("worker_finished", success=result.success, iterations=result.iterations,
+                             files_changed=result.files_changed)
+            return result
         except Exception as exc:  # pragma: no cover - defensive
+            self._logger.error("worker_exception", error=str(exc))
             return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
 
     async def _run(self) -> WorkerResult:
@@ -315,11 +396,13 @@ class WorkerAgent:
         iterations = 0
         for i in range(max_iters):
             iterations = i + 1
+            self._logger.debug("worker_iteration", iteration=iterations)
             response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model, agent="worker"
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
+                self._logger.info("worker_completed", summary=summary[:200])
                 return WorkerResult(
                     summary=summary,
                     success=True,
@@ -339,7 +422,9 @@ class WorkerAgent:
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
+                self._logger.debug("tool_call", tool=tc.name, args=tc.arguments)
                 result = await self._execute_tool(tc)
+                self._logger.debug("tool_result", tool=tc.name, result_preview=result[:200] if isinstance(result, str) else str(result)[:200])
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
@@ -348,6 +433,7 @@ class WorkerAgent:
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        self._logger.warning("worker_budget_exhausted", max_iterations=max_iters)
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -374,6 +460,14 @@ class WorkerAgent:
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
             return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+        if name == "patch_file":
+            return await self._patch_file(str(args.get("path", "")), str(args.get("patch", "")))
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+                str(args.get("include", "")) if args.get("include") is not None else "",
+            )
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -443,6 +537,200 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _patch_file(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not patch.strip():
+            return "error: empty patch"
+        try:
+            # Read the original file
+            original = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: could not read file: {exc}"
+        # Apply the patch
+        try:
+            patched = self._apply_unified_diff(original, patch)
+        except Exception as exc:
+            return f"error: patch failed: {exc}"
+        # Write the patched content
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, patched)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"patched {path} ({len(patched.encode('utf-8'))} bytes)"
+
+    @staticmethod
+    def _apply_unified_diff(original: str, patch: str) -> str:
+        """Apply a unified diff to the original content. Returns the patched content."""
+        import difflib
+        
+        original_lines = original.splitlines(keepends=True)
+        patch_lines = patch.splitlines(keepends=True)
+        
+        # Parse the unified diff header
+        if len(patch_lines) < 3:
+            raise ValueError("Invalid patch format: too short")
+        
+        # Skip the header lines (--- and +++)
+        i = 0
+        while i < len(patch_lines) and (patch_lines[i].startswith("---") or patch_lines[i].startswith("+++")):
+            i += 1
+        
+        # Parse hunks
+        result_lines = original_lines[:]
+        line_offset = 0
+        
+        while i < len(patch_lines):
+            line = patch_lines[i]
+            if not line.startswith("@@"):
+                i += 1
+                continue
+            
+            # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+            import re
+            hunk_match = re.match(r"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@", line)
+            if not hunk_match:
+                raise ValueError(f"Invalid hunk header: {line}")
+            
+            old_start = int(hunk_match.group(1)) - 1  # Convert to 0-indexed
+            old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+            new_start = int(hunk_match.group(3)) - 1  # Convert to 0-indexed
+            new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
+            
+            i += 1
+            hunk_lines = []
+            while i < len(patch_lines) and not patch_lines[i].startswith("@@"):
+                hunk_lines.append(patch_lines[i])
+                i += 1
+            
+            # Apply the hunk
+            # Find the matching context in the original
+            context_before = []
+            context_after = []
+            changes = []
+            
+            for hline in hunk_lines:
+                if hline.startswith(" "):
+                    context_before.append(hline[1:])
+                elif hline.startswith("-"):
+                    context_before.append(hline[1:])
+                    changes.append(("delete", hline[1:]))
+                elif hline.startswith("+"):
+                    changes.append(("add", hline[1:]))
+            
+            # Simple approach: replace the old lines with new lines
+            # Build the new lines for this hunk
+            new_hunk_lines = []
+            for hline in hunk_lines:
+                if hline.startswith(" "):
+                    new_hunk_lines.append(hline[1:])
+                elif hline.startswith("+"):
+                    new_hunk_lines.append(hline[1:])
+                # Skip deleted lines
+            
+            # Replace in result_lines
+            start_idx = old_start + line_offset
+            end_idx = start_idx + old_count
+            
+            # Validate the context matches
+            if start_idx < 0 or end_idx > len(result_lines):
+                raise ValueError(f"Hunk range out of bounds: {start_idx}-{end_idx} (file has {len(result_lines)} lines)")
+            
+            # Check context matches (first and last context lines)
+            if old_count > 0:
+                # Verify first context line if it exists
+                if hunk_lines and hunk_lines[0].startswith(" "):
+                    expected = hunk_lines[0][1:]
+                    actual = result_lines[start_idx] if start_idx < len(result_lines) else ""
+                    if expected != actual:
+                        raise ValueError(f"Context mismatch at line {start_idx + 1}: expected {expected!r}, got {actual!r}")
+            
+            # Apply the change
+            result_lines[start_idx:end_idx] = new_hunk_lines
+            line_offset += len(new_hunk_lines) - old_count
+        
+        return "".join(result_lines)
+
+    async def _search_files(self, pattern: str, path: str, include: str) -> str:
+        """Search for a pattern in files under the workspace."""
+        if not pattern.strip():
+            return "error: empty pattern"
+        
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        try:
+            # Use grep-like search with ripgrep if available, otherwise Python fallback
+            import subprocess
+            cmd = ["rg", "--no-heading", "--line-number", "--color=never"]
+            if include:
+                cmd.extend(["-g", include])
+            cmd.extend([pattern, str(resolved)])
+            
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+            
+            if proc.returncode == 0:
+                output = stdout.decode("utf-8", errors="replace")
+            elif proc.returncode == 1:
+                # No matches found
+                output = ""
+            else:
+                # Try Python fallback
+                output = await self._search_files_python(pattern, resolved, include)
+        except (FileNotFoundError, OSError, ValueError, RuntimeError, asyncio.TimeoutError):
+            # rg not available or error, use Python fallback
+            output = await self._search_files_python(pattern, resolved, include)
+        
+        # Cap the output
+        lines = output.splitlines()
+        if len(lines) > MAX_SEARCH_MATCHES:
+            lines = lines[:MAX_SEARCH_MATCHES]
+            lines.append(f"... ({len(output.splitlines()) - MAX_SEARCH_MATCHES} more matches truncated)")
+        return "\n".join(lines)
+
+    async def _search_files_python(self, pattern: str, resolved: Path, include: str) -> str:
+        """Python fallback for file searching."""
+        import re
+        regex = re.compile(pattern)
+        results = []
+        base = self.workspace.resolve()
+        
+        # Walk the directory
+        for file_path in resolved.rglob("*"):
+            if not file_path.is_file():
+                continue
+            # Check include pattern
+            if include:
+                import fnmatch
+                rel = file_path.relative_to(base)
+                if not fnmatch.fnmatch(str(rel), include):
+                    continue
+            try:
+                content = await self.client.read_file(file_path)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            for i, line in enumerate(content.splitlines(), 1):
+                if regex.search(line):
+                    rel = str(file_path.relative_to(base))
+                    results.append(f"{rel}:{i}:{line}")
+                    if len(results) >= MAX_SEARCH_MATCHES:
+                        break
+            if len(results) >= MAX_SEARCH_MATCHES:
+                break
+        return "\n".join(results)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

@@ -80,6 +80,16 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        click.echo(f"  Estimated cost:  ${usage.cost_usd:.6f}")
+        # Per-agent breakdown
+        if usage.by_agent:
+            click.echo("  By agent:")
+            for agent, agent_usage in sorted(usage.by_agent.items()):
+                click.echo(
+                    f"    {agent}: {agent_usage.calls} calls, {agent_usage.total_tokens} tokens "
+                    f"(in {agent_usage.input_tokens} / out {agent_usage.output_tokens}) "
+                    f"${agent_usage.cost_usd:.6f}"
+                )
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +113,14 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        click.echo(f"  Estimated cost:  ${usage.cost_usd:.6f}")
+        if usage.by_agent:
+            click.echo("  By agent:")
+            for agent, agent_usage in sorted(usage.by_agent.items()):
+                click.echo(
+                    f"    {agent}: {agent_usage.calls} calls, {agent_usage.total_tokens} tokens "
+                    f"${agent_usage.cost_usd:.6f}"
+                )
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:

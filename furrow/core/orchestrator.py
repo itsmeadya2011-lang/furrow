@@ -12,6 +12,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 _UNSET = object()
 
@@ -50,6 +51,8 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        # Structured logger with run context
+        self._logger = get_logger("furrow.orchestrator").bind(goal=goal[:100])
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -154,8 +157,10 @@ class Orchestrator:
             self._resume_state_missing = False
             self.event_bus.emit(Event(type=EventType.LOG,
                                       message="no state file found, starting fresh"))
+            self._logger.info("resume_state_missing", message="no state file found, starting fresh")
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
+        self._logger.info("run_started", original_goal=self.original_goal[:200], max_cycles=self.settings.max_cycles)
 
         while True:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
@@ -163,22 +168,26 @@ class Orchestrator:
                 break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
+            self._logger.info("cycle_started", cycle=self.cycles)
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._logger.error("planner_failed", error=str(e), cycle=self.cycles)
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
                 break
+            self._logger.info("plan_created", cycle=self.cycles, rationale=plan.rationale[:200], task_count=len(plan.tasks))
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
             if not plan.tasks:
+                self._logger.info("goal_complete", cycle=self.cycles, reason="no tasks planned")
                 self.event_bus.emit(
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
@@ -190,6 +199,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._logger.error("execute_failed", error=str(e), cycle=self.cycles)
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
@@ -199,12 +209,14 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._logger.error("tester_failed", error=str(e), cycle=self.cycles)
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 break
             self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
+            self._logger.info("test_run", cycle=self.cycles, passed=test_result.passed, skipped=skipped, summary=test_result.summary[:200])
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             self.event_bus.emit(
                 Event(
@@ -252,6 +264,7 @@ class Orchestrator:
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
             ))
+            self._logger.info("cycle_finished", cycle=self.cycles, tests_passed=test_result.passed, usage_calls=cycle_usage.calls)
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
@@ -265,6 +278,7 @@ class Orchestrator:
                     self._stopped_reason = (
                         "no test runner detected" if skipped else "no progress"
                     )
+                    self._logger.warning("no_progress_guard_tripped", cycle=self.cycles, reason=self._stopped_reason)
                     guard_tripped = True
             else:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
@@ -285,11 +299,13 @@ class Orchestrator:
                 # The state was NOT written: report the failure (including the
                 # path that could not be written) and do NOT emit STATE_SAVED,
                 # which would tell consumers the state was saved when it was not.
+                self._logger.error("state_save_failed", path=str(self.state_store.path), error=str(e))
                 self.event_bus.emit(
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
                 )
             else:
+                self._logger.debug("state_saved", path=str(self.state_store.path))
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
             if guard_tripped:
@@ -302,6 +318,9 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
+        self._logger.info("run_finished", cycles=self.cycles, stopped_reason=self._stopped_reason,
+                          tasks_completed=completed, tasks_failed=failed, tasks_blocked=blocked,
+                          tests_run=self._tests_run, total_cost_usd=self._usage.cost_usd)
 
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
@@ -413,12 +432,14 @@ class Orchestrator:
 
         async def run_one(task: TaskModel) -> None:
             if task.id in self._skip_ids:
+                self._logger.debug("task_skipped", task_id=task.id, reason="already completed")
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
                 return
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
+                self._logger.info("task_started", task_id=task.id, attempt=task.attempts + 1)
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
                 try:
                     result = await worker_for(task).run()
@@ -432,6 +453,7 @@ class Orchestrator:
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()
                     task.status = "pending" if task.attempts <= max_retries else "failed"
+                    self._logger.error("task_exception", task_id=task.id, error=task.error, attempts=task.attempts)
                     self.event_bus.emit(
                         Event(
                             type=EventType.ERROR,
@@ -477,6 +499,8 @@ class Orchestrator:
                         task.status = "pending"
                     else:
                         task.status = "failed"
+                    self._logger.info("task_finished", task_id=task.id, status=task.status, success=success,
+                                     files_changed=task.files_changed, iterations=getattr(result, "iterations", 0))
                     self.event_bus.emit(
                         Event(
                             type=EventType.TASK_FINISHED,

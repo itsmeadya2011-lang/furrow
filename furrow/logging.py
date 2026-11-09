@@ -46,11 +46,13 @@ def configure_logging(level: str = "INFO") -> None:
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
+            # Use console renderer for human-readable output in development,
+            # JSON renderer for production
+            structlog.dev.ConsoleRenderer(colors=True) if sys.stdout.isatty() else structlog.processors.JSONRenderer(),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
@@ -64,3 +66,10 @@ def get_logger(name: str) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger(name)
     return logging.getLogger(name)
+
+
+def bind_context(logger: Any, **kwargs: Any) -> Any:
+    """Bind context variables to a logger for structured logging."""
+    if _STRUCTLOG_AVAILABLE and hasattr(logger, "bind"):
+        return logger.bind(**kwargs)
+    return logger

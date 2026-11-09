@@ -302,17 +302,17 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(self, prompt: str, system: str = "", model: str | None = None, agent: str | None = None) -> str:
         model = model or self.settings.model
         provider = self.settings.provider
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
-                response = await self._complete_anthropic(prompt, system, model)
+                response = await self._complete_anthropic(prompt, system, model, agent)
             elif provider == Provider.OPENAI:
-                response = await self._complete_openai(self.openai, prompt, system, model)
+                response = await self._complete_openai(self.openai, prompt, system, model, agent)
             elif provider == Provider.OLLAMA:
-                response = await self._complete_openai(self.ollama, prompt, system, model)
+                response = await self._complete_openai(self.ollama, prompt, system, model, agent)
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
@@ -325,26 +325,27 @@ class LLMClient:
         tools: list[dict] | None = None,
         system: str = "",
         model: str | None = None,
+        agent: str | None = None,
     ) -> LLMResponse:
         model = model or self.settings.model
         provider = self.settings.provider
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
-                return await self._chat_anthropic(messages, tools, system, model)
+                return await self._chat_anthropic(messages, tools, system, model, agent)
             elif provider == Provider.OPENAI:
                 return await self._chat_openai_compatible(
-                    self.openai, messages, tools, system, model
+                    self.openai, messages, tools, system, model, agent
                 )
             elif provider == Provider.OLLAMA:
                 return await self._chat_openai_compatible(
-                    self.ollama, messages, tools, system, model
+                    self.ollama, messages, tools, system, model, agent
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
         return await self._retry(call)
 
-    async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
+    async def _complete_anthropic(self, prompt: str, system: str, model: str, agent: str | None = None) -> LLMResponse:
         response = await self.anthropic.messages.create(
             model=model,
             max_tokens=self.settings.max_tokens,
@@ -360,11 +361,11 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._add_usage(usage, agent)
         return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _complete_openai(
-        self, client: AsyncOpenAI, prompt: str, system: str, model: str
+        self, client: AsyncOpenAI, prompt: str, system: str, model: str, agent: str | None = None
     ) -> LLMResponse:
         response = await client.chat.completions.create(
             model=model,
@@ -387,8 +388,21 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._add_usage(usage, agent)
         return LLMResponse(text=text, raw=response, usage=usage)
+
+    def _add_usage(self, usage: Usage, agent: str | None = None) -> None:
+        """Add usage to total and per-agent breakdown."""
+        self.total_usage.add(usage)
+        if agent:
+            if agent not in self.total_usage.by_agent:
+                from furrow.config import AgentUsage
+                self.total_usage.by_agent[agent] = AgentUsage()
+            agent_usage = self.total_usage.by_agent[agent]
+            agent_usage.input_tokens += usage.input_tokens
+            agent_usage.output_tokens += usage.output_tokens
+            agent_usage.calls += usage.calls
+            agent_usage.cost_usd += usage.cost_usd
 
     async def _chat_anthropic(
         self,
@@ -396,6 +410,7 @@ class LLMClient:
         tools: list[dict] | None,
         system: str,
         model: str,
+        agent: str | None = None,
     ) -> LLMResponse:
         request_tools = to_anthropic_tools(tools or [])
         request_messages = to_anthropic_messages(messages)
@@ -422,7 +437,7 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._add_usage(usage, agent)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
@@ -438,6 +453,7 @@ class LLMClient:
         tools: list[dict] | None,
         system: str,
         model: str,
+        agent: str | None = None,
     ) -> LLMResponse:
         request_messages = to_openai_messages(messages)
         if system:
@@ -473,7 +489,7 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._add_usage(usage, agent)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
