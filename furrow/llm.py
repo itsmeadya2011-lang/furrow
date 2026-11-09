@@ -3,15 +3,16 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, TypedDict, cast
 
 import aiofiles
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
+from furrow.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitOpenError
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
@@ -30,11 +31,22 @@ RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 T = TypeVar("T")
 
 
+class ToolArguments(TypedDict, total=False):
+    """TypedDict for tool call arguments."""
+    path: str
+    content: str
+    command: str
+
+
+def _empty_tool_arguments() -> ToolArguments:
+    return {}
+
+
 @dataclass(slots=True)
 class ToolCall:
     id: str
     name: str
-    arguments: dict[str, Any] = field(default_factory=dict)
+    arguments: ToolArguments = field(default_factory=_empty_tool_arguments)
 
 
 @dataclass(slots=True)
@@ -42,7 +54,7 @@ class LLMResponse:
     text: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
     stop_reason: str | None = None
-    raw: Any = None
+    raw: object = None
     usage: Usage = field(default_factory=Usage)
 
 
@@ -61,7 +73,7 @@ def _is_retryable(exc: BaseException) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
-def _extract_anthropic_usage(response: Any) -> Usage:
+def _extract_anthropic_usage(response: object) -> Usage:
     """Pull token usage out of an Anthropic messages response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -71,7 +83,7 @@ def _extract_anthropic_usage(response: Any) -> Usage:
     return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1)
 
 
-def _extract_openai_usage(response: Any) -> Usage:
+def _extract_openai_usage(response: object) -> Usage:
     """Pull token usage out of an OpenAI-compatible response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -198,16 +210,16 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
     return converted
 
 
-def parse_tool_arguments(raw: Any) -> dict:
+def parse_tool_arguments(raw: object) -> ToolArguments:
     """Parse tool call arguments from a dict or JSON string ({} on failure)."""
     if isinstance(raw, dict):
-        return raw
+        return cast(ToolArguments, raw)
     if isinstance(raw, str):
         try:
             parsed = json.loads(raw)
         except (TypeError, ValueError):
             return {}
-        return parsed if isinstance(parsed, dict) else {}
+        return cast(ToolArguments, parsed) if isinstance(parsed, dict) else {}
     return {}
 
 
@@ -218,6 +230,19 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        # Circuit breaker for LLM API calls
+        self._circuit_breaker = CircuitBreaker(
+            config=CircuitBreakerConfig(
+                failure_threshold=self.settings.circuit_breaker_failure_threshold,
+                success_threshold=self.settings.circuit_breaker_success_threshold,
+                timeout=self.settings.circuit_breaker_timeout,
+            )
+        )
+
+    @property
+    def circuit_breaker(self) -> CircuitBreaker:
+        """Access the circuit breaker for monitoring/testing."""
+        return self._circuit_breaker
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -271,6 +296,7 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -278,6 +304,11 @@ class LLMClient:
         are not retryable (see :func:`_is_retryable`) are raised immediately.
         """
         max_attempts = max(1, int(self.settings.max_retries))
+
+        # First check the circuit breaker
+        if self._circuit_breaker.is_open:
+            # The circuit breaker's call method will handle the state transition
+            pass
 
         if _TENACITY_AVAILABLE:
             async for attempt_manager in AsyncRetrying(
@@ -287,12 +318,15 @@ class LLMClient:
                 reraise=True,
             ):
                 with attempt_manager:
-                    return await call()
+                    return await self._circuit_breaker.call(call)
 
         last_exc: Exception | None = None
         for attempt_index in range(max_attempts):
             try:
-                return await call()
+                return await self._circuit_breaker.call(call)
+            except CircuitOpenError:
+                # Circuit is open, don't retry
+                raise
             except Exception as exc:
                 last_exc = exc
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
@@ -415,7 +449,7 @@ class LLMClient:
                 text += block.text
             elif block.type == "tool_use":
                 tool_calls.append(
-                    ToolCall(id=block.id, name=block.name, arguments=block.input or {})
+                    ToolCall(id=block.id, name=block.name, arguments=cast(ToolArguments, block.input or {}))
                 )
         usage = _extract_anthropic_usage(response)
         try:

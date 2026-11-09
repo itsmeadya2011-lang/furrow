@@ -2,6 +2,8 @@
 
 Configures structlog to wrap stdlib logging when available, with a defensive
 fallback to stdlib logging if structlog is missing.
+
+Supports correlation IDs and structured context for better debugging.
 """
 
 from __future__ import annotations
@@ -9,6 +11,15 @@ from __future__ import annotations
 import logging
 import sys
 from typing import Any
+
+from furrow.structured_logging import (
+    configure_logging_with_correlation,
+    get_correlation_id,
+    get_structured_context,
+    merge_structured_context,
+    set_correlation_id,
+    set_structured_context,
+)
 
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
@@ -22,6 +33,7 @@ def _configure_stdlib_fallback(level: str = "INFO") -> None:
 
 try:
     import structlog
+
     _STRUCTLOG_AVAILABLE = True
 except ImportError:
     structlog = None  # type: ignore[assignment]
@@ -29,34 +41,8 @@ except ImportError:
 
 
 def configure_logging(level: str = "INFO") -> None:
-    """Configure structlog to wrap stdlib logging."""
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        format="%(message)s",
-        level=log_level,
-        stream=sys.stdout,
-    )
-
-    if not _STRUCTLOG_AVAILABLE:
-        # Fall back to stdlib logging if structlog is not available
-        _configure_stdlib_fallback(level)
-        return
-
-    structlog.configure(
-        processors=[
-            structlog.contextvars.merge_contextvars,
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(log_level),
-        context_class=dict,
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        cache_logger_on_first_use=True,
-    )
+    """Configure structlog to wrap stdlib logging with correlation ID support."""
+    configure_logging_with_correlation(level)
 
 
 def get_logger(name: str) -> Any:
@@ -64,3 +50,15 @@ def get_logger(name: str) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger(name)
     return logging.getLogger(name)
+
+
+# Re-export structured logging utilities
+__all__ = [
+    "configure_logging",
+    "get_logger",
+    "set_correlation_id",
+    "get_correlation_id",
+    "set_structured_context",
+    "get_structured_context",
+    "merge_structured_context",
+]

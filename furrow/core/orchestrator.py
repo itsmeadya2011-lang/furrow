@@ -12,6 +12,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import set_correlation_id
 
 _UNSET = object()
 
@@ -21,7 +22,8 @@ _MAX_TEXT = 120
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None,
                  settings: Settings | None = None, state_store: StateStore | None = None,
-                 event_bus: EventBus | None = None, resume: bool = False) -> None:
+                 event_bus: EventBus | None = None, resume: bool = False,
+                 correlation_id: str | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
@@ -30,7 +32,7 @@ class Orchestrator:
         self.tasks: list[TaskModel] = []
         self.event_bus = event_bus if event_bus is not None else EventBus()
         self.state_store = (
-            state_store if state_store is not None else StateStore(self.settings.state_path())
+            state_store if state_store is not None else StateStore(self.settings.state_path(), async_write=self.settings.state_async_write)
         )
         self.planner = PlannerAgent(client=self.client, settings=self.settings)
         self.tester = TesterAgent(client=self.client, settings=self.settings,
@@ -50,6 +52,7 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self.correlation_id = set_correlation_id(correlation_id)
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently

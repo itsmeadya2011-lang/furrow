@@ -15,9 +15,9 @@ from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
-# Substring patterns that are denied in a command. They are matched
+# Default substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
-DENIED_COMMANDS = (
+_DEFAULT_DENIED_COMMANDS = (
     "rm -rf /",
     "rm -fr /",
     "rm -rf /*",
@@ -28,13 +28,13 @@ DENIED_COMMANDS = (
     "dd if=",
     "shutdown",
     "reboot",
-    "chmod -R 777 /",
+    "chmod -r 777 /",
     "> /dev/sda",
 )
 
-# Programs that are denied by name: the basename of the first token of a
+# Default programs that are denied by name: the basename of the first token of a
 # segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
-DENIED_PROGRAMS = frozenset(
+_DEFAULT_DENIED_PROGRAMS = frozenset(
     {
         "dd",
         "fdisk",
@@ -68,6 +68,20 @@ _REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
 _MAX_SUBSTITUTION_DEPTH = 3
+
+
+def _get_denied_commands(settings: Settings) -> tuple[str, ...]:
+    """Get the denied command patterns from settings, falling back to defaults."""
+    if settings.denied_command_patterns:
+        return tuple(settings.denied_command_patterns)
+    return _DEFAULT_DENIED_COMMANDS
+
+
+def _get_denied_programs(settings: Settings) -> frozenset[str]:
+    """Get the denied programs from settings, falling back to defaults."""
+    if settings.denied_programs:
+        return frozenset(settings.denied_programs)
+    return _DEFAULT_DENIED_PROGRAMS
 
 
 def _normalize_command(command: str) -> str:
@@ -210,7 +224,7 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     return any(token.lower() == "-f" for token in _shell_tokens(segment))
 
 
-def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
+def _is_dangerous_segment(segment: str, workspace: Path, settings: Settings) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
     if not normalized:
@@ -220,11 +234,11 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     program = _get_program_basename(segment)
     if program:
         program = program.lower()
-        if program in DENIED_PROGRAMS or program.startswith("mkfs."):
+        if program in _get_denied_programs(settings) or program.startswith("mkfs."):
             return True
 
     # DENY by PATTERN
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+    if any(denied.lower() in normalized for denied in _get_denied_commands(settings)):
         return True
 
     # DENY a force push
@@ -235,30 +249,32 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     return bool(_redirects_outside_workspace(segment, workspace))
 
 
-def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
+def _text_is_denied(text: str, workspace: Path, depth: int, settings: Settings) -> bool:
     """Check a command - or the text of a command substitution - against the policy."""
     normalized = _normalize_command(text)
     # The whole text is checked against the pattern list as well, so that a
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+    if any(denied.lower() in normalized for denied in _get_denied_commands(settings)):
         return True
     # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
+    if any(_is_dangerous_segment(segment, workspace, settings) for segment in _split_command_segments(text)):
         return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
-            if _text_is_denied(substitution, workspace, depth + 1):
+            if _text_is_denied(substitution, workspace, depth + 1, settings):
                 return True
     return False
 
 
-def is_command_denied(command: str, workspace: Path) -> bool:
+def is_command_denied(command: str, workspace: Path, settings: Settings | None = None) -> bool:
     """Check if command is denied by security policy."""
+    if settings is None:
+        settings = global_settings
     if not command or not command.strip():
         return False
-    return _text_is_denied(command, workspace, depth=0)
+    return _text_is_denied(command, workspace, depth=0, settings=settings)
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -451,7 +467,7 @@ class WorkerAgent:
         # the command, checks every segment against DENIED_COMMANDS and
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
-        if is_command_denied(command, self.workspace):
+        if is_command_denied(command, self.workspace, self.settings):
             return "error: command denied"
         try:
             shlex.split(command)

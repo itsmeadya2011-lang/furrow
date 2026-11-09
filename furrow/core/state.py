@@ -10,10 +10,13 @@ Design notes:
     A partially written state file can therefore never be observed.
   * Reading is forgiving: a missing or corrupt state file yields ``None``
     instead of raising, so a run can always start fresh.
+  * Optional async writes: when enabled, state saves are performed in a
+    background thread to avoid blocking the main event loop.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -79,8 +82,10 @@ def state_path_for(
 class StateStore:
     """Reads and writes a :class:`RunState` JSON document."""
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, async_write: bool = False) -> None:
         self.path = Path(path)
+        self._async_write = async_write
+        self._write_task: asyncio.Task[None] | None = None
 
     def exists(self) -> bool:
         """True when the state file is present on disk."""
@@ -111,7 +116,19 @@ class StateStore:
         The payload is written to a temporary file in the same directory, then
         flushed, fsync'ed and moved into place with ``os.replace``. If anything
         fails the temporary file is removed and the error is re-raised.
+
+        If async_write is enabled, the write is scheduled in a background thread
+        and this method returns immediately. Errors in the background write are
+        logged but not raised.
         """
+        if self._async_write:
+            self._schedule_async_write(state)
+            return
+
+        self._write_sync(state)
+
+    def _write_sync(self, state: RunState) -> None:
+        """Synchronous write implementation."""
         state.updated_at = utcnow()
         payload = json.dumps(state.model_dump(mode="json"), indent=2)
 
@@ -141,6 +158,32 @@ class StateStore:
                     os.unlink(tmp_name)
                 except OSError:  # pragma: no cover - best effort cleanup
                     logger.warning("Could not remove temporary file %s", tmp_name)
+
+    def _schedule_async_write(self, state: RunState) -> None:
+        """Schedule an async write in a background thread."""
+        # Cancel any pending write
+        if self._write_task is not None and not self._write_task.done():
+            self._write_task.cancel()
+
+        async def write_async() -> None:
+            try:
+                await asyncio.to_thread(self._write_sync, state)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Async state write failed: %s", exc)
+
+        self._write_task = asyncio.create_task(write_async())
+
+    async def flush(self) -> None:
+        """Wait for any pending async write to complete."""
+        if self._write_task is not None:
+            try:
+                await self._write_task
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Async state write failed during flush: %s", exc)
 
     def clear(self) -> None:
         """Delete the state file if it exists; never raise when it is already missing."""

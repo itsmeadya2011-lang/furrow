@@ -132,6 +132,16 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    # Circuit breaker settings
+    circuit_breaker_failure_threshold: int = Field(default=5, ge=1)
+    circuit_breaker_success_threshold: int = Field(default=2, ge=1)
+    circuit_breaker_timeout: float = Field(default=60.0, gt=0)
+    # Security: denied command patterns (extends built-in DENIED_COMMANDS)
+    denied_command_patterns: list[str] = Field(default_factory=list)
+    # Security: denied program names (extends built-in DENIED_PROGRAMS)
+    denied_programs: list[str] = Field(default_factory=list)
+    # State persistence: enable async (non-blocking) state writes
+    state_async_write: bool = False
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

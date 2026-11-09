@@ -5,6 +5,15 @@ Commands:
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
     furrow web             serve the web UI
+    furrow clear           clear the persisted run state
+
+Environment variables:
+    FURROW_PROVIDER        LLM provider (anthropic, openai, ollama)
+    FURROW_MODEL           Default model to use
+    FURROW_ANTHROPIC_API_KEY  Anthropic API key
+    FURROW_OPENAI_API_KEY     OpenAI API key
+    FURROW_OLLAMA_BASE_URL    Ollama base URL
+    FURROW_LOG_LEVEL        Log level (DEBUG, INFO, WARNING, ERROR)
 """
 
 from __future__ import annotations
@@ -27,12 +36,17 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+PROVIDER_HELP = "LLM provider to use (anthropic, openai, ollama)."
+MODEL_HELP = "Override the default LLM model."
+LOG_LEVEL_HELP = "Set the log level (DEBUG, INFO, WARNING, ERROR)."
 
 
 def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    provider: str | None = None,
+    log_level: str | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +60,10 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if provider is not None:
+        updates["provider"] = provider
+    if log_level is not None:
+        updates["log_level"] = log_level
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -173,14 +191,23 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
-def main() -> None:
+@click.option("--provider", type=click.Choice(["anthropic", "openai", "ollama"]), default=None, help=PROVIDER_HELP)
+@click.option("--log-level", type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR"]), default=None, help=LOG_LEVEL_HELP)
+@click.pass_context
+def main(ctx: click.Context, provider: str | None, log_level: str | None) -> None:
     """Furrow - an autonomous coding agent."""
-    configure_logging(settings.log_level)
+    # Store provider and log_level in context for subcommands
+    ctx.ensure_object(dict)
+    ctx.obj["provider"] = provider
+    ctx.obj["log_level"] = log_level
+    # Configure logging with the provided log level or fall back to settings
+    effective_log_level = log_level or settings.log_level
+    configure_logging(effective_log_level)
 
 
 @main.command()
 @click.argument("goal", required=False)
-@click.option("--model", default=None, help="Override the LLM model.")
+@click.option("--model", default=None, help=MODEL_HELP)
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 @click.option(
     "--workspace",
@@ -189,7 +216,9 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.pass_context
 def start(
+    ctx: click.Context,
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
@@ -199,7 +228,9 @@ def start(
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    provider = ctx.obj.get("provider")
+    log_level = ctx.obj.get("log_level")
+    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace, provider=provider, log_level=log_level)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -210,9 +241,12 @@ def start(
     default=None,
     help=WORKSPACE_HELP,
 )
-def status(workspace: Path | None) -> None:
+@click.pass_context
+def status(ctx: click.Context, workspace: Path | None) -> None:
     """Show the state of the persisted Furrow run."""
-    run_settings = _run_settings(workspace=workspace)
+    provider = ctx.obj.get("provider")
+    log_level = ctx.obj.get("log_level")
+    run_settings = _run_settings(workspace=workspace, provider=provider, log_level=log_level)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
@@ -229,9 +263,12 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.pass_context
+def resume(ctx: click.Context, workspace: Path | None, max_cycles: int | None) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    provider = ctx.obj.get("provider")
+    log_level = ctx.obj.get("log_level")
+    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace, provider=provider, log_level=log_level)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
@@ -244,8 +281,12 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
 @main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind the web server to.")
 @click.option("--port", type=int, default=8000, help="Port to bind the web server to.")
-def web(host: str, port: int) -> None:
+@click.pass_context
+def web(ctx: click.Context, host: str, port: int) -> None:
     """Run the Furrow web server."""
+    log_level = ctx.obj.get("log_level")
+    if log_level:
+        configure_logging(log_level)
     from furrow.web.server import run
 
     try:
@@ -253,6 +294,30 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.pass_context
+def clear(ctx: click.Context, workspace: Path | None, yes: bool) -> None:
+    """Clear the persisted Furrow run state."""
+    provider = ctx.obj.get("provider")
+    log_level = ctx.obj.get("log_level")
+    run_settings = _run_settings(workspace=workspace, provider=provider, log_level=log_level)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    if not yes:
+        click.confirm("Are you sure you want to delete the persisted run state?", abort=True)
+    store.clear()
+    click.echo("Furrow run state cleared.")
 
 
 if __name__ == "__main__":

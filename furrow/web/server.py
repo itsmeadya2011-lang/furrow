@@ -4,6 +4,7 @@ The server exposes a tiny JSON API plus a websocket that streams every
 orchestrator event to the browser:
 
     GET  /            single page UI (inline HTML/CSS/JS)
+    GET  /health      health check endpoint
     GET  /api/state  persisted run state
     GET  /api/status status of the currently active run
     POST /api/start  start a background run
@@ -15,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import uuid
 from typing import Any
 
 import uvicorn
@@ -26,6 +28,7 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.logging import set_correlation_id
 
 logger = logging.getLogger(__name__)
 
@@ -436,7 +439,7 @@ def _reset_registry() -> None:
 
 def _state_store() -> StateStore:
     """Store for the persisted run state of the current settings."""
-    return StateStore(settings.state_path())
+    return StateStore(settings.state_path(), async_write=settings.state_async_write)
 
 
 def _run_settings(max_cycles: int | None) -> Settings:
@@ -548,15 +551,18 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, bus: EventBus,
+    correlation_id: str | None = None
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
+    run_settings = _run_settings(max_cycles)
     return Orchestrator(
         goal=goal,
-        settings=_run_settings(max_cycles),
-        state_store=StateStore(settings.state_path()),
+        settings=run_settings,
+        state_store=StateStore(run_settings.state_path(), async_write=run_settings.state_async_write),
         event_bus=bus,
         resume=resume,
+        correlation_id=correlation_id,
     )
 
 
@@ -570,6 +576,16 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
 async def index() -> HTMLResponse:
     """The single page UI."""
     return HTMLResponse(content=INDEX_HTML)
+
+
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for load balancers and monitoring."""
+    return {
+        "status": "healthy",
+        "service": "furrow",
+        "running": bool(_CURRENT.get("running")),
+    }
 
 
 @app.get("/api/state")
@@ -619,7 +635,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus, correlation_id=str(uuid.uuid4()))
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -678,7 +694,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus, correlation_id=str(uuid.uuid4()))
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

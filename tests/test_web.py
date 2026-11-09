@@ -40,6 +40,7 @@ class FakeOrchestrator:
         state_store: Any = None,
         event_bus: Any = None,
         resume: bool = False,
+        correlation_id: str = "",
     ) -> None:
         FakeOrchestrator.instances.append(self)
         FakeOrchestrator.init_kwargs = {
@@ -49,6 +50,7 @@ class FakeOrchestrator:
             "state_store": state_store,
             "event_bus": event_bus,
             "resume": resume,
+            "correlation_id": correlation_id,
         }
         self.goal = goal
         self.event_bus = event_bus
