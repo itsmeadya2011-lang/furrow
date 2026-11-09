@@ -16,7 +16,7 @@ from click.testing import CliRunner
 
 from furrow.cli.main import main
 from furrow.config import RunResult, TaskModel, Usage
-from furrow.core.state import RunState, StateStore
+from furrow.core.state import HistoryEntry, RunState, StateStore
 
 
 class FakeOrchestrator:
@@ -603,3 +603,203 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_init_creates_config_and_env(tmp_path: Path, runner: CliRunner) -> None:
+    """`furrow init` writes config.json and .env.example into the workspace."""
+    result = runner.invoke(main, ["init", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Initialized Furrow project" in result.output
+    config_file = tmp_path / ".furrow" / "config.json"
+    env_file = tmp_path / ".env.example"
+    assert config_file.is_file()
+    assert env_file.is_file()
+    import json
+
+    config = json.loads(config_file.read_text())
+    assert config["provider"] == "anthropic"
+    assert config["max_cycles"] == 0
+    assert "ANTHROPIC_API_KEY=your-anthropic-key-here" in env_file.read_text()
+
+
+def test_init_force_overwrites_existing_config(tmp_path: Path, runner: CliRunner) -> None:
+    """`--force` overwrites an existing config file."""
+    config_file = tmp_path / ".furrow" / "config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("{}")
+
+    result = runner.invoke(main, ["init", "--workspace", str(tmp_path), "--force"])
+
+    assert result.exit_code == 0
+    import json
+
+    assert json.loads(config_file.read_text())["provider"] == "anthropic"
+
+
+def test_init_without_force_keeps_existing_config(tmp_path: Path, runner: CliRunner) -> None:
+    """Without `--force`, an existing config is left untouched."""
+    config_file = tmp_path / ".furrow" / "config.json"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text('{"provider": "ollama"}')
+
+    result = runner.invoke(main, ["init", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Use --force to overwrite." in result.output
+    assert config_file.read_text() == '{"provider": "ollama"}'
+
+
+def test_config_shows_settings(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`furrow config` prints the current settings."""
+    monkeypatch.setattr("furrow.cli.main.settings.anthropic_api_key", "sk-secret-12345")
+
+    result = runner.invoke(main, ["config", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Furrow Configuration" in result.output
+    assert "provider: Provider.ANTHROPIC" in result.output
+    assert "max_cycles: 0" in result.output
+
+
+def test_config_masks_api_keys(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`furrow config` masks API key values."""
+    monkeypatch.setattr("furrow.cli.main.settings.anthropic_api_key", "sk-secret-12345")
+
+    result = runner.invoke(main, ["config", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "sk-secret-12345" not in result.output
+    assert "***" in result.output
+
+
+def _write_history_state(workspace: Path) -> RunState:
+    """Persist a run state with history and usage."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+        history=[
+            HistoryEntry(
+                cycle=1,
+                goal="plan",
+                plan_rationale="start with a plan",
+                task_summaries=["t1: do the thing"],
+                tests_passed=True,
+                usage=Usage(input_tokens=100, output_tokens=50, calls=2),
+            ),
+            HistoryEntry(
+                cycle=2,
+                goal="implement",
+                plan_rationale="write the code",
+                task_summaries=["t1: do the thing"],
+                tests_passed=False,
+                usage=Usage(input_tokens=200, output_tokens=100, calls=4),
+            ),
+        ],
+    )
+    StateStore(workspace / ".furrow" / "state.json").save(state)
+    return state
+
+
+def test_history_shows_run_history(tmp_path: Path, runner: CliRunner) -> None:
+    """`furrow history` prints the persisted cycle history."""
+    _write_history_state(tmp_path)
+
+    result = runner.invoke(main, ["history", "--workspace", str(tmp_path), "--limit", "1"])
+
+    assert result.exit_code == 0
+    assert "Run History" in result.output
+    assert "Original goal: ship it" in result.output
+    assert "Cycle 2:" in result.output
+    assert "implement" in result.output
+    section = result.output.split("Cycle 2:")[1].split("Cycle")[0]
+    assert "FAILED" in section
+
+
+def test_history_without_state(tmp_path: Path, runner: CliRunner) -> None:
+    """`furrow history` reports no state when nothing has run."""
+    result = runner.invoke(main, ["history", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found." in result.output
+
+
+def test_cost_shows_breakdown(tmp_path: Path, runner: CliRunner) -> None:
+    """`furrow cost` prints the total and per-cycle cost breakdown."""
+    _write_history_state(tmp_path)
+
+    result = runner.invoke(main, ["cost", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Cost Breakdown" in result.output
+    assert "Total:" in result.output
+    assert "Calls:           12" in result.output
+    assert "Per Cycle:" in result.output
+    assert "Cycle 1:" in result.output
+    assert "Cycle 2:" in result.output
+
+
+def test_cost_without_state(tmp_path: Path, runner: CliRunner) -> None:
+    """`furrow cost` reports no state when nothing has run."""
+    result = runner.invoke(main, ["cost", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found." in result.output
+
+
+def test_cancel_connect_error(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`furrow cancel` reports a friendly error when the server is unreachable."""
+    import httpx
+
+    def boom(*args: Any, **kwargs: Any) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr("httpx.post", boom)
+
+    result = runner.invoke(main, ["cancel", "--host", "127.0.0.1", "--port", "9999"])
+
+    assert result.exit_code == 1
+    assert "Could not connect to web server" in result.output
+
+
+def test_cancel_success(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`furrow cancel` reports success when the server returns 200."""
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+    def ok(*args: Any, **kwargs: Any) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.post", ok)
+
+    result = runner.invoke(main, ["cancel", "--host", "127.0.0.1", "--port", "8000"])
+
+    assert result.exit_code == 0
+    assert "Run cancelled successfully." in result.output
+
+
+def test_cancel_no_run_in_progress(runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`furrow cancel` reports 409 when there is no run to cancel."""
+
+    class FakeResponse:
+        status_code = 409
+        text = ""
+
+    def conflict(*args: Any, **kwargs: Any) -> FakeResponse:
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.post", conflict)
+
+    result = runner.invoke(main, ["cancel", "--host", "127.0.0.1", "--port", "8000"])
+
+    assert result.exit_code == 0
+    assert "No run in progress to cancel." in result.output

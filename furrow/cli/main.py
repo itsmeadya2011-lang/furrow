@@ -1,9 +1,14 @@
 """Command line interface for Furrow.
 
 Commands:
+    furrow init            initialize a new Furrow project
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow history         show run history from persisted state
+    furrow config          view or modify Furrow settings
+    furrow cost            show detailed cost breakdown
+    furrow cancel          cancel a running web server task
     furrow web             serve the web UI
 """
 
@@ -11,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import sys
 from pathlib import Path
@@ -80,6 +86,7 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        click.echo(f"  Estimated cost:  ${usage.cost_usd:.6f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -173,9 +180,21 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
-def main() -> None:
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose output (INFO level).")
+@click.option("--debug", is_flag=True, help="Enable debug output (DEBUG level).")
+@click.pass_context
+def main(ctx: click.Context, verbose: bool, debug: bool) -> None:
     """Furrow - an autonomous coding agent."""
-    configure_logging(settings.log_level)
+    if debug:
+        log_level = "DEBUG"
+    elif verbose:
+        log_level = "INFO"
+    else:
+        log_level = settings.log_level
+    configure_logging(log_level)
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    ctx.obj["debug"] = debug
 
 
 @main.command()
@@ -252,6 +271,232 @@ def web(host: str, port: int) -> None:
         run(host=host, port=port)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--force", is_flag=True, help="Overwrite existing configuration.")
+def init(workspace: Path | None, force: bool) -> None:
+    """Initialize a new Furrow project with default configuration."""
+    ws = Path(workspace) if workspace is not None else Path.cwd()
+    furrow_dir = ws / ".furrow"
+    config_file = furrow_dir / "config.json"
+    env_file = ws / ".env.example"
+
+    if config_file.exists() and not force:
+        click.secho(f"Configuration already exists at {config_file}", fg="yellow")
+        click.echo("Use --force to overwrite.")
+        return
+
+    furrow_dir.mkdir(parents=True, exist_ok=True)
+
+    # Write default config
+    default_config = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-20250514",
+        "planner_model": "claude-3-5-haiku-20241022",
+        "worker_model": "claude-3-5-sonnet-20241022",
+        "tester_model": "claude-3-5-sonnet-20241022",
+        "max_parallel_tasks": 5,
+        "max_cycles": 0,
+        "max_worker_iterations": 12,
+        "max_retries": 3,
+        "max_task_retries": 1,
+        "request_timeout": 120.0,
+        "command_timeout": 300.0,
+        "test_timeout": 600.0,
+        "max_tokens": 4096,
+        "log_level": "INFO",
+    }
+    config_file.write_text(json.dumps(default_config, indent=2))
+
+    # Write .env.example
+    env_content = """# Furrow Configuration
+# Copy this file to .env and fill in your API keys
+
+# Anthropic (default provider)
+ANTHROPIC_API_KEY=your-anthropic-key-here
+
+# OpenAI (alternative provider)
+# OPENAI_API_KEY=your-openai-key-here
+
+# Ollama (local models)
+# OLLAMA_BASE_URL=http://localhost:11434
+
+# Optional: Override default models
+# FURROW_MODEL=claude-sonnet-4-20250514
+# FURROW_PLANNER_MODEL=claude-3-5-haiku-20241022
+# FURROW_WORKER_MODEL=claude-3-5-sonnet-20241022
+# FURROW_TESTER_MODEL=claude-3-5-sonnet-20241022
+
+# Optional: Override other settings
+# FURROW_MAX_PARALLEL_TASKS=5
+# FURROW_MAX_CYCLES=0
+# FURROW_LOG_LEVEL=INFO
+"""
+    env_file.write_text(env_content)
+
+    click.secho(f"Initialized Furrow project in {ws}", fg="green")
+    click.echo(f"  Config: {config_file}")
+    click.echo(f"  Env template: {env_file}")
+    click.echo("\nNext steps:")
+    click.echo("  1. Copy .env.example to .env and add your API keys")
+    click.echo("  2. Run 'furrow start \"your goal\"' to begin")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def config(workspace: Path | None) -> None:
+    """Show the current Furrow configuration."""
+    run_settings = _run_settings(workspace=workspace)
+    click.echo("Furrow Configuration")
+    click.echo("=" * 40)
+    for key, value in run_settings.model_dump().items():
+        # Mask API keys
+        if "api_key" in key.lower() and value:
+            value = "***" + str(value)[-4:] if len(str(value)) > 4 else "****"
+        click.echo(f"  {key}: {value}")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--limit", type=int, default=10, help="Number of history entries to show.")
+def history(workspace: Path | None, limit: int) -> None:
+    """Show run history from persisted state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+
+    click.echo(f"Run History (last {limit} cycles)")
+    click.echo("=" * 60)
+    click.echo(f"Original goal: {state.original_goal}")
+    click.echo(f"Total cycles:  {state.cycles}")
+    click.echo()
+
+    history_entries = list(state.history)[-limit:]
+    if not history_entries:
+        click.echo("No history entries found.")
+        return
+
+    for entry in history_entries:
+        click.echo(f"Cycle {entry.cycle}:")
+        click.echo(f"  Goal:        {entry.goal[:100]}{'...' if len(entry.goal) > 100 else ''}")
+        rationale = entry.plan_rationale[:100]
+        rationale += "..." if len(entry.plan_rationale) > 100 else ""
+        click.echo(f"  Rationale:   {rationale}")
+        click.echo(f"  Tasks:       {len(entry.task_summaries)}")
+        passed = entry.tests_passed
+        verdict = (
+            "PASSED" if passed else "FAILED" if passed is not None else "N/A"
+        )
+        click.echo(f"  Tests:       {verdict}")
+        click.echo(f"  Timestamp:   {entry.timestamp}")
+        if entry.usage.calls > 0:
+            usage = entry.usage
+            click.echo(
+                f"  Usage:       {usage.calls} calls, {usage.total_tokens} tokens "
+                f"(${usage.cost_usd:.6f})"
+            )
+        click.echo()
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def cost(workspace: Path | None) -> None:
+    """Show detailed cost breakdown from persisted state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+
+    click.echo("Cost Breakdown")
+    click.echo("=" * 60)
+    click.echo(f"Original goal: {state.original_goal}")
+    click.echo(f"Total cycles:  {state.cycles}")
+    click.echo()
+
+    total_usage = state.usage
+    click.echo("Total:")
+    click.echo(f"  Calls:           {total_usage.calls}")
+    click.echo(f"  Input tokens:    {total_usage.input_tokens:,}")
+    click.echo(f"  Output tokens:   {total_usage.output_tokens:,}")
+    click.echo(f"  Total tokens:    {total_usage.total_tokens:,}")
+    click.echo(f"  Estimated cost:  ${total_usage.cost_usd:.6f}")
+    click.echo()
+
+    history_entries = list(state.history)
+    if not history_entries:
+        click.echo("No history entries found.")
+        return
+
+    click.echo("Per Cycle:")
+    click.echo("-" * 60)
+    for entry in history_entries:
+        if entry.usage.calls == 0:
+            continue
+        click.echo(f"Cycle {entry.cycle}:")
+        click.echo(f"  Calls:           {entry.usage.calls}")
+        click.echo(f"  Input tokens:    {entry.usage.input_tokens:,}")
+        click.echo(f"  Output tokens:   {entry.usage.output_tokens:,}")
+        click.echo(f"  Total tokens:    {entry.usage.total_tokens:,}")
+        click.echo(f"  Estimated cost:  ${entry.usage.cost_usd:.6f}")
+        click.echo()
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--host", default="127.0.0.1", help="Web server host.")
+@click.option("--port", type=int, default=8000, help="Web server port.")
+def cancel(workspace: Path | None, host: str, port: int) -> None:
+    """Cancel a running Furrow web server task."""
+    import httpx
+
+    url = f"http://{host}:{port}/api/cancel"
+    try:
+        response = httpx.post(url, timeout=5.0)
+        if response.status_code == 200:
+            click.secho("Run cancelled successfully.", fg="green")
+        elif response.status_code == 409:
+            click.secho("No run in progress to cancel.", fg="yellow")
+        else:
+            click.secho(f"Failed to cancel: {response.text}", fg="red")
+            sys.exit(1)
+    except httpx.ConnectError:
+        click.secho(f"Could not connect to web server at {host}:{port}", fg="red")
+        sys.exit(1)
+    except Exception as exc:
+        click.secho(f"Error: {exc}", fg="red")
         sys.exit(1)
 
 

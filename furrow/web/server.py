@@ -642,6 +642,19 @@ async def api_start(request: StartRequest) -> JSONResponse:
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
 
 
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the currently running background run."""
+    task = _CURRENT.get("task")
+    if not _CURRENT.get("running") or task is None or task.done():
+        return JSONResponse(
+            status_code=409,
+            content={"cancelled": False, "error": "no run in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Run a goal and stream every event it emits to the client."""
