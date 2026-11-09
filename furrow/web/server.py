@@ -13,7 +13,6 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from typing import Any
 
@@ -26,8 +25,12 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.core.utils import run_orchestrator
 
 logger = logging.getLogger(__name__)
+
+# Backwards-compatible alias used by the websocket endpoint and tests.
+_run_orchestrator = run_orchestrator
 
 app = FastAPI(title="Furrow")
 
@@ -504,44 +507,12 @@ async def _drain(queue: asyncio.Queue[Event]) -> None:
         await queue.get()
 
 
-async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
-
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
-
-
-async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
-    """Run an orchestrator and release its LLM client afterwards.
-
-    The client is closed in a ``finally`` block, so its HTTP connections are
-    released when the run finishes, when it fails and when it is cancelled
-    (e.g. because the websocket client went away).
-    """
-    try:
-        return await orchestrator.run()
-    finally:
-        await _release_client(getattr(orchestrator, "client", None))
-
-
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
     """Run an orchestrator in the background and discard the emitted events."""
     queue = bus.subscribe()
     drain = asyncio.create_task(_drain(queue))
     try:
-        return await _run_orchestrator(orchestrator)
+        return await run_orchestrator(orchestrator)
     finally:
         drain.cancel()
         bus.unsubscribe(queue)

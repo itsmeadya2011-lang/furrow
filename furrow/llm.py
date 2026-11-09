@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -15,6 +16,14 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.exceptions import (
+    LLMError,
+    LLMInvalidResponseError,
+    LLMProviderError,
+    LLMQuotaExceededError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+)
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -48,6 +57,16 @@ class LLMResponse:
 
 def _is_retryable(exc: BaseException) -> bool:
     """Return True if *exc* is a transient provider error worth retrying."""
+    # Check for custom LLMError with retryable flag
+    if isinstance(exc, LLMError):
+        if exc.retryable:
+            return True
+        # Server errors (5xx) are retryable even if the flag is not set
+        return bool(
+            isinstance(exc, LLMProviderError)
+            and exc.status_code
+            and 500 <= exc.status_code < 600
+        )
     if isinstance(exc, asyncio.TimeoutError):
         return True
     if isinstance(exc, ConnectionError):
@@ -345,12 +364,15 @@ class LLMClient:
         return await self._retry(call)
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
-        response = await self.anthropic.messages.create(
-            model=model,
-            max_tokens=self.settings.max_tokens,
-            system=system or "You are a helpful coding assistant.",
-            messages=[{"role": "user", "content": prompt}],
-        )
+        try:
+            response = await self.anthropic.messages.create(
+                model=model,
+                max_tokens=self.settings.max_tokens,
+                system=system or "You are a helpful coding assistant.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+        except Exception as exc:
+            raise self._convert_provider_error(exc, "anthropic", model) from exc
         text = ""
         for block in response.content or []:
             if block.type == "text":
@@ -366,21 +388,28 @@ class LLMClient:
     async def _complete_openai(
         self, client: AsyncOpenAI, prompt: str, system: str, model: str
     ) -> LLMResponse:
-        response = await client.chat.completions.create(
-            model=model,
-            max_tokens=self.settings.max_tokens,
-            messages=[
-                {"role": "system", "content": system or "You are a helpful coding assistant."},
-                {"role": "user", "content": prompt},
-            ],
-        )
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                max_tokens=self.settings.max_tokens,
+                messages=[
+                    {"role": "system", "content": system or "You are a helpful coding assistant."},
+                    {"role": "user", "content": prompt},
+                ],
+            )
+        except Exception as exc:
+            raise self._convert_provider_error(exc, "openai", model) from exc
         choices = getattr(response, "choices", None) or []
         if not choices:
-            raise ValueError("provider response contained no choices")
+            raise LLMInvalidResponseError(
+                "provider response contained no choices", provider="openai", model=model
+            )
         choice = choices[0]
         message = getattr(choice, "message", None)
         if message is None:
-            raise ValueError("provider response choice has no message")
+            raise LLMInvalidResponseError(
+                "provider response choice has no message", provider="openai", model=model
+            )
         text = message.content or ""
         usage = _extract_openai_usage(response)
         try:
@@ -407,7 +436,10 @@ class LLMClient:
         }
         if request_tools:
             kwargs["tools"] = request_tools
-        response = await self.anthropic.messages.create(**kwargs)
+        try:
+            response = await self.anthropic.messages.create(**kwargs)
+        except Exception as exc:
+            raise self._convert_provider_error(exc, "anthropic", model) from exc
         text = ""
         tool_calls: list[ToolCall] = []
         for block in response.content or []:
@@ -450,14 +482,21 @@ class LLMClient:
         }
         if request_tools:
             kwargs["tools"] = request_tools
-        response = await client.chat.completions.create(**kwargs)
+        try:
+            response = await client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            raise self._convert_provider_error(exc, "openai", model) from exc
         choices = getattr(response, "choices", None) or []
         if not choices:
-            raise ValueError("provider response contained no choices")
+            raise LLMInvalidResponseError(
+                "provider response contained no choices", provider="openai", model=model
+            )
         choice = choices[0]
         message = getattr(choice, "message", None)
         if message is None:
-            raise ValueError("provider response choice has no message")
+            raise LLMInvalidResponseError(
+                "provider response choice has no message", provider="openai", model=model
+            )
         text = message.content or ""
         tool_calls: list[ToolCall] = []
         for tc in message.tool_calls or []:
@@ -481,6 +520,72 @@ class LLMClient:
             raw=response,
             usage=usage,
         )
+
+    def _convert_provider_error(self, exc: Exception, provider: str, model: str | None) -> LLMError:
+        """Convert a provider-specific exception to a Furrow LLMError."""
+        # Check for httpx-style errors with response attribute
+        response = getattr(exc, "response", None)
+        status_code = (
+            getattr(response, "status_code", None)
+            if response
+            else getattr(exc, "status_code", None)
+        )
+
+        # Get response body if available
+        response_body = None
+        if response:
+            with contextlib.suppress(Exception):
+                response_body = (
+                    response.text if hasattr(response, "text") else str(response)
+                )
+
+        message = str(exc)
+
+        # Map specific status codes to specific exception types
+        if status_code == 429:
+            if "quota" in message.lower():
+                return LLMQuotaExceededError(
+                    message, provider=provider, model=model, status_code=status_code
+                )
+            retry_after = None
+            if response and hasattr(response, "headers"):
+                retry_after = response.headers.get("retry-after")
+                if retry_after:
+                    try:
+                        retry_after = float(retry_after)
+                    except ValueError:
+                        retry_after = None
+            return LLMRateLimitError(
+                message, provider=provider, model=model, retry_after=retry_after
+            )
+        elif status_code == 402:
+            return LLMQuotaExceededError(
+                message, provider=provider, model=model, status_code=status_code
+            )
+        elif status_code and 500 <= status_code < 600:
+            return LLMProviderError(
+                message,
+                provider=provider,
+                model=model,
+                status_code=status_code,
+                response_body=response_body,
+                retryable=True,
+            )
+        elif status_code and 400 <= status_code < 500:
+            return LLMProviderError(
+                message,
+                provider=provider,
+                model=model,
+                status_code=status_code,
+                response_body=response_body,
+            )
+        elif isinstance(exc, asyncio.TimeoutError):
+            return LLMTimeoutError(message, provider=provider, model=model)
+        elif isinstance(exc, ConnectionError):
+            return LLMError(message, provider=provider, model=model, retryable=True)
+
+        # Default to generic LLMError
+        return LLMError(message, provider=provider, model=model, status_code=status_code)
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path) as f:

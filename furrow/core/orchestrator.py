@@ -11,7 +11,13 @@ from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.core.types import RunStatus
 from furrow.llm import LLMClient
+
+try:
+    from rich.console import Console
+except ImportError:  # pragma: no cover - rich is a declared dependency
+    Console = Any  # type: ignore[misc,assignment]
 
 _UNSET = object()
 
@@ -44,7 +50,7 @@ class Orchestrator:
         self._resume = resume
         self._last_test_passed: bool | None = None
         self._tests_skipped: bool = False
-        self._console_obj: Any = _UNSET
+        self._console_obj: Console | None = _UNSET  # type: ignore[assignment]
         self._resume_state_missing = False
         self._usage: Usage = Usage()
         self._usage_seen: Usage = Usage()
@@ -94,7 +100,7 @@ class Orchestrator:
             cost_usd=float(getattr(raw, "cost_usd", 0.0) or 0.0),
         )
 
-    def status(self) -> dict[str, Any]:
+    def status(self) -> RunStatus:
         """Return a snapshot of the current run."""
         return {
             "goal": self.goal,
@@ -105,7 +111,7 @@ class Orchestrator:
             "usage": self._usage.model_dump(),
         }
 
-    def _console(self) -> Any:
+    def _console(self) -> Console | None:
         """Return a rich Console, or None when rich is unavailable."""
         if self._console_obj is _UNSET:
             try:

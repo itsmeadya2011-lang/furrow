@@ -8,6 +8,14 @@ import httpx
 import pytest
 
 from furrow.config import Provider, Settings
+from furrow.exceptions import (
+    LLMError,
+    LLMInvalidResponseError,
+    LLMProviderError,
+    LLMQuotaExceededError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+)
 from furrow.llm import (
     LLMClient,
     ToolCall,
@@ -508,7 +516,7 @@ async def test_aclose_resets_so_fresh_client_created():
 
 class _FakeResponseNoChoices:
     def __init__(self) -> None:
-        self.choices = []
+        self.choices: list[Any] = []
         self.usage = None
 
 
@@ -553,7 +561,7 @@ async def test_complete_openai_empty_choices_raises_valueerror():
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
-    with pytest.raises(ValueError, match="no choices"):
+    with pytest.raises(LLMInvalidResponseError, match="no choices"):
         await client.complete("hi")
 
 
@@ -567,7 +575,7 @@ async def test_chat_openai_empty_choices_raises_valueerror():
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
-    with pytest.raises(ValueError, match="no choices"):
+    with pytest.raises(LLMInvalidResponseError, match="no choices"):
         await client.chat([{"role": "user", "content": "hi"}])
 
 
@@ -581,7 +589,7 @@ async def test_complete_openai_choice_no_message_raises_valueerror():
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
-    with pytest.raises(ValueError, match="no message"):
+    with pytest.raises(LLMInvalidResponseError, match="no message"):
         await client.complete("hi")
 
 
@@ -595,7 +603,7 @@ async def test_chat_openai_choice_no_message_raises_valueerror():
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
-    with pytest.raises(ValueError, match="no message"):
+    with pytest.raises(LLMInvalidResponseError, match="no message"):
         await client.chat([{"role": "user", "content": "hi"}])
 
 
@@ -868,3 +876,89 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+class _FakeResponseError(Exception):
+    """Fake exception with a response attribute like httpx/anthropic/openai errors."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.response = type(
+            "R", (), {"status_code": status_code, "text": message, "headers": {}}
+        )()
+
+
+async def test_convert_provider_error_rate_limit():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    exc = _FakeResponseError("rate limited", 429)
+    converted = client._convert_provider_error(exc, "openai", "gpt-4o")
+    assert isinstance(converted, LLMRateLimitError)
+    assert converted.retryable is True
+    assert converted.status_code == 429
+
+
+async def test_convert_provider_error_quota_exceeded():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    exc = _FakeResponseError("quota exceeded", 429)
+    converted = client._convert_provider_error(exc, "openai", "gpt-4o")
+    assert isinstance(converted, LLMQuotaExceededError)
+    assert converted.retryable is False
+    assert converted.status_code == 429
+
+
+async def test_convert_provider_error_server_error():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    exc = _FakeResponseError("internal server error", 503)
+    converted = client._convert_provider_error(exc, "openai", "gpt-4o")
+    assert isinstance(converted, LLMProviderError)
+    assert converted.retryable is True
+    assert converted.status_code == 503
+
+
+async def test_convert_provider_error_client_error():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    exc = _FakeResponseError("bad request", 400)
+    converted = client._convert_provider_error(exc, "openai", "gpt-4o")
+    assert isinstance(converted, LLMProviderError)
+    assert converted.retryable is False
+    assert converted.status_code == 400
+
+
+async def test_convert_provider_error_timeout():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    exc = asyncio.TimeoutError("request timed out")
+    converted = client._convert_provider_error(exc, "openai", "gpt-4o")
+    assert isinstance(converted, LLMTimeoutError)
+    assert converted.retryable is True
+
+
+async def test_convert_provider_error_connection():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    exc = ConnectionError("connection refused")
+    converted = client._convert_provider_error(exc, "openai", "gpt-4o")
+    assert isinstance(converted, LLMError)
+    assert converted.retryable is True
+
+
+async def test_is_retryable_llm_error():
+    """Test that _is_retryable works with LLMError subclasses."""
+    retryable_error = LLMRateLimitError("rate limited", provider="openai", model="gpt-4o")
+    assert _is_retryable(retryable_error) is True
+
+    non_retryable = LLMInvalidResponseError("invalid response", provider="openai", model="gpt-4o")
+    assert _is_retryable(non_retryable) is False
+
+    quota_error = LLMQuotaExceededError(
+        "quota exceeded", provider="openai", model="gpt-4o"
+    )
+    assert _is_retryable(quota_error) is False
+
+    server_error = LLMProviderError(
+        "server error", provider="openai", model="gpt-4o", status_code=503
+    )
+    assert _is_retryable(server_error) is True
+
+    client_error = LLMProviderError(
+        "bad request", provider="openai", model="gpt-4o", status_code=400
+    )
+    assert _is_retryable(client_error) is False
