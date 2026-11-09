@@ -357,12 +357,11 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # A task that is neither completed, failed nor blocked is
+                    # mid-flight (pending/running) or has an unrecognised status;
+                    # it is retried when attempts remain and otherwise reset to
+                    # pending so the next cycle can try again.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
