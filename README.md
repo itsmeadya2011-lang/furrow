@@ -120,7 +120,9 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Currency cost is estimated per call using a built-in per-model pricing snapshot and accumulated (see `furrow/costs.py` and `Usage.cost_usd`). Usage and cost are persisted in the run state file and printed by the CLI in the run summary and in `furrow status`; the web UI also shows cost when usage is present.
+
+Override pricing with `FURROW_MODEL_PRICING` (JSON mapping model id -> `{input_per_million, output_per_million}`) or `Settings.model_pricing`. Costs are estimates (provider pricing changes).
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
