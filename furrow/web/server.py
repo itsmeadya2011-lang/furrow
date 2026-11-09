@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import logging
 from typing import Any
 
 import uvicorn
@@ -26,8 +25,12 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.logging import bind_context, configure_logging, get_logger, log_with_context
 
-logger = logging.getLogger(__name__)
+# Configure logging at module import for the web server
+configure_logging(settings.log_level)
+
+logger = get_logger(__name__)
 
 app = FastAPI(title="Furrow")
 
@@ -466,6 +469,7 @@ def _describe_validation_error(exc: ValidationError) -> str:
 def _on_run_done(task: asyncio.Task[RunResult]) -> None:
     """Finalise the registry when a run ends."""
     _TASKS.discard(task)
+    run_logger = bind_context(logger, run_id=id(task))
     if _CURRENT.get("task") is not task:
         # Another run owns the registry: never clobber its data, but keep the
         # "running" flag in sync with the run that is actually in flight.
@@ -474,14 +478,16 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
         return
     _CURRENT["running"] = False
     if task.cancelled():
+        log_with_context(run_logger, "warning", "run_cancelled")
         _CURRENT["error"] = "run cancelled"
         return
     exc = task.exception()
     if exc is not None:
-        logger.error("Furrow run failed: %s", exc)
+        log_with_context(run_logger, "error", "run_failed", error=str(exc))
         _CURRENT["error"] = str(exc)
         return
     _CURRENT["result"] = task.result()
+    log_with_context(run_logger, "info", "run_completed", result=_CURRENT["result"].summary)
 
 
 def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
@@ -520,7 +526,7 @@ async def _release_client(client: Any) -> None:
         if inspect.isawaitable(outcome):
             await outcome
     except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
+        log_with_context(logger, "warning", "client_close_failed", error=str(exc))
 
 
 async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
@@ -599,12 +605,14 @@ async def api_status() -> dict[str, Any]:
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
     if _CURRENT.get("running"):
+        log_with_context(logger, "warning", "start_rejected", reason="run_in_progress")
         return JSONResponse(
             status_code=409,
             content={"started": False, "error": "a run is already in progress"},
         )
     goal = request.goal.strip()
     if not goal and not request.resume:
+        log_with_context(logger, "warning", "start_rejected", reason="goal_required")
         return JSONResponse(
             status_code=400,
             content={"started": False, "error": "goal is required"},
@@ -613,6 +621,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
         state = _state_store().load()
         goal = state.original_goal if state is not None else ""
         if not goal:
+            log_with_context(logger, "warning", "start_rejected", reason="no_goal_to_resume")
             return JSONResponse(
                 status_code=400,
                 content={"started": False, "error": "no goal to resume"},
@@ -623,6 +632,13 @@ async def api_start(request: StartRequest) -> JSONResponse:
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
+        log_with_context(
+            logger,
+            "warning",
+            "start_rejected",
+            reason="validation_error",
+            error=str(validation_error),
+        )
         return JSONResponse(
             status_code=400,
             content={"started": False, "error": _describe_validation_error(validation_error)},
@@ -639,6 +655,14 @@ async def api_start(request: StartRequest) -> JSONResponse:
             "error": None,
         }
     )
+    log_with_context(
+        logger,
+        "info",
+        "run_started",
+        goal=goal,
+        resume=request.resume,
+        max_cycles=request.max_cycles,
+    )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
 
 
@@ -649,10 +673,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     bus = EventBus()
     queue = bus.subscribe()
     run_task: asyncio.Task[RunResult] | None = None
+    ws_logger = bind_context(logger, connection_id=id(websocket))
     try:
         try:
             payload = await websocket.receive_json()
         except WebSocketDisconnect:
+            log_with_context(ws_logger, "info", "websocket_disconnected", phase="initial")
             return
         except (RuntimeError, ValueError):
             await _send_error(websocket, "expected a JSON object with a goal")
@@ -662,6 +688,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         except ValidationError as validation_error:
             # A rejected payload (an out-of-range ``max_cycles`` for instance)
             # must be answered with an error frame and must never start a run.
+            log_with_context(
+                ws_logger,
+                "warning",
+                "websocket_rejected",
+                reason="validation_error",
+                error=str(validation_error),
+            )
             await _send_error(websocket, _describe_validation_error(validation_error))
             return
         except ValueError:
@@ -670,11 +703,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         goal = request.goal.strip()
         resume = request.resume
         if not goal and not resume:
-            await _send_error(websocket, "goal is required")
+            log_with_context(
+                ws_logger, "warning", "websocket_rejected", reason="goal_required"
+            )
+            await _send_error(websocket, "goal required")
             return
         if _CURRENT.get("running"):
             # A run is already in flight: refuse to start a second one instead
             # of overwriting the registry entry of the running one.
+            log_with_context(
+                ws_logger, "warning", "websocket_rejected", reason="run_in_progress"
+            )
             await _send_error(websocket, "a run is already in progress")
             return
         try:
@@ -682,6 +721,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.
+            log_with_context(
+                ws_logger,
+                "warning",
+                "websocket_rejected",
+                reason="validation_error",
+                error=str(validation_error),
+            )
             await _send_error(websocket, _describe_validation_error(validation_error))
             return
         run_task = asyncio.create_task(_run_orchestrator(orchestrator))
@@ -695,6 +741,14 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "task": run_task,
                 "error": None,
             }
+        )
+        log_with_context(
+            ws_logger,
+            "info",
+            "run_started",
+            goal=goal,
+            resume=resume,
+            max_cycles=request.max_cycles,
         )
         while True:
             if run_task.done() and queue.empty():
@@ -710,13 +764,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # done-callback to be processed.
         _clear_running_flag(run_task)
         if run_task.cancelled():
+            log_with_context(ws_logger, "warning", "run_cancelled")
             return
         exc = run_task.exception()
         if exc is not None:
-            logger.error("Furrow run failed: %s", exc)
+            log_with_context(ws_logger, "error", "run_failed", error=str(exc))
             await _send_error(websocket, f"run failed: {exc}")
             return
         result = run_task.result()
+        log_with_context(ws_logger, "info", "run_completed", result=result.summary)
         await websocket.send_json(
             {
                 "type": "done",
@@ -727,10 +783,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except asyncio.CancelledError:
         # The client went away (or the server is shutting down): stop the run
         # and make sure the server does not stay stuck in the "running" state.
+        log_with_context(ws_logger, "info", "websocket_cancelled")
         if run_task is not None and not run_task.done():
             _cancel_run(run_task)
         raise
     except (WebSocketDisconnect, RuntimeError):
+        log_with_context(ws_logger, "info", "websocket_disconnected", phase="during_run")
         if run_task is not None and not run_task.done():
             _cancel_run(run_task)
     finally:

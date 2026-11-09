@@ -64,3 +64,26 @@ def get_logger(name: str) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger(name)
     return logging.getLogger(name)
+
+
+def bind_context(logger: Any, **kwargs: Any) -> Any:
+    """Bind context variables to a logger for structured logging.
+
+    Returns a new logger with the bound context. Works with both structlog
+    and stdlib loggers (no-op for stdlib).
+    """
+    if _STRUCTLOG_AVAILABLE and hasattr(logger, "bind"):
+        return logger.bind(**kwargs)
+    return logger
+
+
+def log_with_context(logger: Any, level: str, event: str, **kwargs: Any) -> None:
+    """Log an event with context, handling both structlog and stdlib loggers."""
+    bound = bind_context(logger, **kwargs)
+    if _STRUCTLOG_AVAILABLE and hasattr(bound, level):
+        getattr(bound, level)(event)
+    else:
+        # stdlib fallback
+        log_method = getattr(logger, level, logger.info)
+        extra = " ".join(f"{k}={v}" for k, v in kwargs.items())
+        log_method(f"{event} {extra}" if extra else event)

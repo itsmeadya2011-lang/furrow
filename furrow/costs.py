@@ -53,30 +53,91 @@ class ModelPricing(BaseModel):
 # Keys are family names so that dated model ids ("claude-sonnet-4-20250514",
 # "gpt-4o-mini-2024-07-18", ...) resolve through a longest-prefix match.
 DEFAULT_PRICING: dict[str, ModelPricing] = {
+    # Anthropic
     "claude-opus-4": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-opus-4-1": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-sonnet-4": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-sonnet-4-20250514": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-haiku-4-5": ModelPricing(input_per_million=1.0, output_per_million=5.0),
     "claude-3-7-sonnet": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-3-7-sonnet-20250219": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-3-5-opus": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-3-5-sonnet": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-3-5-sonnet-20241022": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-3-5-haiku": ModelPricing(input_per_million=0.8, output_per_million=4.0),
+    "claude-3-5-haiku-20241022": ModelPricing(input_per_million=0.8, output_per_million=4.0),
     "claude-3-opus": ModelPricing(input_per_million=15.0, output_per_million=75.0),
+    "claude-3-opus-20240229": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-3-sonnet": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-3-sonnet-20240229": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-3-haiku": ModelPricing(input_per_million=0.25, output_per_million=1.25),
+    "claude-3-haiku-20240307": ModelPricing(input_per_million=0.25, output_per_million=1.25),
+
+    # OpenAI
     "gpt-4.1": ModelPricing(input_per_million=2.0, output_per_million=8.0),
+    "gpt-4.1-20250414": ModelPricing(input_per_million=2.0, output_per_million=8.0),
     "gpt-4.1-mini": ModelPricing(input_per_million=0.4, output_per_million=1.6),
+    "gpt-4.1-mini-20250414": ModelPricing(input_per_million=0.4, output_per_million=1.6),
     "gpt-4.1-nano": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+    "gpt-4.1-nano-20250414": ModelPricing(input_per_million=0.1, output_per_million=0.4),
     "gpt-4o": ModelPricing(input_per_million=2.5, output_per_million=10.0),
+    "gpt-4o-2024-05-13": ModelPricing(input_per_million=5.0, output_per_million=15.0),
+    "gpt-4o-2024-08-06": ModelPricing(input_per_million=2.5, output_per_million=10.0),
+    "gpt-4o-2024-11-20": ModelPricing(input_per_million=2.5, output_per_million=10.0),
     "gpt-4o-mini": ModelPricing(input_per_million=0.15, output_per_million=0.6),
+    "gpt-4o-mini-2024-07-18": ModelPricing(input_per_million=0.15, output_per_million=0.6),
     "gpt-4": ModelPricing(input_per_million=30.0, output_per_million=60.0),
+    "gpt-4-0613": ModelPricing(input_per_million=30.0, output_per_million=60.0),
     "gpt-4-turbo": ModelPricing(input_per_million=10.0, output_per_million=30.0),
+    "gpt-4-turbo-2024-04-09": ModelPricing(input_per_million=10.0, output_per_million=30.0),
     "gpt-3.5-turbo": ModelPricing(input_per_million=0.5, output_per_million=1.5),
+    "gpt-3.5-turbo-0125": ModelPricing(input_per_million=0.5, output_per_million=1.5),
     "o1": ModelPricing(input_per_million=15.0, output_per_million=60.0),
+    "o1-2024-12-17": ModelPricing(input_per_million=15.0, output_per_million=60.0),
     "o1-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    "o1-mini-2024-09-12": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    "o1-pro": ModelPricing(input_per_million=150.0, output_per_million=600.0),
     "o3": ModelPricing(input_per_million=2.0, output_per_million=8.0),
+    "o3-2025-04-16": ModelPricing(input_per_million=2.0, output_per_million=8.0),
     "o3-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    "o3-mini-2025-01-31": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o4-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+
+    # Google
+    "gemini-1.5-pro": ModelPricing(input_per_million=3.5, output_per_million=10.5),
+    "gemini-1.5-pro-001": ModelPricing(input_per_million=3.5, output_per_million=10.5),
+    "gemini-1.5-pro-002": ModelPricing(input_per_million=1.25, output_per_million=5.0),
+    "gemini-1.5-flash": ModelPricing(input_per_million=0.075, output_per_million=0.3),
+    "gemini-1.5-flash-001": ModelPricing(input_per_million=0.075, output_per_million=0.3),
+    "gemini-1.5-flash-002": ModelPricing(input_per_million=0.075, output_per_million=0.3),
+    "gemini-2.0-flash": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+    "gemini-2.0-flash-001": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+
+    # DeepSeek
+    "deepseek-chat": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "deepseek-coder": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "deepseek-v3": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "deepseek-r1": ModelPricing(input_per_million=0.55, output_per_million=2.19),
+
+    # xAI
+    "grok-1": ModelPricing(input_per_million=5.0, output_per_million=15.0),
+    "grok-2": ModelPricing(input_per_million=2.0, output_per_million=8.0),
+    "grok-beta": ModelPricing(input_per_million=5.0, output_per_million=15.0),
+
+    # Mistral
+    "mistral-large": ModelPricing(input_per_million=2.0, output_per_million=6.0),
+    "mistral-large-2407": ModelPricing(input_per_million=2.0, output_per_million=6.0),
+    "mistral-large-2411": ModelPricing(input_per_million=2.0, output_per_million=6.0),
+    "mistral-small": ModelPricing(input_per_million=0.2, output_per_million=0.6),
+    "mistral-small-2409": ModelPricing(input_per_million=0.2, output_per_million=0.6),
+    "mistral-nemo": ModelPricing(input_per_million=0.15, output_per_million=0.15),
+    "codestral": ModelPricing(input_per_million=0.2, output_per_million=0.6),
+
+    # Cohere
+    "command-r": ModelPricing(input_per_million=0.15, output_per_million=0.6),
+    "command-r-plus": ModelPricing(input_per_million=2.5, output_per_million=10.0),
+    "command-r-08-2024": ModelPricing(input_per_million=0.15, output_per_million=0.6),
+    "command-r-plus-08-2024": ModelPricing(input_per_million=2.5, output_per_million=10.0),
 }
 
 #: Provider prefixes that are stripped from a model id before it is looked up.
@@ -153,22 +214,31 @@ def price_for_model(
         if not isinstance(model, str) or not model.strip():
             return None
         table = _merged_pricing(pricing)
+        
+        # Build normalized lookup table once
+        normalized_table = {_normalize(key): value for key, value in table.items()}
+        
         exact_candidates = _candidates(model)
         for candidate in exact_candidates:
+            # Try exact match first (case-sensitive, then case-insensitive)
             if candidate in table:
                 return table[candidate]
-        normalized = {_normalize(key): value for key, value in table.items()}
-        normalized_candidates = [_normalize(candidate) for candidate in exact_candidates]
-        for candidate in normalized_candidates:
-            if candidate in normalized:
-                return normalized[candidate]
-        for candidate in reversed(normalized_candidates):
+            norm_candidate = _normalize(candidate)
+            if norm_candidate in normalized_table:
+                return normalized_table[norm_candidate]
+        
+        # Try longest prefix match on normalized keys
+        for candidate in exact_candidates:
+            norm_candidate = _normalize(candidate)
             best_key: str | None = None
-            for key in normalized:
-                if candidate.startswith(key) and (best_key is None or len(key) > len(best_key)):
+            best_len = -1
+            for key in normalized_table:
+                if norm_candidate.startswith(key) and len(key) > best_len:
                     best_key = key
+                    best_len = len(key)
             if best_key is not None:
-                return normalized[best_key]
+                return normalized_table[best_key]
+        
         return None
     except Exception:
         return None

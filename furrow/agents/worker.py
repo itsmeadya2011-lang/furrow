@@ -28,7 +28,7 @@ DENIED_COMMANDS = (
     "dd if=",
     "shutdown",
     "reboot",
-    "chmod -R 777 /",
+    "chmod -r 777 /",
     "> /dev/sda",
 )
 
@@ -210,55 +210,83 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     return any(token.lower() == "-f" for token in _shell_tokens(segment))
 
 
-def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
-    """Report whether a single command segment violates the command policy."""
-    normalized = _normalize_command(segment)
-    if not normalized:
-        return False
+class _CommandChecker:
+    """Efficient command policy checker that avoids redundant normalization.
 
-    # DENY by PROGRAM NAME
-    program = _get_program_basename(segment)
-    if program:
-        program = program.lower()
-        if program in DENIED_PROGRAMS or program.startswith("mkfs."):
+    The policy checks require the command to be normalized (lowercased,
+    whitespace collapsed, HOME canonicalised) and split into segments.
+    This class computes the normalized form and segments once, then runs
+    all checks against the cached results.
+    """
+
+    __slots__ = (
+        "depth",
+        "normalized",
+        "original",
+        "segments",
+        "workspace",
+    )
+
+    def __init__(self, command: str, workspace: Path, depth: int = 0) -> None:
+        self.original = command
+        self.workspace = workspace
+        self.depth = depth
+        self.normalized = _normalize_command(command)
+        self.segments = _split_command_segments(command) if command else []
+
+    def is_denied(self) -> bool:
+        """Check if the command (or substitution text) violates the policy."""
+        if not self.normalized:
+            return False
+
+        # DENY by PATTERN on the whole normalized text
+        if any(denied in self.normalized for denied in DENIED_COMMANDS):
             return True
 
-    # DENY by PATTERN
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
-        return True
-
-    # DENY a force push
-    if _is_force_push(segment, normalized):
-        return True
-
-    # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
-
-
-def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
-    """Check a command - or the text of a command substitution - against the policy."""
-    normalized = _normalize_command(text)
-    # The whole text is checked against the pattern list as well, so that a
-    # denied pattern cannot hide in an unusual position (inside quotes, in
-    # the middle of a pipeline, ...).
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
-        return True
-    # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
-        return True
-    # The shell runs the substituted text, so it is checked as well.
-    if depth < _MAX_SUBSTITUTION_DEPTH:
-        for substitution in _extract_command_substitutions(text):
-            if _text_is_denied(substitution, workspace, depth + 1):
+        # DENY by checking each segment
+        for segment in self.segments:
+            if self._is_dangerous_segment(segment):
                 return True
-    return False
+
+        # DENY by checking command substitutions recursively
+        if self.depth < _MAX_SUBSTITUTION_DEPTH:
+            for substitution in _extract_command_substitutions(self.original):
+                checker = _CommandChecker(substitution, self.workspace, self.depth + 1)
+                if checker.is_denied():
+                    return True
+
+        return False
+
+    def _is_dangerous_segment(self, segment: str) -> bool:
+        """Report whether a single command segment violates the command policy."""
+        normalized = _normalize_command(segment)
+        if not normalized:
+            return False
+
+        # DENY by PROGRAM NAME
+        program = _get_program_basename(segment)
+        if program:
+            program = program.lower()
+            if program in DENIED_PROGRAMS or program.startswith("mkfs."):
+                return True
+
+        # DENY by PATTERN
+        if any(denied in normalized for denied in DENIED_COMMANDS):
+            return True
+
+        # DENY a force push
+        if _is_force_push(segment, normalized):
+            return True
+
+        # DENY a redirection that escapes the workspace
+        return _redirects_outside_workspace(segment, self.workspace)
 
 
 def is_command_denied(command: str, workspace: Path) -> bool:
     """Check if command is denied by security policy."""
     if not command or not command.strip():
         return False
-    return _text_is_denied(command, workspace, depth=0)
+    return _CommandChecker(command, workspace).is_denied()
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:

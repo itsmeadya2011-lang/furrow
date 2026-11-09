@@ -496,4 +496,21 @@ class LLMClient:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        # Use os.walk for better performance on large directories.
+        # It avoids creating Path objects for every file and is generally
+        # faster than rglob for deep directory trees.
+        result: list[str] = []
+        base = p.resolve()
+        for root, dirs, files in os.walk(base):
+            # Skip hidden directories (starting with .) to avoid .git, .venv, etc.
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            for f in files:
+                if f.startswith("."):
+                    continue
+                full = Path(root) / f
+                try:
+                    result.append(str(full.relative_to(base)))
+                except ValueError:
+                    # Should not happen, but be defensive
+                    result.append(str(full))
+        return result
