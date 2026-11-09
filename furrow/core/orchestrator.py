@@ -565,12 +565,30 @@ class Orchestrator:
                         retry_queue.append(t)
 
         for wave in waves:
-            failed_ids = {t.id for t in self.tasks if t.status == "failed"}
+            prev_failed_ids = {t.id for t in self.tasks if t.status == "failed"}
             runnable = []
             for t in wave:
-                if any(d in failed_ids for d in t.dependencies):
+                if any(d in prev_failed_ids for d in t.dependencies):
                     t.status = "blocked"
                 else:
                     runnable.append(t)
             await run_tasks(runnable)
             await run_retries(runnable)
+            # A retried dependency may have turned from failed to completed.
+            # Unblock tasks that were blocked solely because of that failure
+            # (not tasks blocked by circular dependencies) and run them in
+            # the same cycle instead of waiting for the next one.
+            failed_ids = {t.id for t in self.tasks if t.status == "failed"}
+            freed = []
+            for t in wave:
+                if t.status == "blocked":
+                    was_blocked_by_failure = any(
+                        d in prev_failed_ids for d in t.dependencies
+                    )
+                    still_blocked = any(d in failed_ids for d in t.dependencies)
+                    if was_blocked_by_failure and not still_blocked:
+                        t.status = "pending"
+                        freed.append(t)
+            if freed:
+                await run_tasks(freed)
+                await run_retries(freed)

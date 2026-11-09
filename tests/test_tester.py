@@ -72,6 +72,22 @@ def test_detect_empty(tmp_path):
     assert cmd is None
 
 
+def test_detect_root_level_test_files(tmp_path):
+    """Root-level test_*.py files are detected as pytest without config files."""
+    (tmp_path / "test_foo.py").write_text("def test_foo(): assert True\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_root_level_test_files_suffix_style(tmp_path):
+    """Root-level *_test.py files are detected as pytest without config files."""
+    (tmp_path / "foo_test.py").write_text("def test_foo(): assert True\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
 def test_run_no_runner_is_reported_as_skipped(tmp_path):
     """No detected test runner means a skipped run, not a passed one."""
     agent = TesterAgent(

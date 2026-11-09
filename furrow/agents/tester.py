@@ -240,6 +240,14 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Root-level test files with no config files at all: still a Python
+        # project worth running pytest against.
+        test_files = list(self.workspace.glob("test_*.py")) + list(
+            self.workspace.glob("*_test.py")
+        )
+        if test_files:
+            return [sys.executable, "-m", "pytest", "-q"]
+
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():

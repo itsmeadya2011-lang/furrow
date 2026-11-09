@@ -169,6 +169,32 @@ async def test_failed_dep_blocked(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_retried_dependency_unblocks_dependent_in_same_cycle(tmp_path, monkeypatch):
+    """A dependency that fails then succeeds on retry unblocks its dependent in the same cycle."""
+    call_order = []
+
+    class RetryWorker(FakeWorker):
+        async def run(self):
+            call_order.append(self.task.id)
+            if self.task.id == "1" and call_order.count("1") == 1:
+                return WorkerResult(summary="fail", success=False, files_changed=[])
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", RetryWorker)
+    t1 = TaskModel(id="1", description="one")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    assert call_order == ["1", "1", "2"]
+    t2o = next(t for t in orch.tasks if t.id == "2")
+    assert t2o.status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_max_parallel(tmp_path, monkeypatch):
     maxc = {"v": 0}
     cur = {"v": 0}
