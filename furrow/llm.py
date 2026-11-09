@@ -302,9 +302,15 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        provider: Provider | None = None,
+    ) -> str:
         model = model or self.settings.model
-        provider = self.settings.provider
+        provider = provider or self.settings.provider
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
@@ -325,9 +331,10 @@ class LLMClient:
         tools: list[dict] | None = None,
         system: str = "",
         model: str | None = None,
+        provider: Provider | None = None,
     ) -> LLMResponse:
         model = model or self.settings.model
-        provider = self.settings.provider
+        provider = provider or self.settings.provider
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:

@@ -169,6 +169,7 @@ class TesterAgent:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self._tester_provider = self.settings.get_provider("tester")
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
@@ -393,7 +394,10 @@ class TesterAgent:
                 prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
                 try:
                     response = await self.client.complete(
-                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                        prompt,
+                        system=TESTER_SYSTEM,
+                        model=self.settings.tester_model,
+                        provider=self._tester_provider,
                     )
                     llm_result = parse_test_result(response)
                 except Exception:

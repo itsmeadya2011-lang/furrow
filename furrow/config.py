@@ -112,6 +112,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC
+    planner_provider: Provider | None = None
+    worker_provider: Provider | None = None
+    tester_provider: Provider | None = None
     model: str = "claude-sonnet-4-20250514"
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
@@ -141,6 +144,16 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def get_provider(self, agent: str) -> Provider:
+        """Get the provider for a specific agent, falling back to the main provider."""
+        if agent == "planner" and self.planner_provider is not None:
+            return self.planner_provider
+        if agent == "worker" and self.worker_provider is not None:
+            return self.worker_provider
+        if agent == "tester" and self.tester_provider is not None:
+            return self.tester_provider
+        return self.provider
 
 
 settings = Settings()

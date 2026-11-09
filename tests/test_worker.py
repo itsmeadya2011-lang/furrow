@@ -16,14 +16,14 @@ class FakeLLMClient:
         self.responses = list(responses)
         self.calls = []
 
-    async def chat(self, messages, tools=None, system="", model=None):
+    async def chat(self, messages, tools=None, system="", model=None, provider=None):
         self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, provider=None):
         return ""
 
     async def read_file(self, path):
@@ -44,7 +44,7 @@ class LoopingLLMClient(FakeLLMClient):
         super().__init__([response])
         self.response = response
 
-    async def chat(self, messages, tools=None, system="", model=None):
+    async def chat(self, messages, tools=None, system="", model=None, provider=None):
         self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
         return self.response
 

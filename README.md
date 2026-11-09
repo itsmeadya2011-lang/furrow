@@ -37,7 +37,14 @@ furrow start "Add JWT auth to the API"
 ```
 
 Options:
-- `--model` — override the LLM model
+- `--model` — override the default LLM model
+- `--planner-model` — override the planner model
+- `--worker-model` — override the worker model
+- `--tester-model` — override the tester model
+- `--provider` — override the LLM provider (`anthropic`, `openai`, `ollama`)
+- `--planner-provider` — override the planner provider
+- `--worker-provider` — override the worker provider
+- `--tester-provider` — override the tester provider
 - `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
 - `--workspace PATH` — project directory to work in
 - `--resume` — resume the persisted run instead of starting fresh
@@ -54,7 +61,7 @@ furrow status
 furrow status --workspace /path/to/project
 ```
 
-The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
+The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), estimated cost (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
 
 ### `furrow resume`
 Continue the persisted run.
@@ -64,7 +71,19 @@ furrow resume
 furrow resume --workspace /path/to/project --max-cycles 5
 ```
 
-The exit codes are the same as for `furrow start`: `1` when the resumed run ends `FAILED`, `0` for `PASSED`, `SKIPPED` and `NOT RUN`.
+The same model/provider options as `furrow start` are supported. The exit codes are the same as for `furrow start`: `1` when the resumed run ends `FAILED`, `0` for `PASSED`, `SKIPPED` and `NOT RUN`.
+
+### `furrow clear`
+Clear the persisted run state.
+
+```bash
+furrow clear
+furrow clear --workspace /path/to/project --yes
+```
+
+Options:
+- `--workspace PATH` — project directory
+- `--yes, -y` — skip confirmation prompt
 
 ### `furrow web`
 Serve the web UI and stream orchestrator events.
@@ -80,6 +99,8 @@ A task status comes from the LLM-planned task, so it is untrusted input: the UI 
 
 The web API refuses to start a second run while one is already in progress — both through `POST /api/start` and through the websocket.
 
+The web API (`POST /api/start` and websocket) supports the same model/provider options as the CLI: `provider`, `planner_provider`, `worker_provider`, `tester_provider`, `planner_model`, `worker_model`, `tester_model`.
+
 ## Configuration
 
 Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file if present). Available settings:
@@ -87,6 +108,9 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FURROW_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, or `ollama` |
+| `FURROW_PLANNER_PROVIDER` | (none) | Planner provider (falls back to `FURROW_PROVIDER`) |
+| `FURROW_WORKER_PROVIDER` | (none) | Worker provider (falls back to `FURROW_PROVIDER`) |
+| `FURROW_TESTER_PROVIDER` | (none) | Tester provider (falls back to `FURROW_PROVIDER`) |
 | `FURROW_MODEL` | `claude-sonnet-4-20250514` | Default model for completions/chat |
 | `FURROW_PLANNER_MODEL` | `claude-3-5-haiku-20241022` | Model for the planner |
 | `FURROW_WORKER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the worker |
@@ -101,6 +125,8 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TASK_RETRIES` | `1` | Times a failed task is retried before it is marked failed |
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
 | `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Command timeout in seconds |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Test suite timeout in seconds |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
