@@ -64,20 +64,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
     margin: 0 0 1rem; color: #f0f2f5;
   }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
   input {
     flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
     border: 1px solid #2b3240; border-radius: 6px; font: inherit;
+    min-width: 0;
   }
   button {
     padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    white-space: nowrap;
   }
-  button:hover { border-color: #4c8dff; }
+  button:hover:not(:disabled) { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #start { border-color: #2e7d32; background: #1b5e20; }
+  #start:hover:not(:disabled) { border-color: #4caf50; background: #2e7d32; }
+  #resume { border-color: #1565c0; background: #0d47a1; }
+  #resume:hover:not(:disabled) { border-color: #2196f3; background: #1565c0; }
+  #stop { border-color: #c62828; background: #b71c1c; }
+  #stop:hover:not(:disabled) { border-color: #ef5350; background: #c62828; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.5;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -131,6 +141,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  @media (max-width: 600px) {
+    body { padding: 1rem; }
+    .bar { flex-direction: column; align-items: stretch; }
+    button { width: 100%; }
+    .header .meta { font-size: .8rem; gap: .5rem; }
+    #log { height: 15rem; }
+  }
 </style>
 </head>
 <body>
@@ -139,6 +156,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -147,6 +165,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>cost <b id="cost">$0.000000</b></span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -160,6 +179,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const costEl = document.getElementById('cost');
+  const stopBtn = document.getElementById('stop');
   let socket = null;
   let lastSummary = null;
 
@@ -170,6 +191,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
+  }
+
+  function setStopButton(enabled) {
+    stopBtn.disabled = !enabled;
+    stopBtn.style.opacity = enabled ? '1' : '0.5';
+    stopBtn.style.cursor = enabled ? 'pointer' : 'not-allowed';
   }
 
   // The task status is planned by the LLM, so it is untrusted input: it is
@@ -206,7 +233,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
+    const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    costEl.textContent = '$' + cost.toFixed(6);
+    setStopButton(running);
   }
 
   function renderTasks(tasks) {
@@ -402,6 +432,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('stop').onclick = async function () {
+    if (stopBtn.disabled) { return; }
+    append('> stopping...');
+    try {
+      const res = await fetch('/api/stop', { method: 'POST' });
+      const body = await res.json();
+      if (body.stopped) {
+        append('> stop requested');
+      } else {
+        append('! ' + (body.error || 'stop failed'));
+      }
+    } catch (err) {
+      append('! stop request failed: ' + err);
+    }
   };
 
   loadState();
@@ -735,6 +780,19 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             _cancel_run(run_task)
     finally:
         bus.unsubscribe(queue)
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running background run."""
+    task = _CURRENT.get("task")
+    if not task or not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:

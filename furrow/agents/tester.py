@@ -202,14 +202,32 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
+            # Check for vitest config first (more specific)
+            for pattern in ["vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
+                    # Prefer direct vitest command if available in node_modules/.bin
+                    vitest_bin = self.workspace / "node_modules" / ".bin" / "vitest"
+                    if vitest_bin.exists():
+                        return [str(vitest_bin), "run"]
+                    # Fall back to package manager
                     if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
+                        return ["pnpm", "exec", "vitest", "run"]
                     if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                        return ["yarn", "vitest", "run"]
+                    return ["npx", "vitest", "run"]
+
+            # Check for jest config
+            for pattern in ["jest.config.*"]:
+                for _f in self.workspace.glob(pattern):
+                    jest_bin = self.workspace / "node_modules" / ".bin" / "jest"
+                    if jest_bin.exists():
+                        return [str(jest_bin), "--silent"]
+                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                        return ["pnpm", "exec", "jest", "--silent"]
+                    if (self.workspace / "yarn.lock").is_file():
+                        return ["yarn", "jest", "--silent"]
+                    return ["npx", "jest", "--silent"]
+
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json") as fh:

@@ -6,7 +6,7 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 
 - Plans tasks with dependency tracking and parallel execution
 - Worker actually implements code using file and command tools
-- Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go)
+- Project-aware test detection (pytest, vitest, jest, npm/pnpm/yarn, cargo, go)
 - Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header, and per-task panels)
 - Finished work is not redone: a task that already completed is skipped when the next plan describes the same work
 - Bounded event queues: a subscriber that stops draining loses its oldest events, never the newest ones
@@ -14,6 +14,8 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Fail-safe cycle loop: a planner, execution, tester or state-save failure is reported as an ERROR event instead of crashing the run
 - Hardened provider calls: transient HTTP errors are retried when the status is exposed on the response, and a malformed provider response raises a clear error
 - Offline test suite with no API keys required
+- LLM token usage and estimated cost tracking (USD) displayed in CLI and web UI
+- Web UI with Start/Resume/Stop controls, responsive design, and color-coded task status
 
 ## Security
 
@@ -74,11 +76,13 @@ furrow web
 furrow web --host 127.0.0.1 --port 8000
 ```
 
-The default web UI is available at [http://127.0.0.1:8000](http://127.0.0.1:8000). If the server cannot start, the command reports a friendly error and exits with status 1. The status header (goal, cycle, state, stopped reason, usage) is bound correctly and is refreshed by status fetches triggered by websocket events (task started, task finished, done) plus a single fetch on page load; the client does not poll on a timer. The run summary is appended to the event log only when it changes.
+The default web UI is available at [http://127.0.0.1:8000](http://127.0.0.1:8000). If the server cannot start, the command reports a friendly error and exits with status 1. The status header (goal, cycle, state, stopped reason, usage, cost) is bound correctly and is refreshed by status fetches triggered by websocket events (task started, task finished, done) plus a single fetch on page load; the client does not poll on a timer. The run summary is appended to the event log only when it changes.
 
 A task status comes from the LLM-planned task, so it is untrusted input: the UI maps it through a fixed set of known statuses (`pending`, `running`, `completed`, `failed`, `blocked`, `skipped`) with an `unknown` fallback before it is used in a CSS class name, and the status text itself is still written with `textContent`.
 
-The web API refuses to start a second run while one is already in progress — both through `POST /api/start` and through the websocket.
+The web API refuses to start a second run while one is already in progress — both through `POST /api/start` and through the websocket. A running run can be stopped via the Stop button in the UI or by calling `POST /api/stop`.
+
+The UI is fully responsive and works on mobile devices. Buttons are color-coded: green for Start, blue for Resume, red for Stop.
 
 ## Configuration
 
@@ -120,7 +124,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Token counts and estimated cost (USD) are both tracked and displayed.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
