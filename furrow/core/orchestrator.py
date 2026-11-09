@@ -7,7 +7,7 @@ from typing import Any
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
+from furrow.config import Plan, RunResult, Settings, TaskModel, Usage, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
@@ -164,6 +164,8 @@ class Orchestrator:
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            
+            # Plan phase
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
@@ -185,6 +187,8 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
                 break
             self._merge_plan(plan)
+            
+            # Execute phase
             try:
                 await self._execute(plan)
             except asyncio.CancelledError:
@@ -194,6 +198,8 @@ class Orchestrator:
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 break
+            
+            # Test phase
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -203,95 +209,17 @@ class Orchestrator:
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 break
-            self._tests_run += 1
-            skipped = bool(getattr(test_result, "skipped", False))
-            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
-            self.event_bus.emit(
-                Event(
-                    type=EventType.TEST_FINISHED,
-                    data={"passed": test_result.passed, "summary": test_result.summary},
-                )
-            )
-            summary = self._escape(self._one_line(test_result.summary))
-            if test_result.passed:
-                self._say(f"[green]Tests passed: {summary}[/green]")
-            else:
-                self._say(f"[red]Tests failed: {summary}[/red]")
-            self._last_test_passed = test_result.passed
-            self._tests_skipped = skipped
-            if skipped:
-                # A skipped run (e.g. no test runner detected) is not a failure:
-                # keep the original goal and drop the stale feedback so the loop
-                # does not chase a test runner that does not exist.
-                self.goal = self.original_goal
-                self._feedback = ""
-            elif not test_result.passed:
-                failures = [f for f in test_result.failures if f and f.strip()]
-                if not failures:
-                    failures = [
-                        test_result.summary
-                        or "the test suite failed without a detailed report"
-                    ]
-                self._feedback = "\n".join(failures)
-                self.goal = (f"{self.original_goal}\n\n"
-                             "The previous cycle left failing tests. Fix them:\n"
-                             f"{self._feedback}")
-            cumulative = self._client_usage()
-            cycle_usage = Usage(
-                input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
-                output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
-                calls=max(0, cumulative.calls - self._usage_seen.calls),
-                cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
-            )
-            self._usage.add(cycle_usage)
-            self._usage_seen = cumulative
-            self.history.append(HistoryEntry(
-                cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
-                task_summaries=[t.id for t in self.tasks],
-                tests_passed=test_result.passed, test_summary=test_result.summary,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                usage=cycle_usage,
-            ))
+            
+            self._handle_test_result(test_result)
+            self._record_cycle_history(plan, test_result)
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
-            # A skipped run (no test runner) reports passed=True but gives the
-            # loop no verification signal, so it must trip the no-progress
-            # guard as well - otherwise the loop never stops.
-            no_signal = (not test_result.passed) or skipped
-            guard_tripped = False
-            if no_signal and sig == self._prev_sig:
-                self._no_progress += 1
-                if self._no_progress >= 2:
-                    self._stopped_reason = (
-                        "no test runner detected" if skipped else "no progress"
-                    )
-                    guard_tripped = True
-            else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
-                    self._no_progress = 0
-                self._prev_sig = sig
-
-            state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
-            try:
-                self.state_store.save(state)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # The state was NOT written: report the failure (including the
-                # path that could not be written) and do NOT emit STATE_SAVED,
-                # which would tell consumers the state was saved when it was not.
-                self.event_bus.emit(
-                    Event(type=EventType.ERROR,
-                         message=f"could not save state to {self.state_store.path}: {e}")
-                )
-            else:
-                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                        data={"path": str(self.state_store.path)}))
+            
+            # Progress guard
+            guard_tripped = self._update_progress_guard(plan)
+            
+            # Persist state
+            self._persist_state(test_result)
+            
             if guard_tripped:
                 break
 
@@ -303,6 +231,110 @@ class Orchestrator:
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
+        return self._build_final_result()
+
+    def _handle_test_result(self, test_result) -> None:
+        """Process test results and update goal/feedback for next cycle."""
+        self._tests_run += 1
+        skipped = bool(getattr(test_result, "skipped", False))
+        self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+        self.event_bus.emit(
+            Event(
+                type=EventType.TEST_FINISHED,
+                data={"passed": test_result.passed, "summary": test_result.summary},
+            )
+        )
+        summary = self._escape(self._one_line(test_result.summary))
+        if test_result.passed:
+            self._say(f"[green]Tests passed: {summary}[/green]")
+        else:
+            self._say(f"[red]Tests failed: {summary}[/red]")
+        self._last_test_passed = test_result.passed
+        self._tests_skipped = skipped
+        if skipped:
+            # A skipped run (e.g. no test runner detected) is not a failure:
+            # keep the original goal and drop the stale feedback so the loop
+            # does not chase a test runner that does not exist.
+            self.goal = self.original_goal
+            self._feedback = ""
+        elif not test_result.passed:
+            failures = [f for f in test_result.failures if f and f.strip()]
+            if not failures:
+                failures = [
+                    test_result.summary
+                    or "the test suite failed without a detailed report"
+                ]
+            self._feedback = "\n".join(failures)
+            self.goal = (f"{self.original_goal}\n\n"
+                         "The previous cycle left failing tests. Fix them:\n"
+                         f"{self._feedback}")
+
+    def _record_cycle_history(self, plan: Plan, test_result) -> None:
+        """Record cycle history and update cumulative usage."""
+        cumulative = self._client_usage()
+        cycle_usage = Usage(
+            input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
+            output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
+            calls=max(0, cumulative.calls - self._usage_seen.calls),
+            cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
+        )
+        self._usage.add(cycle_usage)
+        self._usage_seen = cumulative
+        self.history.append(HistoryEntry(
+            cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
+            task_summaries=[t.id for t in self.tasks],
+            tests_passed=test_result.passed, test_summary=test_result.summary,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            usage=cycle_usage,
+        ))
+
+    def _update_progress_guard(self, plan: Plan) -> bool:
+        """Update the no-progress guard and return True if it trips."""
+        sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+        # A skipped run (no test runner) reports passed=True but gives the
+        # loop no verification signal, so it must trip the no-progress
+        # guard as well - otherwise the loop never stops.
+        no_signal = (not self._last_test_passed) or self._tests_skipped
+        guard_tripped = False
+        if no_signal and sig == self._prev_sig:
+            self._no_progress += 1
+            if self._no_progress >= 2:
+                self._stopped_reason = (
+                    "no test runner detected" if self._tests_skipped else "no progress"
+                )
+                guard_tripped = True
+        else:
+            if sig != self._prev_sig or (self._last_test_passed and not self._tests_skipped):
+                self._no_progress = 0
+            self._prev_sig = sig
+        return guard_tripped
+
+    def _persist_state(self, test_result) -> None:
+        """Persist the run state to disk."""
+        state = RunState(goal=self.goal, original_goal=self.original_goal,
+                         cycles=self.cycles, tasks=self.tasks, history=self.history,
+                         usage=self._usage, no_progress=self._no_progress,
+                         prev_sig=self._prev_sig, tests_run=self._tests_run,
+                         last_passed=test_result.passed, last_skipped=self._tests_skipped,
+                         last_summary=test_result.summary)
+        try:
+            self.state_store.save(state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The state was NOT written: report the failure (including the
+            # path that could not be written) and do NOT emit STATE_SAVED,
+            # which would tell consumers the state was saved when it was not.
+            self.event_bus.emit(
+                Event(type=EventType.ERROR,
+                     message=f"could not save state to {self.state_store.path}: {e}")
+            )
+        else:
+            self.event_bus.emit(Event(type=EventType.STATE_SAVED,
+                                    data={"path": str(self.state_store.path)}))
+
+    def _build_final_result(self) -> RunResult:
+        """Build the final RunResult after the run completes."""
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
         )
@@ -402,164 +434,33 @@ class Orchestrator:
         max_retries = max(0, self.settings.max_task_retries)
         workers: dict[str, WorkerAgent] = {}
 
-        def worker_for(task: TaskModel) -> WorkerAgent:
-            """Return the worker for *task*, creating it once so retries reuse it."""
-            worker = workers.get(task.id)
-            if worker is None:
-                worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
-                                     workspace=self.settings.workspace, goal=self.original_goal)
-                workers[task.id] = worker
-            return worker
-
-        async def run_one(task: TaskModel) -> None:
+        async def run_task(task: TaskModel) -> None:
+            """Run a single task with semaphore and error handling."""
             if task.id in self._skip_ids:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
                 return
             async with sem:
-                task.status = "running"
-                task.started_at = datetime.now(timezone.utc).isoformat()
-                self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
-                try:
-                    result = await worker_for(task).run()
-                except asyncio.CancelledError:
-                    raise  # cancellation is not a task failure
-                except Exception as exc:
-                    # A raised exception is handled exactly like a worker that
-                    # returned success=False: it consumes one attempt and follows
-                    # the same retry / terminal-failure path.
-                    task.attempts += 1
-                    task.error = f"{type(exc).__name__}: {exc}"
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
-                    )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
-                    return
-                try:
-                    success = bool(getattr(result, "success", False))
-                    task.result = getattr(result, "summary", None)
-                    task.error = getattr(result, "error", None)
-                    task.attempts += 1
-                    task.files_changed = sorted(
-                        {str(p) for p in (getattr(result, "files_changed", None) or [])}
-                    )
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    if success:
-                        task.status = "completed"
-                    elif task.attempts <= max_retries:
-                        task.status = "pending"
-                    else:
-                        task.status = "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": task.status == "completed",
-                                "summary": str(task.result or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error or "unknown error"))
-                    if task.status == "completed":
-                        self._say(f"[green]Task {task_id} completed[/green]")
-                    elif task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    task.attempts += 1
-                    task.error = f"{type(exc).__name__}: {exc}"
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
-                    )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                await self._run_single_task(task, workers, max_retries)
 
-        async def run_tasks(tasks: list[TaskModel]) -> None:
-            """Run tasks concurrently, never swallowing a cancellation.
-
-            Exceptions raised inside `run_one` are converted into task failures
-            there; only `asyncio.CancelledError` may still reach us and it must
-            always propagate.
-            """
+        async def run_tasks_in_wave(tasks: list[TaskModel]) -> None:
+            """Run multiple tasks concurrently, propagating cancellation."""
             if not tasks:
                 return
-            results = await asyncio.gather(*[run_one(t) for t in tasks],
+            results = await asyncio.gather(*[run_task(t) for t in tasks],
                                            return_exceptions=True)
             for res in results:
                 if isinstance(res, asyncio.CancelledError):
                     raise res
 
-        async def run_retries(tasks: list[TaskModel]) -> None:
-            """Re-run tasks that failed while retries remain, until the budget is spent."""
+        async def run_task_retries(tasks: list[TaskModel]) -> None:
+            """Re-run failed tasks while retries remain."""
             retry_queue = [t for t in tasks
                            if t.status == "pending" and t.attempts <= max_retries]
             while retry_queue:
                 batch = retry_queue
                 retry_queue = []
-                await run_tasks(batch)
+                await run_tasks_in_wave(batch)
                 for t in batch:
                     if t.status == "pending" and t.attempts <= max_retries:
                         retry_queue.append(t)
@@ -572,5 +473,146 @@ class Orchestrator:
                     t.status = "blocked"
                 else:
                     runnable.append(t)
-            await run_tasks(runnable)
-            await run_retries(runnable)
+            await run_tasks_in_wave(runnable)
+            await run_task_retries(runnable)
+
+    async def _run_single_task(
+        self, task: TaskModel, workers: dict[str, WorkerAgent], max_retries: int
+    ) -> None:
+        """Run a single task and handle its result or exception."""
+        worker = self._get_or_create_worker(task, workers)
+        task.status = "running"
+        task.started_at = datetime.now(timezone.utc).isoformat()
+        self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+        try:
+            result = await worker.run()
+        except asyncio.CancelledError:
+            raise  # cancellation is not a task failure
+        except Exception as exc:
+            self._handle_task_exception(task, exc, max_retries)
+            return
+        self._handle_task_result(task, result, max_retries)
+
+    def _get_or_create_worker(
+        self, task: TaskModel, workers: dict[str, WorkerAgent]
+    ) -> WorkerAgent:
+        """Return the worker for *task*, creating it once so retries reuse it."""
+        worker = workers.get(task.id)
+        if worker is None:
+            worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
+                                 workspace=self.settings.workspace, goal=self.original_goal)
+            workers[task.id] = worker
+        return worker
+
+    def _handle_task_exception(self, task: TaskModel, exc: Exception, max_retries: int) -> None:
+        """Handle an exception raised during task execution."""
+        task.attempts += 1
+        task.error = f"{type(exc).__name__}: {exc}"
+        task.finished_at = datetime.now(timezone.utc).isoformat()
+        task.status = "pending" if task.attempts <= max_retries else "failed"
+        self.event_bus.emit(
+            Event(
+                type=EventType.ERROR,
+                message=f"task {task.id} raised: {task.error}",
+                data={"task": task.id, "error": task.error, "attempts": task.attempts},
+            )
+        )
+        self.event_bus.emit(
+            Event(
+                type=EventType.TASK_FINISHED,
+                data={
+                    "task": task.id,
+                    "success": False,
+                    "summary": str(task.error or ""),
+                },
+            )
+        )
+        task_id = self._escape(task.id)
+        detail = self._escape(self._one_line(task.error))
+        if task.status == "pending":
+            self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
+            self.event_bus.emit(
+                Event(type=EventType.LOG,
+                     message=f"task {task.id} failed, retrying "
+                             f"(attempt {task.attempts} of {max_retries + 1})")
+            )
+        else:
+            self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+
+    def _handle_task_result(
+        self, task: TaskModel, result: WorkerResult, max_retries: int
+    ) -> None:
+        """Handle the result of a successful task execution."""
+        try:
+            success = bool(getattr(result, "success", False))
+            task.result = getattr(result, "summary", None)
+            task.error = getattr(result, "error", None)
+            task.attempts += 1
+            task.files_changed = sorted(
+                {str(p) for p in (getattr(result, "files_changed", None) or [])}
+            )
+            task.finished_at = datetime.now(timezone.utc).isoformat()
+            if success:
+                task.status = "completed"
+            elif task.attempts <= max_retries:
+                task.status = "pending"
+            else:
+                task.status = "failed"
+            self.event_bus.emit(
+                Event(
+                    type=EventType.TASK_FINISHED,
+                    data={
+                        "task": task.id,
+                        "success": task.status == "completed",
+                        "summary": str(task.result or ""),
+                    },
+                )
+            )
+            task_id = self._escape(task.id)
+            detail = self._escape(self._one_line(task.error or "unknown error"))
+            if task.status == "completed":
+                self._say(f"[green]Task {task_id} completed[/green]")
+            elif task.status == "pending":
+                self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
+                self.event_bus.emit(
+                    Event(type=EventType.LOG,
+                         message=f"task {task.id} failed, retrying "
+                                 f"(attempt {task.attempts} of {max_retries + 1})")
+                )
+            else:
+                self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            task.attempts += 1
+            task.error = f"{type(exc).__name__}: {exc}"
+            task.finished_at = datetime.now(timezone.utc).isoformat()
+            task.status = "pending" if task.attempts <= max_retries else "failed"
+            self.event_bus.emit(
+                Event(
+                    type=EventType.ERROR,
+                    message=f"task {task.id} raised: {task.error}",
+                    data={"task": task.id, "error": task.error, "attempts": task.attempts},
+                )
+            )
+            self.event_bus.emit(
+                Event(
+                    type=EventType.TASK_FINISHED,
+                    data={
+                        "task": task.id,
+                        "success": False,
+                        "summary": str(task.error or ""),
+                    },
+                )
+            )
+            task_id = self._escape(task.id)
+            detail = self._escape(self._one_line(task.error))
+            if task.status == "pending":
+                self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
+                self.event_bus.emit(
+                    Event(type=EventType.LOG,
+                         message=f"task {task.id} failed, retrying "
+                                 f"(attempt {task.attempts} of {max_retries + 1})")
+                )
+            else:
+                self._say(f"[red]Task {task_id} failed: {detail}[/red]")

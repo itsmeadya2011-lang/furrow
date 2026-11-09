@@ -10,11 +10,8 @@ Commands:
 from __future__ import annotations
 
 import asyncio
-import inspect
-import logging
 import sys
 from pathlib import Path
-from typing import Any
 
 import click
 
@@ -22,32 +19,10 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
-
-logger = logging.getLogger(__name__)
+from furrow.util import build_run_settings, run_orchestrator
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
-
-
-def _run_settings(
-    model: str | None = None,
-    max_cycles: int | None = None,
-    workspace: Path | None = None,
-) -> Settings:
-    """Return a validated copy of the global settings with the given overrides applied.
-
-    The module level ``settings`` object is never mutated: a fresh validated
-    instance is constructed for this run only.
-    """
-    updates: dict[str, Any] = {}
-    if model is not None:
-        updates["model"] = model
-    if max_cycles is not None:
-        updates["max_cycles"] = max_cycles
-    if workspace is not None:
-        updates["workspace"] = Path(workspace)
-    merged = {**settings.model_dump(), **updates}
-    return Settings.model_validate(merged)
 
 
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
@@ -80,6 +55,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if usage.cost_usd > 0:
+            click.echo(f"  Estimated cost:  ${usage.cost_usd:.6f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +80,8 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        if usage.cost_usd > 0:
+            click.echo(f"  Estimated cost:  ${usage.cost_usd:.6f}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
@@ -115,37 +94,6 @@ def _print_state(state: RunState) -> None:
         click.echo("Tasks:  (none)")
 
 
-async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
-
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
-
-
-async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
-    """Run an orchestrator and release its LLM client afterwards.
-
-    The client is closed in a ``finally`` block, so its HTTP connections are
-    released even when the run raises.
-    """
-    try:
-        return await orchestrator.run()
-    finally:
-        await _release_client(getattr(orchestrator, "client", None))
-
-
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
@@ -156,7 +104,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         resume=resume,
     )
     try:
-        result = asyncio.run(_run_and_release(orchestrator))
+        result = asyncio.run(run_orchestrator(orchestrator))
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)
@@ -199,7 +147,9 @@ def start(
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = build_run_settings(
+        settings, model=model, max_cycles=max_cycles, workspace=workspace
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -212,7 +162,7 @@ def start(
 )
 def status(workspace: Path | None) -> None:
     """Show the state of the persisted Furrow run."""
-    run_settings = _run_settings(workspace=workspace)
+    run_settings = build_run_settings(settings, workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
@@ -231,7 +181,7 @@ def status(workspace: Path | None) -> None:
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 def resume(workspace: Path | None, max_cycles: int | None) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = build_run_settings(settings, max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

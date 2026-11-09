@@ -13,7 +13,6 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from typing import Any
 
@@ -26,6 +25,7 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.util import build_run_settings, run_orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -439,17 +439,25 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override.
+def build_orchestrator(
+    goal: str,
+    resume: bool,
+    max_cycles: int | None,
+    settings: Settings,
+    event_bus: Any,
+) -> Orchestrator:
+    """Create an orchestrator wired to the event bus and the state store.
 
-    The merged settings are *validated*: ``model_copy(update=...)`` skips the
-    pydantic validation and would happily build a ``Settings`` object with an
-    out-of-range value (a negative ``max_cycles`` for instance).  The module
-    level ``settings`` object is never modified: a new one is built instead.
+    Lives in the web layer (rather than :mod:`furrow.util`) so that tests can
+    monkeypatch ``server.Orchestrator`` and have the patched class picked up.
     """
-    if max_cycles is None:
-        return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Orchestrator(
+        goal=goal,
+        settings=build_run_settings(settings, max_cycles=max_cycles),
+        state_store=StateStore(settings.state_path()),
+        event_bus=event_bus,
+        resume=resume,
+    )
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -504,60 +512,36 @@ async def _drain(queue: asyncio.Queue[Event]) -> None:
         await queue.get()
 
 
-async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
-
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
-
-
-async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
-    """Run an orchestrator and release its LLM client afterwards.
-
-    The client is closed in a ``finally`` block, so its HTTP connections are
-    released when the run finishes, when it fails and when it is cancelled
-    (e.g. because the websocket client went away).
-    """
-    try:
-        return await orchestrator.run()
-    finally:
-        await _release_client(getattr(orchestrator, "client", None))
-
-
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
     """Run an orchestrator in the background and discard the emitted events."""
     queue = bus.subscribe()
     drain = asyncio.create_task(_drain(queue))
     try:
-        return await _run_orchestrator(orchestrator)
+        return await run_orchestrator(orchestrator)
     finally:
         drain.cancel()
         bus.unsubscribe(queue)
 
 
-def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
-) -> Orchestrator:
-    """Create an orchestrator wired to the event bus and the state store."""
-    return Orchestrator(
-        goal=goal,
-        settings=_run_settings(max_cycles),
-        state_store=StateStore(settings.state_path()),
-        event_bus=bus,
-        resume=resume,
-    )
+async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
+    """Run an orchestrator and release its LLM client afterwards.
+
+    Thin wrapper around :func:`furrow.util.run_orchestrator` so the web layer
+    keeps a stable private entry point for tests and internal callers.
+    """
+    return await run_orchestrator(orchestrator)
+
+
+def _run_settings(max_cycles: int | None = None) -> Settings:
+    """Return the settings to use for a run, applying a ``max_cycles`` override.
+
+    Without an override the shared ``settings`` object is returned as-is. With
+    an override a fresh validated copy is built via
+    :func:`furrow.util.build_run_settings`.
+    """
+    if max_cycles is None:
+        return settings
+    return build_run_settings(settings, max_cycles=max_cycles)
 
 
 async def _send_error(websocket: WebSocket, message: str) -> None:
@@ -619,7 +603,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = build_orchestrator(goal, request.resume, request.max_cycles, settings, bus)
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -678,13 +662,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = build_orchestrator(goal, resume, request.max_cycles, settings, bus)
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.
             await _send_error(websocket, _describe_validation_error(validation_error))
             return
-        run_task = asyncio.create_task(_run_orchestrator(orchestrator))
+        run_task = asyncio.create_task(run_orchestrator(orchestrator))
         _TASKS.add(run_task)
         run_task.add_done_callback(_on_run_done)
         _CURRENT.update(

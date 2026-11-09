@@ -447,26 +447,38 @@ class WorkerAgent:
     async def _run_command(self, command: str) -> str:
         if not command.strip():
             return "error: empty command"
-        # The hardened check subsumes the legacy pattern list: it normalizes
-        # the command, checks every segment against DENIED_COMMANDS and
-        # DENIED_PROGRAMS, and denies force pushes and redirections outside
-        # the workspace.
+        validation_error = self._validate_command(command)
+        if validation_error:
+            return validation_error
+        timeout = self._get_command_timeout()
+        new_session = os.name == "posix"
+        spawn_kwargs = {"start_new_session": True} if new_session else {}
+        proc = await self._create_process(command, spawn_kwargs)
+        if isinstance(proc, str):
+            return proc
+        return await self._run_with_timeout(proc, new_session, timeout)
+
+    def _validate_command(self, command: str) -> str | None:
+        """Validate the command and return an error message if invalid, None if valid."""
         if is_command_denied(command, self.workspace):
             return "error: command denied"
         try:
             shlex.split(command)
         except ValueError:
             return "error: could not parse command"
-        timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
-        # On POSIX the command runs in its own session/process group so that a
-        # timeout can kill the whole tree (children and grandchildren included)
-        # instead of leaking orphans. On other platforms we fall back to
-        # killing the direct child only.
-        new_session = os.name == "posix"
-        spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+        return None
+
+    def _get_command_timeout(self) -> float:
+        """Get the command timeout from settings."""
+        return float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+
+    async def _create_process(
+        self, command: str, spawn_kwargs: dict[str, Any]
+    ) -> asyncio.subprocess.Process | str:
+        """Create the subprocess for the command."""
         try:
             if os.name == "posix":
-                proc = await asyncio.create_subprocess_exec(
+                return await asyncio.create_subprocess_exec(
                     "/bin/sh", "-c", command,
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
@@ -477,7 +489,7 @@ class WorkerAgent:
                 parts = shlex.split(command)
                 if not parts:
                     return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
+                return await asyncio.create_subprocess_exec(
                     *parts,
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
@@ -486,11 +498,20 @@ class WorkerAgent:
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
+
+    async def _run_with_timeout(
+        self, proc: asyncio.subprocess.Process, new_session: bool, timeout: float
+    ) -> str:
+        """Run the process with timeout and return formatted output."""
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
+        return self._format_output(stdout, stderr)
+
+    def _format_output(self, stdout: bytes, stderr: bytes) -> str:
+        """Format the process output."""
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
