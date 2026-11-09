@@ -361,6 +361,27 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "4321 tokens" in output
     assert "in 3900" in output
     assert "out 421" in output
+    assert "USD" not in output
+
+
+def test_summary_prints_estimated_cost_when_present(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary includes estimated USD cost when usage reports a positive cost."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.123456),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "4321 tokens" in output
+    assert "est. $0.123456 USD" in output
 
 
 def test_summary_skips_usage_line_when_zero_calls(
@@ -518,6 +539,25 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
     assert "LLM usage:" in result.output
     assert "12 calls" in result.output
     assert "4321 tokens" in result.output
+    assert "USD" not in result.output
+
+
+def test_status_prints_estimated_cost_when_present(runner: CliRunner, tmp_path: Path) -> None:
+    """Status includes estimated USD cost when persisted usage reports it."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.123456),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "LLM usage:" in result.output
+    assert "est. $0.123456 USD" in result.output
 
 
 class RecordingClient:
