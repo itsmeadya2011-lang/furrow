@@ -97,6 +97,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  .panel.hidden {
+    display: none;
   }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
@@ -131,6 +135,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .cycle-badge {
+    font-size: .75rem; padding: .1rem .4rem; background: #2b3240;
+    border-radius: 3px; color: #8a93a5;
+  }
 </style>
 </head>
 <body>
@@ -146,8 +154,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>cycle <b id="cycle">\u2014</b></span>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>usage <b id="usage">0 calls, 0 tokens - est. cost: N/A</b></span>
   </div>
+</div>
+<div class="filter-bar">
+  <button id="filter-all" class="active">All</button>
+  <button id="filter-pending">Pending</button>
+  <button id="filter-running">Running</button>
+  <button id="filter-completed">Completed</button>
+  <button id="filter-failed">Failed</button>
+  <button id="filter-blocked">Blocked</button>
+  <button id="filter-skipped">Skipped</button>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -162,6 +179,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const usageEl = document.getElementById('usage');
   let socket = null;
   let lastSummary = null;
+  let currentFilter = 'all';
+  let allTasks = [];
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -206,18 +225,31 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    const costStr = cost > 0 ? cost.toFixed(6) : 'N/A';
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens - est. cost: $' + costStr;
   }
 
   function renderTasks(tasks) {
+    allTasks = tasks || [];
+    applyFilter();
+  }
+
+  function applyFilter() {
     while (tasksEl.firstChild) {
       tasksEl.removeChild(tasksEl.firstChild);
     }
-    const list = tasks || [];
+    const list = allTasks.filter(task => {
+      if (currentFilter === 'all') return true;
+      const status = text(task.status).trim().toLowerCase();
+      return status === currentFilter;
+    });
     if (list.length === 0) {
       const hint = document.createElement('p');
       hint.className = 'panel-empty';
-      hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
+      hint.textContent = currentFilter === 'all' 
+        ? 'No run yet \u2014 enter a goal and click Start.' 
+        : 'No tasks with status: ' + currentFilter;
       tasksEl.appendChild(hint);
       return;
     }
@@ -248,6 +280,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      if (task.cycle !== undefined) {
+        const cycleBadge = document.createElement('span');
+        cycleBadge.className = 'cycle-badge';
+        cycleBadge.textContent = 'cycle ' + task.cycle;
+        meta.appendChild(cycleBadge);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -271,6 +309,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
       tasksEl.appendChild(panel);
     });
   }
+
+  function setFilter(filter) {
+    currentFilter = filter;
+    document.querySelectorAll('.filter-bar button').forEach(btn => {
+      btn.classList.toggle('active', btn.id === 'filter-' + filter);
+    });
+    applyFilter();
+  }
+
+  document.getElementById('filter-all').onclick = () => setFilter('all');
+  document.getElementById('filter-pending').onclick = () => setFilter('pending');
+  document.getElementById('filter-running').onclick = () => setFilter('running');
+  document.getElementById('filter-completed').onclick = () => setFilter('completed');
+  document.getElementById('filter-failed').onclick = () => setFilter('failed');
+  document.getElementById('filter-blocked').onclick = () => setFilter('blocked');
+  document.getElementById('filter-skipped').onclick = () => setFilter('skipped');
 
   async function loadState() {
     try {

@@ -21,7 +21,9 @@ Return JSON only (no markdown, no explanation) with this shape:
 }
 
 If the goal is too large for one cycle, say so in rationale and break it
-into the most critical first slice."""
+into the most critical first slice.
+
+Before planning, you can use the `analyze_codebase` tool to understand the project structure, existing patterns, and relevant files. This helps you create more accurate and contextual plans."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
@@ -71,12 +73,37 @@ WORKER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "apply_patch",
+        "description": "apply a unified diff patch to a file in the workspace. The patch must be in unified diff format (like git diff output).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "patch": {"type": "string"},
+            },
+            "required": ["path", "patch"],
+        },
+    },
+    {
         "name": "list_files",
         "description": "list files under a workspace directory (relative paths).",
         "parameters": {
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": [],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "search for a pattern in files under the workspace. Returns matching lines with file paths and line numbers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "include": {"type": "string"},
+            },
+            "required": ["pattern"],
         },
     },
     {

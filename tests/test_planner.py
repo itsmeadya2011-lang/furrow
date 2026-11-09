@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from furrow.llm import LLMResponse, ToolCall
 
 from furrow.agents.planner import PlannerAgent
 from furrow.config import Plan, Settings
@@ -12,6 +13,8 @@ class FakeLLMClient:
         self.raises = raises
         self.prompts = []
         self.models = []
+        self.messages = []
+        self.tools = []
 
     async def complete(self, prompt, system="", model=None):
         self.prompts.append(prompt)
@@ -19,6 +22,14 @@ class FakeLLMClient:
         if self.raises:
             raise self.raises
         return self.response
+
+    async def chat(self, messages, tools=None, system="", model=None):
+        self.messages.append(messages)
+        self.tools.append(tools)
+        self.models.append(model)
+        if self.raises:
+            raise self.raises
+        return LLMResponse(text=self.response, tool_calls=[])
 
 
 def run(coro):
@@ -70,7 +81,7 @@ def test_context_included():
     client = FakeLLMClient(response='{"tasks":[],"rationale":""}')
     agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
     run(agent.plan("g", context="FAILING TESTS"))
-    assert "FAILING TESTS" in client.prompts[0]
+    assert "FAILING TESTS" in str(client.messages[0]) or "FAILING TESTS" in client.prompts[0]
 
 
 def test_uses_planner_model():

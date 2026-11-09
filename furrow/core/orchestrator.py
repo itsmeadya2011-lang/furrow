@@ -32,7 +32,7 @@ class Orchestrator:
         self.state_store = (
             state_store if state_store is not None else StateStore(self.settings.state_path())
         )
-        self.planner = PlannerAgent(client=self.client, settings=self.settings)
+        self.planner = PlannerAgent(client=self.client, settings=self.settings, workspace=self.settings.workspace)
         self.tester = TesterAgent(client=self.client, settings=self.settings,
                                  workspace=self.settings.workspace)
         self.history: list[HistoryEntry] = []

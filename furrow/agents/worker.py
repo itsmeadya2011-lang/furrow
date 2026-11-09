@@ -51,6 +51,9 @@ DENIED_PROGRAMS = frozenset(
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
+# Maximum number of matches returned by the ``grep`` tool.
+MAX_GREP_MATCHES = 200
+
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
 
@@ -374,9 +377,19 @@ class WorkerAgent:
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
             return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+        if name == "apply_patch":
+            return await self._apply_patch(
+                str(args.get("path", "")), str(args.get("patch", ""))
+            )
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
+            )
+        if name == "grep":
+            return await self._grep(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+                str(args.get("include", "")) if args.get("include") is not None else None,
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
@@ -443,6 +456,203 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _grep(self, pattern: str, path: str, include: str | None = None) -> str:
+        """Search for a pattern in files under the workspace."""
+        if not pattern:
+            return "error: pattern is required"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            import re
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+
+        matches: list[str] = []
+        base = self.workspace.resolve()
+
+        def search_files(directory: Path) -> None:
+            for entry in directory.rglob("*"):
+                if not entry.is_file():
+                    continue
+                # Check include pattern if provided
+                if include:
+                    import fnmatch
+                    if not fnmatch.fnmatch(entry.name, include):
+                        continue
+                # Skip binary files
+                try:
+                    content = entry.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+                except OSError:
+                    continue
+
+                for i, line in enumerate(content.splitlines(), 1):
+                    if regex.search(line):
+                        try:
+                            rel = entry.relative_to(base)
+                        except ValueError:
+                            rel = entry
+                        matches.append(f"{rel}:{i}:{line}")
+                        if len(matches) >= MAX_GREP_MATCHES:
+                            return
+
+        await asyncio.to_thread(search_files, resolved)
+
+        if not matches:
+            return "no matches found"
+
+        if len(matches) >= MAX_GREP_MATCHES:
+            matches = matches[:MAX_GREP_MATCHES]
+            matches.append(f"... (truncated to {MAX_GREP_MATCHES} matches)")
+
+        return "\n".join(matches)
+
+    async def _apply_patch(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file."""
+        if not patch.strip():
+            return "error: patch is empty"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            # Read the original file
+            if not resolved.exists():
+                return f"error: file {path} does not exist"
+            original_content = resolved.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return f"error: {exc}"
+
+        try:
+            # Apply the patch using the difflib/patch approach
+            import difflib
+            
+            # Parse the unified diff
+            lines = patch.splitlines(keepends=True)
+            if not lines:
+                return "error: empty patch"
+            
+            # Simple unified diff parser - expects format like:
+            # --- a/file.py
+            # +++ b/file.py
+            # @@ -1,3 +1,4 @@
+            #  line1
+            # -line2
+            # +line2 modified
+            # +line3 new
+            #  line4
+            
+            # For simplicity, we'll use the patch command if available
+            # Otherwise fall back to manual application
+            import subprocess
+            import tempfile
+            
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as pf:
+                pf.write(patch)
+                patch_file = pf.name
+            
+            try:
+                # Try using the patch command first
+                result = subprocess.run(
+                    ['patch', '-p1', '-i', patch_file],
+                    cwd=str(self.workspace),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if result.returncode == 0:
+                    # Read the new content to verify
+                    new_content = resolved.read_text(encoding="utf-8")
+                    rel = str(resolved.relative_to(self.workspace.resolve()))
+                    self.files_changed.add(rel)
+                    return f"applied patch to {path} ({len(new_content.encode('utf-8'))} bytes)"
+                else:
+                    # Patch command failed, try manual application
+                    return await self._apply_patch_manual(resolved, original_content, patch, path)
+            except FileNotFoundError:
+                # patch command not available, use manual application
+                return await self._apply_patch_manual(resolved, original_content, patch, path)
+            finally:
+                # Clean up temp file
+                import os
+                try:
+                    os.unlink(patch_file)
+                except OSError:
+                    pass
+        except Exception as exc:
+            return f"error: {exc}"
+
+    async def _apply_patch_manual(self, resolved: Path, original_content: str, patch: str, path: str) -> str:
+        """Manually apply a unified diff patch."""
+        try:
+            lines = original_content.splitlines(keepends=True)
+            patch_lines = patch.splitlines(keepends=True)
+            
+            i = 0
+            # Skip header lines (--- and +++)
+            while i < len(patch_lines) and (patch_lines[i].startswith('---') or patch_lines[i].startswith('+++')):
+                i += 1
+            
+            while i < len(patch_lines):
+                line = patch_lines[i]
+                if line.startswith('@@'):
+                    # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+                    import re
+                    match = re.match(r'@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@', line)
+                    if not match:
+                        i += 1
+                        continue
+                    old_start = int(match.group(1)) - 1  # Convert to 0-based
+                    old_count = int(match.group(2)) if match.group(2) else 1
+                    new_start = int(match.group(3)) - 1  # Convert to 0-based
+                    # new_count = int(match.group(4)) if match.group(4) else 1
+                    
+                    i += 1
+                    hunk_lines = []
+                    while i < len(patch_lines) and not patch_lines[i].startswith('@@'):
+                        hunk_lines.append(patch_lines[i])
+                        i += 1
+                    
+                    # Apply the hunk
+                    old_end = old_start + old_count
+                    new_lines = []
+                    for hunk_line in hunk_lines:
+                        if hunk_line.startswith(' '):
+                            # Context line - must match
+                            context = hunk_line[1:]
+                            if old_start < len(lines) and lines[old_start].rstrip('\n') == context.rstrip('\n'):
+                                new_lines.append(lines[old_start])
+                                old_start += 1
+                            else:
+                                return f"error: context mismatch at line {old_start + 1}"
+                        elif hunk_line.startswith('-'):
+                            # Deleted line - must match and skip
+                            deleted = hunk_line[1:]
+                            if old_start < len(lines) and lines[old_start].rstrip('\n') == deleted.rstrip('\n'):
+                                old_start += 1
+                            else:
+                                return f"error: delete mismatch at line {old_start + 1}"
+                        elif hunk_line.startswith('+'):
+                            # Added line
+                            new_lines.append(hunk_line[1:] + '\n')
+                    
+                    # Replace the old lines with new lines
+                    lines = lines[:old_start - old_count + len(new_lines)] if False else lines
+                    lines = lines[:old_start - old_count] + new_lines + lines[old_end:]
+                else:
+                    i += 1
+            
+            # Write the modified content
+            new_content = ''.join(lines)
+            resolved.write_text(new_content, encoding="utf-8")
+            rel = str(resolved.relative_to(self.workspace.resolve()))
+            self.files_changed.add(rel)
+            return f"applied patch to {path} ({len(new_content.encode('utf-8'))} bytes)"
+        except Exception as exc:
+            return f"error: failed to apply patch manually: {exc}"
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
