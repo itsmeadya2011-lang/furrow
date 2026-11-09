@@ -380,6 +380,12 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "grep":
+            return await self._grep(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") else None,
+                str(args.get("include", "")) if args.get("include") else None,
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -519,3 +525,86 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+
+    async def _grep(self, pattern: str, path: str | None, include: str | None) -> str:
+        """Search for a pattern in files using ripgrep (rg)."""
+        if not pattern.strip():
+            return "error: empty pattern"
+        
+        # Build the rg command
+        cmd_parts = ["rg", "--no-heading", "--line-number", "--color=never"]
+        
+        if include:
+            # Validate include pattern to prevent injection
+            if not re.match(r'^[\w\*\.\-\+]+$', include):
+                return "error: invalid include pattern"
+            cmd_parts.extend(["-g", include])
+        
+        # Escape the pattern for safe use
+        cmd_parts.append(pattern)
+        
+        # Determine search directory
+        search_path = self.workspace
+        if path:
+            resolved = resolve_in_workspace(self.workspace, path)
+            if resolved is None:
+                return "error: path escapes workspace"
+            search_path = resolved
+        
+        cmd_parts.append(str(search_path))
+        
+        command = " ".join(shlex.quote(p) for p in cmd_parts)
+        
+        # Check if command is denied (rg is not in DENIED_PROGRAMS)
+        if is_command_denied(command, self.workspace):
+            return "error: command denied"
+        
+        timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+        new_session = os.name == "posix"
+        spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+        
+        try:
+            if os.name == "posix":
+                proc = await asyncio.create_subprocess_exec(
+                    "/bin/sh", "-c", command,
+                    cwd=str(self.workspace),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **spawn_kwargs,
+                )
+            else:
+                parts = shlex.split(command)
+                if not parts:
+                    return "error: empty command"
+                proc = await asyncio.create_subprocess_exec(
+                    *parts,
+                    cwd=str(self.workspace),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    **spawn_kwargs,
+                )
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self._kill_process_tree(proc, new_session)
+            return "command timed out"
+        
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        
+        # rg returns exit code 1 when no matches found (not an error)
+        if proc.returncode not in (0, 1):
+            return f"error: rg exited with status {proc.returncode}: {err}"
+        
+        combined = out
+        if err.strip():
+            combined += "\n[stderr]\n" + err
+        
+        cap = 20000
+        if len(combined) > cap:
+            combined = "[... output truncated ...]\n" + combined[-cap:]
+        
+        return combined if combined.strip() else "(no matches)"

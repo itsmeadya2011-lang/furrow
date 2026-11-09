@@ -33,7 +33,7 @@ class FakePlanner:
         self.raise_runtimeerror = raise_runtimeerror
         self.calls = 0
 
-    async def plan(self, goal, context=""):
+    async def plan(self, goal, context="", **kwargs):
         self.calls += 1
         if self.raise_valueerror:
             raise ValueError("boom")

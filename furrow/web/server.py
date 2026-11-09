@@ -141,14 +141,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="resume">Resume</button>
 </div>
 <div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <div class="goal" id="goal-display">\u2014</div>
+    <div class="meta" id="header-meta">
+      <span>cycle <b id="cycle">\u2014</b></span>
+      <span>state <b id="state">idle</b></span>
+      <span id="stopped-reason" class="reason"></span>
+      <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+      <span id="cost" class="reason"></span>
+    </div>
   </div>
-</div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
 <script>
@@ -160,6 +161,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const costEl = document.getElementById('cost');
   let socket = null;
   let lastSummary = null;
 
@@ -207,6 +209,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    costEl.textContent = cost > 0 ? '$' + cost.toFixed(6) : '';
   }
 
   function renderTasks(tasks) {

@@ -165,7 +165,11 @@ class Orchestrator:
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
-                plan = await self.planner.plan(self.goal, context=self._context())
+                plan = await self.planner.plan(
+                    self.goal,
+                    context=self._context(),
+                    task_history=self._task_history(),
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -330,6 +334,19 @@ class Orchestrator:
         if self._feedback:
             return self._feedback
         return ""
+
+    def _task_history(self) -> list[dict[str, Any]]:
+        """Return a summary of task history for the planner."""
+        return [
+            {
+                "id": t.id,
+                "description": t.description,
+                "status": t.status,
+                "error": t.error,
+                "result": t.result,
+            }
+            for t in self.tasks
+        ]
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()

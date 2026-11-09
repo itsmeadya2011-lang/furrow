@@ -88,4 +88,26 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "grep",
+        "description": (
+            "search for a pattern in files within the workspace using ripgrep (rg). "
+            "Returns matching lines with file paths and line numbers."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {
+                    "type": "string",
+                    "description": "optional directory to search in (default: workspace root)",
+                },
+                "include": {
+                    "type": "string",
+                    "description": "optional file pattern to include (e.g. '*.py')",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
 ]

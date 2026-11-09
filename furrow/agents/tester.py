@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import signal
 import sys
 from pathlib import Path
@@ -91,6 +92,32 @@ def parse_test_output(output: str) -> list[dict]:
             )
             seen_locations.add(location_key)
 
+    # Pattern for pytest short test summary (FAILED tests/...)
+    pytest_summary_pattern = re.compile(
+        r"^FAILED\s+([^\s:]+)::([^\s:]+)(?::(\d+))?\s*-\s*(.*)$", re.MULTILINE
+    )
+    for match in pytest_summary_pattern.finditer(output):
+        test_path = match.group(1)
+        test_name = match.group(2)
+        line_num = int(match.group(3)) if match.group(3) else None
+        error_msg = match.group(4).strip() if match.group(4) else ""
+
+        file_path = test_path
+        if "::" in file_path:
+            file_path = file_path.split("::")[0]
+
+        location_key = f"{file_path}::{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": file_path,
+                    "line": line_num,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
     # Pattern for file:line:col
     file_line_col_pattern = re.compile(r"([^\s:]+\.py):(\d+):(\d+)")
     for match in file_line_col_pattern.finditer(output):
@@ -154,6 +181,87 @@ def parse_test_output(output: str) -> list[dict]:
                     failure["error"] = exc_full
                     break
 
+    # JUnit / unittest style failures
+    junit_failure_pattern = re.compile(
+        r"^(?:FAIL|ERROR):\s+([^\s\(]+)(?:\(([^\)]+)\))?\s*\n(.*?)(?=\n(?:FAIL|ERROR|OK|Ran )|\Z)",
+        re.MULTILINE | re.DOTALL
+    )
+    for match in junit_failure_pattern.finditer(output):
+        test_name = match.group(1)
+        test_class = match.group(2) or ""
+        error_msg = match.group(3).strip()
+        location_key = f"junit:{test_class}.{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": test_class.replace(".", "/") + ".py" if test_class else None,
+                    "line": None,
+                    "test": f"{test_class}.{test_name}" if test_class else test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Go test failures
+    go_failure_pattern = re.compile(
+        r"^--- FAIL:\s+(\S+)\s*\([\d.]+s\)\s*\n(.*?)(?=\n---|\nPASS|\nFAIL|\Z)",
+        re.MULTILINE | re.DOTALL
+    )
+    for match in go_failure_pattern.finditer(output):
+        test_name = match.group(1)
+        error_msg = match.group(2).strip()
+        location_key = f"go:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Rust/cargo test failures
+    cargo_failure_pattern = re.compile(
+        r"^test\s+(\S+)\s+\.\.\.\s+FAILED\s*\n(.*?)(?=\ntest\s|\nrunning\s|\nfailures:|\Z)",
+        re.MULTILINE | re.DOTALL
+    )
+    for match in cargo_failure_pattern.finditer(output):
+        test_name = match.group(1)
+        error_msg = match.group(2).strip()
+        location_key = f"cargo:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
+    # JavaScript/Jest/Vitest failures
+    js_failure_pattern = re.compile(
+        r"^\s*✕\s+(.+?)\s*\n\s+(.+?)(?=\n\s*(?:✕|✓|PASS|FAIL|Test Suites:|Tests:|\Z))",
+        re.MULTILINE | re.DOTALL
+    )
+    for match in js_failure_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        error_msg = match.group(2).strip()
+        location_key = f"js:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
     return failures
 
 
@@ -194,6 +302,11 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
+        # Check pyproject.toml for explicit test configuration
+        pyproject_test_cmd = self._get_pyproject_test_command()
+        if pyproject_test_cmd:
+            return pyproject_test_cmd
+
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
@@ -203,7 +316,8 @@ class TesterAgent:
         # Check for Node.js test runners
         if has_package:
             # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
+            patterns = ["jest.config.*", "vitest.config.*", "vitest.config.ts", "vitest.config.js"]
+            for pattern in patterns:
                 for _f in self.workspace.glob(pattern):
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
@@ -244,7 +358,48 @@ class TesterAgent:
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+        if (self.workspace / "mix.exs").is_file():
+            return ["mix", "test"]
+        is_gradle = (self.workspace / "build.gradle").is_file() or (
+            self.workspace / "build.gradle.kts"
+        ).is_file()
+        if is_gradle:
+            return ["./gradlew", "test", "--quiet"]
+        if (self.workspace / "pom.xml").is_file():
+            return ["mvn", "test", "-q"]
 
+        return None
+
+    def _get_pyproject_test_command(self) -> list[str] | None:
+        """Extract test command from pyproject.toml if explicitly configured."""
+        pyproject_path = self.workspace / "pyproject.toml"
+        if not pyproject_path.is_file():
+            return None
+        try:
+            import tomllib
+        except ImportError:
+            try:
+                import tomli as tomllib
+            except ImportError:
+                return None
+        try:
+            with open(pyproject_path, "rb") as f:
+                data = tomllib.load(f)
+            # Check for [tool.furrow] test_command
+            tool_furrow = data.get("tool", {}).get("furrow", {})
+            if "test_command" in tool_furrow:
+                cmd = tool_furrow["test_command"]
+                if isinstance(cmd, str):
+                    return shlex.split(cmd)
+                if isinstance(cmd, list):
+                    return cmd
+            # Check for [tool.pytest.ini_options] or [tool.pytest]
+            # If pytest is configured, use pytest
+            tool = data.get("tool", {})
+            if "pytest" in tool or "pytest.ini_options" in tool:
+                return [sys.executable, "-m", "pytest", "-q"]
+        except Exception:
+            pass
         return None
 
     def _finalize(

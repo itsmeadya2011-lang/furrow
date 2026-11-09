@@ -5,14 +5,15 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 ## Features
 
 - Plans tasks with dependency tracking and parallel execution
-- Worker actually implements code using file and command tools
-- Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go)
-- Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header, and per-task panels)
+- Worker actually implements code using file, command, and search tools (read_file, write_file, list_files, run_command, grep)
+- Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go, gradle, maven, mix, and configurable via pyproject.toml)
+- Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header with estimated cost, and per-task panels)
 - Finished work is not redone: a task that already completed is skipped when the next plan describes the same work
 - Bounded event queues: a subscriber that stops draining loses its oldest events, never the newest ones
 - Atomic state persistence with resume support
 - Fail-safe cycle loop: a planner, execution, tester or state-save failure is reported as an ERROR event instead of crashing the run
 - Hardened provider calls: transient HTTP errors are retried when the status is exposed on the response, and a malformed provider response raises a clear error
+- LLM cost estimation (USD) displayed in CLI and web UI
 - Offline test suite with no API keys required
 
 ## Security
@@ -104,6 +105,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_MODEL_PRICING` | (none) | JSON object mapping model IDs to USD prices per 1M tokens, e.g. `{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}` |
 
 A `.env` file is read automatically via pydantic-settings.
 
@@ -114,13 +116,13 @@ The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0
 1. **Plan** — The planner creates a `Plan` with tasks, each task specifying `id`, `description`, `files`, and `dependencies`.
 2. **Execute** — Tasks run in dependency waves. The orchestrator respects `max_parallel_tasks` and marks tasks as pending/running/completed/failed/blocked. A failed task is retried with the same worker up to `max_task_retries` times; only when the retries are exhausted is it marked failed (and its dependents blocked). A plan merge preserves a task's terminal status for reporting — a task that failed with an exhausted retry budget stays failed, a blocked task stays blocked — and preserves its attempt counter; the retry budget is enforced within a cycle, not across cycles. A task that already completed is not run again when the new plan describes the same work (the same description and the same files): it is skipped, no attempt is consumed, its status stays `completed`, and a log event records the skip. When the planner re-plans the same task id with a different description or different files, the task counts as new work: its status is reset to `pending` and it is executed again. A merge never wipes a result or an error that was already recorded for a task. A worker that exhausts its iteration budget without solving the task is also marked failed — running out of iterations is never reported as success. Commands run by the worker and tester are executed with timeouts from `command_timeout` and `test_timeout` respectively; when a command times out, its whole process group is killed so no orphan processes are left behind. The worker executes commands via `/bin/sh -c` with a hardened guard (segments, command substitutions, denied programs/patterns, force-pushes, and workspace-scoped redirections). The tester treats the exit status as ground truth (non-zero exit is failure even if the LLM reports passed; a runner that cannot start is an infrastructure error; `test_timeout` controls the test suite; "0 failed"/"no failures" are not misread as failures). The no-progress guard counter and the current plan signature are persisted in run state and restored on resume, so a resumed run does not restart the guard from zero; the guard is evaluated before the state is written, so the persisted counter is the current one instead of lagging the live one by a cycle (and the persisted signature is the current cycle's). The state file is written exactly once per completed cycle, with a single `STATE_SAVED` event. Tasks blocked by failed dependencies remain blocked and are reported separately. `RunResult` includes `tasks_blocked` and `tests_run`. `Settings` adds `command_timeout` (default 300s) and `test_timeout` (default 600s).
 3. **Test** — The tester detects the appropriate test command for the project (pytest, npm/pnpm/yarn, cargo, go) and returns a `TestResult`. When no test runner is detectable, the result is `skipped` and the run is reported as `SKIPPED` rather than passed.
-4. **Repeat** — If tests fail, the goal is amended with failure details to guide the next cycle. `max_cycles` controls termination (0 = unlimited). The worker uses a real tool-calling loop with `read_file`, `write_file`, `list_files`, and `run_command` to actually modify files in the sandboxed workspace.
+4. **Repeat** — If tests fail, the goal is amended with failure details to guide the next cycle. `max_cycles` controls termination (0 = unlimited). The worker uses a real tool-calling loop with `read_file`, `write_file`, `list_files`, `run_command`, and `grep` to actually modify files in the sandboxed workspace.
 
 The loop is fail-safe: a planner error, an execution error, a tester error or a state-save error no longer crashes the run. A planner, execution or tester error emits an ERROR event, sets a stopped reason (`planner failed: ...`, `execute failed: ...`, `tester failed: ...`) and ends the loop cleanly with a normal run result; a state-save error emits an ERROR event with the path that could not be written and the run keeps going. Cancellation (`asyncio.CancelledError`) still propagates. An exception raised while handling a worker's result is converted into a task failure that consumes one attempt — it used to be swallowed by `asyncio.gather(..., return_exceptions=True)` — so a task is never left in an inconsistent state.
 
-## LLM token accounting
+## LLM token and cost accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Estimated USD cost is calculated using a built-in pricing table (overridable via `FURROW_MODEL_PRICING`) and displayed alongside token counts.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 
