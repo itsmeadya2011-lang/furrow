@@ -363,7 +363,43 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "out 421" in output
 
 
-def test_summary_skips_usage_line_when_zero_calls(
+def test_summary_prints_estimated_cost_when_present(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary includes the estimated cost when cost_usd is non-zero."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.018015),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "~$0.0180" in output
+
+
+def test_summary_omits_cost_when_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A zero cost (unknown model) does not print a misleading cost line."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM usage:" in output
+    assert "$" not in output
+
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
     """A run with no LLM calls does not print a misleading zero usage line."""
@@ -520,7 +556,23 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
     assert "4321 tokens" in result.output
 
 
-class RecordingClient:
+def test_status_prints_estimated_cost(runner: CliRunner, tmp_path: Path) -> None:
+    """The status command prints estimated cost from persisted usage."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.018015),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "LLM usage:" in result.output
+    assert "~$0.0180" in result.output
+
     """Fake LLM client that records whether it was closed."""
 
     def __init__(self) -> None:

@@ -501,6 +501,13 @@ def test_index_script_knows_every_status_and_falls_back_to_unknown(
     assert re.search(r"\bunknown\s*:", body), "the status map has no unknown entry"
     assert "return 'unknown';" in script, "statusClass() has no unknown fallback"
 
+def test_index_script_shows_cost_in_usage(client: TestClient) -> None:
+    """The status header renders estimated cost when usage.cost_usd is present."""
+    script = _inline_script(client)
+
+    assert "cost_usd" in script
+    assert "toFixed(4)" in script or "toFixed" in script
+
 
 @pytest.fixture
 def recording_orchestrator(

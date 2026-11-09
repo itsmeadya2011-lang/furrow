@@ -61,6 +61,20 @@ def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[st
     return ("FAILED - tests did not pass.", "red")
 
 
+def _format_usage(usage: Any) -> str | None:
+    """Format LLM usage for display, or ``None`` when there are no calls."""
+    if usage is None or getattr(usage, "calls", 0) <= 0:
+        return None
+    cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+    line = (
+        f"{usage.calls} calls, {usage.total_tokens} tokens "
+        f"(in {usage.input_tokens} / out {usage.output_tokens})"
+    )
+    if cost > 0:
+        line += f", ~${cost:.4f}"
+    return line
+
+
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
     click.echo("Run summary")
@@ -74,12 +88,9 @@ def _print_summary(result: RunResult) -> None:
     tests_run = getattr(result, "tests_run", 0) or 0
     text, colour = _result_line(result.passed, skipped, tests_run)
     click.secho(f"  Result: {text}", fg=colour)
-    usage = getattr(result, "usage", None)
-    if usage is not None and usage.calls > 0:
-        click.echo(
-            f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
-            f"(in {usage.input_tokens} / out {usage.output_tokens})"
-        )
+    usage_line = _format_usage(getattr(result, "usage", None))
+    if usage_line is not None:
+        click.echo(f"  LLM usage:       {usage_line}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -101,8 +112,12 @@ def _print_state(state: RunState) -> None:
     click.echo(f"  Tests run:     {tests_run}")
     click.secho(f"  Result:        {text}", fg=colour)
     usage = getattr(state, "usage", None)
-    if usage is not None and usage.calls > 0:
-        click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+    if usage is not None and getattr(usage, "calls", 0) > 0:
+        cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+        usage_line = f"{usage.calls} calls, {usage.total_tokens} tokens"
+        if cost > 0:
+            usage_line += f", ~${cost:.4f}"
+        click.echo(f"  LLM usage:       {usage_line}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
