@@ -357,12 +357,12 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # A task left in "pending" or "running" from a previous cycle
+                    # was interrupted or never executed: reset it to "pending" so
+                    # it can be retried in this cycle. The attempt check is not
+                    # relevant here — a task that already exhausted its retries
+                    # would be in the "failed" branch above, not this one.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
