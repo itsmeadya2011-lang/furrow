@@ -10,7 +10,6 @@ Commands:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import sys
 from pathlib import Path
@@ -22,32 +21,12 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
+from furrow.utils import release_client_async, run_settings
 
 logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
-
-
-def _run_settings(
-    model: str | None = None,
-    max_cycles: int | None = None,
-    workspace: Path | None = None,
-) -> Settings:
-    """Return a validated copy of the global settings with the given overrides applied.
-
-    The module level ``settings`` object is never mutated: a fresh validated
-    instance is constructed for this run only.
-    """
-    updates: dict[str, Any] = {}
-    if model is not None:
-        updates["model"] = model
-    if max_cycles is not None:
-        updates["max_cycles"] = max_cycles
-    if workspace is not None:
-        updates["workspace"] = Path(workspace)
-    merged = {**settings.model_dump(), **updates}
-    return Settings.model_validate(merged)
 
 
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
@@ -118,20 +97,10 @@ def _print_state(state: RunState) -> None:
 async def _release_client(client: Any) -> None:
     """Release the HTTP resources of an LLM client, when it supports closing.
 
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
+    Delegates to :func:`furrow.utils.release_client_async` so the behaviour is
+    identical to the web server's release helper.
     """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
+    await release_client_async(client)
 
 
 async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
@@ -146,12 +115,12 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
-def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
+def _execute(goal: str, run_settings_obj: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
-    store = StateStore(run_settings.state_path())
+    store = StateStore(run_settings_obj.state_path())
     orchestrator = Orchestrator(
         goal=goal,
-        settings=run_settings,
+        settings=run_settings_obj,
         state_store=store,
         resume=resume,
     )
@@ -199,8 +168,8 @@ def start(
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
-    _execute(goal=goal, run_settings=run_settings, resume=resume)
+    run_settings_obj = run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    _execute(goal=goal, run_settings=run_settings_obj, resume=resume)
 
 
 @main.command()
@@ -212,8 +181,8 @@ def start(
 )
 def status(workspace: Path | None) -> None:
     """Show the state of the persisted Furrow run."""
-    run_settings = _run_settings(workspace=workspace)
-    store = StateStore(run_settings.state_path())
+    settings_obj = run_settings(workspace=workspace)
+    store = StateStore(settings_obj.state_path())
     state = store.load()
     if state is None:
         click.echo("No furrow run state found.")
@@ -231,14 +200,14 @@ def status(workspace: Path | None) -> None:
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 def resume(workspace: Path | None, max_cycles: int | None) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
-    store = StateStore(run_settings.state_path())
+    settings_obj = run_settings(max_cycles=max_cycles, workspace=workspace)
+    store = StateStore(settings_obj.state_path())
     state = store.load()
     if state is None:
         click.secho("No furrow run state found to resume.", fg="red")
         sys.exit(1)
     goal = state.original_goal or state.goal
-    _execute(goal=goal, run_settings=run_settings, resume=True)
+    _execute(goal=goal, run_settings=settings_obj, resume=True)
 
 
 @main.command()
