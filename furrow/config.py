@@ -24,6 +24,9 @@ class TaskStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+_VALID_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
 class TaskModel(BaseModel):
     id: str
     description: str
@@ -132,6 +135,14 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    @field_validator("log_level")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        upper = v.strip().upper()
+        if upper not in _VALID_LOG_LEVELS:
+            raise ValueError(f"log_level must be one of {sorted(_VALID_LOG_LEVELS)}")
+        return upper
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

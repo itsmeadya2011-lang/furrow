@@ -14,7 +14,15 @@ from furrow.core.state import StateStore
 
 
 class FakeWorker:
-    def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+    def __init__(
+        self,
+        task,
+        client=None,
+        settings=None,
+        workspace=None,
+        goal="",
+        progress_callback=None,
+    ):
         self.task = task
         self._order = None
 
@@ -46,6 +54,21 @@ class FakePlanner:
             ],
             rationale="r",
         )
+
+    async def plan_with_reasoning(self, goal, context=""):
+        self.calls += 1
+        if self.raise_valueerror:
+            raise ValueError("boom")
+        if self.raise_runtimeerror:
+            raise RuntimeError("boom")
+        plan = Plan(
+            tasks=[
+                TaskModel(id=t.id, description=t.description, dependencies=list(t.dependencies))
+                for t in self.tasks
+            ],
+            rationale="r",
+        )
+        return "fake reasoning", plan
 
 
 class FakeTester:

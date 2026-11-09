@@ -7,7 +7,14 @@ Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
 
-Return JSON only (no markdown, no explanation) with this shape:
+First, think through the problem step by step:
+1. What is the core objective?
+2. What are the major components or areas that need to be addressed?
+3. Which tasks can run in parallel vs. must be sequential?
+4. What files are likely to be touched for each task?
+5. Are there any dependencies between tasks?
+
+Then, return JSON only (no markdown, no explanation) with this shape:
 {
   "tasks": [
     {
@@ -86,6 +93,20 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"command": {"type": "string"}},
             "required": ["command"],
+        },
+    },
+    {
+        "name": "search_files",
+        "description": "search for a pattern in files under the workspace (grep-like).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "include": {"type": "string"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+            },
+            "required": ["pattern"],
         },
     },
 ]

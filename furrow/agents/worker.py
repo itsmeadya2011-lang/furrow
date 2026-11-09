@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -290,6 +291,7 @@ class WorkerAgent:
         settings: Settings | None = None,
         workspace: Path | None = None,
         goal: str = "",
+        progress_callback: Callable[[str], Any] | None = None,
     ) -> None:
         self.task = task
         self.settings = settings if settings is not None else global_settings
@@ -297,6 +299,7 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._progress_callback = progress_callback
 
     async def run(self) -> WorkerResult:
         try:
@@ -380,7 +383,17 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
-        return f"unknown tool: {name}"
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+                str(args.get("include", "")) if args.get("include") is not None else None,
+                int(args.get("max_results", 50)) if args.get("max_results") is not None else 50,
+            )
+        return (
+            f"unknown tool: {name}. Available tools: "
+            "read_file, write_file, list_files, run_command, search_files"
+        )
 
     @staticmethod
     def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:
@@ -401,14 +414,46 @@ class WorkerAgent:
             return None
         return None
 
+    def _format_error(self, operation: str, path: str, exc: Exception) -> str:
+        """Format a user-friendly error message with actionable suggestions."""
+        error_type = type(exc).__name__
+        error_msg = str(exc)
+        
+        if operation == "read_file":
+            if "Permission denied" in error_msg:
+                return f"error: cannot read '{path}' - permission denied (check file permissions)"
+            if "No such file" in error_msg or "not found" in error_msg.lower():
+                return f"error: file '{path}' not found - use list_files to see available files"
+            if "Is a directory" in error_msg:
+                return f"error: '{path}' is a directory - use list_files to see its contents"
+        elif operation == "write_file":
+            if "Permission denied" in error_msg:
+                return f"error: cannot write to '{path}' - permission denied"
+            if "No such file" in error_msg or "not found" in error_msg.lower():
+                return f"error: parent directory for '{path}' does not exist"
+            if "Is a directory" in error_msg:
+                return f"error: '{path}' is a directory - specify a file path"
+        elif operation == "run_command":
+            if "command denied" in error_msg.lower():
+                return "error: command was denied by security policy - check for dangerous patterns"
+            if "timed out" in error_msg.lower():
+                return (
+                    f"error: command timed out after {self.settings.command_timeout}s "
+                    "- try a simpler command or increase timeout"
+                )
+            if "could not parse" in error_msg.lower():
+                return "error: could not parse command - check syntax (unbalanced quotes, etc.)"
+        
+        return f"error: {operation} failed for '{path}': {error_type}: {error_msg}"
+
     async def _read_file(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
-            return "error: path escapes workspace"
+            return "error: path escapes workspace - use relative paths within the workspace"
         try:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+            return self._format_error("read_file", path, exc)
         if len(content) > 20000:
             content = content[:20000] + "\n[... output truncated ...]"
         return content
@@ -416,12 +461,12 @@ class WorkerAgent:
     async def _write_file(self, path: str, content: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
-            return "error: path escapes workspace"
+            return "error: path escapes workspace - use relative paths within the workspace"
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+            return self._format_error("write_file", path, exc)
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
@@ -429,11 +474,11 @@ class WorkerAgent:
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
-            return "error: path escapes workspace"
+            return "error: path escapes workspace - use relative paths within the workspace"
         try:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+            return self._format_error("list_files", path, exc)
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
         base = self.workspace.resolve()
@@ -442,7 +487,56 @@ class WorkerAgent:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
+        if not rels:
+            return f"(no files found in '{path}')"
         return "\n".join(rels)
+
+    async def _search_files(
+        self,
+        pattern: str,
+        path: str = ".",
+        include: str | None = None,
+        max_results: int = 50,
+    ) -> str:
+        """Search for a pattern in files under the workspace (grep-like)."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace - use relative paths within the workspace"
+        if not pattern.strip():
+            return "error: search pattern cannot be empty"
+        try:
+            # Use grep via asyncio.to_thread to avoid blocking
+            import subprocess
+            cmd = ["grep", "-r", "-n", "--color=never"]
+            if include:
+                cmd.extend(["--include", include])
+            cmd.extend([pattern, str(resolved)])
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return "error: search timed out after 30s - try a more specific pattern or path"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return self._format_error("search_files", path, exc)
+
+        if proc.returncode == 2:
+            return "error: invalid pattern or search failed - check regex syntax"
+        if proc.returncode == 1:
+            return "no matches found"
+
+        output = proc.stdout.strip()
+        if not output:
+            return "no matches found"
+
+        lines = output.splitlines()
+        if len(lines) > max_results:
+            lines = lines[:max_results]
+            output = "\n".join(lines) + f"\n[... truncated to {max_results} results ...]"
+        return output
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
@@ -486,6 +580,12 @@ class WorkerAgent:
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
+
+        # Stream output if progress callback is available
+        if self._progress_callback is not None:
+            return await self._run_command_streaming(proc, timeout, new_session)
+
+        # Default: wait for completion and return all output at once
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
@@ -498,6 +598,72 @@ class WorkerAgent:
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
+
+    async def _run_command_streaming(
+        self,
+        proc: asyncio.subprocess.Process,
+        timeout: float,
+        new_session: bool,
+    ) -> str:
+        """Run command with streaming output via progress callback."""
+        if proc.stdout is None or proc.stderr is None:
+            # Fallback to non-streaming if streams are not available
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await self._kill_process_tree(proc, new_session)
+                return "command timed out"
+            out = stdout.decode("utf-8", errors="replace")
+            err = stderr.decode("utf-8", errors="replace")
+            combined = out + "\n[stderr]\n" + err if err.strip() else out
+            cap = 20000
+            if len(combined) > cap:
+                combined = "[... output truncated ...]\n" + combined[-cap:]
+            return combined
+
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        try:
+            # Read stdout and stderr incrementally
+            async def read_stream(
+                stream: asyncio.StreamReader, chunks: list[bytes], name: str
+            ) -> None:
+                while True:
+                    chunk = await stream.read(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    # Emit progress callback with decoded chunk
+                    if self._progress_callback:
+                        try:
+                            decoded = chunk.decode("utf-8", errors="replace")
+                            await self._progress_callback(f"[{name}] {decoded}")
+                        except Exception:
+                            pass  # Ignore callback errors
+
+            # Create tasks for reading both streams
+            stdout_task = asyncio.create_task(read_stream(proc.stdout, stdout_chunks, "stdout"))
+            stderr_task = asyncio.create_task(read_stream(proc.stderr, stderr_chunks, "stderr"))
+
+            # Wait for process to complete or timeout
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=timeout)
+            except asyncio.TimeoutError:
+                await self._kill_process_tree(proc, new_session)
+                return "command timed out"
+            finally:
+                # Ensure stream readers are done
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+
+            out = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+            err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
+            combined = out + "\n[stderr]\n" + err if err.strip() else out
+            cap = 20000
+            if len(combined) > cap:
+                combined = "[... output truncated ...]\n" + combined[-cap:]
+            return combined
+        except Exception as exc:
+            return f"error: {exc}"
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

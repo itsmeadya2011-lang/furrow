@@ -74,11 +74,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.danger { border-color: #e0685f; color: #e0685f; }
+  button.danger:hover { background: #e0685f; color: #10131a; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
   }
+  .log-line { margin: 0; line-height: 1.4; }
+  .log-timestamp { color: #6a7385; margin-right: .5rem; }
+  .log-command-output { color: #7dcfff; font-family: inherit; }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
     margin-bottom: 1rem; background: #171b23;
@@ -97,7 +103,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color 0.2s;
   }
+  .panel.running { border-color: #4c8dff; }
+  .panel.completed { border-color: #57d38c; }
+  .panel.failed { border-color: #e0685f; }
+  .panel.blocked { border-color: #f0b367; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
   }
@@ -121,6 +132,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-error {
     margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
   }
+  .panel-command-output {
+    margin-top: .4rem; padding: .4rem; background: #0b0e13;
+    border: 1px solid #2b3240; border-radius: 4px;
+    font-size: .8rem; color: #7dcfff; max-height: 10rem;
+    overflow: auto; white-space: pre-wrap; word-break: break-word;
+  }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
@@ -131,6 +148,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .controls { display: flex; gap: .5rem; margin-top: .5rem; }
 </style>
 </head>
 <body>
@@ -139,6 +157,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="cancel" class="danger" disabled>Cancel Run</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -160,11 +179,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const cancelBtn = document.getElementById('cancel');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
   let socket = null;
   let lastSummary = null;
+  let isRunning = false;
 
-  function append(line) {
-    logEl.textContent += line + '\n';
+  function append(line, className = '') {
+    const div = document.createElement('div');
+    div.className = 'log-line' + (className ? ' ' + className : '');
+    div.textContent = line;
+    logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
   }
 
@@ -207,6 +233,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    isRunning = running;
+    updateButtonStates();
+  }
+
+  function updateButtonStates() {
+    startBtn.disabled = isRunning;
+    resumeBtn.disabled = isRunning;
+    cancelBtn.disabled = !isRunning;
   }
 
   function renderTasks(tasks) {
@@ -225,7 +259,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = text(task.status) || 'pending';
 
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = 'panel ' + statusClass(status);
       panel.id = 'task-' + text(task.id);
 
       const head = document.createElement('div');
@@ -266,6 +300,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
         errorEl.className = 'panel-error';
         errorEl.textContent = error;
         panel.appendChild(errorEl);
+      }
+
+      // Command output streaming display
+      const cmdOutput = task.command_output || '';
+      if (cmdOutput) {
+        const outputEl = document.createElement('div');
+        outputEl.className = 'panel-command-output';
+        outputEl.textContent = cmdOutput;
+        panel.appendChild(outputEl);
       }
 
       tasksEl.appendChild(panel);
@@ -332,6 +375,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const time = eventTime(msg);
       let line = '';
       let color = '#8a93a5';
+      let className = '';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
       } else if (type === 'plan_created') {
@@ -353,6 +397,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
         line = 'state saved';
       } else if (type === 'log') {
         line = text(msg.message);
+        if (data && data.stream === 'command_output') {
+          className = 'log-command-output';
+          const taskId = data.task || '';
+          if (taskId) {
+            line = '[' + taskId + '] ' + line;
+          }
+        }
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
         color = '#e0685f';
@@ -365,8 +416,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const span = document.createElement('span');
       span.style.color = color;
       span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
+      const div = document.createElement('div');
+      div.className = 'log-line' + (className ? ' ' + className : '');
+      div.appendChild(span);
+      logEl.appendChild(div);
       logEl.scrollTop = logEl.scrollHeight;
       return line;
     }
@@ -397,12 +450,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
     };
   }
 
+  function cancelRun() {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      lastSummary = null;
+      socket.send(JSON.stringify({ cancel: true }));
+      append('> cancellation requested');
+    }
+  }
+
   document.getElementById('start').onclick = function () {
     connect({ goal: goalEl.value, resume: false });
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('cancel').onclick = cancelRun;
 
   loadState();
   loadStatus();
@@ -702,6 +764,25 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=POLL_INTERVAL)
             except asyncio.TimeoutError:
+                # Check for incoming cancellation message
+                try:
+                    msg = await asyncio.wait_for(
+                        websocket.receive_json(), timeout=0.01
+                    )
+                    if (
+                        isinstance(msg, dict)
+                        and msg.get("cancel")
+                        and run_task
+                        and not run_task.done()
+                    ):
+                        _cancel_run(run_task)
+                        await websocket.send_json({
+                            "type": "log",
+                            "message": "cancellation requested",
+                            "data": {}
+                        })
+                except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError, ValueError):
+                    pass
                 continue
             await websocket.send_json(event.to_dict())
         if run_task is None:  # pragma: no cover - defensive
