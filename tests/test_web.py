@@ -552,6 +552,17 @@ def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:
     assert ".status-skipped" in html
 
 
+def test_index_usage_header_surfaces_estimated_cost(client: TestClient) -> None:
+    """The usage header shows the estimated USD cost when the usage carries one."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    # The renderStatus() function reads cost_usd from the usage object and
+    # appends it to the usage text when it is non-zero.
+    assert "cost_usd" in script, "the script never reads cost_usd"
+    assert "toFixed(6)" in script, "the script never formats the cost"
+
+
 def test_start_request_rejects_negative_max_cycles(client: TestClient) -> None:
     response = client.post("/api/start", json={"goal": "x", "max_cycles": -1})
     assert response.status_code == 422

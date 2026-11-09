@@ -440,6 +440,51 @@ async def test_dependency_of_raised_task_is_blocked(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_exception_while_processing_a_worker_result_is_a_task_failure(
+    tmp_path, monkeypatch
+):
+    """An exception raised while handling the WorkerResult consumes one attempt.
+
+    Regression test for the refactor that extracted the shared task-failure
+    helper: the second ``try`` block (the one that processes the returned
+    ``WorkerResult``) must still convert a raised exception into a task
+    failure, exactly like the worker call itself.
+    """
+
+    class _Exploding:
+        """An iterable that raises when iterated (and is truthy)."""
+
+        def __iter__(self):  # pragma: no cover - exercised by the test
+            raise TypeError("cannot iterate")
+
+    class ExplodingResult:
+        summary = "ok"
+        success = True
+        error = None
+        files_changed = _Exploding()
+
+    class FW(FakeWorker):
+        async def run(self):
+            return ExplodingResult()
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    task = orch.tasks[0]
+    assert task.status == "failed"
+    # The attempt is counted once when the worker runs and once more when the
+    # result-handling block raises, so the failed task ends with two attempts.
+    assert task.attempts == 2
+    assert "TypeError" in (task.error or "")
+    assert result.tasks_failed == 1
+
+
+@pytest.mark.asyncio
 async def test_resume_restores_state_and_loads_it_once(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
