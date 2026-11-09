@@ -544,6 +544,12 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
         return await _run_orchestrator(orchestrator)
     finally:
         drain.cancel()
+        # Await the cancellation so the drain task is fully cleaned up and no
+        # "task was destroyed but it is pending" warning is emitted.
+        try:
+            await drain
+        except asyncio.CancelledError:
+            pass
         bus.unsubscribe(queue)
 
 
