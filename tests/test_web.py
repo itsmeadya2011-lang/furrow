@@ -454,6 +454,15 @@ def _inline_script(client: TestClient) -> str:
     return html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
 
 
+def test_index_usage_includes_cost_when_present(client: TestClient) -> None:
+    """The status header renders estimated cost when usage includes cost_usd."""
+    script = _inline_script(client)
+
+    assert "cost_usd" in script
+    assert "toFixed(6)" in script or "cost" in script
+    assert "calls, ' + total + ' tokens'" in script
+
+
 def test_index_script_never_concatenates_a_raw_status_into_a_class_name(
     client: TestClient,
 ) -> None:

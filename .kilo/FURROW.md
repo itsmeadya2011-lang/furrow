@@ -78,7 +78,7 @@ furrow/
 ## Events and state
 
 - **Events** (`furrow/core/events.py`): `EventType` values include `CYCLE_STARTED`, `PLAN_CREATED`, `TASK_STARTED`, `TASK_FINISHED`, `TEST_STARTED`, `TEST_FINISHED`, `STATE_SAVED`, `LOG`, `ERROR`. `EventBus` provides fan-out pub/sub. A `STATE_SAVED` event is emitted only when the state file was actually written; a failed write emits an `ERROR` event (with the path that could not be written) instead. The web UI and CLI consume these events.
-- **State file**: `<workspace>/.furrow/state.json` (configurable via `FURROW_STATE_FILE`). Contains `RunState` with `goal`, `original_goal`, `cycles`, `tasks`, `history`, `updated_at`, accumulated LLM `usage`, `version` (default 1), `no_progress` (no-progress guard counter), `prev_sig` (previous plan signature) and `tests_run`. Each subscriber gets a BOUNDED queue (1000 events); when a subscriber is not draining, the oldest event is dropped so the newest is always delivered and the drop count is tracked. `RunResult` includes `passed`, `cycles`, `tasks_completed`, `tasks_failed`, `tasks_blocked`, `tests_run`, `summary`, `stopped_reason`, `skipped`, `usage`, and `files_changed`. Written atomically; corrupt files are ignored on load.
+- **State file**: `<workspace>/.furrow/state.json` (configurable via `FURROW_STATE_FILE`). Contains `RunState` with `goal`, `original_goal`, `cycles`, `tasks`, `history`, `updated_at`, accumulated LLM `usage` (including `cost_usd`), `version` (default 1), `no_progress` (no-progress guard counter), `prev_sig` (previous plan signature) and `tests_run`. Each subscriber gets a BOUNDED queue (1000 events); when a subscriber is not draining, the oldest event is dropped so the newest is always delivered and the drop count is tracked. `RunResult` includes `passed`, `cycles`, `tasks_completed`, `tasks_failed`, `tasks_blocked`, `tests_run`, `summary`, `stopped_reason`, `skipped`, `usage`, and `files_changed`. Written atomically; corrupt files are ignored on load.
 
 ## Permissions
 
@@ -100,9 +100,13 @@ A Furrow run works in a disposable workspace, so a change is only durable once i
 - **CLI**: `furrow start "<goal>"`, `furrow status`, `furrow resume`, `furrow web` (default http://127.0.0.1:8000).
 - **Web API/WebSocket**: `GET /api/state`, `GET /api/status`, `POST /api/start`, `WS /ws` streams events and ends with `{"type": "done", ...}`.
 
+## Done recently
+
+- Richer web UI with per-agent panels (status header with cycle/state/usage, per-task panels, timestamped event log).
+- Token and currency cost accounting: per-call/cycle/run token counts and estimated USD cost (from a per-model price snapshot, overridable via `FURROW_MODEL_PRICING`) are tracked, persisted in state, and surfaced in CLI/web summaries.
+
 ## Future Work
 
-- Richer web UI with per-agent panels — delivered (status header with cycle/state/usage, per-task panels, timestamped event log).
 - A richer `furrow` package plugin system
 - Multi-provider model routing
-- Cost accounting: token accounting is delivered (per-call, per-cycle and per-run counts, persisted in state and printed by the CLI); currency cost estimation is still missing.
+- More accurate/provider-reported cost accounting and budget guardrails
