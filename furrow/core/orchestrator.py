@@ -253,6 +253,33 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+            self.event_bus.emit(
+                Event(
+                    type=EventType.LOG,
+                    message=(
+                        f"usage: {self._usage.calls} calls, "
+                        f"{self._usage.total_tokens} tokens, "
+                        f"cost: {self._usage.cost_str(self.settings.max_cost_usd)}"
+                    ),
+                )
+            )
+            budget = float(getattr(self.settings, "max_cost_usd", 0.0) or 0.0)
+            if budget > 0:
+                self.event_bus.emit(
+                    Event(
+                        type=EventType.COST,
+                        message=(
+                            f"${self._usage.cost_usd:,.2f} spent "
+                            f"(budget: ${budget:,.2f})"
+                        ),
+                        data={
+                            "cost_usd": self._usage.cost_usd,
+                            "budget_usd": budget,
+                            "calls": self._usage.calls,
+                            "tokens": self._usage.total_tokens,
+                        },
+                    )
+                )
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
@@ -270,6 +297,16 @@ class Orchestrator:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
                     self._no_progress = 0
                 self._prev_sig = sig
+
+            # Cost budget enforcement: stop the loop when the cumulative cost
+            # crosses the configured ceiling. A zero budget means "no limit".
+            budget = float(getattr(self.settings, "max_cost_usd", 0.0) or 0.0)
+            if budget > 0 and self._usage.cost_usd >= budget:
+                self._stopped_reason = (
+                    f"cost budget exceeded: ${self._usage.cost_usd:,.2f} "
+                    f">= ${budget:,.2f}"
+                )
+                guard_tripped = True
 
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,

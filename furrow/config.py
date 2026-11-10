@@ -93,6 +93,26 @@ class Usage(BaseModel):
         self.cost_usd += other.cost_usd
         return self
 
+    def cost_str(self, budget: float | None = None) -> str:
+        """Return a human-readable cost string.
+
+        * ``$0.00`` when no cost has been recorded.
+        * ``$1.23`` for small amounts, ``$1,234.56`` for larger ones.
+        * When *budget* is given, append ``  (budget: $X.XX)`` and a remaining
+          amount when the budget is positive.
+        """
+        cost = max(0.0, float(self.cost_usd))
+        if cost < 1.0:
+            text = f"${cost:.2f}"
+        elif cost < 1_000_000.0:
+            text = f"${cost:,.2f}"
+        else:
+            text = f"${cost:,.0f}"
+        if budget is not None and budget > 0:
+            remaining = max(0.0, float(budget) - cost)
+            text += f"  (budget: ${budget:,.2f}, remaining: ${remaining:,.2f})"
+        return text
+
 
 class RunResult(BaseModel):
     passed: bool = False
@@ -130,6 +150,7 @@ class Settings(BaseSettings):
     command_timeout: float = Field(default=300.0, gt=0)
     test_timeout: float = Field(default=600.0, gt=0)
     max_tokens: int = Field(default=4096, ge=1)
+    max_cost_usd: float = Field(default=0.0, ge=0)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 

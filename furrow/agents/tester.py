@@ -193,6 +193,12 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_deno_json = (self.workspace / "deno.json").is_file() or (
+            self.workspace / "deno.jsonc"
+        ).is_file()
+        has_deno_lock = (self.workspace / "deno.lock").is_file()
+        has_bun_lockb = (self.workspace / "bun.lockb").is_file()
+        has_bun_lock = (self.workspace / "bun.lock").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
@@ -200,11 +206,17 @@ class TesterAgent:
         ):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Deno projects take precedence over Node.js when their markers exist
+        if has_deno_json or has_deno_lock:
+            return ["deno", "test", "-A"]
+
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
+            # Check for jest/vitest/bun configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
+                    if has_bun_lockb or has_bun_lock:
+                        return ["bun", "test"]
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
@@ -216,6 +228,8 @@ class TesterAgent:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
+                    if has_bun_lockb or has_bun_lock:
+                        return ["bun", "test"]
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
@@ -224,11 +238,17 @@ class TesterAgent:
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
+            if has_bun_lockb or has_bun_lock:
+                return ["bun", "test"]
             if (self.workspace / "pnpm-lock.yaml").is_file():
                 return ["pnpm", "test", "--silent"]
             if (self.workspace / "yarn.lock").is_file():
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
+
+        # Bun without package.json
+        if has_bun_lockb or has_bun_lock:
+            return ["bun", "test"]
 
         python_markers = [
             "pyproject.toml",

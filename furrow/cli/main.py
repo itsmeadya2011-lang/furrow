@@ -80,6 +80,8 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        if usage.cost_usd > 0:
+            click.echo(f"  Estimated cost:  {usage.cost_str()}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +105,8 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        if usage.cost_usd > 0:
+            click.echo(f"  Estimated cost:  {usage.cost_str()}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
@@ -201,6 +205,32 @@ def start(
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+def clear(workspace: Path | None, yes: bool) -> None:
+    """Delete the persisted Furrow state for this workspace."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found to clear.")
+        return
+    if not yes:
+        confirmed = click.confirm(
+            f"Delete {store.path}?", default=False
+        )
+        if not confirmed:
+            click.echo("Aborted.")
+            return
+    store.clear()
+    click.echo(f"Cleared furrow state at {store.path}")
 
 
 @main.command()

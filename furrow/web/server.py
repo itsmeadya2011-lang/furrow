@@ -147,7 +147,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>cost <b id="cost">$0.00</b></span>
   </div>
+  <div class="files" id="header-files" style="margin-top:.5rem; font-size:.85rem; color:#8a93a5;"></div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -207,6 +209,29 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    // Cost display
+    const cost = Number(usage.cost_usd) || 0;
+    const costEl = document.getElementById('cost');
+    if (costEl) {
+      if (cost > 0) {
+        costEl.textContent = '$' + cost.toFixed(2);
+        costEl.style.color = '#f0b367';
+      } else {
+        costEl.textContent = '$0.00';
+        costEl.style.color = '';
+      }
+    }
+    // Files changed display
+    const filesEl = document.getElementById('header-files');
+    if (filesEl) {
+      const files = (result && result.files_changed) || [];
+      if (files.length > 0) {
+        filesEl.textContent = 'Files: ' + files.join(', ');
+        filesEl.style.display = '';
+      } else {
+        filesEl.style.display = 'none';
+      }
+    }
   }
 
   function renderTasks(tasks) {
@@ -248,6 +273,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      const files = task.files_changed || [];
+      if (files.length > 0) {
+        const filesSpan = document.createElement('span');
+        filesSpan.textContent = 'files: ' + files.join(', ');
+        meta.appendChild(filesSpan);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -356,6 +388,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
         color = '#e0685f';
+      } else if (type === 'cost') {
+        line = 'cost: ' + text(msg.message);
+        color = '#f0b367';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
         color = '#57d38c';
