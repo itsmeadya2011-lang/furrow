@@ -238,7 +238,11 @@ def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> No
     script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
     lines = script.splitlines()
 
-    send_indexes = [index for index, line in enumerate(lines) if "socket.send(" in line]
+    send_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if "socket.send(" in line and "payload" in line
+    ]
     assert send_indexes, "the script never sends the start/resume message"
 
     for index in send_indexes:

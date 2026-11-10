@@ -136,19 +136,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <body>
 <h1>Furrow</h1>
 <div class="bar">
-  <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
-  <button id="resume">Resume</button>
-</div>
-<div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <input id="goal" placeholder="What should Furrow build?" autofocus />
+    <button id="start">Start</button>
+    <button id="resume">Resume</button>
+    <button id="stop" disabled>Stop</button>
   </div>
-</div>
+<div class="header" id="header">
+    <div class="goal" id="goal-display">\u2014</div>
+    <div class="meta" id="header-meta">
+      <span>cycle <b id="cycle">\u2014</b></span>
+      <span>state <b id="state">idle</b></span>
+      <span id="stopped-reason" class="reason"></span>
+      <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+      <span>cost <b id="cost">$0.000000</b></span>
+    </div>
+  </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
 <script>
@@ -160,6 +162,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const costEl = document.getElementById('cost');
+  const stopBtn = document.getElementById('stop');
   let socket = null;
   let lastSummary = null;
 
@@ -207,6 +211,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    costEl.textContent = '$' + cost.toFixed(6);
   }
 
   function renderTasks(tasks) {
@@ -290,6 +296,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = body.status || null;
       const result = body.result || null;
       renderStatus(status, result, running);
+      stopBtn.disabled = !running;
       if (status && status.tasks) { renderTasks(status.tasks); }
       if (body.result) {
         const summary = text(body.result.summary);
@@ -312,6 +319,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       // A new run starts: forget the previous summary so this run always
       // contributes its own summary line to the log.
       lastSummary = null;
+      stopBtn.disabled = false;
       socket.send(JSON.stringify(payload));
     };
     function truncate(value, max) {
@@ -390,10 +398,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket.onclose = function () {
       append('-- closed');
       socket = null;
+      stopBtn.disabled = true;
       loadStatus();
     };
     socket.onerror = function () {
       append('!! websocket error');
+      stopBtn.disabled = true;
     };
   }
 
@@ -402,6 +412,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  stopBtn.onclick = function () {
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'stop' }));
+      append('> stop requested');
+    }
   };
 
   loadState();
@@ -704,6 +720,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 continue
             await websocket.send_json(event.to_dict())
+            # Check for stop message from client
+            try:
+                msg = await asyncio.wait_for(websocket.receive_json(), timeout=0)
+                if msg.get("type") == "stop" and run_task and not run_task.done():
+                    _cancel_run(run_task)
+            except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError):
+                pass
         if run_task is None:  # pragma: no cover - defensive
             return
         # The run is over: clear the flag right away instead of waiting for the
