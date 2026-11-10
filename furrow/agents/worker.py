@@ -369,17 +369,29 @@ class WorkerAgent:
         name = tc.name
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
-            return "error: invalid tool arguments"
+            got = type(tc.arguments).__name__
+            return f"error: invalid tool arguments for {name} (expected JSON object, got {got})"
         if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
+            path = args.get("path")
+            if not path:
+                return "error: read_file requires 'path' argument"
+            return await self._read_file(str(path))
         if name == "write_file":
-            return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+            path = args.get("path")
+            content = args.get("content")
+            if not path:
+                return "error: write_file requires 'path' argument"
+            if content is None:
+                return "error: write_file requires 'content' argument"
+            return await self._write_file(str(path), str(content))
         if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
+            path = args.get("path", ".")
+            return await self._list_files(str(path))
         if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
+            command = args.get("command")
+            if not command:
+                return "error: run_command requires 'command' argument"
+            return await self._run_command(str(command))
         return f"unknown tool: {name}"
 
     @staticmethod

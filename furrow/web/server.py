@@ -74,6 +74,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button.active { border-color: #4c8dff; background: #253042; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -93,6 +94,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .summary-bar {
+    display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem;
+    padding: .75rem 1rem; background: #171b23; border: 1px solid #2b3240;
+    border-radius: 8px;
+  }
+  .summary-item {
+    display: flex; flex-direction: column; gap: .15rem;
+    min-width: 70px;
+  }
+  .summary-label { font-size: .75rem; color: #8a93a5; text-transform: uppercase; }
+  .summary-value { font-size: 1.1rem; font-weight: 700; color: #f0f2f5; }
+  .filter-bar {
+    display: flex; gap: .4rem; flex-wrap: wrap; margin-bottom: 1rem;
+  }
+  .filter-btn {
+    padding: .35rem .7rem; border-radius: 4px; border: 1px solid #2b3240;
+    background: #1d2430; color: #8a93a5; font: inherit; cursor: pointer;
+    font-size: .85rem;
+  }
+  .filter-btn:hover { border-color: #4c8dff; color: #d7dae0; }
+  .filter-btn.active { border-color: #4c8dff; background: #253042; color: #4c8dff; }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
@@ -114,12 +136,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    margin: .4rem 0 0; font-size: .8rem; color: #57d38c;
+    white-space: pre-wrap; word-break: break-word;
+  }
   .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
+    margin: .4rem 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
   }
   .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+    margin: .4rem 0 0 .3rem; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
   }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
@@ -141,13 +167,39 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="resume">Resume</button>
 </div>
 <div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
-  </div>
+      <div class="goal" id="goal-display">\u2014</div>
+      <div class="meta" id="header-meta">
+        <span>cycle <b id="cycle">\u2014</b></span>
+        <span>state <b id="state">idle</b></span>
+        <span id="stopped-reason" class="reason"></span>
+        <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+        <span id="cost" class="cost"></span>
+      </div>
+    </div>
+<div class="summary-bar" id="summary-bar" style="display: none;">
+  <div class="summary-item"><span class="summary-label">Total</span>
+    <span class="summary-value" id="sum-total">0</span></div>
+  <div class="summary-item"><span class="summary-label">Completed</span>
+    <span class="summary-value" id="sum-completed" style="color:#57d38c">0</span></div>
+  <div class="summary-item"><span class="summary-label">Failed</span>
+    <span class="summary-value" id="sum-failed" style="color:#e0685f">0</span></div>
+  <div class="summary-item"><span class="summary-label">Blocked</span>
+    <span class="summary-value" id="sum-blocked" style="color:#f0b367">0</span></div>
+  <div class="summary-item"><span class="summary-label">Running</span>
+    <span class="summary-value" id="sum-running" style="color:#4c8dff">0</span></div>
+  <div class="summary-item"><span class="summary-label">Pending</span>
+    <span class="summary-value" id="sum-pending" style="color:#8a93a5">0</span></div>
+  <div class="summary-item"><span class="summary-label">Skipped</span>
+    <span class="summary-value" id="sum-skipped" style="color:#8a93a5">0</span></div>
+</div>
+<div class="filter-bar" id="filter-bar" style="display: none;">
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="pending">Pending</button>
+  <button class="filter-btn" data-filter="running">Running</button>
+  <button class="filter-btn" data-filter="completed">Completed</button>
+  <button class="filter-btn" data-filter="failed">Failed</button>
+  <button class="filter-btn" data-filter="blocked">Blocked</button>
+  <button class="filter-btn" data-filter="skipped">Skipped</button>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -160,8 +212,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const costEl = document.getElementById('cost');
+  const summaryBar = document.getElementById('summary-bar');
+  const filterBar = document.getElementById('filter-bar');
+  const filterBtns = filterBar.querySelectorAll('.filter-btn');
   let socket = null;
   let lastSummary = null;
+  let currentFilter = 'all';
+  let allTasks = [];
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -207,21 +265,61 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    if (cost > 0) {
+      costEl.textContent = ' | $' + cost.toFixed(6);
+      costEl.style.display = '';
+    } else {
+      costEl.textContent = '';
+      costEl.style.display = 'none';
+    }
   }
 
   function renderTasks(tasks) {
+    allTasks = tasks || [];
+    updateSummary();
+    applyFilter();
+  }
+
+  function updateSummary() {
+    const counts = {
+      total: 0, pending: 0, running: 0, completed: 0,
+      failed: 0, blocked: 0, skipped: 0
+    };
+    allTasks.forEach(function(task) {
+      counts.total++;
+      const status = text(task.status || 'pending').toLowerCase();
+      if (counts[status] !== undefined) counts[status]++;
+    });
+    document.getElementById('sum-total').textContent = counts.total;
+    document.getElementById('sum-completed').textContent = counts.completed;
+    document.getElementById('sum-failed').textContent = counts.failed;
+    document.getElementById('sum-blocked').textContent = counts.blocked;
+    document.getElementById('sum-running').textContent = counts.running;
+    document.getElementById('sum-pending').textContent = counts.pending;
+    document.getElementById('sum-skipped').textContent = counts.skipped;
+    summaryBar.style.display = counts.total > 0 ? 'flex' : 'none';
+    filterBar.style.display = counts.total > 0 ? 'flex' : 'none';
+  }
+
+  function applyFilter() {
     while (tasksEl.firstChild) {
       tasksEl.removeChild(tasksEl.firstChild);
     }
-    const list = tasks || [];
-    if (list.length === 0) {
+    const filtered = allTasks.filter(function(task) {
+      if (currentFilter === 'all') return true;
+      return text(task.status || 'pending').toLowerCase() === currentFilter;
+    });
+    if (filtered.length === 0) {
       const hint = document.createElement('p');
       hint.className = 'panel-empty';
-      hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
+      hint.textContent = currentFilter === 'all'
+        ? 'No run yet \u2014 enter a goal and click Start.'
+        : 'No tasks with status: ' + currentFilter;
       tasksEl.appendChild(hint);
       return;
     }
-    list.forEach(function (task) {
+    filtered.forEach(function (task) {
       const status = text(task.status) || 'pending';
 
       const panel = document.createElement('div');
@@ -248,6 +346,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const files = document.createElement('span');
+        files.textContent = 'files: ' + filesChanged.join(', ');
+        meta.appendChild(files);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -271,6 +375,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
       tasksEl.appendChild(panel);
     });
   }
+
+  filterBtns.forEach(function(btn) {
+    btn.onclick = function() {
+      filterBtns.forEach(function(b) { b.classList.remove('active'); });
+      btn.classList.add('active');
+      currentFilter = btn.dataset.filter;
+      applyFilter();
+    };
+  });
 
   async function loadState() {
     try {

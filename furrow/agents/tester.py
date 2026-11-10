@@ -202,33 +202,37 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
+            # Check for vitest configs (more specific first)
+            for pattern in ["vitest.config.*", "vite.config.*"]:
                 for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
+                    return self._node_test_command()
+            # Check for jest configs
+            for pattern in ["jest.config.*", "jest.config.*"]:
+                for _f in self.workspace.glob(pattern):
+                    return self._node_test_command()
+            # Check package.json for test script and detect runner from script
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    test_script = scripts["test"]
+                    # Detect runner from test script
+                    if "vitest" in test_script:
+                        return self._node_test_command("vitest")
+                    if "jest" in test_script:
+                        return self._node_test_command("jest")
+                    if "bun test" in test_script:
+                        return ["bun", "test"]
+                    # Default to npm/pnpm/yarn test
+                    return self._node_test_command()
             except Exception:
                 pass
+            # Check for bun.lockb
+            if (self.workspace / "bun.lockb").is_file():
+                return ["bun", "test"]
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            return self._node_test_command()
 
         python_markers = [
             "pyproject.toml",
@@ -240,12 +244,33 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Check for Python test files even without markers
+        if has_tests_dir:
+            return [sys.executable, "-m", "pytest", "-q"]
+
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
 
         return None
+
+    def _node_test_command(self, runner: str | None = None) -> list[str]:
+        """Return the appropriate test command for a Node.js project."""
+        if runner == "vitest":
+            return ["npx", "vitest", "run"]
+        if runner == "jest":
+            return ["npx", "jest"]
+        if runner == "bun":
+            return ["bun", "test"]
+        # Default: use package manager test script
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            return ["pnpm", "test", "--silent"]
+        if (self.workspace / "yarn.lock").is_file():
+            return ["yarn", "test", "--silent"]
+        if (self.workspace / "bun.lockb").is_file():
+            return ["bun", "test"]
+        return ["npm", "test", "--silent"]
 
     def _finalize(
         self,
