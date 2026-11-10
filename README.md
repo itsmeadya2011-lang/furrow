@@ -101,9 +101,12 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TASK_RETRIES` | `1` | Times a failed task is retried before it is marked failed |
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
 | `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Timeout in seconds for worker `run_command` calls |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Timeout in seconds for the test suite |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_MODEL_PRICING` | (none) | JSON object mapping model ids to `{input_per_million, output_per_million}` USD prices; overrides the built-in pricing table |
 
 A `.env` file is read automatically via pydantic-settings.
 
@@ -120,7 +123,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Token counts are tracked alongside an estimated USD cost per call (see [Configuration](#configuration) for pricing overrides).
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 

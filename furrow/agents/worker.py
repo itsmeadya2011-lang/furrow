@@ -434,14 +434,22 @@ class WorkerAgent:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
+        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the
+        # context; reserve one slot for the truncation notice when the cap is hit.
+        total = len(entries)
+        cap = MAX_LIST_ENTRIES
+        entries = entries[: cap - 1] if total > cap else entries[:cap]
         rels = []
         base = self.workspace.resolve()
-        for e in entries[:MAX_LIST_ENTRIES]:
+        for e in entries:
             try:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
+        if total > cap:
+            rels.append(
+                f"[... listing truncated at {cap} entries; at least {total} files exist]"
+            )
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:
