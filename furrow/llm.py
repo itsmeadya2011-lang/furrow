@@ -497,3 +497,38 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    def search_files(self, directory: str | Path, pattern: str, limit: int = 100) -> list[str]:
+        """Search file contents under *directory* for *pattern* (regex).
+
+        Returns up to *limit* lines formatted as ``relative/path:line: content``.
+        Binary files and unreadable files are skipped. The search is case-sensitive
+        and honours the pattern as a regular expression.
+        """
+        import re as _re
+
+        try:
+            regex = _re.compile(pattern)
+        except _re.error:
+            return ["error: invalid regex pattern"]
+        base = Path(directory)
+        if not base.exists() or not base.is_dir():
+            return []
+        results: list[str] = []
+        for f in base.rglob("*"):
+            if not f.is_file():
+                continue
+            try:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    for lineno, line in enumerate(fh, start=1):
+                        if regex.search(line):
+                            try:
+                                rel = str(f.relative_to(base))
+                            except ValueError:
+                                rel = str(f)
+                            results.append(f"{rel}:{lineno}: {line.rstrip()}")
+                            if len(results) >= limit:
+                                return results
+            except OSError:
+                continue
+        return results

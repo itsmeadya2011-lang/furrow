@@ -8,18 +8,21 @@ orchestrator event to the browser:
     GET  /api/status status of the currently active run
     POST /api/start  start a background run
     WS   /ws         run a goal and stream its events
+    GET  /api/events stream the current run's events as Server-Sent Events
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
+import signal
 from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from furrow.config import RunResult, Settings, settings
@@ -39,6 +42,7 @@ DEFAULT_CURRENT: dict[str, Any] = {
     "result": None,
     "task": None,
     "error": None,
+    "bus": None,
 }
 
 # Registry of the run that is currently active (or of the last one that ran).
@@ -47,6 +51,9 @@ _CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
 # Strong references to background tasks so they are never garbage collected
 # while they are still pending.
 _TASKS: set[asyncio.Task[RunResult]] = set()
+
+# Tracks whether graceful-shutdown signal handlers have been installed.
+_SHUTDOWN_HANDLERS_INSTALLED = False
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -475,13 +482,16 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
     _CURRENT["running"] = False
     if task.cancelled():
         _CURRENT["error"] = "run cancelled"
+        _CURRENT["bus"] = None
         return
     exc = task.exception()
     if exc is not None:
         logger.error("Furrow run failed: %s", exc)
         _CURRENT["error"] = str(exc)
+        _CURRENT["bus"] = None
         return
     _CURRENT["result"] = task.result()
+    _CURRENT["bus"] = None
 
 
 def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
@@ -496,6 +506,7 @@ def _cancel_run(task: asyncio.Task[RunResult]) -> None:
     if _CURRENT.get("task") is task:
         _CURRENT["running"] = False
         _CURRENT["error"] = "run cancelled"
+        _CURRENT["bus"] = None
 
 
 async def _drain(queue: asyncio.Queue[Event]) -> None:
@@ -537,7 +548,13 @@ async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
 
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
-    """Run an orchestrator in the background and discard the emitted events."""
+    """Run an orchestrator in the background and drain its events to nowhere.
+
+    The bus itself is intentionally NOT torn down here: the SSE endpoint
+    subscribes to it after the run finishes to replay the final events, so the
+    bus must outlive the run task.  :func:`_on_run_done` clears the registry
+    reference when the run ends.
+    """
     queue = bus.subscribe()
     drain = asyncio.create_task(_drain(queue))
     try:
@@ -637,9 +654,52 @@ async def api_start(request: StartRequest) -> JSONResponse:
             "result": None,
             "task": run_task,
             "error": None,
+            "bus": bus,
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.get("/api/events")
+async def api_events() -> StreamingResponse:
+    """Stream the current run's events as Server-Sent Events.
+
+    Connects to the active run's event bus (if any) and forwards every event
+    as ``data: <json>\\n\\n``.  When no run is active the stream closes
+    immediately.  This lets REST clients observe real-time progress without
+    opening a websocket.
+    """
+    bus: EventBus | None = _CURRENT.get("bus")
+
+    async def event_stream() -> Any:
+        if bus is None:
+            yield "data: {\"type\": \"done\", \"message\": \"no run active\"}\n\n"
+            return
+        queue = bus.subscribe()
+        try:
+            while True:
+                if _CURRENT.get("running") is False and queue.empty():
+                    # Drain any buffered events before closing.
+                    while not queue.empty():
+                        try:
+                            event = queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                        yield f"data: {event.to_dict()}\n\n"
+                    return
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=POLL_INTERVAL)
+                except asyncio.TimeoutError:
+                    continue
+                yield f"data: {event.to_dict()}\n\n"
+        finally:
+            bus.unsubscribe(queue)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )
 
 
 @app.websocket("/ws")
@@ -694,6 +754,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "result": None,
                 "task": run_task,
                 "error": None,
+                "bus": bus,
             }
         )
         while True:
@@ -737,6 +798,31 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         bus.unsubscribe(queue)
 
 
+def _install_graceful_shutdown() -> None:
+    """Install SIGTERM/SIGINT handlers that cancel in-flight runs cleanly.
+
+    Uvicorn installs its own handlers, so this is a no-op when called from a
+    uvicorn worker; the handlers only matter when :func:`run` is invoked
+    directly (the CLI path).  A failed install is silently ignored.
+    """
+    global _SHUTDOWN_HANDLERS_INSTALLED
+    if _SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    _SHUTDOWN_HANDLERS_INSTALLED = True
+
+    def _handle_signal(signum, frame):
+        task = _CURRENT.get("task")
+        if task is not None and not task.done():
+            _cancel_run(task)
+        # Uvicorn's default handler re-raises after this returns, which is what
+        # we want: the server stops accepting connections after the run ends.
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(ValueError, OSError):  # pragma: no cover - not in main thread
+            signal.signal(sig, _handle_signal)
+
+
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
     """Start the Furrow web server."""
+    _install_graceful_shutdown()
     uvicorn.run(app, host=host, port=port)

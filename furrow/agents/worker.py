@@ -378,6 +378,11 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -443,6 +448,20 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _search_files(self, pattern: str, path: str) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not pattern.strip():
+            return "error: pattern is required"
+        try:
+            matches = await asyncio.to_thread(self.client.search_files, resolved, pattern)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if not matches:
+            return "no matches"
+        return "\n".join(matches)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

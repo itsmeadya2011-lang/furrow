@@ -36,6 +36,33 @@ class FakeLLMClient:
     def list_files(self, directory):
         return [str(p) for p in Path(directory).rglob("*") if p.is_file()]
 
+    def search_files(self, directory, pattern):
+        import re as _re
+
+        try:
+            regex = _re.compile(pattern)
+        except _re.error:
+            return ["error: invalid regex pattern"]
+        base = Path(directory)
+        if not base.exists() or not base.is_dir():
+            return []
+        results: list[str] = []
+        for f in base.rglob("*"):
+            if not f.is_file():
+                continue
+            try:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    for lineno, line in enumerate(fh, start=1):
+                        if regex.search(line):
+                            try:
+                                rel = str(f.relative_to(base))
+                            except ValueError:
+                                rel = str(f)
+                            results.append(f"{rel}:{lineno}: {line.rstrip()}")
+            except OSError:
+                continue
+        return results
+
 
 class LoopingLLMClient(FakeLLMClient):
     """Fake client that always answers with the same tool-calling response."""
@@ -326,6 +353,75 @@ async def test_list_files_caps_at_500_entries(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_search_files_finds_matches(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "src" / "b.py").write_text("def bar():\n    return 2\n")
+    (tmp_path / "other.txt").write_text("no match here\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("def", ".")
+    lines = out.splitlines()
+    assert any("a.py:1:" in ln for ln in lines)
+    assert any("b.py:1:" in ln for ln in lines)
+    assert not any("other.txt" in ln for ln in lines)
+
+
+@pytest.mark.asyncio
+async def test_search_files_path_escapes_workspace(tmp_path):
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("x", "../escape")
+    assert out == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_search_files_no_pattern(tmp_path):
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("", ".")
+    assert out == "error: pattern is required"
+
+
+@pytest.mark.asyncio
+async def test_search_files_no_matches(tmp_path):
+    (tmp_path / "a.py").write_text("hello\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("zzz_not_found", ".")
+    assert out == "no matches"
+
+
+@pytest.mark.asyncio
+async def test_search_files_invalid_regex(tmp_path):
+    (tmp_path / "a.py").write_text("hello\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._search_files("(unclosed", ".")
+    assert out == "error: invalid regex pattern"
+
+
+@pytest.mark.asyncio
 async def test_client_exception(tmp_path):
     client = FakeLLMClient([RuntimeError("boom")])
     settings = make_settings(tmp_path)
@@ -375,14 +471,24 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == [
+        "list_files",
+        "read_file",
+        "run_command",
+        "search_files",
+        "write_file",
+    ]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
         assert p["type"] == "object"
         assert "properties" in p
         assert "required" in p
+    # search_files requires a pattern; path is optional.
+    search = next(t for t in WORKER_TOOLS if t["name"] == "search_files")
+    assert "pattern" in search["parameters"]["required"]
+    assert "path" not in search["parameters"]["required"]
 
 
 def test_resolve_in_workspace():

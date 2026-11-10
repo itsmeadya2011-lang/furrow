@@ -868,3 +868,46 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+def test_search_files_finds_matching_lines(tmp_path):
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "src" / "b.py").write_text("x = 1\n")
+    client = LLMClient(settings=Settings(workspace=tmp_path))
+    results = client.search_files(tmp_path, "def")
+    assert any("a.py:1:" in line for line in results)
+    assert not any("b.py" in line for line in results)
+
+
+def test_search_files_empty_directory(tmp_path):
+    client = LLMClient(settings=Settings(workspace=tmp_path))
+    assert client.search_files(tmp_path, "anything") == []
+
+
+def test_search_files_invalid_regex(tmp_path):
+    (tmp_path / "a.py").write_text("hello\n")
+    client = LLMClient(settings=Settings(workspace=tmp_path))
+    results = client.search_files(tmp_path, "(unclosed")
+    assert results == ["error: invalid regex pattern"]
+
+
+def test_search_files_missing_directory(tmp_path):
+    client = LLMClient(settings=Settings(workspace=tmp_path))
+    assert client.search_files(tmp_path / "nope", "x") == []
+
+
+def test_search_files_limit(tmp_path):
+    for i in range(50):
+        (tmp_path / f"f{i:02d}.py").write_text("match\n")
+    client = LLMClient(settings=Settings(workspace=tmp_path))
+    results = client.search_files(tmp_path, "match", limit=10)
+    assert len(results) == 10
+
+
+def test_search_files_skips_binary(tmp_path):
+    (tmp_path / "a.py").write_text("match\n")
+    (tmp_path / "bin.dat").write_bytes(b"\x00\x01match\xff")
+    client = LLMClient(settings=Settings(workspace=tmp_path))
+    results = client.search_files(tmp_path, "match")
+    assert any("a.py" in line for line in results)
