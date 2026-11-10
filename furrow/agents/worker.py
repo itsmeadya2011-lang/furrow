@@ -474,16 +474,39 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+                # Non-POSIX: try to find a shell to run the command through.
+                # Shell features (&&, ||, |, >, cd, env vars) only work through a shell.
+                import shutil
+                shell = shutil.which("sh") or shutil.which("bash") or shutil.which("cmd")
+                if shell is not None:
+                    if shell.endswith("cmd") or shell.endswith("cmd.exe"):
+                        proc = await asyncio.create_subprocess_exec(
+                            shell, "/c", command,
+                            cwd=str(self.workspace),
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            **spawn_kwargs,
+                        )
+                    else:
+                        proc = await asyncio.create_subprocess_exec(
+                            shell, "-c", command,
+                            cwd=str(self.workspace),
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            **spawn_kwargs,
+                        )
+                else:
+                    # No shell available: fall back to direct execution
+                    parts = shlex.split(command)
+                    if not parts:
+                        return "error: empty command"
+                    proc = await asyncio.create_subprocess_exec(
+                        *parts,
+                        cwd=str(self.workspace),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                        **spawn_kwargs,
+                    )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:

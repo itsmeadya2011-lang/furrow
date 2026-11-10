@@ -109,8 +109,9 @@ class StateStore:
         """Serialize state to JSON and write it ATOMICALLY.
 
         The payload is written to a temporary file in the same directory, then
-        flushed, fsync'ed and moved into place with ``os.replace``. If anything
-        fails the temporary file is removed and the error is re-raised.
+        flushed, fsync'ed and moved into place with ``os.replace``. If the temp
+        file and target are on different filesystems, fall back to a direct write.
+        If anything fails the temporary file is removed and the error is re-raised.
         """
         state.updated_at = utcnow()
         payload = json.dumps(state.model_dump(mode="json"), indent=2)
@@ -133,8 +134,17 @@ class StateStore:
                 tmp.write("\n")
                 tmp.flush()
                 os.fsync(tmp.fileno())
-            os.replace(tmp_name, self.path)
-            tmp_name = None
+            try:
+                os.replace(tmp_name, self.path)
+            except OSError:
+                # Cross-filesystem: fall back to a direct write.
+                with open(self.path, "w", encoding="utf-8") as out:
+                    out.write(payload)
+                    out.write("\n")
+                    out.flush()
+                    os.fsync(out.fileno())
+                os.unlink(tmp_name)
+                tmp_name = None
         finally:
             if tmp_name is not None:
                 try:

@@ -52,11 +52,20 @@ def test_detect_pyproject(tmp_path):
     assert cmd is not None and "pytest" in cmd
 
 
-def test_detect_packagejson(tmp_path):
+def test_detect_packagejson_no_test_script(tmp_path):
+    """An empty package.json with no test script means no runner detected."""
     (tmp_path / "package.json").write_text("{}")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
-    assert cmd is not None and "npm" in cmd
+    assert cmd is None
+
+
+def test_detect_packagejson_with_test_script(tmp_path):
+    """A package.json with a test script returns npm test."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "echo ok"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd and "test" in cmd
 
 
 def test_detect_cargo(tmp_path):

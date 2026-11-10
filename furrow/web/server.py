@@ -249,6 +249,35 @@ INDEX_HTML = r"""<!DOCTYPE html>
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
 
+      const files = Array.isArray(task.files_changed) ? task.files_changed : [];
+      if (files.length > 0) {
+        const filesSpan = document.createElement('span');
+        filesSpan.textContent = 'files: ' + files.join(', ');
+        filesSpan.style.marginLeft = '0.5rem';
+        meta.appendChild(filesSpan);
+      }
+
+      const deps = Array.isArray(task.dependencies) ? task.dependencies : [];
+      if (deps.length > 0) {
+        const depsSpan = document.createElement('span');
+        depsSpan.textContent = 'deps: ' + deps.join(', ');
+        depsSpan.style.marginLeft = '0.5rem';
+        meta.appendChild(depsSpan);
+      }
+
+      if (task.started_at) {
+        const startedSpan = document.createElement('span');
+        startedSpan.textContent = 'started: ' + text(task.started_at);
+        startedSpan.style.marginLeft = '0.5rem';
+        meta.appendChild(startedSpan);
+      }
+      if (task.finished_at) {
+        const finishedSpan = document.createElement('span');
+        finishedSpan.textContent = 'finished: ' + text(task.finished_at);
+        finishedSpan.style.marginLeft = '0.5rem';
+        meta.appendChild(finishedSpan);
+      }
+
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);

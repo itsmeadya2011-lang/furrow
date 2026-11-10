@@ -146,8 +146,12 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
-def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
+def _execute(goal: str, run_settings: Settings, resume: bool, verbose: bool = False, quiet: bool = False) -> None:
     """Run the orchestrator and print the summary of the result."""
+    if verbose:
+        configure_logging("DEBUG")
+    elif quiet:
+        configure_logging("WARNING")
     store = StateStore(run_settings.state_path())
     orchestrator = Orchestrator(
         goal=goal,
@@ -189,18 +193,22 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug-level logging output.")
+@click.option("--quiet", "-q", is_flag=True, help="Reduce output to warnings and errors only.")
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    verbose: bool,
+    quiet: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
-    _execute(goal=goal, run_settings=run_settings, resume=resume)
+    _execute(goal=goal, run_settings=run_settings, resume=resume, verbose=verbose, quiet=quiet)
 
 
 @main.command()
@@ -229,7 +237,9 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--verbose", "-v", is_flag=True, help="Enable debug-level logging output.")
+@click.option("--quiet", "-q", is_flag=True, help="Reduce output to warnings and errors only.")
+def resume(workspace: Path | None, max_cycles: int | None, verbose: bool, quiet: bool) -> None:
     """Resume the persisted Furrow run."""
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
@@ -238,7 +248,7 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         click.secho("No furrow run state found to resume.", fg="red")
         sys.exit(1)
     goal = state.original_goal or state.goal
-    _execute(goal=goal, run_settings=run_settings, resume=True)
+    _execute(goal=goal, run_settings=run_settings, resume=True, verbose=verbose, quiet=quiet)
 
 
 @main.command()
