@@ -553,6 +553,23 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "echo hi > ~/x",
         "echo hi > $HOME/x",
         "echo hi > ${HOME}/x",
+        # New denied commands
+        "mv / /dev/null",
+        "cp /dev/zero /dev/sda",
+        "wipefs /dev/sda",
+        "cryptsetup luksFormat /dev/sda",
+        "losetup /dev/loop0 /dev/sda",
+        "pivot_root /new_root /old_root",
+        "kexec -l /boot/vmlinuz",
+        "systemctl poweroff",
+        "telinit 0",
+        "kill -9 1",
+        "crontab -r",
+        "atrm 1",
+        "userdel testuser",
+        "groupdel testgroup",
+        "passwd -d root",
+        "usermod -L root",
     ]
     allowed_commands = [
         "pytest -q",

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
 from furrow.agents.planner import Plan
 from furrow.agents.tester import TestResult
 from furrow.agents.worker import WorkerResult
-from furrow.config import RunResult, Settings, TaskModel
+from furrow.config import RunResult, Settings, TaskModel, Usage
 from furrow.core.events import EventType
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
@@ -87,7 +88,7 @@ def make_settings(tmp_path, max_cycles=3, max_parallel_tasks=2, max_task_retries
                     max_task_retries=max_task_retries)
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_loops_three_cycles(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=3)
@@ -99,7 +100,7 @@ async def test_loops_three_cycles(tmp_path, monkeypatch):
     assert result.cycles == 3
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_original_goal_survives(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -112,7 +113,7 @@ async def test_original_goal_survives(tmp_path, monkeypatch):
     assert "fail" in orch.goal
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_tasks_tracked(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -125,7 +126,7 @@ async def test_tasks_tracked(tmp_path, monkeypatch):
     assert orch.tasks[0].status == "completed"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_dependency_ordering(tmp_path, monkeypatch):
     order = []
 
@@ -146,7 +147,7 @@ async def test_dependency_ordering(tmp_path, monkeypatch):
     assert order.index("1") < order.index("2")
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_failed_dep_blocked(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):
@@ -168,7 +169,7 @@ async def test_failed_dep_blocked(tmp_path, monkeypatch):
     assert t2o.status == "blocked"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_max_parallel(tmp_path, monkeypatch):
     maxc = {"v": 0}
     cur = {"v": 0}
@@ -192,7 +193,7 @@ async def test_max_parallel(tmp_path, monkeypatch):
     assert maxc["v"] <= 2
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_no_progress_guard(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=10)
@@ -204,7 +205,7 @@ async def test_no_progress_guard(tmp_path, monkeypatch):
     assert result.stopped_reason == "no progress"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_state_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -219,7 +220,7 @@ async def test_state_persistence(tmp_path, monkeypatch):
     assert st.cycles > 0
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_resume(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -233,7 +234,7 @@ async def test_resume(tmp_path, monkeypatch):
     assert orch2.original_goal == "g"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_events(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -251,7 +252,7 @@ async def test_events(tmp_path, monkeypatch):
     assert EventType.TASK_FINISHED in types
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_planner_valueerror(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -263,7 +264,7 @@ async def test_planner_valueerror(tmp_path, monkeypatch):
     assert result.stopped_reason.startswith("planner failed")
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_console_output_does_not_break_the_run(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -278,7 +279,7 @@ async def test_console_output_does_not_break_the_run(tmp_path, monkeypatch):
     assert result.stopped_reason == "max_cycles reached"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_status_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -297,7 +298,7 @@ async def test_status_snapshot(tmp_path, monkeypatch):
     assert all(isinstance(task, dict) for task in status["tasks"])
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_console_reports_progress(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -317,7 +318,7 @@ async def test_console_reports_progress(tmp_path, monkeypatch):
     assert "Stopped: max_cycles reached" in printed
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_console_reports_failed_task(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):
@@ -345,7 +346,7 @@ def drain(queue):
     return events
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_task_that_raises_is_marked_failed(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):
@@ -369,7 +370,7 @@ async def test_task_that_raises_is_marked_failed(tmp_path, monkeypatch):
     assert any("RuntimeError: boom" in e.message for e in events if e.type == EventType.ERROR)
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_task_that_raises_is_retried_until_budget_is_spent(tmp_path, monkeypatch):
     calls = []
 
@@ -392,7 +393,7 @@ async def test_task_that_raises_is_retried_until_budget_is_spent(tmp_path, monke
     assert result.tasks_failed == 1
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_task_that_raises_without_retries_fails_immediately(tmp_path, monkeypatch):
     calls = []
 
@@ -415,7 +416,7 @@ async def test_task_that_raises_without_retries_fails_immediately(tmp_path, monk
     assert result.tasks_failed == 1
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_dependency_of_raised_task_is_blocked(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):
@@ -439,7 +440,7 @@ async def test_dependency_of_raised_task_is_blocked(tmp_path, monkeypatch):
     assert result.tasks_failed == 1
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_resume_restores_state_and_loads_it_once(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -470,7 +471,7 @@ async def test_resume_restores_state_and_loads_it_once(tmp_path, monkeypatch):
     assert len(loads) == 1  # run() must not load the state file again
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_resume_without_state_file_logs_starting_fresh(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -484,7 +485,7 @@ async def test_resume_without_state_file_logs_starting_fresh(tmp_path, monkeypat
     assert any(e.type == EventType.LOG and "starting fresh" in e.message for e in events)
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -499,7 +500,7 @@ async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
     assert result.passed is True
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_worker_files_changed_recorded_on_task_and_result(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):
@@ -524,7 +525,7 @@ async def test_worker_files_changed_recorded_on_task_and_result(tmp_path, monkey
     assert result.files_changed == ["furrow/config.py", "furrow/core/orchestrator.py"]
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_worker_files_changed_empty_when_none(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -537,7 +538,7 @@ async def test_worker_files_changed_empty_when_none(tmp_path, monkeypatch):
     assert result.files_changed == []
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_blocked_dep_counted_in_tasks_blocked(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):
@@ -560,7 +561,7 @@ async def test_blocked_dep_counted_in_tasks_blocked(tmp_path, monkeypatch):
     assert result.tasks_blocked > 0
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_tests_run_zero_before_tests_and_ge_one_when_run(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -582,7 +583,7 @@ async def test_tests_run_zero_before_tests_and_ge_one_when_run(tmp_path, monkeyp
     assert result2.tests_run >= 1
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_merge_plan_does_not_reset_failed_exhausted_task(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
@@ -602,7 +603,7 @@ async def test_merge_plan_does_not_reset_failed_exhausted_task(tmp_path, monkeyp
     assert plan.tasks[0].status == "failed"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_merge_plan_retries_failed_with_attempts_left(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
@@ -622,7 +623,7 @@ async def test_merge_plan_retries_failed_with_attempts_left(tmp_path, monkeypatc
     assert plan.tasks[0].status == "pending"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_merge_plan_keeps_recorded_result_and_error_when_plan_is_none(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
@@ -644,7 +645,7 @@ async def test_merge_plan_keeps_recorded_result_and_error_when_plan_is_none(tmp_
     assert plan.tasks[0].error == "old error"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
@@ -667,7 +668,7 @@ async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, mo
     assert plan.tasks[0].error == "new error"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -686,7 +687,7 @@ async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     assert orch2._prev_sig == "sig123"
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_completed_task_is_not_executed_again_when_the_plan_is_unchanged(tmp_path, monkeypatch):  # noqa: E501
     calls = []
 
@@ -711,7 +712,7 @@ async def test_completed_task_is_not_executed_again_when_the_plan_is_unchanged(t
     assert any(e.type == EventType.LOG and "already completed" in e.message for e in events)
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_completed_task_is_executed_again_when_the_description_changed(tmp_path, monkeypatch):
     calls = []
 
@@ -735,7 +736,7 @@ async def test_completed_task_is_executed_again_when_the_description_changed(tmp
     assert orch.tasks[0].attempts == 2
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_failed_task_with_an_exhausted_budget_stays_failed(tmp_path, monkeypatch):
     calls = []
 
@@ -780,7 +781,7 @@ async def test_failed_task_with_an_exhausted_budget_stays_failed(tmp_path, monke
     assert "2" not in calls or calls.count("2") == 0  # it was never run
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_state_is_saved_once_per_cycle(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=3)
@@ -804,7 +805,7 @@ async def test_state_is_saved_once_per_cycle(tmp_path, monkeypatch):
     assert len(state_saved) == orch.cycles
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_persisted_no_progress_matches_the_live_counter(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=2)
@@ -818,7 +819,7 @@ async def test_persisted_no_progress_matches_the_live_counter(tmp_path, monkeypa
     assert orch._no_progress == st.no_progress
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_tests_run_is_restored_on_resume(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -836,7 +837,7 @@ async def test_tests_run_is_restored_on_resume(tmp_path, monkeypatch):
     assert result2.tests_run >= 1  # accounts for both cycles (restored)
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_planner_runtimeerror_produces_error_event_and_stopped_reason(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -851,7 +852,7 @@ async def test_planner_runtimeerror_produces_error_event_and_stopped_reason(tmp_
     assert any(e.type == EventType.ERROR for e in events)
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_state_store_save_oserror_does_not_crash_run(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -876,7 +877,7 @@ async def test_state_store_save_oserror_does_not_crash_run(tmp_path, monkeypatch
     assert not [e for e in events if e.type == EventType.STATE_SAVED]
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_state_saved_is_emitted_only_for_cycles_whose_save_succeeded(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=2)
@@ -913,7 +914,7 @@ async def test_state_saved_is_emitted_only_for_cycles_whose_save_succeeded(tmp_p
     assert str(store.path) in errors[0].message
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_worker_result_attribute_access_failure_marks_task_failed(tmp_path, monkeypatch):
     class BadResult:
         @property
@@ -943,7 +944,7 @@ async def test_worker_result_attribute_access_failure_marks_task_failed(tmp_path
     )
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_cancelled_error_propagates_out_of_run(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):
@@ -959,9 +960,8 @@ async def test_cancelled_error_propagates_out_of_run(tmp_path, monkeypatch):
         await orch.run()
 
 
-@pytest.mark.asyncio
+@ pytest.mark.asyncio
 async def test_usage_cost_carried(tmp_path, monkeypatch):
-    from furrow.config import Usage
 
     class FakeClient:
         def __init__(self):
@@ -977,3 +977,51 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@ pytest.mark.asyncio
+async def test_orchestrator_logging_emits_structured_logs(tmp_path, monkeypatch, caplog):
+    """Test that the orchestrator emits structured logs with context."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="test goal", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+
+    # Capture logs
+    with caplog.at_level(logging.INFO):
+        await orch.run()
+
+    # Check that structured logs were emitted
+    log_messages = [record.message for record in caplog.records]
+    assert any("run_started" in msg for msg in log_messages)
+    assert any("cycle_started" in msg for msg in log_messages)
+    assert any("plan_created" in msg for msg in log_messages)
+    assert any("test_finished" in msg for msg in log_messages)
+    assert any("run_finished" in msg for msg in log_messages)
+
+
+@ pytest.mark.asyncio
+async def test_orchestrator_logging_includes_context(tmp_path, monkeypatch, caplog):
+    """Test that logs include relevant context like cycle, task_id, etc."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="test goal", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+
+    with caplog.at_level(logging.INFO):
+        await orch.run()
+
+    import json
+    # Check that context is included in logs
+    for record in caplog.records:
+        if "run_started" in record.message:
+            data = json.loads(record.message)
+            assert data.get("goal") == "test goal"
+            assert data.get("max_cycles") == 1
+        if "cycle_started" in record.message:
+            data = json.loads(record.message)
+            assert data.get("cycle") == 1

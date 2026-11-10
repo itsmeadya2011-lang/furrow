@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -108,21 +109,59 @@ class RunResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
 
 
+def _validate_log_level(v: str) -> str:
+    """Validate that the log level is a standard logging level."""
+    valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+    upper = v.upper()
+    if upper not in valid_levels:
+        raise ValueError(f"log_level must be one of {sorted(valid_levels)}")
+    return upper
+
+
+def _validate_model_name(v: str) -> str:
+    """Validate that the model name is not empty."""
+    if not v or not v.strip():
+        raise ValueError("model name cannot be empty")
+    return v.strip()
+
+
+def _validate_ollama_url(v: str) -> str:
+    """Validate that the Ollama URL is a valid HTTP/HTTPS URL."""
+    if not v:
+        raise ValueError("ollama_base_url cannot be empty")
+    v = v.strip()
+    if not (v.startswith("http://") or v.startswith("https://")):
+        raise ValueError("ollama_base_url must start with http:// or https://")
+    return v.rstrip("/")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC
-    model: str = "claude-sonnet-4-20250514"
-    planner_model: str = "claude-3-5-haiku-20241022"
-    worker_model: str = "claude-3-5-sonnet-20241022"
-    tester_model: str = "claude-3-5-sonnet-20241022"
+    model: Annotated[
+        str, Field(default="claude-sonnet-4-20250514")
+    ] = "claude-sonnet-4-20250514"
+    planner_model: Annotated[
+        str, Field(default="claude-3-5-haiku-20241022")
+    ] = "claude-3-5-haiku-20241022"
+    worker_model: Annotated[
+        str, Field(default="claude-3-5-sonnet-20241022")
+    ] = "claude-3-5-sonnet-20241022"
+    tester_model: Annotated[
+        str, Field(default="claude-3-5-sonnet-20241022")
+    ] = "claude-3-5-sonnet-20241022"
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
-    ollama_base_url: str = "http://localhost:11434"
+    ollama_base_url: Annotated[
+        str, Field(default="http://localhost:11434")
+    ] = "http://localhost:11434"
     max_parallel_tasks: int = Field(default=5, ge=1)
     max_cycles: int = Field(default=0, ge=0)
     workspace: Path = Field(default_factory=Path.cwd)
-    log_level: str = "INFO"
+    log_level: Annotated[
+        str, Field(default="INFO")
+    ] = "INFO"
     max_worker_iterations: int = Field(default=12, ge=1)
     max_retries: int = Field(default=3, ge=0)
     max_task_retries: int = Field(default=1, ge=0)
@@ -133,6 +172,28 @@ class Settings(BaseSettings):
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        return _validate_log_level(v)
+
+    @field_validator("model", "planner_model", "worker_model", "tester_model", mode="before")
+    @classmethod
+    def _validate_model_names(cls, v: str) -> str:
+        return _validate_model_name(v)
+
+    @field_validator("ollama_base_url", mode="before")
+    @classmethod
+    def _validate_ollama_base_url(cls, v: str) -> str:
+        return _validate_ollama_url(v)
+
+    @field_validator("anthropic_api_key", "openai_api_key", mode="before")
+    @classmethod
+    def _validate_api_keys(cls, v: str | None) -> str | None:
+        if v is not None and not v.strip():
+            return None
+        return v
+
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
         base = Path(workspace) if workspace is not None else Path(self.workspace)
@@ -141,6 +202,21 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def validate_api_keys(self) -> list[str]:
+        """Validate that required API keys are present for the selected provider.
+        
+        Returns a list of missing API key names (empty if all present).
+        """
+        missing = []
+        if self.provider == Provider.ANTHROPIC and not self.anthropic_api_key:
+            missing.append("FURROW_ANTHROPIC_API_KEY")
+        elif self.provider == Provider.OPENAI and not self.openai_api_key:
+            missing.append("FURROW_OPENAI_API_KEY")
+        elif self.provider == Provider.OLLAMA:
+            # Ollama doesn't require an API key, but the base URL must be valid
+            pass
+        return missing
 
 
 settings = Settings()

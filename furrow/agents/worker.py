@@ -14,6 +14,7 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -30,6 +31,35 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    "mv / /dev/null",
+    "cp /dev/zero",
+    "mkfs.ext",
+    "mkfs.vfat",
+    "mkfs.ntfs",
+    "mkfs.xfs",
+    "mkfs.btrfs",
+    "wipefs",
+    "cryptsetup",
+    "losetup",
+    "mount --bind",
+    "pivot_root",
+    "kexec",
+    "systemctl",
+    "service ",
+    "init 0",
+    "init 6",
+    "telinit",
+    "kill -9 1",
+    "kill -s KILL 1",
+    ">/dev/mem",
+    ">/dev/kmem",
+    ">/dev/port",
+    "crontab -r",
+    "atrm",
+    "userdel",
+    "groupdel",
+    "passwd -d",
+    "usermod -L",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,8 +75,29 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "wipefs",
+        "cryptsetup",
+        "losetup",
+        "pivot_root",
+        "kexec",
+        "systemctl",
+        "telinit",
+        "mkfs.ext4",
+        "mkfs.ext3",
+        "mkfs.ext2",
+        "mkfs.vfat",
+        "mkfs.ntfs",
+        "mkfs.xfs",
+        "mkfs.btrfs",
+        "userdel",
+        "groupdel",
+        "usermod",
+        "crontab",
+        "atrm",
     }
 )
+
+_log = get_logger("furrow.worker")
 
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
@@ -297,11 +348,27 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._log = get_logger("furrow.worker")
 
     async def run(self) -> WorkerResult:
+        self._log.info(
+                "worker_started",
+                task_id=self.task.id,
+                description=self.task.description,
+                max_iterations=self.settings.max_worker_iterations,
+            )
         try:
-            return await self._run()
+            result = await self._run()
+            self._log.info(
+                "worker_finished",
+                task_id=self.task.id,
+                success=result.success,
+                iterations=result.iterations,
+                files_changed=result.files_changed,
+            )
+            return result
         except Exception as exc:  # pragma: no cover - defensive
+            self._log.error("worker_error", task_id=self.task.id, error=str(exc))
             return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
 
     async def _run(self) -> WorkerResult:
@@ -320,6 +387,7 @@ class WorkerAgent:
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
+                self._log.debug("worker_no_tool_calls", task_id=self.task.id, iteration=iterations)
                 return WorkerResult(
                     summary=summary,
                     success=True,
@@ -339,6 +407,7 @@ class WorkerAgent:
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
+                self._log.debug("tool_call", task_id=self.task.id, tool=tc.name, args=tc.arguments)
                 result = await self._execute_tool(tc)
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
@@ -348,6 +417,11 @@ class WorkerAgent:
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        self._log.warning(
+                "worker_iteration_budget_exhausted",
+                task_id=self.task.id,
+                max_iterations=max_iters,
+            )
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -369,6 +443,7 @@ class WorkerAgent:
         name = tc.name
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
+            self._log.warning("invalid_tool_args", task_id=self.task.id, tool=name)
             return "error: invalid tool arguments"
         if name == "read_file":
             return await self._read_file(str(args.get("path", "")))
@@ -380,6 +455,7 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        self._log.warning("unknown_tool", task_id=self.task.id, tool=name)
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -404,35 +480,54 @@ class WorkerAgent:
     async def _read_file(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            self._log.warning("read_file_path_escape", task_id=self.task.id, path=path)
             return "error: path escapes workspace"
         try:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            self._log.error("read_file_error", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         if len(content) > 20000:
             content = content[:20000] + "\n[... output truncated ...]"
+            self._log.debug(
+                "read_file_truncated",
+                task_id=self.task.id,
+                path=path,
+                original_size=len(content),
+            )
+        self._log.debug("read_file_success", task_id=self.task.id, path=path, size=len(content))
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            self._log.warning("write_file_path_escape", task_id=self.task.id, path=path)
             return "error: path escapes workspace"
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
         except (OSError, ValueError, RuntimeError) as exc:
+            self._log.error("write_file_error", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
+        self._log.info(
+                "write_file_success",
+                task_id=self.task.id,
+                path=path,
+                size=len(content.encode("utf-8")),
+            )
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            self._log.warning("list_files_path_escape", task_id=self.task.id, path=path)
             return "error: path escapes workspace"
         try:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            self._log.error("list_files_error", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
@@ -442,20 +537,24 @@ class WorkerAgent:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
+        self._log.debug("list_files_success", task_id=self.task.id, path=path, count=len(rels))
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
+            self._log.warning("run_command_empty", task_id=self.task.id)
             return "error: empty command"
         # The hardened check subsumes the legacy pattern list: it normalizes
         # the command, checks every segment against DENIED_COMMANDS and
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            self._log.warning("run_command_denied", task_id=self.task.id, command=command)
             return "error: command denied"
         try:
             shlex.split(command)
         except ValueError:
+            self._log.warning("run_command_parse_error", task_id=self.task.id, command=command)
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
         # On POSIX the command runs in its own session/process group so that a
@@ -485,10 +584,22 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
+            self._log.error(
+                "run_command_spawn_error",
+                task_id=self.task.id,
+                command=command,
+                error=str(exc),
+            )
             return f"error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            self._log.warning(
+                "run_command_timeout",
+                task_id=self.task.id,
+                command=command,
+                timeout=timeout,
+            )
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
@@ -497,6 +608,19 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+            self._log.debug(
+                "run_command_output_truncated",
+                task_id=self.task.id,
+                command=command,
+                original_size=len(combined),
+            )
+        self._log.debug(
+            "run_command_success",
+            task_id=self.task.id,
+            command=command,
+            exit_code=proc.returncode,
+            output_size=len(combined),
+        )
         return combined
 
     @staticmethod

@@ -259,3 +259,87 @@ def test_pricing_overrides_returns_a_copy():
     overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
     assert s.model_pricing["my-model"].input_per_million == 1.0
 
+
+def test_settings_log_level_validation():
+    """Test that log_level validation works."""
+    from pydantic import ValidationError
+
+    # Valid log levels should work
+    for level in ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL", "debug", "info"]:
+        s = Settings(log_level=level)
+        assert s.log_level == level.upper()
+
+    # Invalid log level should fail
+    with pytest.raises(ValidationError):
+        Settings(log_level="INVALID")
+
+
+def test_settings_model_name_validation():
+    """Test that model name validation works."""
+    from pydantic import ValidationError
+
+    # Valid model names should work
+    s = Settings(model="test-model")
+    assert s.model == "test-model"
+
+    # Empty model name should fail
+    with pytest.raises(ValidationError):
+        Settings(model="")
+    with pytest.raises(ValidationError):
+        Settings(model="   ")
+
+
+def test_settings_ollama_url_validation():
+    """Test that Ollama URL validation works."""
+    from pydantic import ValidationError
+
+    # Valid URLs should work
+    s = Settings(ollama_base_url="http://localhost:11434")
+    assert s.ollama_base_url == "http://localhost:11434"
+    s = Settings(ollama_base_url="https://example.com")
+    assert s.ollama_base_url == "https://example.com"
+
+    # Invalid URLs should fail
+    with pytest.raises(ValidationError):
+        Settings(ollama_base_url="")
+    with pytest.raises(ValidationError):
+        Settings(ollama_base_url="not-a-url")
+    with pytest.raises(ValidationError):
+        Settings(ollama_base_url="ftp://example.com")
+
+
+def test_settings_api_key_validation():
+    """Test that empty API keys are normalized to None."""
+    s = Settings(anthropic_api_key="")
+    assert s.anthropic_api_key is None
+    s = Settings(anthropic_api_key="   ")
+    assert s.anthropic_api_key is None
+    s = Settings(anthropic_api_key="valid-key")
+    assert s.anthropic_api_key == "valid-key"
+
+
+def test_settings_validate_api_keys():
+    """Test the validate_api_keys method."""
+    # Anthropic requires API key
+    s = Settings(provider=Provider.ANTHROPIC, anthropic_api_key=None)
+    missing = s.validate_api_keys()
+    assert "FURROW_ANTHROPIC_API_KEY" in missing
+
+    s = Settings(provider=Provider.ANTHROPIC, anthropic_api_key="test-key")
+    missing = s.validate_api_keys()
+    assert missing == []
+
+    # OpenAI requires API key
+    s = Settings(provider=Provider.OPENAI, openai_api_key=None)
+    missing = s.validate_api_keys()
+    assert "FURROW_OPENAI_API_KEY" in missing
+
+    s = Settings(provider=Provider.OPENAI, openai_api_key="test-key")
+    missing = s.validate_api_keys()
+    assert missing == []
+
+    # Ollama doesn't require API key
+    s = Settings(provider=Provider.OLLAMA)
+    missing = s.validate_api_keys()
+    assert missing == []
+

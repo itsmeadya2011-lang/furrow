@@ -15,10 +15,13 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
 DEFAULT_TEST_TIMEOUT = 600.0
+
+_log = get_logger("furrow.tester")
 
 # Keywords that mark a line as reporting a failure.
 _FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
@@ -169,6 +172,7 @@ class TesterAgent:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self._log = get_logger("furrow.tester")
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
@@ -186,6 +190,7 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        self._log.debug("detect_command_started", workspace=str(self.workspace))
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -198,6 +203,11 @@ class TesterAgent:
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            self._log.info(
+                "detect_command_result",
+                runner="pytest",
+                reason="tests_dir_with_python_markers",
+            )
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -206,9 +216,24 @@ class TesterAgent:
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
                     if (self.workspace / "pnpm-lock.yaml").is_file():
+                        self._log.info(
+                            "detect_command_result",
+                            runner="pnpm",
+                            reason="jest_vitest_config",
+                        )
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
+                        self._log.info(
+                            "detect_command_result",
+                            runner="yarn",
+                            reason="jest_vitest_config",
+                        )
                         return ["yarn", "test", "--silent"]
+                    self._log.info(
+                        "detect_command_result",
+                        runner="npm",
+                        reason="jest_vitest_config",
+                    )
                     return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
@@ -217,17 +242,47 @@ class TesterAgent:
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
                     if (self.workspace / "pnpm-lock.yaml").is_file():
+                        self._log.info(
+                            "detect_command_result",
+                            runner="pnpm",
+                            reason="package_json_test_script",
+                        )
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
+                        self._log.info(
+                            "detect_command_result",
+                            runner="yarn",
+                            reason="package_json_test_script",
+                        )
                         return ["yarn", "test", "--silent"]
+                    self._log.info(
+                        "detect_command_result",
+                        runner="npm",
+                        reason="package_json_test_script",
+                    )
                     return ["npm", "test", "--silent"]
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
             if (self.workspace / "pnpm-lock.yaml").is_file():
+                self._log.info(
+                    "detect_command_result",
+                    runner="pnpm",
+                    reason="package_json_fallback",
+                )
                 return ["pnpm", "test", "--silent"]
             if (self.workspace / "yarn.lock").is_file():
+                self._log.info(
+                    "detect_command_result",
+                    runner="yarn",
+                    reason="package_json_fallback",
+                )
                 return ["yarn", "test", "--silent"]
+            self._log.info(
+                "detect_command_result",
+                runner="npm",
+                reason="package_json_fallback",
+            )
             return ["npm", "test", "--silent"]
 
         python_markers = [
@@ -238,13 +293,17 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
+            self._log.info("detect_command_result", runner="pytest", reason="python_markers")
             return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
+            self._log.info("detect_command_result", runner="cargo", reason="cargo_toml")
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
+            self._log.info("detect_command_result", runner="go", reason="go_mod")
             return ["go", "test", "./..."]
 
+        self._log.info("detect_command_result", runner=None, reason="no_runner_detected")
         return None
 
     def _finalize(
@@ -325,9 +384,11 @@ class TesterAgent:
         return TestResult(passed=passed, summary=summary, failures=failures)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        self._log.info("tester_run_started", goal=goal, task_count=len(tasks))
         try:
             cmd = await self.detect_command()
             if cmd is None:
+                self._log.info("tester_no_runner", workspace=str(self.workspace))
                 return TestResult(
                     passed=True,
                     skipped=True,
@@ -339,6 +400,7 @@ class TesterAgent:
             # timeout: `request_timeout` bounds a single API call, while a test
             # suite may legitimately run for minutes.
             timeout = resolve_test_timeout(self.settings)
+            self._log.debug("tester_command", command=cmd, timeout=timeout)
 
             spawn_kwargs: dict[str, Any] = {}
             if os.name == "posix":
@@ -364,6 +426,7 @@ class TesterAgent:
                 spawn_error = (
                     f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 )
+                self._log.error("tester_spawn_failed", command=cmd, error=spawn_error)
                 returncode = 1
                 stdout = b""
                 stderr = b""
@@ -371,6 +434,7 @@ class TesterAgent:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
+                    self._log.warning("tester_timeout", command=cmd, timeout=timeout)
                     await self._kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
@@ -385,6 +449,7 @@ class TesterAgent:
                 + stderr.decode("utf-8", errors="replace")
             )
             if len(combined) > 20000:
+                self._log.debug("tester_output_truncated", original_size=len(combined))
                 combined = "[... output truncated ...]\n" + combined[-20000:]
 
             llm_result: TestResult | None = None
@@ -396,10 +461,11 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                except Exception as exc:
+                    self._log.warning("tester_llm_failed", error=str(exc))
                     llm_result = None
 
-            return self._finalize(
+            result = self._finalize(
                 llm_result=llm_result,
                 returncode=returncode,
                 combined=combined,
@@ -408,8 +474,16 @@ class TesterAgent:
                 timed_out=timed_out,
                 timeout=timeout,
             )
+            self._log.info(
+                "tester_run_finished",
+                passed=result.passed,
+                skipped=result.skipped,
+                failures_count=len(result.failures),
+            )
+            return result
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
+            self._log.error("tester_error", error=message)
             return TestResult(
                 passed=False,
                 summary=f"Tester error: {message}",
