@@ -23,6 +23,15 @@ DEFAULT_TEST_TIMEOUT = 600.0
 # Keywords that mark a line as reporting a failure.
 _FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
 
+# Filenames that mark a project as a Python project (used to pick pytest).
+PYTHON_MARKERS = (
+    "pyproject.toml",
+    "pytest.ini",
+    "setup.cfg",
+    "tox.ini",
+    "requirements.txt",
+)
+
 # Counter phrases that mention a failure keyword but report *zero* failures,
 # e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",
 # "errors=0".  They describe a green run and must not be read as a failure.
@@ -230,14 +239,7 @@ class TesterAgent:
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
-        python_markers = [
-            "pyproject.toml",
-            "pytest.ini",
-            "setup.cfg",
-            "tox.ini",
-            "requirements.txt",
-        ]
-        if any((self.workspace / m).is_file() for m in python_markers):
+        if any((self.workspace / m).is_file() for m in PYTHON_MARKERS):
             return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
