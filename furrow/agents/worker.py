@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
 import shlex
-import signal
 from pathlib import Path
 from typing import Any
 
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
+from furrow.core.process import kill_process_tree
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
@@ -461,35 +460,35 @@ class WorkerAgent:
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
         # instead of leaking orphans. On other platforms we fall back to
-        # killing the direct child only.
+        # killing the direct child only.  On POSIX we go through /bin/sh -c so
+        # that shell constructs (pipes, variable assignments, redirections)
+        # work; on other platforms we exec the command directly.
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
         try:
             if os.name == "posix":
-                proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+                program = "/bin/sh"
+                exec_args = ["-c", command]
             else:
                 parts = shlex.split(command)
                 if not parts:
                     return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+                program = parts[0]
+                exec_args = parts[1:]
+            proc = await asyncio.create_subprocess_exec(
+                program,
+                *exec_args,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            await self._kill_process_tree(proc, new_session)
+            await kill_process_tree(proc, new_session)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
@@ -498,24 +497,3 @@ class WorkerAgent:
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
-
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
-        """Kill a timed-out command together with every process it spawned."""
-        if new_session:
-            try:
-                pgid = os.getpgid(proc.pid)
-            except (OSError, AttributeError):
-                pgid = None
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (OSError, AttributeError):
-                    pass
-                else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
-        # Fallback: no process group available (or killing it failed).
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
