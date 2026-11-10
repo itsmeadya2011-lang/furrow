@@ -103,6 +103,8 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "tests_run": int(getattr(self, "_tests_run", 0) or 0),
+            "skipped": bool(self._tests_skipped),
         }
 
     def _console(self) -> Any:
@@ -312,6 +314,21 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                data={
+                    "passed": bool(self._last_test_passed),
+                    "cycles": self.cycles,
+                    "stopped_reason": self._stopped_reason,
+                    "tasks_completed": completed,
+                    "tasks_failed": failed,
+                    "tasks_blocked": blocked,
+                    "tests_run": int(getattr(self, "_tests_run", 0) or 0),
+                    "skipped": bool(self._tests_skipped),
+                },
+            )
+        )
         return RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
@@ -357,12 +374,9 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Non-terminal states (pending, running, skipped, unknown):
+                    # reset to pending so the task can be (re-)executed.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
