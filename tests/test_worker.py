@@ -888,3 +888,295 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_write_file_creates_parent_directories(tmp_path):
+    """write_file should create parent directories if they don't exist."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="write_file",
+                    arguments={"path": "subdir/nested/deep.py", "content": "print('hi')"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="write nested", files=["subdir/nested/deep.py"])
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == ["subdir/nested/deep.py"]
+    assert (tmp_path / "subdir/nested/deep.py").read_text() == "print('hi')"
+
+
+@pytest.mark.asyncio
+async def test_read_file_nonexistent_returns_error(tmp_path):
+    """Reading a non-existent file should return an error message."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "missing.txt"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="read missing")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "error" in b["content"].lower()
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_with_shell_operators(tmp_path):
+    """Commands with shell operators (&&, ||, |, ;) should work."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo first && echo second"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="shell operators")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "first" in content and "second" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_with_pipe(tmp_path):
+    """Commands with pipes should work."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo hello | cat"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="pipe")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "hello" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_with_env_var(tmp_path):
+    """Commands with environment variable assignments should work."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "FOO=bar && echo $FOO"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="env var")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "bar" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_with_cd(tmp_path):
+    """Commands with cd should work."""
+    subdir = tmp_path / "subdir"
+    subdir.mkdir()
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": f"cd {subdir} && pwd"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "subdir" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_worker_iteration_budget_exhaustion_is_failure(tmp_path):
+    """Exhausting the iteration budget should result in success=False."""
+    response = LLMResponse(
+        text="", tool_calls=[ToolCall(id="t1", name="read_file", arguments={"path": "x"})]
+    )
+    client = FakeLLMClient([response] * 5)  # Return same response 5 times
+    settings = make_settings(tmp_path, iters=3)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="loop")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is False
+    assert result.error == "worker iteration budget exhausted"
+    assert result.iterations == 3
+
+
+@pytest.mark.asyncio
+async def test_list_files_empty_directory(tmp_path):
+    """list_files on empty directory should return empty string."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list empty")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_list_files_nonexistent_directory(tmp_path):
+    """list_files on non-existent directory should return empty string (no files found)."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list missing")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files("nonexistent")
+    assert out == ""
+
+
+@pytest.mark.asyncio
+async def test_write_file_overwrites_existing(tmp_path):
+    """write_file should overwrite existing files."""
+    (tmp_path / "existing.txt").write_text("old content")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="write_file",
+                    arguments={"path": "existing.txt", "content": "new content"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="overwrite", files=["existing.txt"])
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert (tmp_path / "existing.txt").read_text() == "new content"
+
+
+@pytest.mark.asyncio
+async def test_worker_tool_args_coercion_handles_json_string(tmp_path):
+    """_coerce_tool_args should handle JSON string arguments."""
+    from furrow.agents.worker import WorkerAgent
+
+    # Valid JSON string
+    args = WorkerAgent._coerce_tool_args('{"path": "test.txt"}')
+    assert args == {"path": "test.txt"}
+    # Invalid JSON string
+    args = WorkerAgent._coerce_tool_args("not json")
+    assert args is None
+    # Empty string
+    args = WorkerAgent._coerce_tool_args("")
+    assert args == {}
+    # None
+    args = WorkerAgent._coerce_tool_args(None)
+    assert args == {}
+    # Already a dict
+    args = WorkerAgent._coerce_tool_args({"path": "test.txt"})
+    assert args == {"path": "test.txt"}

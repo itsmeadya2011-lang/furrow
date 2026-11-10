@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, TypedDict
 
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
@@ -12,6 +12,21 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+
+if TYPE_CHECKING:
+    from rich.console import Console
+
+
+class OrchestratorStatus(TypedDict):
+    """Type for the orchestrator status snapshot."""
+
+    goal: str
+    original_goal: str
+    cycles: int
+    stopped_reason: str
+    tasks: list[dict[str, object]]
+    usage: dict[str, object]
+
 
 _UNSET = object()
 
@@ -44,7 +59,7 @@ class Orchestrator:
         self._resume = resume
         self._last_test_passed: bool | None = None
         self._tests_skipped: bool = False
-        self._console_obj: Any = _UNSET
+        self._console_obj: Console | object | None = _UNSET
         self._resume_state_missing = False
         self._usage: Usage = Usage()
         self._usage_seen: Usage = Usage()
@@ -94,7 +109,7 @@ class Orchestrator:
             cost_usd=float(getattr(raw, "cost_usd", 0.0) or 0.0),
         )
 
-    def status(self) -> dict[str, Any]:
+    def status(self) -> OrchestratorStatus:
         """Return a snapshot of the current run."""
         return {
             "goal": self.goal,
@@ -105,7 +120,7 @@ class Orchestrator:
             "usage": self._usage.model_dump(),
         }
 
-    def _console(self) -> Any:
+    def _console(self) -> Console | None:
         """Return a rich Console, or None when rich is unavailable."""
         if self._console_obj is _UNSET:
             try:
@@ -114,7 +129,7 @@ class Orchestrator:
                 self._console_obj = Console()
             except ImportError:  # pragma: no cover - rich is a declared dependency
                 self._console_obj = None
-        return self._console_obj
+        return self._console_obj  # type: ignore[return-value]
 
     def _say(self, message: str) -> None:
         """Print a progress message; a broken console must never break the run."""

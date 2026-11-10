@@ -41,7 +41,8 @@ class FakePlanner:
             raise RuntimeError("boom")
         return Plan(
             tasks=[
-                TaskModel(id=t.id, description=t.description, dependencies=list(t.dependencies))
+                TaskModel(id=t.id, description=t.description, files=list(t.files),
+                          dependencies=list(t.dependencies))
                 for t in self.tasks
             ],
             rationale="r",
@@ -977,3 +978,223 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_no_progress_guard_with_skipped_tests(tmp_path, monkeypatch):
+    """No-progress guard should trip when tests are skipped and plan doesn't change."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=True)
+    result = await orch.run()
+    # With skipped tests, the no-progress guard should trip after 2 cycles
+    assert result.stopped_reason == "no test runner detected"
+    assert result.cycles >= 2
+
+
+@pytest.mark.asyncio
+async def test_completed_task_skipped_when_files_unchanged(tmp_path, monkeypatch):
+    """A completed task should be skipped when both description and files are unchanged."""
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    # Same description, same files
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1", files=["a.py"])])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    task = orch.tasks[0]
+    assert len(calls) == 1
+    assert task.status == "completed"
+    assert task.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_task_rerun_when_files_changed(tmp_path, monkeypatch):
+    """A completed task should be re-run when files change but description is same."""
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    # Same description, different files
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1", files=["a.py"])])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1", files=["b.py"])])
+    await orch.run()
+
+    assert len(calls) == 2
+    assert orch.tasks[0].attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_task_with_attempts_left_retried_in_next_cycle(tmp_path, monkeypatch):
+    """A failed task with remaining retry budget should be retried in the next cycle."""
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            if self.task.id == "t1" and self.task.attempts < 2:
+                return WorkerResult(summary="fail", success=False, files_changed=[], error="boom")
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=2, max_task_retries=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1")])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+
+    # Should have retried in cycle 2
+    task = orch.tasks[0]
+    assert task.status == "completed"
+    assert task.attempts == 3  # 1 initial + 2 retries
+
+
+@pytest.mark.asyncio
+async def test_blocked_task_stays_blocked_across_cycles(tmp_path, monkeypatch):
+    """A blocked task should remain blocked in subsequent cycles."""
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            if self.task.id == "1":
+                return WorkerResult(summary="fail", success=False, files_changed=[])
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    t1 = TaskModel(id="1", description="one")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+
+    t2_after = next(t for t in orch.tasks if t.id == "2")
+    assert t2_after.status == "blocked"
+    # Second cycle - blocked task should stay blocked
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    await orch.run()
+    t2_final = next(t for t in orch.tasks if t.id == "2")
+    assert t2_final.status == "blocked"
+    # Task 2 should never have been executed
+    assert calls.count("2") == 0
+
+
+@pytest.mark.asyncio
+async def test_state_save_failure_does_not_emit_state_saved(tmp_path, monkeypatch):
+    """When state save fails, STATE_SAVED event should not be emitted."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+
+    def boom(state):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "save", boom)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    assert isinstance(result, RunResult)
+    events = drain(q)
+    # Should have ERROR but not STATE_SAVED
+    assert any(e.type == EventType.ERROR for e in events)
+    assert not any(e.type == EventType.STATE_SAVED for e in events)
+
+
+@pytest.mark.asyncio
+async def test_task_dependencies_respected_in_waves(tmp_path, monkeypatch):
+    """Tasks should execute in dependency order within waves."""
+    order = []
+
+    class OW(FakeWorker):
+        async def run(self):
+            order.append(self.task.id)
+            await asyncio.sleep(0.01)  # Small delay to ensure ordering is visible
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", OW)
+    t1 = TaskModel(id="1", description="one")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    t3 = TaskModel(id="3", description="three", dependencies=["2"])
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2, t3])
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    assert order.index("1") < order.index("2")
+    assert order.index("2") < order.index("3")
+
+
+@pytest.mark.asyncio
+async def test_max_parallel_tasks_respected(tmp_path, monkeypatch):
+    """Max parallel tasks should limit concurrent execution."""
+    max_concurrent = {"v": 0}
+    current = {"v": 0}
+
+    class SW(FakeWorker):
+        async def run(self):
+            current["v"] += 1
+            max_concurrent["v"] = max(max_concurrent["v"], current["v"])
+            await asyncio.sleep(0.05)
+            current["v"] -= 1
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", SW)
+    tasks = [TaskModel(id=f"t{i}", description=f"d{i}") for i in range(5)]
+    settings = make_settings(tmp_path, max_cycles=1, max_parallel_tasks=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=tasks)
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    assert max_concurrent["v"] <= 2
+
+
+@pytest.mark.asyncio
+async def test_history_contains_usage_per_cycle(tmp_path, monkeypatch):
+    """History should track usage for each cycle."""
+    from furrow.config import Usage
+
+    class FakeClient:
+        def __init__(self):
+            self.total_usage = Usage(input_tokens=10, output_tokens=20, calls=1, cost_usd=0.0)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=FakeClient())
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+
+    assert len(orch.history) == 2
+    for entry in orch.history:
+        assert entry.usage.calls >= 0
+        assert entry.usage.cost_usd >= 0

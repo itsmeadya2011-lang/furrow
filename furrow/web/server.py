@@ -13,9 +13,8 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-from typing import Any
+from typing import TypedDict, cast
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -24,16 +23,42 @@ from pydantic import BaseModel, Field, ValidationError
 
 from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
-from furrow.core.orchestrator import Orchestrator
+from furrow.core.orchestrator import Orchestrator, OrchestratorStatus
 from furrow.core.state import StateStore
-
-logger = logging.getLogger(__name__)
+from furrow.utils import release_llm_client
 
 app = FastAPI(title="Furrow")
+logger = logging.getLogger(__name__)
 
 POLL_INTERVAL = 0.05
 
-DEFAULT_CURRENT: dict[str, Any] = {
+
+class CurrentRun(TypedDict):
+    """Type for the current run registry entry."""
+
+    running: bool
+    orchestrator: Orchestrator | None
+    result: RunResult | None
+    task: asyncio.Task[RunResult] | None
+    error: str | None
+
+
+class StateAPIResponse(TypedDict):
+    """Type for the /api/state response."""
+
+    state: dict[str, object] | None
+    exists: bool
+
+
+class StatusAPIResponse(TypedDict):
+    """Type for the /api/status response."""
+
+    running: bool
+    status: OrchestratorStatus | None
+    result: dict[str, object] | None
+
+
+DEFAULT_CURRENT: CurrentRun = {
     "running": False,
     "orchestrator": None,
     "result": None,
@@ -42,7 +67,7 @@ DEFAULT_CURRENT: dict[str, Any] = {
 }
 
 # Registry of the run that is currently active (or of the last one that ran).
-_CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
+_CURRENT: CurrentRun = cast(CurrentRun, dict(DEFAULT_CURRENT))
 
 # Strong references to background tasks so they are never garbage collected
 # while they are still pending.
@@ -430,8 +455,8 @@ class SocketRequest(BaseModel):
 
 def _reset_registry() -> None:
     """Forget the active run (used by the tests)."""
-    _CURRENT.clear()
-    _CURRENT.update(DEFAULT_CURRENT)
+    global _CURRENT
+    _CURRENT = cast(CurrentRun, dict(DEFAULT_CURRENT))
 
 
 def _state_store() -> StateStore:
@@ -504,25 +529,6 @@ async def _drain(queue: asyncio.Queue[Event]) -> None:
         await queue.get()
 
 
-async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
-
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
-
-
 async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
     """Run an orchestrator and release its LLM client afterwards.
 
@@ -533,7 +539,7 @@ async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
     try:
         return await orchestrator.run()
     finally:
-        await _release_client(getattr(orchestrator, "client", None))
+        await release_llm_client(getattr(orchestrator, "client", None))
 
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
@@ -573,7 +579,7 @@ async def index() -> HTMLResponse:
 
 
 @app.get("/api/state")
-async def api_state() -> dict[str, Any]:
+async def api_state() -> StateAPIResponse:
     """The persisted run state, if there is one."""
     store = _state_store()
     state = store.load()
@@ -584,7 +590,7 @@ async def api_state() -> dict[str, Any]:
 
 
 @app.get("/api/status")
-async def api_status() -> dict[str, Any]:
+async def api_status() -> StatusAPIResponse:
     """Status of the run that is currently active."""
     orchestrator = _CURRENT.get("orchestrator")
     result = _CURRENT.get("result")

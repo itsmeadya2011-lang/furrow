@@ -1,3 +1,10 @@
+"""Configuration and data models for Furrow.
+
+This module defines all the core data models used by Furrow, including task
+definitions, plan structures, test results, worker results, token usage,
+run results, and application settings.
+"""
+
 from __future__ import annotations
 
 from enum import Enum
@@ -10,12 +17,16 @@ from furrow.costs import ModelPricing
 
 
 class Provider(str, Enum):
+    """Supported LLM providers."""
+
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OLLAMA = "ollama"
 
 
 class TaskStatus(str, Enum):
+    """Possible status values for a task."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -25,6 +36,22 @@ class TaskStatus(str, Enum):
 
 
 class TaskModel(BaseModel):
+    """A single task in a Furrow plan.
+
+    Attributes:
+        id: Unique identifier for the task.
+        description: Human-readable description of what the task should accomplish.
+        files: List of file paths the task is expected to modify.
+        dependencies: List of task IDs that must complete before this task can run.
+        status: Current status of the task (normalized to known values).
+        result: Summary of what the task accomplished (if completed).
+        error: Error message if the task failed.
+        attempts: Number of times this task has been attempted.
+        started_at: ISO timestamp when the task started.
+        finished_at: ISO timestamp when the task finished.
+        files_changed: List of file paths that were actually modified.
+    """
+
     id: str
     description: str
     files: list[str] = Field(default_factory=list)
@@ -40,6 +67,7 @@ class TaskModel(BaseModel):
     @field_validator("status")
     @classmethod
     def _normalize_status(cls, v: str) -> str:
+        """Normalize status to a known value, defaulting to 'pending'."""
         if v is None:
             return "pending"
         if not isinstance(v, str):
@@ -52,11 +80,27 @@ class TaskModel(BaseModel):
 
 
 class Plan(BaseModel):
+    """A plan consisting of multiple tasks with a rationale.
+
+    Attributes:
+        tasks: List of tasks to execute.
+        rationale: Explanation of the planning decisions.
+    """
+
     tasks: list[TaskModel]
     rationale: str
 
 
 class TestResult(BaseModel):
+    """Result of running the test suite.
+
+    Attributes:
+        passed: Whether the tests passed.
+        summary: Human-readable summary of the test run.
+        failures: List of individual failure descriptions.
+        skipped: Whether the test run was skipped (e.g., no test runner found).
+    """
+
     __test__ = False
     passed: bool
     summary: str
@@ -65,6 +109,16 @@ class TestResult(BaseModel):
 
 
 class WorkerResult(BaseModel):
+    """Result of a worker executing a task.
+
+    Attributes:
+        summary: Summary of what the worker did.
+        success: Whether the worker succeeded.
+        files_changed: List of files modified by the worker.
+        error: Error message if the worker failed.
+        iterations: Number of tool-calling iterations used.
+    """
+
     summary: str = ""
     success: bool = True
     files_changed: list[str] = Field(default_factory=list)
@@ -73,7 +127,14 @@ class WorkerResult(BaseModel):
 
 
 class Usage(BaseModel):
-    """Token usage accumulated over one or more LLM calls."""
+    """Token usage accumulated over one or more LLM calls.
+
+    Attributes:
+        input_tokens: Total input tokens across all calls.
+        output_tokens: Total output tokens across all calls.
+        calls: Number of LLM calls made.
+        cost_usd: Estimated cost in USD.
+    """
 
     input_tokens: int = 0
     output_tokens: int = 0
@@ -95,6 +156,22 @@ class Usage(BaseModel):
 
 
 class RunResult(BaseModel):
+    """Final result of a Furrow run.
+
+    Attributes:
+        passed: Whether the tests passed (or were skipped).
+        cycles: Number of orchestration cycles completed.
+        tasks_completed: Number of tasks that completed successfully.
+        tasks_failed: Number of tasks that failed.
+        tasks_blocked: Number of tasks that were blocked by failed dependencies.
+        tests_run: Number of times the test suite was executed.
+        summary: Brief summary of why the run stopped.
+        stopped_reason: Detailed reason for stopping.
+        skipped: Whether the run was skipped (no test runner detected).
+        usage: Accumulated LLM token usage.
+        files_changed: List of all files changed during the run.
+    """
+
     passed: bool = False
     cycles: int = 0
     tasks_completed: int = 0
@@ -109,6 +186,35 @@ class RunResult(BaseModel):
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables.
+
+    All settings use the ``FURROW_`` prefix (e.g., ``FURROW_MODEL``).
+    A ``.env`` file is also read if present.
+
+    Attributes:
+        provider: LLM provider to use.
+        model: Default model for completions/chat.
+        planner_model: Model for the planner agent.
+        worker_model: Model for the worker agent.
+        tester_model: Model for the tester agent.
+        anthropic_api_key: Anthropic API key.
+        openai_api_key: OpenAI API key.
+        ollama_base_url: Ollama OpenAI-compatible base URL.
+        max_parallel_tasks: Maximum concurrent worker tasks per wave.
+        max_cycles: Maximum cycles to run (0 = unlimited).
+        workspace: Working directory for the agent.
+        log_level: Logging level used by the CLI.
+        max_worker_iterations: Maximum tool-call iterations per worker task.
+        max_retries: Retry attempts for transient LLM errors.
+        max_task_retries: Times a failed task is retried before marking failed.
+        request_timeout: Request timeout in seconds for LLM calls.
+        command_timeout: Timeout in seconds for worker commands.
+        test_timeout: Timeout in seconds for test commands.
+        max_tokens: Max tokens for LLM completions.
+        state_file: State file path (relative to workspace).
+        model_pricing: User-supplied price overrides for cost estimation.
+    """
+
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC

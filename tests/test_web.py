@@ -58,6 +58,7 @@ class FakeOrchestrator:
             "cycles": 0,
             "stopped_reason": "",
             "tasks": [],
+            "usage": {},
         }
 
     def status(self) -> dict[str, Any]:
