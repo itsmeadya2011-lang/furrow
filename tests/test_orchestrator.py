@@ -603,6 +603,56 @@ async def test_merge_plan_does_not_reset_failed_exhausted_task(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_merge_plan_resets_failed_exhausted_desc_change(tmp_path, monkeypatch):
+    """A failed task with an exhausted budget is treated as new work when the
+    planner re-plans it with a different description: it is reset to pending
+    with a fresh attempt budget."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "failed"
+    task.attempts = 1  # exhausted budget
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description="completely different description",
+                         dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+    assert plan.tasks[0].attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_resets_failed_exhausted_task_when_files_change(tmp_path, monkeypatch):
+    """A failed task with an exhausted budget is treated as new work when the
+    planner re-plans it with different files: it is reset to pending with a
+    fresh attempt budget."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "failed"
+    task.attempts = 1  # exhausted budget
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description,
+                         files=["new_file.py"], dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+    assert plan.tasks[0].attempts == 0
+
+
+@pytest.mark.asyncio
 async def test_merge_plan_retries_failed_with_attempts_left(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)

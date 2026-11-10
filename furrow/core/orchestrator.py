@@ -253,7 +253,9 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+            sig = "|".join(
+                f"{t.id}:{t.description}:{','.join(sorted(t.files))}" for t in plan.tasks
+            )
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
@@ -350,10 +352,19 @@ class Orchestrator:
                     else:
                         pt.status = "pending"
                 elif old.status == "failed":
-                    if old.attempts <= max_retries:
-                        pt.status = "pending"
+                    if old_desc == pt.description and old_files == pt.files:
+                        # Same work: keep the terminal state, retry only if
+                        # budget remains.
+                        if old.attempts <= max_retries:
+                            pt.status = "pending"
+                        else:
+                            pt.status = "failed"
                     else:
-                        pt.status = "failed"
+                        # New work (different description or files): reset to
+                        # pending with a fresh attempt budget so the new task
+                        # gets a full retry cycle.
+                        pt.status = "pending"
+                        old.attempts = 0
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
