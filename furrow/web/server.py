@@ -172,6 +172,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
+  function formatUsd(amount) {
+    const n = Number(amount) || 0;
+    if (n <= 0) return '$0.00';
+    if (n < 0.01) return '$' + n.toFixed(4);
+    return '$' + n.toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
+    });
+  }
+
   // The task status is planned by the LLM, so it is untrusted input: it is
   // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
@@ -206,7 +216,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
+      (cost > 0 ? ', ' + formatUsd(cost) : '');
   }
 
   function renderTasks(tasks) {
