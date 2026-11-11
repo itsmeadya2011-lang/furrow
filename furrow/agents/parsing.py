@@ -164,8 +164,13 @@ def parse_test_result(text: str) -> TestResult:
             elif m_true:
                 passed = True
             else:
+                # Success patterns (including zero-failure counts) are checked
+                # first so that "0 failed" / "0 failures" are not misread as
+                # failures. The bare word "success" is deliberately excluded:
+                # it can appear alongside failure messages and must not override
+                # a real failure signal.
                 m_success = re.search(
-                    r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
+                    r"\b(no failures?|0 failed|0 failures|all tests passed|tests passed)\b",
                     lower,
                 )
                 if m_success:

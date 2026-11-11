@@ -224,8 +224,14 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
             return True
 
     # DENY by PATTERN
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
-        return True
+    for denied in DENIED_COMMANDS:
+        if denied == "rm -rf /":
+            # Block rm -rf / (deletes the entire filesystem) but allow
+            # legitimate paths like rm -rf /tmp; require a boundary after /.
+            if re.search(r"rm -rf /(?:\s|$|[&|;])", normalized):
+                return True
+        elif denied.lower() in normalized:
+            return True
 
     # DENY a force push
     if _is_force_push(segment, normalized):
@@ -375,9 +381,8 @@ class WorkerAgent:
         if name == "write_file":
             return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
         if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
+            path = args.get("path")
+            return await self._list_files(str(path) if path is not None else ".")
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
