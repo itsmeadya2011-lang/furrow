@@ -10,7 +10,8 @@ from typing import Any, TypeVar
 
 import aiofiles
 from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, AsyncAzureOpenAI
+from google import genai as google_genai
 
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
@@ -217,6 +218,8 @@ class LLMClient:
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
+        self._gemini: google_genai.Client | None = None
+        self._azure: AsyncAzureOpenAI | None = None
         self.total_usage: Usage = Usage()
 
     @property
@@ -250,13 +253,41 @@ class LLMClient:
             )
         return self._ollama
 
+    @property
+    def gemini(self) -> google_genai.Client:
+        if self._gemini is None:
+            api_key = self.settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise ValueError("GEMINI_API_KEY is not set")
+            self._gemini = google_genai.Client(
+                api_key=api_key, timeout=self.settings.request_timeout
+            )
+        return self._gemini
+
+    @property
+    def azure(self) -> AsyncAzureOpenAI:
+        if self._azure is None:
+            api_key = self.settings.azure_api_key or os.getenv("AZURE_OPENAI_API_KEY")
+            endpoint = self.settings.azure_endpoint or os.getenv("AZURE_OPENAI_ENDPOINT")
+            if not api_key:
+                raise ValueError("AZURE_OPENAI_API_KEY is not set")
+            if not endpoint:
+                raise ValueError("AZURE_OPENAI_ENDPOINT is not set")
+            self._azure = AsyncAzureOpenAI(
+                api_key=api_key,
+                azure_endpoint=endpoint,
+                api_version=self.settings.azure_api_version,
+                timeout=self.settings.request_timeout,
+            )
+        return self._azure
+
     async def aclose(self) -> None:
         """Release any lazily-created provider clients.
 
         Reusable: cached references are reset to ``None`` so a later request
         creates a fresh client. Never raises.
         """
-        for attr in ("_anthropic", "_openai", "_ollama"):
+        for attr in ("_anthropic", "_openai", "_ollama", "_gemini", "_azure"):
             client = getattr(self, attr)
             if client is None:
                 continue
@@ -313,6 +344,10 @@ class LLMClient:
                 response = await self._complete_openai(self.openai, prompt, system, model)
             elif provider == Provider.OLLAMA:
                 response = await self._complete_openai(self.ollama, prompt, system, model)
+            elif provider == Provider.GEMINI:
+                response = await self._complete_gemini(prompt, system, model)
+            elif provider == Provider.AZURE:
+                response = await self._complete_openai(self.azure, prompt, system, model)
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
@@ -339,6 +374,12 @@ class LLMClient:
             elif provider == Provider.OLLAMA:
                 return await self._chat_openai_compatible(
                     self.ollama, messages, tools, system, model
+                )
+            elif provider == Provider.GEMINI:
+                return await self._chat_gemini(messages, tools, system, model)
+            elif provider == Provider.AZURE:
+                return await self._chat_openai_compatible(
+                    self.azure, messages, tools, system, model
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
@@ -389,6 +430,87 @@ class LLMClient:
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
+
+    async def _complete_gemini(self, prompt: str, system: str, model: str) -> LLMResponse:
+        # Gemini uses a different API format
+        full_prompt = (system + "\n\n" + prompt).strip() if system else prompt
+        response = await self.gemini.aio.models.generate_content(
+            model=model,
+            contents=full_prompt,
+        )
+        text = response.text or ""
+        # Extract usage from Gemini response
+        usage = Usage(calls=1)
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            usage.input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            usage.output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+        try:
+            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+        except Exception:
+            usage.cost_usd = 0.0
+        self.total_usage.add(usage)
+        return LLMResponse(text=text, raw=response, usage=usage)
+
+    async def _chat_gemini(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None,
+        system: str,
+        model: str,
+    ) -> LLMResponse:
+        # Convert messages to Gemini format
+        contents = []
+        for msg in messages:
+            role = msg["role"]
+            content = msg.get("content")
+            if isinstance(content, list):
+                # Handle tool calls and tool results
+                text_parts = []
+                for block in content:
+                    if block.get("type") == "text":
+                        text_parts.append(block.get("text", ""))
+                    elif block.get("type") == "tool_use":
+                        # Gemini doesn't have native tool calling in the same way
+                        # We'll include it as text for now
+                        text_parts.append(f"[Tool call: {block.get('name')}]")
+                    elif block.get("type") == "tool_result":
+                        text_parts.append(f"[Tool result: {block.get('content')}]")
+                content = "\n".join(text_parts)
+            
+            if role == "user":
+                contents.append({"role": "user", "parts": [{"text": content or ""}]})
+            elif role == "assistant":
+                contents.append({"role": "model", "parts": [{"text": content or ""}]})
+            elif role == "system":
+                # System message is prepended to first user message
+                pass
+        
+        # Prepend system to first user message if present
+        if system and contents:
+            for c in contents:
+                if c["role"] == "user":
+                    c["parts"][0]["text"] = system + "\n\n" + c["parts"][0]["text"]
+                    break
+        
+        # Note: Gemini's function calling is different from Anthropic/OpenAI
+        # For now, we'll use the simpler API without tools
+        response = await self.gemini.aio.models.generate_content(
+            model=model,
+            contents=contents,
+        )
+        text = response.text or ""
+        tool_calls: list[ToolCall] = []
+        
+        usage = Usage(calls=1)
+        if hasattr(response, "usage_metadata") and response.usage_metadata:
+            usage.input_tokens = getattr(response.usage_metadata, "prompt_token_count", 0) or 0
+            usage.output_tokens = getattr(response.usage_metadata, "candidates_token_count", 0) or 0
+        try:
+            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+        except Exception:
+            usage.cost_usd = 0.0
+        self.total_usage.add(usage)
+        return LLMResponse(text=text, tool_calls=tool_calls, raw=response, usage=usage)
 
     async def _chat_anthropic(
         self,

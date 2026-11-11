@@ -13,6 +13,8 @@ class Provider(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OLLAMA = "ollama"
+    GEMINI = "gemini"
+    AZURE = "azure"
 
 
 class TaskStatus(str, Enum):
@@ -119,6 +121,10 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
+    gemini_api_key: str | None = None
+    azure_api_key: str | None = None
+    azure_endpoint: str | None = None
+    azure_api_version: str = "2024-02-15-preview"
     max_parallel_tasks: int = Field(default=5, ge=1)
     max_cycles: int = Field(default=0, ge=0)
     workspace: Path = Field(default_factory=Path.cwd)

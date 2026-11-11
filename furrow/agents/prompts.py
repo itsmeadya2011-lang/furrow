@@ -71,6 +71,44 @@ WORKER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "edit_file",
+        "description": "make a targeted edit to a file by replacing a specific string with a new string. Use for small, precise changes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
+        "name": "patch_file",
+        "description": "apply a unified diff patch to a file. Use for larger changes that are better expressed as a diff.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "patch": {"type": "string"},
+            },
+            "required": ["path", "patch"],
+        },
+    },
+    {
+        "name": "grep_file",
+        "description": "search for a pattern in files under the workspace. Returns matching lines with file paths and line numbers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "include": {"type": "string"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
         "name": "list_files",
         "description": "list files under a workspace directory (relative paths).",
         "parameters": {

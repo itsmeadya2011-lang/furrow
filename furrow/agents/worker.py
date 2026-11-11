@@ -374,6 +374,23 @@ class WorkerAgent:
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
             return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+        if name == "edit_file":
+            return await self._edit_file(
+                str(args.get("path", "")),
+                str(args.get("old_string", "")),
+                str(args.get("new_string", "")),
+            )
+        if name == "patch_file":
+            return await self._patch_file(
+                str(args.get("path", "")),
+                str(args.get("patch", "")),
+            )
+        if name == "grep_file":
+            return await self._grep_file(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+                str(args.get("include", "")) if args.get("include") is not None else "",
+            )
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -498,6 +515,79 @@ class WorkerAgent:
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
+
+    async def _edit_file(self, path: str, old_string: str, new_string: str) -> str:
+        """Make a targeted edit to a file by replacing old_string with new_string."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        
+        if old_string not in content:
+            return f"error: old_string not found in file"
+        
+        new_content = content.replace(old_string, new_string, 1)
+        if new_content == content:
+            return "error: no changes made (old_string not found or identical to new_string)"
+        
+        try:
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path} (replaced 1 occurrence)"
+
+    async def _patch_file(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        try:
+            # Write patch to a temporary file and apply it
+            patch_path = resolved.with_suffix(resolved.suffix + ".patch")
+            await self.client.write_file(patch_path, patch)
+            
+            # Apply patch using git apply or patch command
+            result = await self._run_command(f"cd {self.workspace} && git apply --check {patch_path.relative_to(self.workspace)} 2>&1")
+            if "error" in result.lower() or result.strip():
+                # Try with patch command
+                result = await self._run_command(f"cd {self.workspace} && patch -p1 < {patch_path.relative_to(self.workspace)} 2>&1")
+                if "error" in result.lower() or "fail" in result.lower():
+                    return f"error: patch failed: {result}"
+            else:
+                await self._run_command(f"cd {self.workspace} && git apply {patch_path.relative_to(self.workspace)} 2>&1")
+            
+            # Clean up patch file
+            await self._run_command(f"rm {patch_path.relative_to(self.workspace)}")
+            
+            rel = str(resolved.relative_to(self.workspace.resolve()))
+            self.files_changed.add(rel)
+            return f"patched {path}"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+    async def _grep_file(self, pattern: str, path: str, include: str) -> str:
+        """Search for a pattern in files under the workspace."""
+        import re
+        
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        try:
+            # Use grep via run_command for efficiency
+            include_arg = f" --include={include}" if include else ""
+            cmd = f"grep -r -n {include_arg} {shlex.quote(pattern)} {resolved.relative_to(self.workspace)}"
+            result = await self._run_command(cmd)
+            return result
+        except (OSError, ValueError, RuntimeError, re.error) as exc:
+            return f"error: {exc}"
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

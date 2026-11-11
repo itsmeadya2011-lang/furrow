@@ -86,7 +86,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `FURROW_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, or `ollama` |
+| `FURROW_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, `ollama`, `gemini`, or `azure` |
 | `FURROW_MODEL` | `claude-sonnet-4-20250514` | Default model for completions/chat |
 | `FURROW_PLANNER_MODEL` | `claude-3-5-haiku-20241022` | Model for the planner |
 | `FURROW_WORKER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the worker |
@@ -94,6 +94,10 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_ANTHROPIC_API_KEY` | (none) | Anthropic API key |
 | `FURROW_OPENAI_API_KEY` | (none) | OpenAI API key |
 | `FURROW_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama OpenAI-compatible base URL |
+| `FURROW_GEMINI_API_KEY` | (none) | Google Gemini API key |
+| `FURROW_AZURE_API_KEY` | (none) | Azure OpenAI API key |
+| `FURROW_AZURE_ENDPOINT` | (none) | Azure OpenAI endpoint URL |
+| `FURROW_AZURE_API_VERSION` | `2024-02-15-preview` | Azure OpenAI API version |
 | `FURROW_MAX_PARALLEL_TASKS` | `5` | Maximum concurrent worker tasks per wave |
 | `FURROW_MAX_CYCLES` | `0` | Maximum cycles to run (0 = unlimited) |
 | `FURROW_MAX_WORKER_ITERATIONS` | `12` | Maximum tool-call iterations per worker task |
@@ -120,7 +124,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Token counts and **estimated USD cost** are tracked — cost estimation uses a built-in pricing table (overridable via `FURROW_MODEL_PRICING`) and is displayed in the CLI summary, `furrow status`, and the web UI.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 

@@ -206,7 +206,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    let usageText = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    if (cost > 0) {
+      usageText += ', $' + cost.toFixed(6);
+    }
+    usageEl.textContent = usageText;
   }
 
   function renderTasks(tasks) {
@@ -357,7 +362,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
         line = 'ERROR: ' + text(msg.message);
         color = '#e0685f';
       } else if (type === 'done') {
-        line = 'finished: ' + text(msg.message);
+        const cost = Number(msg.data?.usage?.cost_usd) || 0;
+        let costText = '';
+        if (cost > 0) {
+          costText = ' (cost: $' + cost.toFixed(6) + ')';
+        }
+        line = 'finished: ' + text(msg.message) + costText;
         color = '#57d38c';
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
