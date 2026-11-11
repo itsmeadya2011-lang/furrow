@@ -15,10 +15,13 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
 DEFAULT_TEST_TIMEOUT = 600.0
+
+logger = get_logger(__name__)
 
 # Keywords that mark a line as reporting a failure.
 _FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
@@ -186,6 +189,7 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        logger.debug("detect_command_start", workspace=str(self.workspace))
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -193,11 +197,17 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_uv_lock = (self.workspace / "uv.lock").is_file()
+        has_poetry_lock = (self.workspace / "poetry.lock").is_file()
+        has_pnpm_lock = (self.workspace / "pnpm-lock.yaml").is_file()
+        has_yarn_lock = (self.workspace / "yarn.lock").is_file()
+        has_pnpm_workspace = has_package and self._is_pnpm_workspace()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            logger.info("test_command_detected", runner="pytest", reason="tests_dir_with_python_markers")
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -205,10 +215,16 @@ class TesterAgent:
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                    if has_pnpm_workspace:
+                        logger.info("test_command_detected", runner="pnpm", reason="jest_or_vitest_config_pnpm_workspace")
+                        return ["pnpm", "test", "--silent", "--filter=..."]
+                    if has_pnpm_lock:
+                        logger.info("test_command_detected", runner="pnpm", reason="jest_or_vitest_config")
                         return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
+                    if has_yarn_lock:
+                        logger.info("test_command_detected", runner="yarn", reason="jest_or_vitest_config")
                         return ["yarn", "test", "--silent"]
+                    logger.info("test_command_detected", runner="npm", reason="jest_or_vitest_config")
                     return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
@@ -216,20 +232,33 @@ class TesterAgent:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                    if has_pnpm_workspace:
+                        logger.info("test_command_detected", runner="pnpm", reason="package_json_test_script_pnpm_workspace")
+                        return ["pnpm", "test", "--silent", "--filter=..."]
+                    if has_pnpm_lock:
+                        logger.info("test_command_detected", runner="pnpm", reason="package_json_test_script")
                         return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
+                    if has_yarn_lock:
+                        logger.info("test_command_detected", runner="yarn", reason="package_json_test_script")
                         return ["yarn", "test", "--silent"]
+                    logger.info("test_command_detected", runner="npm", reason="package_json_test_script")
                     return ["npm", "test", "--silent"]
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
+            if has_pnpm_workspace:
+                logger.info("test_command_detected", runner="pnpm", reason="package_json_fallback_pnpm_workspace")
+                return ["pnpm", "test", "--silent", "--filter=..."]
+            if has_pnpm_lock:
+                logger.info("test_command_detected", runner="pnpm", reason="package_json_fallback")
                 return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
+            if has_yarn_lock:
+                logger.info("test_command_detected", runner="yarn", reason="package_json_fallback")
                 return ["yarn", "test", "--silent"]
+            logger.info("test_command_detected", runner="npm", reason="package_json_fallback")
             return ["npm", "test", "--silent"]
 
+        # Python project detection - check for uv, poetry, or standard markers
         python_markers = [
             "pyproject.toml",
             "pytest.ini",
@@ -238,14 +267,39 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
+            # Prefer uv if uv.lock exists, poetry if poetry.lock exists
+            if has_uv_lock:
+                logger.info("test_command_detected", runner="uv", reason="uv_lock")
+                return ["uv", "run", "pytest", "-q"]
+            if has_poetry_lock:
+                logger.info("test_command_detected", runner="poetry", reason="poetry_lock")
+                return ["poetry", "run", "pytest", "-q"]
+            logger.info("test_command_detected", runner="pytest", reason="python_markers")
             return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
+            logger.info("test_command_detected", runner="cargo", reason="cargo_toml")
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
+            logger.info("test_command_detected", runner="go", reason="go_mod")
             return ["go", "test", "./..."]
 
+        logger.info("no_test_runner_detected", workspace=str(self.workspace))
         return None
+
+    def _is_pnpm_workspace(self) -> bool:
+        """Check if this is a pnpm workspace (monorepo)."""
+        try:
+            with open(self.workspace / "package.json") as fh:
+                pkg_data = json.load(fh)
+            # Check for pnpm workspace fields
+            if "workspaces" in pkg_data:
+                return True
+            if "pnpm" in pkg_data and "overrides" in pkg_data["pnpm"]:
+                return True
+        except Exception:
+            pass
+        return False
 
     def _finalize(
         self,
@@ -325,9 +379,11 @@ class TesterAgent:
         return TestResult(passed=passed, summary=summary, failures=failures)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        logger.info("tester_run_started", goal=goal[:200], task_count=len(tasks))
         try:
             cmd = await self.detect_command()
             if cmd is None:
+                logger.info("tester_skipped", reason="no_test_runner_detected")
                 return TestResult(
                     passed=True,
                     skipped=True,
@@ -348,6 +404,7 @@ class TesterAgent:
             spawn_error = ""
             timed_out = False
             try:
+                logger.info("test_command_executing", command=cmd, timeout=timeout)
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     cwd=str(self.workspace),
@@ -364,6 +421,7 @@ class TesterAgent:
                 spawn_error = (
                     f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 )
+                logger.error("test_command_spawn_failed", command=cmd, error=spawn_error)
                 returncode = 1
                 stdout = b""
                 stderr = b""
@@ -376,8 +434,10 @@ class TesterAgent:
                     returncode = 1
                     stdout = b""
                     stderr = f"Test command timed out after {timeout:g}s.".encode()
+                    logger.warning("test_command_timeout", command=cmd, timeout=timeout)
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
+                    logger.info("test_command_completed", command=cmd, returncode=returncode)
 
             combined = (
                 stdout.decode("utf-8", errors="replace")
@@ -396,7 +456,9 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                    logger.debug("tester_llm_result", passed=llm_result.passed if llm_result else None)
+                except Exception as exc:
+                    logger.warning("tester_llm_failed", error=str(exc))
                     llm_result = None
 
             return self._finalize(

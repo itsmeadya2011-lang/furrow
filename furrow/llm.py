@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -28,6 +29,8 @@ RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
+
+logger = get_logger(__name__)
 
 
 @dataclass(slots=True)
@@ -296,7 +299,9 @@ class LLMClient:
             except Exception as exc:
                 last_exc = exc
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
+                    logger.warning("llm_retry_exhausted", attempts=attempt_index + 1, max_attempts=max_attempts, error=str(exc))
                     raise
+                logger.warning("llm_retry_attempt", attempt=attempt_index + 1, max_attempts=max_attempts, error=str(exc))
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
         if last_exc is not None:
             raise last_exc
@@ -305,6 +310,7 @@ class LLMClient:
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         provider = self.settings.provider
+        logger.debug("llm_complete_start", provider=provider.value, model=model, prompt_length=len(prompt))
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
@@ -317,7 +323,9 @@ class LLMClient:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        logger.debug("llm_complete_success", provider=provider.value, model=model, response_length=len(result))
+        return result
 
     async def chat(
         self,
@@ -328,6 +336,7 @@ class LLMClient:
     ) -> LLMResponse:
         model = model or self.settings.model
         provider = self.settings.provider
+        logger.debug("llm_chat_start", provider=provider.value, model=model, message_count=len(messages), has_tools=bool(tools))
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
@@ -342,7 +351,9 @@ class LLMClient:
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        logger.debug("llm_chat_success", provider=provider.value, model=model, has_tool_calls=bool(result.tool_calls), usage=result.usage.model_dump() if result.usage else None)
+        return result
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(

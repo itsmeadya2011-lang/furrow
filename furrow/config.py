@@ -36,6 +36,7 @@ class TaskModel(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     files_changed: list[str] = Field(default_factory=list)
+    cost_usd: float = 0.0
 
     @field_validator("status")
     @classmethod
@@ -132,6 +133,7 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    webhook_url: str | None = Field(default=None, description="URL to POST run completion notifications to")
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

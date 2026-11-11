@@ -14,6 +14,7 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -30,6 +31,22 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    "chown -R",
+    "chmod 777",
+    "mkfs.",
+    "fdisk",
+    "parted",
+    "wipefs",
+    "cryptsetup",
+    "losetup",
+    "mount -o remount,rw /",
+    "mount --bind",
+    "pivot_root",
+    "kexec",
+    "systemctl",
+    "service ",
+    "init ",
+    "telinit",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,8 +62,26 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "wipefs",
+        "cryptsetup",
+        "losetup",
+        "pivot_root",
+        "kexec",
+        "systemctl",
+        "service",
+        "telinit",
+        "mkfs.ext2",
+        "mkfs.ext3",
+        "mkfs.ext4",
+        "mkfs.xfs",
+        "mkfs.btrfs",
+        "mkfs.vfat",
+        "mkfs.fat",
+        "mkfs.ntfs",
     }
 )
+
+logger = get_logger(__name__)
 
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
@@ -235,30 +270,51 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     return bool(_redirects_outside_workspace(segment, workspace))
 
 
-def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
-    """Check a command - or the text of a command substitution - against the policy."""
+def _check_denial_reason(text: str, workspace: Path, depth: int) -> str | None:
+    """Check a command and return the denial reason if denied, otherwise None."""
     normalized = _normalize_command(text)
-    # The whole text is checked against the pattern list as well, so that a
-    # denied pattern cannot hide in an unusual position (inside quotes, in
-    # the middle of a pipeline, ...).
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
-        return True
-    # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
-        return True
-    # The shell runs the substituted text, so it is checked as well.
+    # Check patterns
+    for denied in DENIED_COMMANDS:
+        if denied.lower() in normalized:
+            return f"denied pattern: {denied}"
+    # Check segments
+    for segment in _split_command_segments(text):
+        segment_normalized = _normalize_command(segment)
+        if not segment_normalized:
+            continue
+        # Program name
+        program = _get_program_basename(segment)
+        if program:
+            program = program.lower()
+            if program in DENIED_PROGRAMS or program.startswith("mkfs."):
+                return f"denied program: {program}"
+        # Force push
+        if _is_force_push(segment, segment_normalized):
+            return "denied: git force push"
+        # Redirection outside workspace
+        if _redirects_outside_workspace(segment, workspace):
+            return "denied: redirection outside workspace"
+    # Check command substitutions
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
-            if _text_is_denied(substitution, workspace, depth + 1):
-                return True
-    return False
+            reason = _check_denial_reason(substitution, workspace, depth + 1)
+            if reason:
+                return reason
+    return None
 
 
 def is_command_denied(command: str, workspace: Path) -> bool:
     """Check if command is denied by security policy."""
     if not command or not command.strip():
         return False
-    return _text_is_denied(command, workspace, depth=0)
+    return _check_denial_reason(command, workspace, depth=0) is not None
+
+
+def get_denial_reason(command: str, workspace: Path) -> str | None:
+    """Get the reason why a command is denied, or None if allowed."""
+    if not command or not command.strip():
+        return None
+    return _check_denial_reason(command, workspace, depth=0)
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -306,6 +362,7 @@ class WorkerAgent:
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
+        logger.info("worker_started", task_id=self.task.id, description=self.task.description[:200], max_iterations=max_iters)
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -320,6 +377,7 @@ class WorkerAgent:
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
+                logger.info("worker_completed", task_id=self.task.id, iterations=iterations, files_changed=len(self.files_changed))
                 return WorkerResult(
                     summary=summary,
                     success=True,
@@ -339,6 +397,7 @@ class WorkerAgent:
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
+                logger.debug("tool_call", task_id=self.task.id, tool=tc.name, args=tc.arguments)
                 result = await self._execute_tool(tc)
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
@@ -348,6 +407,7 @@ class WorkerAgent:
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        logger.warning("worker_iteration_budget_exhausted", task_id=self.task.id, iterations=max_iters)
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -369,18 +429,24 @@ class WorkerAgent:
         name = tc.name
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
+            logger.warning("invalid_tool_arguments", task_id=self.task.id, tool=name, args=tc.arguments)
             return "error: invalid tool arguments"
-        if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
-        if name == "write_file":
-            return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
-        if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
-        if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
-        return f"unknown tool: {name}"
+        try:
+            if name == "read_file":
+                return await self._read_file(str(args.get("path", "")))
+            if name == "write_file":
+                return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+            if name == "list_files":
+                return await self._list_files(
+                    str(args.get("path", "")) if args.get("path") is not None else "."
+                )
+            if name == "run_command":
+                return await self._run_command(str(args.get("command", "")))
+            logger.warning("unknown_tool", task_id=self.task.id, tool=name)
+            return f"unknown tool: {name}"
+        except Exception as exc:
+            logger.error("tool_execution_failed", task_id=self.task.id, tool=name, error=str(exc), exc_info=True)
+            return f"error: {type(exc).__name__}: {exc}"
 
     @staticmethod
     def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:
@@ -404,35 +470,43 @@ class WorkerAgent:
     async def _read_file(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            logger.warning("path_escape_attempt", task_id=self.task.id, path=path)
             return "error: path escapes workspace"
         try:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.error("read_file_failed", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         if len(content) > 20000:
             content = content[:20000] + "\n[... output truncated ...]"
+        logger.debug("read_file", task_id=self.task.id, path=path, size=len(content))
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            logger.warning("path_escape_attempt", task_id=self.task.id, path=path)
             return "error: path escapes workspace"
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.error("write_file_failed", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
+        logger.info("write_file", task_id=self.task.id, path=path, size=len(content.encode('utf-8')))
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            logger.warning("path_escape_attempt", task_id=self.task.id, path=path)
             return "error: path escapes workspace"
         try:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.error("list_files_failed", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
@@ -442,20 +516,25 @@ class WorkerAgent:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
+        logger.debug("list_files", task_id=self.task.id, path=path, entries=len(rels))
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
+            logger.warning("empty_command", task_id=self.task.id)
             return "error: empty command"
         # The hardened check subsumes the legacy pattern list: it normalizes
         # the command, checks every segment against DENIED_COMMANDS and
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
-        if is_command_denied(command, self.workspace):
-            return "error: command denied"
+        denial_reason = get_denial_reason(command, self.workspace)
+        if denial_reason:
+            logger.warning("command_denied", task_id=self.task.id, command=command[:200], reason=denial_reason)
+            return f"error: command denied ({denial_reason})"
         try:
             shlex.split(command)
         except ValueError:
+            logger.warning("command_parse_failed", task_id=self.task.id, command=command[:200])
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
         # On POSIX the command runs in its own session/process group so that a
@@ -464,6 +543,7 @@ class WorkerAgent:
         # killing the direct child only.
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+        logger.info("run_command", task_id=self.task.id, command=command[:200], timeout=timeout)
         try:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
@@ -485,10 +565,12 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.error("run_command_spawn_failed", task_id=self.task.id, command=command[:200], error=str(exc))
             return f"error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            logger.warning("run_command_timeout", task_id=self.task.id, command=command[:200], timeout=timeout)
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
@@ -497,6 +579,12 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        # Include return code in output for debugging
+        if proc.returncode != 0:
+            combined = f"[exit code: {proc.returncode}]\n" + combined
+            logger.warning("run_command_failed", task_id=self.task.id, command=command[:200], returncode=proc.returncode)
+        else:
+            logger.debug("run_command_completed", task_id=self.task.id, command=command[:200], returncode=proc.returncode, output_size=len(combined))
         return combined
 
     @staticmethod

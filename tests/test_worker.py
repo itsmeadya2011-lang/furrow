@@ -467,8 +467,8 @@ async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
             if isinstance(m.get("content"), list):
                 for b in m["content"]:
                     if b.get("type") == "tool_result":
-                        assert b["content"] == "error: command denied", (
-                            f"Command '{cmd}' not denied properly"
+                        assert b["content"].startswith("error: command denied"), (
+                            f"Command '{cmd}' not denied properly: {b['content']}"
                         )
                         found_denied = True
         assert found_denied
@@ -517,8 +517,8 @@ async def test_allowed_command_table(tmp_path):
                 for b in m["content"]:
                     if b.get("type") == "tool_result":
                         result = b["content"]
-                        assert result != "error: command denied", (
-                            f"Command '{cmd}' was incorrectly denied"
+                        assert not result.startswith("error: command denied"), (
+                            f"Command '{cmd}' was incorrectly denied: {result}"
                         )
                         found_result = True
         assert found_result
