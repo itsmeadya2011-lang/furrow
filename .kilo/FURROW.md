@@ -10,7 +10,7 @@ The Kilo-side setup defines primary/subagents and a slash command for running Fu
 
 | File | Type | Role |
 | --- | --- | --- |
-| `.kilo/agent/furrow.md` | Primary agent | Orchestrator for the infinite development loop. Coordinates planning, spawning workers, testing, and repeating. |
+| `.kilo/agent/furrow.md` | Primary agent | Orchestrator for the infinite development loop. Coordinates planning, spawning workers, testing, and repeating. Each cycle spawns `furrow-planner` (`subagent_type: "furrow-planner"`) for planning, `furrow-worker` subagents (`subagent_type: "furrow-worker"`) for execution, and `furrow-tester` (`subagent_type: "furrow-tester"`) for the test/verify step. Only the orchestrator commits and pushes; workers and testers must not touch VCS. |
 | `.kilo/agent/furrow-planner.md` | Subagent | Breaks a high-level goal into parallelizable tasks with IDs, descriptions, files, and dependencies. |
 | `.kilo/agent/furrow-worker.md` | Subagent | Executes a single assigned task with targeted changes. |
 | `.kilo/agent/furrow-tester.md` | Subagent | Runs tests/lint/type checks, fixes failures when possible, and returns pass/fail results. |
