@@ -12,6 +12,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import bind_cycle, bind_goal, bind_phase, bind_task_id, clear_context
 
 _UNSET = object()
 
@@ -149,6 +150,7 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
+        bind_goal(self.original_goal)
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
@@ -162,6 +164,8 @@ class Orchestrator:
                 self._stopped_reason = "max_cycles reached"
                 break
             self.cycles += 1
+            bind_cycle(self.cycles)
+            bind_phase("plan")
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
@@ -185,6 +189,7 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
                 break
             self._merge_plan(plan)
+            bind_phase("execute")
             try:
                 await self._execute(plan)
             except asyncio.CancelledError:
@@ -194,6 +199,7 @@ class Orchestrator:
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 break
+            bind_phase("test")
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -302,6 +308,7 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
+        clear_context()
 
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
@@ -416,6 +423,7 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
                 return
+            bind_task_id(task.id)
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
@@ -536,6 +544,8 @@ class Orchestrator:
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+            finally:
+                clear_context()
 
         async def run_tasks(tasks: list[TaskModel]) -> None:
             """Run tasks concurrently, never swallowing a cancellation.

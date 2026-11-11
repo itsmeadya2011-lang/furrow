@@ -202,33 +202,33 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
+            # Check for jest/vitest/playwright/mocha/cypress configs
+            js_test_configs = [
+                "jest.config.*",
+                "vitest.config.*",
+                "playwright.config.*",
+                ".mocharc*",
+                "mocha.opts",
+                "cypress.config.*",
+            ]
+            for pattern in js_test_configs:
                 for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return self._node_test_command()
+
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                # Prefer explicit test runners, then common aliases
+                for script_name in ("test", "test:unit", "test:integration", "test:e2e",
+                                     "vitest", "jest", "playwright", "cypress", "mocha"):
+                    if script_name in scripts:
+                        return self._node_test_command()
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            return self._node_test_command()
 
         python_markers = [
             "pyproject.toml",
@@ -246,6 +246,14 @@ class TesterAgent:
             return ["go", "test", "./..."]
 
         return None
+
+    def _node_test_command(self) -> list[str]:
+        """Return the appropriate Node.js test command based on lockfile."""
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            return ["pnpm", "test", "--silent"]
+        if (self.workspace / "yarn.lock").is_file():
+            return ["yarn", "test", "--silent"]
+        return ["npm", "test", "--silent"]
 
     def _finalize(
         self,
