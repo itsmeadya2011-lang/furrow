@@ -303,6 +303,29 @@ class Orchestrator:
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
+        # Emit a terminal DONE event so every subscriber (web UI, CLI, tests)
+        # observes the run's conclusion through the event bus instead of only
+        # through the return value or an out-of-band status fetch.
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=f"finished: {self._one_line(self._stopped_reason)}",
+                data={
+                    "passed": bool(self._last_test_passed),
+                    "cycles": self.cycles,
+                    "stopped_reason": self._stopped_reason,
+                    "tasks_completed": sum(
+                        1 for t in self.tasks if t.status == "completed"
+                    ),
+                    "tasks_failed": sum(1 for t in self.tasks if t.status == "failed"),
+                    "tasks_blocked": sum(1 for t in self.tasks if t.status == "blocked"),
+                    "tests_run": int(getattr(self, "_tests_run", 0) or 0),
+                    "skipped": bool(self._tests_skipped),
+                    "usage": self._usage.model_dump(),
+                },
+            )
+        )
+
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
         )

@@ -259,6 +259,109 @@ def test_start_uses_max_cycles_and_workspace(
     assert global_settings.workspace == workspace_before
 
 
+def test_start_passes_max_worker_iterations_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        [
+            "start",
+            "build a thing",
+            "--max-worker-iterations",
+            "7",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_worker_iterations == 7
+
+
+def test_start_passes_max_parallel_tasks_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        [
+            "start",
+            "build a thing",
+            "--max-parallel-tasks",
+            "3",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_parallel_tasks == 3
+
+
+def test_start_rejects_zero_max_worker_iterations(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(
+        main, ["start", "build a thing", "--max-worker-iterations", "0"]
+    )
+    assert result.exit_code != 0
+
+
+def test_start_rejects_zero_max_parallel_tasks(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(
+        main, ["start", "build a thing", "--max-parallel-tasks", "0"]
+    )
+    assert result.exit_code != 0
+
+
+def test_start_negative_max_cycles_still_rejected(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(main, ["start", "build a thing", "--max-cycles", "-1"])
+    assert result.exit_code != 0
+
+
+def test_resume_passes_max_worker_iterations_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+    result = runner.invoke(
+        main,
+        [
+            "resume",
+            "--workspace",
+            str(tmp_path),
+            "--max-worker-iterations",
+            "5",
+        ],
+    )
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_worker_iterations == 5
+
+
+def test_resume_passes_max_parallel_tasks_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+    result = runner.invoke(
+        main,
+        [
+            "resume",
+            "--workspace",
+            str(tmp_path),
+            "--max-parallel-tasks",
+            "2",
+        ],
+    )
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_parallel_tasks == 2
+
+
 def test_start_stops_gracefully_on_keyboard_interrupt(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

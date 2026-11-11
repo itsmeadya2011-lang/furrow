@@ -252,6 +252,32 @@ async def test_events(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_done_event_emitted_at_end_of_run(tmp_path, monkeypatch):
+    """The orchestrator emits a terminal DONE event through the event bus."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    types = []
+    messages = []
+    while not q.empty():
+        event = q.get_nowait()
+        types.append(event.type)
+        messages.append(event)
+    assert EventType.DONE in types, f"DONE event not emitted; types={types}"
+    done = next(e for e in messages if e.type == EventType.DONE)
+    assert done.data["cycles"] == orch.cycles
+    assert done.data["stopped_reason"] == orch._stopped_reason
+    assert "passed" in done.data
+    assert "tasks_completed" in done.data
+    assert "usage" in done.data
+
+
+@pytest.mark.asyncio
 async def test_planner_valueerror(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
