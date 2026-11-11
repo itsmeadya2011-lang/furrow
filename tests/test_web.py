@@ -198,6 +198,20 @@ def test_index_uses_text_content_for_untrusted_text(client: TestClient) -> None:
     assert "innerHTML" not in html
 
 
+def test_index_render_status_includes_estimated_cost(client: TestClient) -> None:
+    """The usage line in renderStatus() shows the tracked USD cost.
+
+    ``Usage.cost_usd`` is a numeric field already tracked by the CLI; the web
+    UI surfaces it consistently by formatting it to 6 decimals.
+    """
+    script = _inline_script(client)
+
+    assert "cost_usd" in script
+    assert "toFixed(6)" in script
+    assert "est. $" in script
+    assert "tokens, est. $" in script
+
+
 def test_index_script_declares_every_element_reference(client: TestClient) -> None:
     """Every ``*El`` identifier used in the inline script is declared there.
 
