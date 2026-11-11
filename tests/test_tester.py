@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import asyncio
 
-from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
+from furrow.agents.tester import (
+    TesterAgent,
+    _extract_failures,
+    _looks_like_failure,
+    parse_test_output,
+    resolve_test_timeout,
+)
 from furrow.config import Settings, TestResult
 
 
@@ -385,6 +391,23 @@ def test_green_summary_line_is_not_reported_as_a_failure(tmp_path, monkeypatch):
 
     assert res.passed is True
     assert res.failures == []
+
+
+def test_parse_test_output_deduplicates_col_and_line_same_location():
+    """file:line:col and file:line for the same location yield one entry."""
+    output = "file.py:42:5\nfile.py:42\n"
+    failures = parse_test_output(output)
+    same = [f for f in failures if f.get("file") == "file.py" and f.get("line") == 42]
+    assert len(same) == 1
+    assert failures == [{"file": "file.py", "line": 42, "test": None, "error": ""}]
+
+
+def test_extract_failures_no_duplicate_entries():
+    """_extract_failures must not emit duplicate entries for the same failure."""
+    output = "file.py:42:5\nfile.py:42\nfile.py:42:5\n"
+    failures = _extract_failures(output)
+    assert failures == ["file.py:42"]
+    assert len(failures) == len(set(failures))
 
 
 def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):

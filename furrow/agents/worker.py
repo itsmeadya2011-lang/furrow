@@ -420,7 +420,7 @@ class WorkerAgent:
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
-        except (OSError, ValueError, RuntimeError) as exc:
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
             return f"error: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
@@ -474,11 +474,8 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
+                proc = await asyncio.create_subprocess_shell(
+                    command,
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
