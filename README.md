@@ -41,6 +41,7 @@ Options:
 - `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
 - `--workspace PATH` — project directory to work in
 - `--resume` — resume the persisted run instead of starting fresh
+- `--version` — print the Furrow version and exit
 
 If `goal` is omitted, Furrow will prompt for it.
 
@@ -104,6 +105,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}`; overrides the built-in price table used for cost estimation |
 
 A `.env` file is read automatically via pydantic-settings.
 

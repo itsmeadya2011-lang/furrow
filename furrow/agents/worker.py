@@ -458,38 +458,26 @@ class WorkerAgent:
         except ValueError:
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
-        # On POSIX the command runs in its own session/process group so that a
-        # timeout can kill the whole tree (children and grandchildren included)
-        # instead of leaking orphans. On other platforms we fall back to
-        # killing the direct child only.
-        new_session = os.name == "posix"
-        spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+        # The command always runs through /bin/sh -c so that ordinary shell
+        # constructs (cd dir && pytest, pipes, variable assignments,
+        # redirections) work everywhere, matching what the hardened guard
+        # validates. start_new_session creates a new process group on every
+        # platform, so a timeout can kill the whole tree instead of leaking
+        # orphans.
         try:
-            if os.name == "posix":
-                proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-            else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/sh", "-c", command,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            await self._kill_process_tree(proc, new_session)
+            await self._kill_process_tree(proc)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
@@ -500,9 +488,9 @@ class WorkerAgent:
         return combined
 
     @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
+    async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         """Kill a timed-out command together with every process it spawned."""
-        if new_session:
+        if os.name == "posix":
             try:
                 pgid = os.getpgid(proc.pid)
             except (OSError, AttributeError):

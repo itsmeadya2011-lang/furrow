@@ -603,3 +603,14 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_version_flag_prints_version(
+    runner: CliRunner,
+) -> None:
+    """``furrow --version`` prints the package version and exits 0."""
+    result = runner.invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert "0.1.0" in result.output
+    assert "furrow" in result.output.lower()
