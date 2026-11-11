@@ -147,6 +147,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>cost <b id="cost">$0.00</b></span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -160,6 +161,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const costEl = document.getElementById('cost');
   let socket = null;
   let lastSummary = null;
 
@@ -170,6 +172,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
+  }
+
+  function formatCost(value) {
+    const n = Number(value) || 0;
+    if (n >= 1.0) return '$' + n.toFixed(2);
+    if (n >= 0.01) return '$' + n.toFixed(4);
+    return '$' + n.toFixed(6);
   }
 
   // The task status is planned by the LLM, so it is untrusted input: it is
@@ -207,6 +216,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    if (costEl) {
+      if (cost > 0) {
+        costEl.textContent = formatCost(cost);
+      } else {
+        costEl.textContent = '$0.00';
+      }
+    }
   }
 
   function renderTasks(tasks) {

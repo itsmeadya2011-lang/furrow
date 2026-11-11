@@ -50,6 +50,15 @@ def _run_settings(
     return Settings.model_validate(merged)
 
 
+def _format_cost(cost_usd: float) -> str:
+    """Format a USD amount for display, trimming trailing zeros."""
+    if cost_usd >= 1.0:
+        return f"${cost_usd:,.2f}"
+    if cost_usd >= 0.01:
+        return f"${cost_usd:,.4f}"
+    return f"${cost_usd:,.6f}"
+
+
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
     """Return the (verdict, colour) of the one-line result of a run."""
     if skipped:
@@ -80,6 +89,9 @@ def _print_summary(result: RunResult) -> None:
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
+        cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+        if cost > 0.0:
+            click.echo(f"  Est. cost:      {_format_cost(cost)}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -103,6 +115,9 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+        if cost > 0.0:
+            click.echo(f"  Est. cost:      {_format_cost(cost)}")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:

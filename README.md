@@ -104,8 +104,11 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Worker command timeout in seconds |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Test suite timeout in seconds |
+| `FURROW_MODEL_PRICING` | (built-in table) | JSON object of per-model USD pricing overrides |
 
-A `.env` file is read automatically via pydantic-settings.
+A `.env` file is read automatically via pydantic-settings. A `.env.example` template is included in the repository.
 
 The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` rejects a negative value at the command line.
 
@@ -120,7 +123,7 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 
 ## LLM token accounting
 
-The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Only token counts are tracked — cost estimation in currency is not implemented yet.
+The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Estimated USD cost is computed from a built-in per-model price table (a snapshot that goes stale; override or extend it with `FURROW_MODEL_PRICING`) and displayed alongside the token counts when it is non-zero.
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 

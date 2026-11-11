@@ -206,11 +206,38 @@ def test_usage_add_accumulates_cost_usd():
     assert a.total_tokens == 25
 
 
-def test_settings_model_pricing_defaults_to_empty(monkeypatch: pytest.MonkeyPatch):
+def test_settings_model_pricing_defaults_to_the_built_in_table(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A fresh Settings instance is seeded with the built-in pricing table.
+
+    Currency cost estimation works out of the box: every known model family
+    resolves to a price, and the user can still override individual entries
+    through the constructor or the FURROW_MODEL_PRICING environment variable.
+    """
+    from furrow.costs import DEFAULT_PRICING
+
     monkeypatch.delenv("FURROW_MODEL_PRICING", raising=False)
     s = Settings(_env_file=None)
-    assert s.model_pricing == {}
-    assert s.pricing_overrides() == {}
+    assert s.model_pricing == DEFAULT_PRICING
+    assert s.pricing_overrides() == DEFAULT_PRICING
+    # A known model resolves through the seeded table.
+    assert s.model_pricing["gpt-4o-mini"].input_per_million == 0.15
+
+
+def test_settings_model_pricing_env_override_beats_the_built_in_table(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """FURROW_MODEL_PRICING replaces the built-in table rather than merging."""
+    monkeypatch.setenv(
+        "FURROW_MODEL_PRICING",
+        '{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}',
+    )
+    s = Settings(_env_file=None)
+    assert set(s.model_pricing) == {"my-model"}
+    assert s.pricing_overrides() == {
+        "my-model": ModelPricing(input_per_million=1.0, output_per_million=2.0)
+    }
 
 
 def test_settings_accepts_model_pricing_as_a_dict():

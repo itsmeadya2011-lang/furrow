@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from furrow.costs import ModelPricing
+from furrow.costs import DEFAULT_PRICING, ModelPricing
 
 
 class Provider(str, Enum):
@@ -131,7 +131,9 @@ class Settings(BaseSettings):
     test_timeout: float = Field(default=600.0, gt=0)
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
-    model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    model_pricing: dict[str, ModelPricing] = Field(
+        default_factory=lambda: dict(DEFAULT_PRICING)
+    )
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

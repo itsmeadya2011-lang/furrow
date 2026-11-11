@@ -183,6 +183,7 @@ def test_index_contains_ui_hooks(client: TestClient) -> None:
         'id="state"',
         'id="stopped-reason"',
         'id="usage"',
+        'id="cost"',
     ):
         assert hook in html, f"missing hook {hook}"
 
@@ -221,7 +222,7 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
     html = client.get("/").text
     script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
 
-    for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage"):
+    for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage", "cost"):
         assert f"getElementById('{element_id}')" in script, (
             f"script does not bind to #{element_id}"
         )
@@ -550,6 +551,15 @@ async def test_run_orchestrator_releases_the_client_when_the_run_is_cancelled() 
 def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:
     html = client.get("/").text
     assert ".status-skipped" in html
+
+
+def test_index_contains_cost_element_and_binding(client: TestClient) -> None:
+    """The status header exposes a cost element bound by the inline script."""
+    html = client.get("/").text
+    assert 'id="cost"' in html
+    script = _inline_script(client)
+    assert "getElementById('cost')" in script
+    assert "formatCost" in script
 
 
 def test_start_request_rejects_negative_max_cycles(client: TestClient) -> None:
