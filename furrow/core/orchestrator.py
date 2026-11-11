@@ -295,12 +295,6 @@ class Orchestrator:
             if guard_tripped:
                 break
 
-        if not self._stopped_reason:
-            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
-                self._stopped_reason = "max_cycles reached"
-            else:
-                self._stopped_reason = "goal complete"
-
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
         active = (
@@ -357,12 +351,10 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Any status other than completed/failed/blocked
+                    # (pending, running, skipped) is reset to pending
+                    # so the task is executed again.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
