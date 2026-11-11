@@ -74,6 +74,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  #cancel { display: none; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -139,6 +140,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="cancel">Cancel</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -160,8 +162,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const cancelEl = document.getElementById('cancel');
   let socket = null;
   let lastSummary = null;
+
+  function setCancelVisible(visible) {
+    cancelEl.style.display = visible ? '' : 'none';
+  }
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -290,6 +297,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = body.status || null;
       const result = body.result || null;
       renderStatus(status, result, running);
+      setCancelVisible(running);
       if (status && status.tasks) { renderTasks(status.tasks); }
       if (body.result) {
         const summary = text(body.result.summary);
@@ -312,6 +320,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       // A new run starts: forget the previous summary so this run always
       // contributes its own summary line to the log.
       lastSummary = null;
+      setCancelVisible(true);
       socket.send(JSON.stringify(payload));
     };
     function truncate(value, max) {
@@ -402,6 +411,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('cancel').onclick = async function () {
+    try {
+      const res = await fetch('/api/cancel', { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(function () { return {}; });
+        append('! cancel failed: ' + (body.error || 'unknown error'));
+      }
+    } catch (err) {
+      append('! cancel request failed: ' + err);
+    }
+    if (socket) { socket.close(); }
   };
 
   loadState();
@@ -593,6 +614,20 @@ async def api_status() -> dict[str, Any]:
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
     }
+
+
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the currently running run, if there is one."""
+    if not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"cancelled": False, "error": "no run is in progress"},
+        )
+    task = _CURRENT.get("task")
+    if task is not None and not task.done():
+        _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
 
 
 @app.post("/api/start")

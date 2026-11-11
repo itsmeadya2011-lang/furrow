@@ -465,25 +465,13 @@ class WorkerAgent:
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
         try:
-            if os.name == "posix":
-                proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-            else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/sh", "-c", command,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from enum import Enum
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, EnvSettingsSource, SettingsConfigDict
 
 from furrow.costs import ModelPricing
 
@@ -108,8 +109,34 @@ class RunResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
 
 
+class _ModelPricingEnvSource(EnvSettingsSource):
+    """Env source that passes ``FURROW_MODEL_PRICING`` through raw so the field
+    validator can parse (or fall back from) invalid JSON instead of crashing."""
+
+    def prepare_field_value(self, field_name, field, field_value, value_is_complex):
+        if field_name == "model_pricing" and isinstance(field_value, str):
+            return field_value
+        return super().prepare_field_value(field_name, field, field_value, value_is_complex)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls,
+        init_settings,
+        env_settings,
+        dotenv_settings,
+        file_secret_settings,
+    ):
+        return (
+            init_settings,
+            _ModelPricingEnvSource(settings_cls),
+            dotenv_settings,
+            file_secret_settings,
+        )
 
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
@@ -132,6 +159,17 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    @field_validator("model_pricing", mode="before")
+    @classmethod
+    def _parse_model_pricing(cls, value: object) -> object:
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return value
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

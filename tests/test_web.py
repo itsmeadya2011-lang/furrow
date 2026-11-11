@@ -583,6 +583,73 @@ def test_run_settings_without_override_returns_the_current_settings() -> None:
     assert server._run_settings(None) is server.settings
 
 
+def test_api_cancel_returns_409_when_no_run_is_in_progress(
+    client: TestClient,
+) -> None:
+    """``POST /api/cancel`` refuses when nothing is running."""
+    response = client.post("/api/cancel")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["cancelled"] is False
+    assert body["error"] == "no run is in progress"
+
+
+def test_api_cancel_cancels_a_running_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``POST /api/cancel`` cancels the active run and clears the flag."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+    server._reset_registry()
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "x"})
+        assert _wait_until(lambda: server._CURRENT.get("running") is True), (
+            "the run never started"
+        )
+
+        response = client.post("/api/cancel")
+        assert response.status_code == 200
+        assert response.json()["cancelled"] is True
+
+        # The flag is cleared immediately, without waiting for the task to
+        # actually be cancelled.
+        assert server._CURRENT.get("running") is False
+        assert server._CURRENT.get("error") == "run cancelled"
+
+        # The task itself must eventually be cancelled.
+        run_task = server._CURRENT.get("task")
+        assert run_task is not None
+        assert _wait_until(lambda: bool(run_task.cancelled())), (
+            "the run was not cancelled"
+        )
+
+
+def test_index_contains_cancel_button(client: TestClient) -> None:
+    """The served page exposes a Cancel button next to Start and Resume."""
+    html = client.get("/").text
+
+    assert 'id="cancel"' in html
+    assert "getElementById('cancel')" in html.split("<script>", 1)[1].rsplit("</script>", 1)[0], (
+        "the script must reference the cancel button"
+    )
+
+
+def test_index_script_wires_cancel_button(client: TestClient) -> None:
+    """The inline script binds a click handler to the Cancel button."""
+    script = _inline_script(client)
+
+    assert "getElementById('cancel')" in script, (
+        "the script does not bind to #cancel"
+    )
+    assert "fetch('/api/cancel'" in script, (
+        "the script does not call the cancel endpoint"
+    )
+    assert "setCancelVisible" in script, (
+        "the script does not expose a visibility helper"
+    )
+
+
 def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """An out-of-range override is rejected instead of silently accepted.
 

@@ -249,6 +249,15 @@ def test_settings_reads_model_pricing_from_the_environment(
     }
 
 
+def test_settings_invalid_model_pricing_json_falls_back_to_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("FURROW_MODEL_PRICING", "{not valid json")
+    s = Settings(_env_file=None)
+    assert s.model_pricing == {}
+    assert s.pricing_overrides() == {}
+
+
 def test_pricing_overrides_returns_a_copy():
     s = Settings(
         model_pricing={
