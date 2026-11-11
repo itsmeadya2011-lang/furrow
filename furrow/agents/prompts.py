@@ -21,7 +21,18 @@ Return JSON only (no markdown, no explanation) with this shape:
 }
 
 If the goal is too large for one cycle, say so in rationale and break it
-into the most critical first slice."""
+into the most critical first slice.
+
+Planning rules:
+- Tasks that can run at the same time should have empty dependencies.
+- A task that depends on another task must list the other task's id in
+  "dependencies".  Do not create circular dependencies.
+- Prefer touching as few files as possible: list only the files this task
+  actually needs to read or write.
+- If a task is blocked because another task must finish first, say so in
+  its description and list the blocking task in dependencies.
+- Make task ids short and unique (e.g. "1", "2", "auth-db", "auth-routes").
+"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

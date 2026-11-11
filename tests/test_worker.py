@@ -888,3 +888,45 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_list_files_runs_off_the_event_loop(tmp_path):
+    """list_files must not block the event loop: it runs in a worker thread."""
+    import threading
+
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("x")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    loop_thread = threading.get_ident()
+    seen = {}
+
+    def slow_list(directory):
+        seen["tid"] = threading.get_ident()
+        import time
+        time.sleep(0.1)
+        from pathlib import Path as _P
+        return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
+
+    client.list_files = slow_list
+
+    progress = {"n": 0}
+
+    async def ticker():
+        while not progress.get("done"):
+            progress["n"] += 1
+            await asyncio.sleep(0.01)
+
+    t = asyncio.ensure_future(ticker())
+    await agent._list_files(".")
+    progress["done"] = True
+    await t
+    assert seen["tid"] != loop_thread
+    assert progress["n"] > 0
