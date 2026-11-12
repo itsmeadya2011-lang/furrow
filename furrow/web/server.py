@@ -137,6 +137,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <h1>Furrow</h1>
 <div class="bar">
   <input id="goal" placeholder="What should Furrow build?" autofocus />
+  <input id="max-cost" type="number" step="0.01" min="0" placeholder="Max cost (USD, 0=unlimited)" style="width: 12rem;" />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
 </div>
@@ -147,6 +148,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>cost <b id="cost">$0.000000</b></span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -159,7 +161,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const cycleEl = document.getElementById('cycle');
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
-  const usageEl = document.getElementById('usage');
+  const maxCostEl = document.getElementById('max-cost');
   let socket = null;
   let lastSummary = null;
 
@@ -207,6 +209,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    costEl.textContent = '$' + cost.toFixed(6);
   }
 
   function renderTasks(tasks) {
@@ -398,10 +402,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+    const maxCost = parseFloat(maxCostEl.value) || 0;
+    connect({ goal: goalEl.value, resume: false, max_cost_usd: maxCost > 0 ? maxCost : undefined });
   };
   document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+    const maxCost = parseFloat(maxCostEl.value) || 0;
+    connect({ goal: goalEl.value, resume: true, max_cost_usd: maxCost > 0 ? maxCost : undefined });
   };
 
   loadState();
@@ -417,6 +423,7 @@ class StartRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -425,6 +432,7 @@ class SocketRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -439,7 +447,7 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
+def _run_settings(max_cycles: int | None, max_cost_usd: float | None = None) -> Settings:
     """Settings for a run, with an optional ``max_cycles`` override.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
@@ -447,9 +455,14 @@ def _run_settings(max_cycles: int | None) -> Settings:
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    updates: dict[str, Any] = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if max_cost_usd is not None:
+        updates["max_cost_usd"] = max_cost_usd
+    if not updates:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -458,6 +471,8 @@ def _describe_validation_error(exc: ValidationError) -> str:
         location = ".".join(str(part) for part in error.get("loc", ()))
         if location == "max_cycles":
             return "max_cycles must be greater than or equal to 0"
+        if location == "max_cost_usd":
+            return "max_cost_usd must be greater than or equal to 0"
         if location == "goal":
             return "goal must be a string"
     return "invalid request payload"
@@ -548,12 +563,12 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, max_cost_usd: float | None, bus: EventBus
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
     return Orchestrator(
         goal=goal,
-        settings=_run_settings(max_cycles),
+        settings=_run_settings(max_cycles, max_cost_usd),
         state_store=StateStore(settings.state_path()),
         event_bus=bus,
         resume=resume,
@@ -619,7 +634,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, request.max_cost_usd, bus)
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -678,7 +693,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, request.max_cost_usd, bus)
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

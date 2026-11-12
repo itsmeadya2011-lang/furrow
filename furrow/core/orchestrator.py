@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,9 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 _UNSET = object()
 
@@ -149,21 +153,33 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
+        start_time = time.time()
+        logger.info("Orchestrator run starting", goal=self.original_goal[:200], resume=self._resume, max_cycles=self.settings.max_cycles)
+        
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
             self.event_bus.emit(Event(type=EventType.LOG,
                                       message="no state file found, starting fresh"))
+            logger.warning("Resume requested but no state file found, starting fresh")
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
         while True:
+            # Check cost budget before starting a new cycle
+            if self.settings.max_cost_usd > 0 and self._usage.cost_usd >= self.settings.max_cost_usd:
+                self._stopped_reason = f"cost budget exceeded (${self._usage.cost_usd:.4f} >= ${self.settings.max_cost_usd:.4f})"
+                logger.warning("Cost budget exceeded", current_cost=self._usage.cost_usd, max_cost=self.settings.max_cost_usd)
+                break
+            
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
                 break
             self.cycles += 1
+            cycle_start = time.time()
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            logger.info("Cycle started", cycle=self.cycles)
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
@@ -171,6 +187,7 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
+                logger.error("Planner failed", cycle=self.cycles, error=str(e))
                 self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
@@ -178,11 +195,13 @@ class Orchestrator:
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
+            logger.info("Plan created", cycle=self.cycles, tasks=planned, rationale=plan.rationale[:200])
             if not plan.tasks:
                 self.event_bus.emit(
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
                 self._stopped_reason = "goal complete"
+                logger.info("No tasks planned - goal complete", cycle=self.cycles)
                 break
             self._merge_plan(plan)
             try:
@@ -192,6 +211,7 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
+                logger.error("Execution failed", cycle=self.cycles, error=str(e))
                 self.cycles -= 1
                 break
             try:
@@ -201,6 +221,7 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
+                logger.error("Tester failed", cycle=self.cycles, error=str(e))
                 self.cycles -= 1
                 break
             self._tests_run += 1
@@ -225,6 +246,7 @@ class Orchestrator:
                 # does not chase a test runner that does not exist.
                 self.goal = self.original_goal
                 self._feedback = ""
+                logger.info("Tests skipped - no test runner detected", cycle=self.cycles)
             elif not test_result.passed:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:
@@ -236,6 +258,12 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+                logger.warning("Tests failed", cycle=self.cycles, failures=len(failures))
+            else:
+                logger.info("Tests passed", cycle=self.cycles)
+            
+            cycle_elapsed = time.time() - cycle_start
+            logger.info("Cycle completed", cycle=self.cycles, elapsed_seconds=round(cycle_elapsed, 2))
             cumulative = self._client_usage()
             cycle_usage = Usage(
                 input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
@@ -279,6 +307,7 @@ class Orchestrator:
                              last_summary=test_result.summary)
             try:
                 self.state_store.save(state)
+                logger.debug("State saved", path=str(self.state_store.path), cycle=self.cycles)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -289,10 +318,12 @@ class Orchestrator:
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
                 )
+                logger.error("Failed to save state", path=str(self.state_store.path), error=str(e))
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
             if guard_tripped:
+                logger.warning("No progress guard tripped", reason=self._stopped_reason, cycle=self.cycles)
                 break
 
         if not self._stopped_reason:
@@ -311,6 +342,18 @@ class Orchestrator:
         blocked = sum(1 for t in active if t.status == "blocked")
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
+        )
+        total_elapsed = time.time() - start_time
+        logger.info(
+            "Orchestrator run finished",
+            cycles=self.cycles,
+            tasks_completed=completed,
+            tasks_failed=failed,
+            tasks_blocked=blocked,
+            stopped_reason=self._stopped_reason,
+            total_elapsed_seconds=round(total_elapsed, 2),
+            total_cost_usd=round(self._usage.cost_usd, 6),
+            total_tokens=self._usage.total_tokens,
         )
         return RunResult(
             passed=bool(self._last_test_passed),
@@ -398,6 +441,7 @@ class Orchestrator:
 
     async def _execute(self, plan: Plan) -> None:
         waves = self._plan_waves(plan.tasks)
+        logger.info("Execution plan waves", cycle=self.cycles, num_waves=len(waves), max_parallel=self.settings.max_parallel_tasks)
         sem = asyncio.Semaphore(self.settings.max_parallel_tasks)
         max_retries = max(0, self.settings.max_task_retries)
         workers: dict[str, WorkerAgent] = {}
@@ -415,11 +459,13 @@ class Orchestrator:
             if task.id in self._skip_ids:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
+                logger.info("Task skipped (already completed)", task_id=task.id)
                 return
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                logger.info("Task started", task_id=task.id, attempt=task.attempts + 1)
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -440,6 +486,7 @@ class Orchestrator:
                                   "attempts": task.attempts},
                         )
                     )
+                    logger.error("Task raised exception", task_id=task.id, error=str(exc), attempts=task.attempts)
                     self.event_bus.emit(
                         Event(
                             type=EventType.TASK_FINISHED,
@@ -491,6 +538,7 @@ class Orchestrator:
                     detail = self._escape(self._one_line(task.error or "unknown error"))
                     if task.status == "completed":
                         self._say(f"[green]Task {task_id} completed[/green]")
+                        logger.info("Task completed", task_id=task.id, attempts=task.attempts, files_changed=len(task.files_changed))
                     elif task.status == "pending":
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(
@@ -498,8 +546,10 @@ class Orchestrator:
                                  message=f"task {task.id} failed, retrying "
                                          f"(attempt {task.attempts} of {max_retries + 1})")
                         )
+                        logger.warning("Task failed, will retry", task_id=task.id, attempt=task.attempts, error=detail)
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                        logger.error("Task failed permanently", task_id=task.id, attempts=task.attempts, error=detail)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -534,8 +584,10 @@ class Orchestrator:
                                  message=f"task {task.id} failed, retrying "
                                          f"(attempt {task.attempts} of {max_retries + 1})")
                         )
+                        logger.warning("Task raised exception, will retry", task_id=task.id, attempt=task.attempts, error=detail)
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                        logger.error("Task raised exception permanently", task_id=task.id, attempts=task.attempts, error=detail)
 
         async def run_tasks(tasks: list[TaskModel]) -> None:
             """Run tasks concurrently, never swallowing a cancellation.
@@ -546,6 +598,7 @@ class Orchestrator:
             """
             if not tasks:
                 return
+            logger.debug("Running tasks concurrently", task_ids=[t.id for t in tasks])
             results = await asyncio.gather(*[run_one(t) for t in tasks],
                                            return_exceptions=True)
             for res in results:
@@ -559,18 +612,21 @@ class Orchestrator:
             while retry_queue:
                 batch = retry_queue
                 retry_queue = []
+                logger.info("Running retry batch", task_ids=[t.id for t in batch], attempts=[t.attempts for t in batch])
                 await run_tasks(batch)
                 for t in batch:
                     if t.status == "pending" and t.attempts <= max_retries:
                         retry_queue.append(t)
 
-        for wave in waves:
+        for wave_idx, wave in enumerate(waves):
             failed_ids = {t.id for t in self.tasks if t.status == "failed"}
             runnable = []
             for t in wave:
                 if any(d in failed_ids for d in t.dependencies):
                     t.status = "blocked"
+                    logger.warning("Task blocked due to failed dependency", task_id=t.id, failed_deps=failed_ids)
                 else:
                     runnable.append(t)
+            logger.info("Executing wave", wave=wave_idx + 1, total_waves=len(waves), runnable_tasks=[t.id for t in runnable])
             await run_tasks(runnable)
             await run_retries(runnable)

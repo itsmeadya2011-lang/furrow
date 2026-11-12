@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,9 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
@@ -194,10 +198,13 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
+        logger.debug("Detecting test command", workspace=str(self.workspace), has_package=has_package, has_pyproject=has_pyproject, has_tests_dir=has_tests_dir)
+
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            logger.info("Test command detected: pytest (Python with tests/ dir)")
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -206,9 +213,12 @@ class TesterAgent:
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
                     if (self.workspace / "pnpm-lock.yaml").is_file():
+                        logger.info("Test command detected: pnpm test (jest/vitest)")
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
+                        logger.info("Test command detected: yarn test (jest/vitest)")
                         return ["yarn", "test", "--silent"]
+                    logger.info("Test command detected: npm test (jest/vitest)")
                     return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
@@ -217,17 +227,23 @@ class TesterAgent:
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
                     if (self.workspace / "pnpm-lock.yaml").is_file():
+                        logger.info("Test command detected: pnpm test (package.json)")
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
+                        logger.info("Test command detected: yarn test (package.json)")
                         return ["yarn", "test", "--silent"]
+                    logger.info("Test command detected: npm test (package.json)")
                     return ["npm", "test", "--silent"]
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)
             if (self.workspace / "pnpm-lock.yaml").is_file():
+                logger.info("Test command detected: pnpm test (fallback)")
                 return ["pnpm", "test", "--silent"]
             if (self.workspace / "yarn.lock").is_file():
+                logger.info("Test command detected: yarn test (fallback)")
                 return ["yarn", "test", "--silent"]
+            logger.info("Test command detected: npm test (fallback)")
             return ["npm", "test", "--silent"]
 
         python_markers = [
@@ -238,13 +254,17 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
+            logger.info("Test command detected: pytest (Python markers)")
             return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
+            logger.info("Test command detected: cargo test")
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
+            logger.info("Test command detected: go test")
             return ["go", "test", "./..."]
 
+        logger.warning("No test runner detected")
         return None
 
     def _finalize(
@@ -276,6 +296,7 @@ class TesterAgent:
             summary = (
                 f"The test runner could not be started: {spawn_error}. The tests did not run."
             )
+            logger.error("Test runner spawn failed", error=spawn_error)
             return TestResult(
                 passed=False,
                 summary=summary,
@@ -287,10 +308,13 @@ class TesterAgent:
                 f"The test command timed out after {timeout:g}s and was killed; "
                 "the test run did not finish."
             )
+            logger.warning("Test command timed out", timeout=timeout)
         elif returncode != 0:
             status = f"The test command exited with status {returncode}; the test run failed."
+            logger.warning("Test command failed", returncode=returncode)
         else:
             status = "The test command exited with status 0."
+            logger.info("Test command succeeded")
 
         notes: list[str] = [status]
         if llm_result is None:
@@ -298,6 +322,7 @@ class TesterAgent:
             passed = returncode == 0 and not _has_failure_keywords(combined)
             failures = _extract_failures(combined)
             notes.append(combined[:500].strip())
+            logger.debug("Using raw output for test result (LLM unavailable)", passed=passed, failures=len(failures))
         else:
             failures = list(llm_result.failures)
             if llm_result.passed and returncode != 0:
@@ -306,11 +331,13 @@ class TesterAgent:
                 notes.append(
                     "The LLM reported a pass, but the non-zero exit status is authoritative."
                 )
+                logger.warning("LLM reported pass but exit code indicates failure", returncode=returncode)
             elif not llm_result.passed and returncode == 0:
                 # A green exit code with a "the suite did not run" report is not
                 # silently reported as a pass.
                 passed = False
                 notes.append("The command exited with status 0, but the LLM reported a failure.")
+                logger.warning("LLM reported failure but exit code indicates success")
             else:
                 passed = llm_result.passed
             if not failures:
@@ -325,9 +352,12 @@ class TesterAgent:
         return TestResult(passed=passed, summary=summary, failures=failures)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        start_time = time.time()
+        logger.info("Tester run starting", goal=goal[:200], num_tasks=len(tasks))
         try:
             cmd = await self.detect_command()
             if cmd is None:
+                logger.info("No test runner detected, skipping tests")
                 return TestResult(
                     passed=True,
                     skipped=True,
@@ -347,6 +377,7 @@ class TesterAgent:
             spawn_failed = False
             spawn_error = ""
             timed_out = False
+            logger.info("Starting test command", command=" ".join(cmd), timeout=timeout)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -364,6 +395,7 @@ class TesterAgent:
                 spawn_error = (
                     f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 )
+                logger.error("Test command spawn failed", command=" ".join(cmd), error=spawn_error)
                 returncode = 1
                 stdout = b""
                 stderr = b""
@@ -371,6 +403,7 @@ class TesterAgent:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
+                    logger.warning("Test command timed out", command=" ".join(cmd), timeout=timeout)
                     await self._kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
@@ -378,6 +411,7 @@ class TesterAgent:
                     stderr = f"Test command timed out after {timeout:g}s.".encode()
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
+                    logger.info("Test command finished", returncode=returncode)
 
             combined = (
                 stdout.decode("utf-8", errors="replace")
@@ -396,10 +430,12 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                    logger.debug("LLM test result parsed", passed=llm_result.passed, failures=len(llm_result.failures))
+                except Exception as exc:
+                    logger.warning("LLM test result parsing failed", error=str(exc))
                     llm_result = None
 
-            return self._finalize(
+            result = self._finalize(
                 llm_result=llm_result,
                 returncode=returncode,
                 combined=combined,
@@ -408,8 +444,12 @@ class TesterAgent:
                 timed_out=timed_out,
                 timeout=timeout,
             )
+            elapsed = time.time() - start_time
+            logger.info("Tester run completed", passed=result.passed, skipped=result.skipped, failures=len(result.failures), elapsed_seconds=round(elapsed, 2))
+            return result
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
+            logger.error("Tester error", error=message)
             return TestResult(
                 passed=False,
                 summary=f"Tester error: {message}",

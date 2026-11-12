@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,9 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -221,18 +225,26 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if program:
         program = program.lower()
         if program in DENIED_PROGRAMS or program.startswith("mkfs."):
+            logger.warning("Denied program detected", program=program, segment=segment[:200])
             return True
 
     # DENY by PATTERN
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
-        return True
+    for denied in DENIED_COMMANDS:
+        if denied.lower() in normalized:
+            logger.warning("Denied command pattern matched", pattern=denied, segment=segment[:200])
+            return True
 
     # DENY a force push
     if _is_force_push(segment, normalized):
+        logger.warning("Git force push denied", segment=segment[:200])
         return True
 
     # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    if _redirects_outside_workspace(segment, workspace):
+        logger.warning("Redirection outside workspace denied", segment=segment[:200])
+        return True
+    
+    return False
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
@@ -241,11 +253,14 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # The whole text is checked against the pattern list as well, so that a
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
-    if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
-        return True
+    for denied in DENIED_COMMANDS:
+        if denied.lower() in normalized:
+            logger.warning("Denied pattern in command substitution", pattern=denied, depth=depth)
+            return True
     # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
-        return True
+    for segment in _split_command_segments(text):
+        if _is_dangerous_segment(segment, workspace):
+            return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
@@ -258,7 +273,10 @@ def is_command_denied(command: str, workspace: Path) -> bool:
     """Check if command is denied by security policy."""
     if not command or not command.strip():
         return False
-    return _text_is_denied(command, workspace, depth=0)
+    denied = _text_is_denied(command, workspace, depth=0)
+    if denied:
+        logger.warning("Command denied by security policy", command=command[:200])
+    return denied
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -297,12 +315,29 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._tool_calls_made: int = 0
+        self._tool_errors: list[str] = []
+        self._start_time: float = 0.0
 
     async def run(self) -> WorkerResult:
+        self._start_time = time.time()
         try:
             return await self._run()
         except Exception as exc:  # pragma: no cover - defensive
-            return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
+            elapsed = time.time() - self._start_time
+            logger.error(
+                "Worker task failed with exception",
+                task_id=self.task.id,
+                error=str(exc),
+                elapsed_seconds=round(elapsed, 2),
+            )
+            return WorkerResult(
+                summary=f"Worker exception: {exc}",
+                success=False,
+                error=str(exc),
+                iterations=0,
+                files_changed=sorted(self.files_changed),
+            )
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
@@ -313,19 +348,41 @@ class WorkerAgent:
             }
         ]
         iterations = 0
+        tool_calls_this_iteration = 0
+        
         for i in range(max_iters):
             iterations = i + 1
+            tool_calls_this_iteration = 0
+            
+            logger.debug(
+                "Worker iteration starting",
+                task_id=self.task.id,
+                iteration=iterations,
+                max_iterations=max_iters,
+            )
+            
             response: LLMResponse = await self.client.chat(
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
+            
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
+                elapsed = time.time() - self._start_time
+                logger.info(
+                    "Worker task completed",
+                    task_id=self.task.id,
+                    iterations=iterations,
+                    tool_calls=self._tool_calls_made,
+                    files_changed=len(self.files_changed),
+                    elapsed_seconds=round(elapsed, 2),
+                )
                 return WorkerResult(
                     summary=summary,
                     success=True,
                     files_changed=sorted(self.files_changed),
                     iterations=iterations,
                 )
+            
             # append assistant turn
             blocks: list[dict[str, Any]] = []
             if response.text:
@@ -334,20 +391,41 @@ class WorkerAgent:
                 blocks.append(
                     {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
                 )
+                tool_calls_this_iteration += 1
+                self._tool_calls_made += 1
             messages.append({"role": "assistant", "content": blocks})
 
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
                 result = await self._execute_tool(tc)
+                if result.startswith("error:"):
+                    self._tool_errors.append(f"{tc.name}: {result}")
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
             messages.append({"role": "user", "content": result_blocks})
+            
+            logger.debug(
+                "Worker iteration completed",
+                task_id=self.task.id,
+                iteration=iterations,
+                tool_calls_this_iteration=tool_calls_this_iteration,
+                total_tool_calls=self._tool_calls_made,
+            )
 
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        elapsed = time.time() - self._start_time
+        logger.warning(
+            "Worker iteration budget exhausted",
+            task_id=self.task.id,
+            max_iterations=max_iters,
+            tool_calls=self._tool_calls_made,
+            tool_errors=len(self._tool_errors),
+            elapsed_seconds=round(elapsed, 2),
+        )
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -369,18 +447,47 @@ class WorkerAgent:
         name = tc.name
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
+            logger.warning("Invalid tool arguments", tool=name, tool_call_id=tc.id)
             return "error: invalid tool arguments"
-        if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
-        if name == "write_file":
-            return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
-        if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
+        
+        logger.debug("Executing tool", tool=name, tool_call_id=tc.id, args=args)
+        start = time.time()
+        
+        try:
+            if name == "read_file":
+                result = await self._read_file(str(args.get("path", "")))
+            elif name == "write_file":
+                result = await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+            elif name == "list_files":
+                result = await self._list_files(
+                    str(args.get("path", "")) if args.get("path") is not None else "."
+                )
+            elif name == "run_command":
+                result = await self._run_command(str(args.get("command", "")))
+            else:
+                result = f"unknown tool: {name}"
+        except Exception as exc:
+            elapsed = time.time() - start
+            logger.error(
+                "Tool execution raised exception",
+                tool=name,
+                tool_call_id=tc.id,
+                error=str(exc),
+                elapsed_seconds=round(elapsed, 3),
             )
-        if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
-        return f"unknown tool: {name}"
+            return f"error: {type(exc).__name__}: {exc}"
+        
+        elapsed = time.time() - start
+        is_error = result.startswith("error:")
+        logger.debug(
+            "Tool completed",
+            tool=name,
+            tool_call_id=tc.id,
+            is_error=is_error,
+            elapsed_seconds=round(elapsed, 3),
+            output_length=len(result),
+        )
+        return result
 
     @staticmethod
     def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:
@@ -404,10 +511,12 @@ class WorkerAgent:
     async def _read_file(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            logger.warning("Read file denied - path escapes workspace", path=path)
             return "error: path escapes workspace"
         try:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Read file failed", path=path, error=str(exc))
             return f"error: {exc}"
         if len(content) > 20000:
             content = content[:20000] + "\n[... output truncated ...]"
@@ -416,11 +525,13 @@ class WorkerAgent:
     async def _write_file(self, path: str, content: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            logger.warning("Write file denied - path escapes workspace", path=path)
             return "error: path escapes workspace"
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Write file failed", path=path, error=str(exc))
             return f"error: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
@@ -429,10 +540,12 @@ class WorkerAgent:
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            logger.warning("List files denied - path escapes workspace", path=path)
             return "error: path escapes workspace"
         try:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("List files failed", path=path, error=str(exc))
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
@@ -452,6 +565,7 @@ class WorkerAgent:
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            logger.warning("Command denied by security policy", command=command[:200])
             return "error: command denied"
         try:
             shlex.split(command)
@@ -485,10 +599,12 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Command spawn failed", command=command[:200], error=str(exc))
             return f"error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            logger.warning("Command timed out", command=command[:200], timeout=timeout)
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
