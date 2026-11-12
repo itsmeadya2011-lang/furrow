@@ -51,6 +51,19 @@ DENIED_PROGRAMS = frozenset(
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
+# Cap on matches returned by one ``search_files`` call.
+MAX_SEARCH_RESULTS = 200
+# Files larger than this are searched only up to this many bytes.
+MAX_SEARCH_FILE_BYTES = 2_000_000
+# Directories that never contain first-party source worth searching.
+_SKIP_DIRS = frozenset(
+    {
+        ".git", ".hg", ".svn", "__pycache__", ".venv", "venv",
+        "node_modules", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+        ".tox", ".eggs",
+    }
+)
+
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
 
@@ -210,6 +223,126 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     return any(token.lower() == "-f" for token in _shell_tokens(segment))
 
 
+def _is_root_target(token: str) -> bool:
+    """True when *token* names the filesystem root or the user's whole home."""
+    raw = token.strip().strip("\"'")
+    norm = _normalize_command(raw)
+    stripped = norm.rstrip("/")
+    if stripped == "" and norm.startswith("/"):
+        return True
+    if stripped in {"/*", "~", "$home", "~/*", "$home/*"}:
+        return True
+    try:
+        expanded = Path(_expand_home(raw))
+        if expanded.is_absolute() and str(expanded.resolve()) == "/":
+            return True
+    except (OSError, RuntimeError):
+        pass
+    return False
+
+
+def _rm_is_destructive(segment: str, workspace: Path) -> bool:
+    """True for recursive force ``rm`` on a root target or a target outside workspace."""
+    tokens = _shell_tokens(segment.strip())
+    if not tokens or os.path.basename(tokens[0]) != "rm":
+        return False
+    recursive = force = False
+    operands: list[str] = []
+    options_done = False
+    for token in tokens[1:]:
+        if not options_done and token == "--":
+            options_done = True
+            continue
+        if not options_done and token.startswith("-") and token != "-":
+            if token == "--recursive":
+                recursive = True
+            elif token == "--force":
+                force = True
+            elif not token.startswith("--"):
+                chars = set(token[1:])
+                if "r" in chars or "R" in chars:
+                    recursive = True
+                if "f" in chars:
+                    force = True
+            continue
+        options_done = True
+        operands.append(token)
+    return recursive and force and any(
+        _is_root_target(op) or not _target_inside_workspace(op, workspace)
+        for op in operands
+    )
+
+
+_SYMBOLIC_MODE_RE = re.compile(r"([ugoa]*)([+\-=])([rwxXst]*)")
+
+
+def _mode_is_world_writable(mode: str) -> bool:
+    """True for an octal mode with the other-write bit, or a symbolic mode that
+    grants write to ``o``/``a``/everyone."""
+    mode = mode.strip().strip("\"'")
+    if re.fullmatch(r"[0-7]{3,4}", mode):
+        return int(mode[-1], 8) & 0o002 != 0
+    for clause in mode.split(","):
+        match = _SYMBOLIC_MODE_RE.fullmatch(clause)
+        if not match:
+            continue
+        who, op, perms = match.groups()
+        if op == "-" or "w" not in perms:
+            continue
+        if who == "" or "a" in who or "o" in who:
+            return True
+    return False
+
+
+def _chmod_is_destructive(segment: str, workspace: Path) -> bool:
+    """True for recursive world-writable ``chmod`` on root/outside-workspace targets."""
+    tokens = _shell_tokens(segment.strip())
+    if not tokens or os.path.basename(tokens[0]) != "chmod":
+        return False
+    recursive = False
+    operands: list[str] = []
+    for token in tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("-") and token != "-":
+            if token == "--recursive" or (
+                not token.startswith("--")
+                and ("r" in set(token[1:]) or "R" in set(token[1:]))
+            ):
+                recursive = True
+            continue
+        operands.append(token)
+    if not recursive or len(operands) < 2:
+        return False
+    return _mode_is_world_writable(operands[0]) and any(
+        _is_root_target(target) or not _target_inside_workspace(target, workspace)
+        for target in operands[1:]
+    )
+
+
+_POWER_ACTIONS = frozenset(
+    {"poweroff", "reboot", "halt", "kexec", "suspend", "hibernate"}
+)
+
+
+def _systemctl_is_destructive(segment: str) -> bool:
+    """True when a segment asks systemctl to power off / halt / reboot.
+
+    ``systemctl`` may be wrapped (``sudo systemctl ...``), so the token is
+    located anywhere in the segment and the first non-option token after it is
+    treated as the action.
+    """
+    tokens = _shell_tokens(segment.strip())
+    for index, token in enumerate(tokens):
+        if os.path.basename(token) != "systemctl":
+            continue
+        for action in tokens[index + 1:]:
+            if not action.startswith("-"):
+                return action.lower() in _POWER_ACTIONS
+        return False
+    return False
+
+
 def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
@@ -229,6 +362,14 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
 
     # DENY a force push
     if _is_force_push(segment, normalized):
+        return True
+
+    # DENY structural rm / chmod / systemctl bypasses (flag order, wrappers).
+    if _rm_is_destructive(segment, workspace):
+        return True
+    if _chmod_is_destructive(segment, workspace):
+        return True
+    if _systemctl_is_destructive(segment):
         return True
 
     # DENY a redirection that escapes the workspace
@@ -280,6 +421,16 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     except ValueError:
         return None
     return candidate
+
+
+def _coerce_limit(value: Any, default: int, maximum: int) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return default
+    if limit <= 0:
+        return default
+    return min(limit, maximum)
 
 
 class WorkerAgent:
@@ -380,6 +531,12 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+                args.get("max_results", MAX_SEARCH_RESULTS),
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -443,6 +600,65 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _search_files(self, pattern: str, path: str, max_results: Any) -> str:
+        if not pattern:
+            return "error: empty pattern"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regular expression: {exc}"
+        resolved = resolve_in_workspace(self.workspace, path or ".")
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not resolved.exists():
+            return f"error: path not found: {path}"
+        limit = _coerce_limit(max_results, MAX_SEARCH_RESULTS, MAX_SEARCH_RESULTS)
+        try:
+            return await asyncio.to_thread(self._search_files_sync, resolved, regex, limit)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+    def _search_files_sync(
+        self, root: Path, regex: re.Pattern[str], limit: int
+    ) -> str:
+        base = self.workspace.resolve()
+        results: list[str] = []
+        truncated = False
+        candidates = [root] if root.is_file() else list(root.rglob("*"))
+        for candidate in candidates:
+            try:
+                if not candidate.is_file():
+                    continue
+                rel = candidate.relative_to(base)
+            except (ValueError, OSError):
+                continue
+            if any(part in _SKIP_DIRS for part in rel.parts):
+                continue
+            try:
+                candidate.resolve().relative_to(base)
+            except (ValueError, OSError):
+                continue
+            try:
+                text = candidate.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if len(text) > MAX_SEARCH_FILE_BYTES:
+                text = text[:MAX_SEARCH_FILE_BYTES]
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if regex.search(line):
+                    results.append(f"{rel.as_posix()}:{lineno}: {line.strip()[:500]}")
+                    if len(results) >= limit:
+                        truncated = True
+                        break
+            if truncated:
+                break
+        if not results:
+            return "no matches"
+        output = "\n".join(results)
+        if truncated:
+            output += f"\n[... more matches omitted (limit {limit}) ...]"
+        return output
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

@@ -375,8 +375,14 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == [
+        "list_files",
+        "read_file",
+        "run_command",
+        "search_files",
+        "write_file",
+    ]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -553,6 +559,12 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "echo hi > ~/x",
         "echo hi > $HOME/x",
         "echo hi > ${HOME}/x",
+        "rm -r -f /", "rm -R -f /", "rm --recursive --force /", "rm -rf -- /",
+        "rm -r -f ~/", "rm -r -f //",
+        "chmod 777 -R /", "chmod -R 0777 /",
+        "systemctl poweroff", "systemctl halt",
+        "systemctl --no-block poweroff", "sudo systemctl poweroff",
+        "rm -r -f ../", "rm -r -f ..", "rm -r -f /tmp/furrow-outside", "chmod -R 777 ..",
     ]
     allowed_commands = [
         "pytest -q",
@@ -561,6 +573,8 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "rm -rf build",
         "echo hi > out.txt",
         "cd sub && ls",
+        "rm -r build", "rm -f build", "rm -rf build/",
+        "chmod -R 755 /tmp", "chmod -R u+w /tmp", "chmod 777 /tmp/file",
     ]
 
     for cmd in denied_commands:
@@ -583,6 +597,96 @@ def test_is_command_denied_checks_command_substitutions(tmp_path):
 def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     """A redirect whose target stays inside the workspace is allowed."""
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -r -f /", "rm -R -f /", "rm --recursive --force /", "rm -rf -- /",
+        "rm -r -f ~/", "rm -r -f //",
+        "chmod 777 -R /", "chmod -R 0777 /",
+        "systemctl poweroff", "systemctl halt",
+        "systemctl --no-block poweroff", "sudo systemctl poweroff",
+        "echo $(rm -r -f /)",
+        "rm -r -f ../", "rm -r -f ..", "rm -r -f /tmp/furrow-outside", "chmod -R 777 ..",
+    ],
+)
+def test_command_guard_handles_flag_order_and_separators(command, tmp_path):
+    assert is_command_denied(command, tmp_path) is True
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "rm -r build", "rm -f build", "rm -rf build/",
+        "chmod -R 755 /tmp", "chmod -R u+w /tmp", "chmod 777 /tmp/file",
+    ],
+)
+def test_command_guard_allows_non_root_targets(command, tmp_path):
+    assert is_command_denied(command, tmp_path) is False
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["rm -r -f ../", "rm -r -f ..", "rm -r -f /tmp/furrow-outside", "chmod -R 777 .."],
+)
+def test_command_guard_denies_targets_outside_the_workspace(command, tmp_path):
+    assert is_command_denied(command, tmp_path) is True
+
+
+def _search_agent(tmp_path):
+    from furrow.config import TaskModel
+    return WorkerAgent(
+        task=TaskModel(id="1", description="search"),
+        client=FakeLLMClient([]),
+        settings=make_settings(tmp_path),
+        workspace=tmp_path,
+    )
+
+
+@pytest.mark.asyncio
+async def test_search_files_finds_matches(tmp_path):
+    (tmp_path / "a.py").write_text("alpha\nbeta = 2\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.py").write_text("gamma alpha\n")
+    agent = _search_agent(tmp_path)
+    out = await agent._search_files("alpha", ".", 100)
+    assert "a.py:1: alpha" in out
+    assert "b.py:1: gamma alpha" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_invalid_regex(tmp_path):
+    agent = _search_agent(tmp_path)
+    out = await agent._search_files("(", ".", 100)
+    assert out.startswith("error: invalid regular expression")
+
+
+@pytest.mark.asyncio
+async def test_search_files_path_escape(tmp_path):
+    agent = _search_agent(tmp_path)
+    assert await agent._search_files("x", "../", 100) == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_search_files_respects_max_results(tmp_path):
+    for i in range(6):
+        (tmp_path / f"f{i}.txt").write_text("hit\n")
+    agent = _search_agent(tmp_path)
+    out = await agent._search_files("hit", ".", 3)
+    match_lines = [line for line in out.splitlines() if ": hit" in line]
+    assert len(match_lines) == 3
+    assert "more matches omitted" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_skips_binary(tmp_path):
+    (tmp_path / "b.bin").write_bytes(b"\xff\xfe\x00\x01")
+    (tmp_path / "a.txt").write_text("needle\n")
+    agent = _search_agent(tmp_path)
+    out = await agent._search_files("needle", ".", 100)
+    assert "a.txt" in out
+    assert "b.bin" not in out
 
 
 @pytest.mark.asyncio
