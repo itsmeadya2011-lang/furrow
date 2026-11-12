@@ -256,6 +256,7 @@ class LLMClient:
         Reusable: cached references are reset to ``None`` so a later request
         creates a fresh client. Never raises.
         """
+        close_timeout = min(10.0, float(getattr(self.settings, "request_timeout", 10.0) or 10.0))
         for attr in ("_anthropic", "_openai", "_ollama"):
             client = getattr(self, attr)
             if client is None:
@@ -267,7 +268,7 @@ class LLMClient:
                 if close is not None:
                     result = close()
                     if asyncio.iscoroutine(result):
-                        await result
+                        await asyncio.wait_for(result, timeout=close_timeout)
             except Exception:
                 pass
             setattr(self, attr, None)

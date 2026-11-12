@@ -12,7 +12,7 @@ Repeat this cycle continuously until explicitly stopped:
 1. **Receive / Identify** - Understand the current goal from user input or previous state
 2. **Plan** - Break the goal into 1-5 parallelizable tasks. Prefer independent work that can run concurrently.
 3. **Execute** - Spawn parallel subagents (using the Task tool) to complete each planned task. Use `furrow-worker` agents. Wait for all to return.
-4. **Test** - Run tests, linting, and type checks on the completed work. Fix failures. If tests pass, proceed.
+4. **Test** - Run the project's test suite on the completed work (the standalone Furrow tester detects pytest/npm/pnpm/yarn/cargo/go). If tests fail, analyze and fix failures, then re-run as needed. If tests pass (or are skipped because no test runner is detected), proceed.
 5. **Report** - Show a summary of what was built, tested, and what remains.
 6. **Repeat** - Immediately start the next cycle with updated context.
 

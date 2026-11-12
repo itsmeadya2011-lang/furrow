@@ -50,6 +50,9 @@ class ModelPricing(BaseModel):
 # them with the FURROW_MODEL_PRICING environment variable, for example
 # FURROW_MODEL_PRICING='{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}'
 #
+# Local/self-hosted models (e.g. Ollama) are not listed here and have no
+# default price entry; estimate_cost() returns 0.0 for unknown models.
+#
 # Keys are family names so that dated model ids ("claude-sonnet-4-20250514",
 # "gpt-4o-mini-2024-07-18", ...) resolve through a longest-prefix match.
 DEFAULT_PRICING: dict[str, ModelPricing] = {
