@@ -389,6 +389,8 @@ def test_resolve_in_workspace():
     ws = Path("/tmp/ws").resolve()
     assert resolve_in_workspace(ws, "../x") is None
     assert resolve_in_workspace(ws, "/etc/passwd") is None
+    # Absolute path with ``..`` segments that escape the workspace is denied.
+    assert resolve_in_workspace(ws, str(ws / "sub/../../../etc/passwd")) is None
     inside = resolve_in_workspace(ws, str(ws / "a.py"))
     assert inside == ws / "a.py"
 
@@ -767,8 +769,39 @@ async def test_failing_command_does_not_raise(tmp_path):
         if isinstance(m.get("content"), list):
             for b in m["content"]:
                 if b.get("type") == "tool_result":
-                    # failing command returns output (possibly empty) and does not raise
+                    # failing command returns output (possibly empty) and does not raise,
+                    # but surfaces its non-zero exit code.
                     assert b["content"] is not None
+                    assert "[exit code: 3]" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_successful_command_reports_exit_code_zero(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": "echo ok"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "ok" in b["content"]
+                    assert "[exit code: 0]" in b["content"]
                     found = True
     assert found
 

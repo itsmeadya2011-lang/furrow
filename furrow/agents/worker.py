@@ -268,11 +268,15 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
         return None
     p = Path(path)
     if p.is_absolute():
+        # Resolve (symlinks + ``..`` segments included) *before* the
+        # containment check, so that ``/workspace/app/sub/../../../etc/passwd``
+        # cannot escape through a pure lexical comparison.
+        candidate = p.resolve()
         try:
-            p.relative_to(workspace)
+            candidate.relative_to(workspace)
         except ValueError:
             return None
-        return p
+        return candidate
     # reject traversal
     candidate = (workspace / p).resolve()
     try:
@@ -497,7 +501,7 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
-        return combined
+        return f"{combined}\n[exit code: {proc.returncode}]"
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

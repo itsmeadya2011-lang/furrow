@@ -16,6 +16,10 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Offline test suite with no API keys required
 - Estimated USD cost per LLM call/cycle/run tracked, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`
 
+## Kilo integration
+
+This repo includes a Kilo-side setup in `.kilo/` (orchestrator/subagent definitions and `/furrow` command). See [`.kilo/FURROW.md`](.kilo/FURROW.md) for the integration overview and how it relates to the Python `furrow/` package.
+
 ## Security
 
 The worker's command execution is hardened: commands run through `/bin/sh -c` so ordinary shell constructs (`cd dir && pytest`, pipes, variable assignments, redirections) work. Commands are normalized (lowercased, whitespace collapsed, home variables canonicalised), split into segments on `;`, `&&`, `||`, `|`, and newlines, and every segment and every command substitution (`$(...)`, backticks) is checked. Destructive programs by name (`mkfs*`, `dd`, `fdisk`, `parted`, `shutdown`, `reboot`, `poweroff`, `halt`, `init`) and destructive patterns (`rm -rf /` in all spellings including `rm -rf "$HOME"`, `rm -fr /`, `rm -rf /*`, `chmod -R 777 /`, the fork bomb, `> /dev/sda`) are denied. Force-pushing (`git push --force`, `-f`, `--force-with-lease`) is blocked, and any redirection whose target resolves outside the workspace (absolute paths, `..` traversal, `~` and `$HOME` targets) is denied; redirections inside the workspace are allowed. Commands run in their own process group so a timeout kills the whole tree. The worker's tools treat their arguments defensively as well: a tool argument value that is not an object is reported back as an `error: invalid tool arguments` tool result instead of failing the whole task. Ordinary development commands continue to work.
