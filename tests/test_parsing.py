@@ -75,6 +75,14 @@ def test_parse_plan_raises_on_tasks_not_a_list():
         parsing.parse_plan('{"tasks": "not-a-list"}')
 
 
+def test_parse_plan_raises_on_duplicate_task_ids():
+    text = '{"tasks": [{"id": "t1", "description": "a"}, {"id": "t1", "description": "b"}]}'
+    with pytest.raises(ValueError) as exc_info:
+        parsing.parse_plan(text)
+    assert "Duplicate task ID" in str(exc_info.value)
+    assert "t1" in str(exc_info.value)
+
+
 def test_parse_test_result_json():
     r = parsing.parse_test_result('{"passed": false, "summary": "x", "failures": ["a"]}')
     assert isinstance(r, TestResult)

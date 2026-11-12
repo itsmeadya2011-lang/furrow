@@ -189,6 +189,13 @@ def test_index_contains_ui_hooks(client: TestClient) -> None:
     # Task panel container.
     assert 'id="tasks"' in html
 
+    # Filter and sort controls.
+    for hook in (
+        'id="status-filter"',
+        'id="task-sort"',
+    ):
+        assert hook in html, f"missing hook {hook}"
+
 
 def test_index_uses_text_content_for_untrusted_text(client: TestClient) -> None:
     """Task text is assigned via textContent, never innerHTML interpolation."""

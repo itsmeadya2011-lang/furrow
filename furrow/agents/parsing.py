@@ -112,6 +112,7 @@ def parse_plan(text: str) -> Plan:
     - if it is not a mapping raise ValueError
     - accept missing 'rationale' (default '') and missing 'tasks' (default [])
     - validate tasks via TaskModel
+    - check for duplicate task IDs
     - on any failure raise ValueError whose message includes the underlying reason
       and a short excerpt (first 300 chars) of the original text"""
     try:
@@ -125,9 +126,14 @@ def parse_plan(text: str) -> Plan:
         if tasks_data is None:
             tasks_data = []
         tasks = []
+        seen_ids = set()
         if isinstance(tasks_data, list):
             for t in tasks_data:
                 if isinstance(t, dict):
+                    task_id = t.get("id")
+                    if task_id in seen_ids:
+                        raise ValueError(f"Duplicate task ID: {task_id}")
+                    seen_ids.add(task_id)
                     tasks.append(TaskModel(**t))
                 else:
                     raise ValueError("Each task must be an object")

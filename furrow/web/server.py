@@ -74,6 +74,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  .ui-select {
+    padding: .55rem .7rem; background: #171b23; color: inherit;
+    border: 1px solid #2b3240; border-radius: 6px; font: inherit;
+  }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -140,6 +144,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="start">Start</button>
   <button id="resume">Resume</button>
 </div>
+<div class="bar" style="margin-top: 0.5rem;">
+  <label style="font-size: 0.9rem; color: #8a93a5;">Filter:</label>
+  <select id="status-filter" class="ui-select">
+    <option value="all">All</option>
+    <option value="pending">Pending</option>
+    <option value="running">Running</option>
+    <option value="completed">Completed</option>
+    <option value="failed">Failed</option>
+    <option value="blocked">Blocked</option>
+    <option value="skipped">Skipped</option>
+  </select>
+  <label style="font-size: 0.9rem; color: #8a93a5; margin-left: 1rem;">Sort:</label>
+  <select id="task-sort" class="ui-select">
+    <option value="id">Task ID</option>
+    <option value="status">Status</option>
+    <option value="attempts">Attempts</option>
+  </select>
+</div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
   <div class="meta" id="header-meta">
@@ -160,8 +182,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const statusFilterEl = document.getElementById('status-filter');
+  const taskSortEl = document.getElementById('task-sort');
   let socket = null;
   let lastSummary = null;
+  let allTasks = [];
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -192,6 +217,34 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return 'unknown';
   }
 
+  function filterAndSortTasks(tasks) {
+    const filter = statusFilterEl ? statusFilterEl.value : 'all';
+    const sort = taskSortEl ? taskSortEl.value : 'id';
+    let list = [...tasks];
+    if (filter !== 'all') {
+      list = list.filter(t =>
+        text(t.status).trim().toLowerCase() === filter
+      );
+    }
+    if (sort === 'status') {
+      const statusOrder = {
+        pending: 0, running: 1, completed: 2, failed: 3,
+        blocked: 4, skipped: 5, unknown: 6
+      };
+      list.sort((a, b) =>
+        (statusOrder[text(a.status).trim().toLowerCase()] || 6) -
+        (statusOrder[text(b.status).trim().toLowerCase()] || 6)
+      );
+    } else if (sort === 'attempts') {
+      list.sort((a, b) =>
+        (Number(b.attempts) || 0) - (Number(a.attempts) || 0)
+      );
+    } else {
+      list.sort((a, b) => text(a.id).localeCompare(text(b.id)));
+    }
+    return list;
+  }
+
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
@@ -206,18 +259,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    let costStr = '';
+    if (cost >= 1.0) {
+      costStr = '$' + cost.toFixed(2);
+    } else if (cost >= 0.01) {
+      costStr = '$' + cost.toFixed(4);
+    } else if (cost > 0) {
+      costStr = '$' + cost.toFixed(6);
+    } else {
+      costStr = '$0.00';
+    }
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens, ' + costStr;
   }
 
   function renderTasks(tasks) {
+    allTasks = tasks || [];
+    const list = filterAndSortTasks(allTasks);
     while (tasksEl.firstChild) {
       tasksEl.removeChild(tasksEl.firstChild);
     }
-    const list = tasks || [];
     if (list.length === 0) {
       const hint = document.createElement('p');
       hint.className = 'panel-empty';
-      hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
+      const filtered = allTasks.length ? ' (filtered)' : '';
+      hint.textContent =
+        'No tasks to display' + filtered + ' \u2014 enter a goal and click Start.';
       tasksEl.appendChild(hint);
       return;
     }
@@ -270,6 +337,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
       tasksEl.appendChild(panel);
     });
+  }
+
+  // Re-render tasks when filter or sort changes
+  if (statusFilterEl) {
+    statusFilterEl.addEventListener('change', function() { renderTasks(allTasks); });
+  }
+  if (taskSortEl) {
+    taskSortEl.addEventListener('change', function() { renderTasks(allTasks); });
   }
 
   async function loadState() {
