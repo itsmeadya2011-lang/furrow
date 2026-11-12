@@ -14,7 +14,7 @@ import inspect
 import logging
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import click
 
@@ -61,6 +61,21 @@ def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[st
     return ("FAILED - tests did not pass.", "red")
 
 
+def _format_cost(amount: object) -> str:
+    """Format *amount* as a USD string like ``$0.123456``.
+
+    The value is coerced with :func:`float`, defaulting to ``0.0`` on
+    ``TypeError``/``ValueError``; negatives are clamped to ``0.0``.  Never raises.
+    """
+    try:
+        value = float(cast(Any, amount))
+    except (TypeError, ValueError):
+        value = 0.0
+    if value < 0:
+        value = 0.0
+    return f"${value:.6f}"
+
+
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
     click.echo("Run summary")
@@ -79,6 +94,9 @@ def _print_summary(result: RunResult) -> None:
         click.echo(
             f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
+        )
+        click.echo(
+            f"  Est. cost:       {_format_cost(getattr(usage, 'cost_usd', 0.0))}"
         )
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
@@ -103,6 +121,9 @@ def _print_state(state: RunState) -> None:
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
+        click.echo(
+            f"  Est. cost:       {_format_cost(getattr(usage, 'cost_usd', 0.0))}"
+        )
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:

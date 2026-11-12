@@ -198,6 +198,21 @@ def test_index_uses_text_content_for_untrusted_text(client: TestClient) -> None:
     assert "innerHTML" not in html
 
 
+def test_index_renders_estimated_cost_in_usage_header(client: TestClient) -> None:
+    """The inline script reads cost_usd and renders an estimated cost."""
+    script = _inline_script(client)
+
+    assert "cost_usd" in script, "the script never reads cost_usd"
+    assert re.search(r"usageEl\.textContent\s*=[^;]*cost\.toFixed\(6\)", script), (
+        "the usage text is not built from the estimated cost"
+    )
+    assert "est. $" in script, "the usage header does not mention the estimated cost"
+
+    # The initial HTML advertises the cost column too.
+    html = client.get("/").text
+    assert "est. $0.000000" in html, "the initial usage header does not show cost"
+
+
 def test_index_script_declares_every_element_reference(client: TestClient) -> None:
     """Every ``*El`` identifier used in the inline script is declared there.
 
