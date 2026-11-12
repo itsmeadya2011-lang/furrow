@@ -127,6 +127,69 @@ def parse_test_output(output: str) -> list[dict]:
             )
             seen_locations.add(location_key)
 
+    # Pattern for Go-style failures: "file.go:line:col" or "file.go:line"
+    go_file_line_pattern = re.compile(
+        r"([^\s:]+\.go):(\d+)(?::(\d+))?"
+    )
+    for match in go_file_line_pattern.finditer(output):
+        file_path = match.group(1)
+        line_num = int(match.group(2))
+        location_key = f"{file_path}:{line_num}"
+        if location_key not in seen_locations and not any(
+            f.get("line") == line_num and f.get("file") == file_path for f in failures
+        ):
+            failures.append(
+                {
+                    "file": file_path,
+                    "line": line_num,
+                    "test": None,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Pattern for Rust-style failures: "file.rs:line:col"
+    rust_file_line_pattern = re.compile(
+        r"([^\s:]+\.rs):(\d+)(?::(\d+))?"
+    )
+    for match in rust_file_line_pattern.finditer(output):
+        file_path = match.group(1)
+        line_num = int(match.group(2))
+        location_key = f"{file_path}:{line_num}"
+        if location_key not in seen_locations and not any(
+            f.get("line") == line_num and f.get("file") == file_path for f in failures
+        ):
+            failures.append(
+                {
+                    "file": file_path,
+                    "line": line_num,
+                    "test": None,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Pattern for JavaScript/TypeScript failures: "file.ts(line,col)" or "file.js:line:col"
+    js_file_line_pattern = re.compile(
+        r"([^\s:]+\.(?:ts|js|tsx|jsx|mts|mjs|cts|cjs)):(\d+):(\d+)"
+    )
+    for match in js_file_line_pattern.finditer(output):
+        file_path = match.group(1)
+        line_num = int(match.group(2))
+        location_key = f"{file_path}:{line_num}"
+        if location_key not in seen_locations and not any(
+            f.get("line") == line_num and f.get("file") == file_path for f in failures
+        ):
+            failures.append(
+                {
+                    "file": file_path,
+                    "line": line_num,
+                    "test": None,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
     # Extract exception types and messages
     exception_pattern = re.compile(r"([A-Za-z]+Error|[A-Za-z]+Exception):\s*(.+)$", re.MULTILINE)
     if not failures:

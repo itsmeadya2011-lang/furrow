@@ -232,7 +232,30 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
         return True
 
     # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    if _redirects_outside_workspace(segment, workspace):
+        return True
+
+    # DENY shell invocations that wrap dangerous content (bash -c '...', sh -c "...").
+    # The fork bomb and other denied patterns can hide inside a quoted argument to
+    # a shell interpreter, so the argument text is checked against the same rules.
+    _SHELL_WRAPPER_RE = re.compile(
+        r"(?:^|\s)(?:ba?sh|z?sh|ksh|dash|tcsh|csh|/bin/(?:ba?sh|z?sh|ksh|dash|tcsh|csh))"
+        r"\s+(?:-c|-e|-E)\s+"
+        r"(?:"  # single-quoted argument
+        r"'([^']*)'"
+        r"|"  # double-quoted argument
+        r'"([^"]*)"'
+        r"|"  # unquoted argument (up to next whitespace/separator)
+        r"(\S+)"
+        r")",
+        re.IGNORECASE,
+    )
+    for match in _SHELL_WRAPPER_RE.finditer(segment):
+        inner = next((g for g in match.groups() if g is not None), "")
+        if inner and _text_is_denied(inner, workspace, depth=0):
+            return True
+
+    return False
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:

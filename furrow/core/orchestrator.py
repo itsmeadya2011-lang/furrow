@@ -357,12 +357,10 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # pending/running or any other non-terminal state: the
+                    # retry budget is enforced within a cycle, so a fresh cycle
+                    # always gives the task another attempt.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies

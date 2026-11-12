@@ -179,11 +179,24 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
                 }
             )
         elif role == "user" and isinstance(content, list):
-            user_text: list[str] = []
+            # Preserve the original block order: text blocks become a user
+            # message, tool_result blocks become tool messages, interleaved
+            # exactly as they appeared in the neutral message.
+            pending_text: list[str] = []
+
+            def _flush_text() -> None:
+                if pending_text:
+                    converted.append(
+                        {"role": "user", "content": "\n".join(pending_text)}
+                    )
+                    pending_text.clear()
+
             for block in content:
-                if block.get("type") == "text":
-                    user_text.append(block.get("text", ""))
-                elif block.get("type") == "tool_result":
+                btype = block.get("type")
+                if btype == "text":
+                    pending_text.append(block.get("text", ""))
+                elif btype == "tool_result":
+                    _flush_text()
                     converted.append(
                         {
                             "role": "tool",
@@ -191,8 +204,7 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
                             "content": block.get("content", ""),
                         }
                     )
-            if user_text:
-                converted.append({"role": "user", "content": "\n".join(user_text)})
+            _flush_text()
         else:
             converted.append({"role": role, "content": content})
     return converted
