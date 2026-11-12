@@ -363,6 +363,63 @@ def test_summary_prints_usage_when_result_carries_usage(
     assert "out 421" in output
 
 
+def test_summary_prints_cost_when_usage_has_positive_cost_usd(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary prints the LLM cost line when usage has a positive cost_usd."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=1_000_000, output_tokens=500_000, calls=5, cost_usd=0.001234),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM cost:" in output
+    assert "$0.001234" in output
+
+
+def test_summary_omits_cost_when_cost_usd_is_zero(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary omits the LLM cost line when cost_usd is 0."""
+    FakeOrchestrator.result = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0),
+    )
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM cost:" not in output
+
+
+def test_summary_omits_cost_when_usage_lacks_cost_usd(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The summary omits the LLM cost line when usage has no cost_usd attribute (legacy)."""
+    legacy = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="done",
+        stopped_reason="goal complete",
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12),
+    )
+    # Explicitly remove cost_usd to simulate legacy object
+    object.__delattr__(legacy.usage, "cost_usd")
+
+    output = runner.invoke(main, ["start", "build a thing"]).output
+
+    assert "LLM cost:" not in output
+
+
 def test_summary_skips_usage_line_when_zero_calls(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
@@ -518,6 +575,46 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
     assert "LLM usage:" in result.output
     assert "12 calls" in result.output
     assert "4321 tokens" in result.output
+
+
+def test_status_prints_persisted_cost_when_usage_has_positive_cost_usd(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command prints the LLM cost line when persisted usage has a positive cost_usd."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=1_000_000, output_tokens=500_000, calls=5, cost_usd=0.005678),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "ship it" in result.output
+    assert "LLM cost:" in result.output
+    assert "$0.005678" in result.output
+
+
+def test_status_omits_cost_when_persisted_cost_usd_is_zero(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command omits the LLM cost line when persisted cost_usd is 0."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        usage=Usage(input_tokens=3900, output_tokens=421, calls=12, cost_usd=0.0),
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "LLM cost:" not in result.output
 
 
 class RecordingClient:

@@ -502,6 +502,18 @@ def test_index_script_knows_every_status_and_falls_back_to_unknown(
     assert "return 'unknown';" in script, "statusClass() has no unknown fallback"
 
 
+def test_index_script_surfaces_cost_in_render_status(client: TestClient) -> None:
+    """The inline script's renderStatus() reads usage.cost_usd and formats it with toFixed(6)."""
+    script = _inline_script(client)
+
+    # The script should reference usage.cost_usd
+    assert "usage.cost_usd" in script, "script does not read usage.cost_usd"
+    # The script should format the cost with toFixed(6)
+    assert "toFixed(6)" in script, "script does not format cost with toFixed(6)"
+    # The script should conditionally include the cost only when > 0
+    assert "cost > 0" in script, "script does not guard cost display with cost > 0"
+
+
 @pytest.fixture
 def recording_orchestrator(
     monkeypatch: pytest.MonkeyPatch,
