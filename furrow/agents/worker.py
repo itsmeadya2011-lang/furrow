@@ -30,6 +30,87 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    # Destructive filesystem operations
+    "rm -rf /tmp",
+    "rm -rf /var",
+    "rm -rf /etc",
+    "rm -rf /usr",
+    "rm -rf /boot",
+    "rm -rf /lib",
+    "rm -rf /opt",
+    "rm -rf /srv",
+    "rm -rf /proc",
+    "rm -rf /sys",
+    "rm -rf /dev",
+    "rm -rf /*/",
+    "mkfs.",
+    "mkfs.",
+    "dd of=",
+    "dd if=/dev",
+    "> /dev/hd",
+    "> /dev/sd",
+    "> /dev/nvme",
+    "> /dev/xvd",
+    "poweroff",
+    "halt",
+    "init 0",
+    "init 6",
+    "systemctl poweroff",
+    "systemctl reboot",
+    "wall ",
+    "echo b > /dev",
+    "printf > /dev",
+    # Version control destruction
+    "git push --force",
+    "git push -f ",
+    "git reset --hard",
+    "git clean -fd",
+    "git checkout -- .",
+    "git checkout .",
+    "git branch -D",
+    "git tag -d ",
+    "git remote remove",
+    "git filter-branch",
+    "git reflog expire",
+    "git gc --prune=now",
+    # Package managers that can break the system
+    "apt-get remove",
+    "apt-get purge",
+    "apt-get autoremove",
+    "yum remove",
+    "dnf remove",
+    "pacman -R",
+    "brew uninstall",
+    "pip uninstall",
+    "npm uninstall -g",
+    "yarn global remove",
+    "pnpm remove -g",
+    # Network exfiltration
+    "curl | sh",
+    "curl | bash",
+    "wget -O- | sh",
+    "wget -O- | bash",
+    "nc -e",
+    "nc -e /bin/sh",
+    "nc -e /bin/bash",
+    "/dev/tcp/",
+    "base64 -d | sh",
+    "base64 -d | bash",
+    "xxd -r -p | sh",
+    "xxd -r -p | bash",
+    # Dangerous kernel/module operations
+    "insmod",
+    "rmmod",
+    "modprobe",
+    "echo 1 > /proc/sys",
+    "echo 1 > /sys/",
+    "sysctl -w",
+    "ulimit -f 0",
+    "mount",
+    "umount",
+    "chroot",
+    "sudo ",
+    "su ",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,6 +126,23 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "sudo",
+        "su",
+        "mount",
+        "umount",
+        "chroot",
+        "insmod",
+        "rmmod",
+        "modprobe",
+        "sysctl",
+        "wall",
+        "write",
+        "telnet",
+        "ftp",
+        "tftp",
+        "nc",
+        "netcat",
+        "socat",
     }
 )
 
@@ -53,6 +151,18 @@ MAX_LIST_ENTRIES = 500
 
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
+
+# Pipe-based patterns that catch "curl URL | sh", "wget file | bash", etc.
+# These need a regex because the URL or filename sits between the program
+# and the pipe target, so a plain substring check would miss them.
+_PIPE_PATTERNS = [
+    re.compile(r"\bcurl\b[^|]*\|\s*(?:sh|bash|zsh|ash|ksh|fish|/bin/sh|/bin/bash)\b"),
+    re.compile(r"\bwget\b[^|]*\|\s*(?:sh|bash|zsh|ash|ksh|fish|/bin/sh|/bin/bash)\b"),
+    re.compile(r"\bbase64\b[^|]*\|\s*(?:sh|bash|zsh|ash|ksh|fish)\b"),
+    re.compile(r"\bxxd\b[^|]*\|\s*(?:sh|bash|zsh|ash|ksh|fish)\b"),
+    re.compile(r"\bnc\b[^|]*\|\s*(?:sh|bash|/bin/sh|/bin/bash)\b"),
+    re.compile(r"\bsocat\b.*\bexec\b"),
+]
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
@@ -243,6 +353,12 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
+    # Pipe-based patterns: match "curl ... | sh", "wget ... | bash", etc.
+    # These need a regex because the URL or filename sits between the
+    # program and the pipe target.
+    for pattern in _PIPE_PATTERNS:
+        if pattern.search(normalized):
+            return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
         return True
@@ -363,6 +479,10 @@ class WorkerAgent:
         parts.append(f"Task: {self.task.description}")
         parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
         parts.append(f"Workspace: {self.workspace}")
+        if self.task.acceptance:
+            parts.append("Acceptance criteria (verify each before declaring success):")
+            for i, criterion in enumerate(self.task.acceptance, 1):
+                parts.append(f"  {i}. {criterion}")
         return "\n".join(parts)
 
     async def _execute_tool(self, tc: ToolCall) -> str:
@@ -380,6 +500,10 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "git_diff":
+            return await self._git_diff()
+        if name == "git_status":
+            return await self._git_status()
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -519,3 +643,59 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+
+    async def _git_diff(self) -> str:
+        """Return the unstaged diff of the workspace, or a message when git is unavailable."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "diff", "--no-color",
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (OSError, ValueError) as exc:
+            return f"error: could not run git diff: {exc}"
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
+            return "error: git diff timed out"
+        out = stdout.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            err = stderr.decode("utf-8", errors="replace").strip()
+            return f"error: git diff failed ({proc.returncode}): {err or out}"
+        if not out.strip():
+            return "(no unstaged changes)"
+        cap = 20000
+        if len(out) > cap:
+            out = out[:cap] + "\n[... output truncated ...]"
+        return out
+
+    async def _git_status(self) -> str:
+        """Return the git status of the workspace, or a message when git is unavailable."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git", "status", "--short", "--branch",
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except (OSError, ValueError) as exc:
+            return f"error: could not run git status: {exc}"
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.kill()
+            return "error: git status timed out"
+        out = stdout.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            err = stderr.decode("utf-8", errors="replace").strip()
+            return f"error: git status failed ({proc.returncode}): {err or out}"
+        if not out.strip():
+            return "(clean working tree)"
+        cap = 20000
+        if len(out) > cap:
+            out = out[:cap] + "\n[... output truncated ...]"
+        return out
