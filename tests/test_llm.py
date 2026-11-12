@@ -662,7 +662,7 @@ async def test_retry_retries_a_retryable_error_the_expected_number_of_times(
 
     client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
     with pytest.raises(_FakeStatusError):
-        await client._retry(call)
+        await client._retry(call, provider=Provider.OPENAI)
     assert len(calls) == 3  # max_retries attempts
 
 
@@ -679,7 +679,7 @@ async def test_retry_raises_a_non_retryable_error_immediately(
 
     client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
     with pytest.raises(ValueError, match="not retryable"):
-        await client._retry(call)
+        await client._retry(call, provider=Provider.OPENAI)
     assert len(calls) == 1  # a non-retryable error is never retried
 
 
@@ -695,7 +695,7 @@ async def test_retry_returns_the_result_of_a_successful_call(
         return "ok"
 
     client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
-    assert await client._retry(call) == "ok"
+    assert await client._retry(call, provider=Provider.OPENAI) == "ok"
     assert len(calls) == 1
 
 
@@ -713,7 +713,7 @@ async def test_retry_succeeds_after_a_transient_error(
         return "recovered"
 
     client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
-    assert await client._retry(call) == "recovered"
+    assert await client._retry(call, provider=Provider.OPENAI) == "recovered"
     assert len(calls) == 2
 
 

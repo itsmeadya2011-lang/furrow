@@ -88,4 +88,29 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "search_files",
+        "description": "search for a pattern in files under the workspace using grep.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "file_pattern": {"type": "string"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "patch_file",
+        "description": "apply a unified diff patch to a file in the workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "patch": {"type": "string"},
+            },
+            "required": ["path", "patch"],
+        },
+    },
 ]

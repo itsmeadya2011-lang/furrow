@@ -202,33 +202,65 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
+            # Check package.json for test script and specific test framework configs
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
+                dev_deps = {
+                    **pkg_data.get("devDependencies", {}),
+                    **pkg_data.get("dependencies", {}),
+                }
+                
+                # Determine package manager
+                pm = "npm"
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    pm = "pnpm"
+                elif (self.workspace / "yarn.lock").is_file():
+                    pm = "yarn"
+                
+                # Check for explicit test script
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return [pm, "test", "--silent"] if pm != "npm" else ["npm", "test", "--silent"]
+                
+                # Detect test framework from dependencies
+                if "vitest" in dev_deps:
+                    return [pm, "vitest", "run"] if pm != "npm" else ["npx", "vitest", "run"]
+                if "jest" in dev_deps:
+                    return [pm, "jest", "--silent"] if pm != "npm" else ["npx", "jest", "--silent"]
+                if "mocha" in dev_deps:
+                    return [pm, "mocha"] if pm != "npm" else ["npx", "mocha"]
+                if "@playwright/test" in dev_deps or "playwright" in dev_deps:
+                    return (
+                        [pm, "playwright", "test"]
+                        if pm != "npm"
+                        else ["npx", "playwright", "test"]
+                    )
+                if "cypress" in dev_deps:
+                    return [pm, "cypress", "run"] if pm != "npm" else ["npx", "cypress", "run"]
+                    
             except Exception:
                 pass
+            
+            # Check for config files
+            for pattern in ["vitest.config.*", "jest.config.*"]:
+                if any(self.workspace.glob(pattern)):
+                    pm = (
+                        "pnpm"
+                        if (self.workspace / "pnpm-lock.yaml").is_file()
+                        else ("yarn" if (self.workspace / "yarn.lock").is_file() else "npm")
+                    )
+                    if "vitest" in pattern:
+                        return [pm, "vitest", "run"] if pm != "npm" else ["npx", "vitest", "run"]
+                    return [pm, "jest", "--silent"] if pm != "npm" else ["npx", "jest", "--silent"]
+            
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            pm = (
+                "pnpm"
+                if (self.workspace / "pnpm-lock.yaml").is_file()
+                else ("yarn" if (self.workspace / "yarn.lock").is_file() else "npm")
+            )
+            return [pm, "test", "--silent"] if pm != "npm" else ["npm", "test", "--silent"]
 
         python_markers = [
             "pyproject.toml",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,10 +13,14 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger, get_metrics_collector
 
 _UNSET = object()
 
 _MAX_TEXT = 120
+
+
+logger = get_logger(__name__)
 
 
 class Orchestrator:
@@ -149,6 +154,10 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
+        metrics = get_metrics_collector()
+        metrics.increment("orchestrator.runs.started")
+        start_time = time.monotonic()
+        
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
@@ -162,8 +171,10 @@ class Orchestrator:
                 self._stopped_reason = "max_cycles reached"
                 break
             self.cycles += 1
+            cycle_start = time.monotonic()
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            metrics.increment("orchestrator.cycles.started")
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
@@ -171,11 +182,15 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
+                metrics.increment("orchestrator.planner.failures")
                 self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
+            metrics.set_gauge(
+                "orchestrator.cycle.tasks_planned", planned, {"cycle": str(self.cycles)}
+            )
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
             if not plan.tasks:
@@ -192,6 +207,7 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
+                metrics.increment("orchestrator.execution.failures")
                 self.cycles -= 1
                 break
             try:
@@ -201,6 +217,7 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
+                metrics.increment("orchestrator.tester.failures")
                 self.cycles -= 1
                 break
             self._tests_run += 1
@@ -215,8 +232,10 @@ class Orchestrator:
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
                 self._say(f"[green]Tests passed: {summary}[/green]")
+                metrics.increment("orchestrator.tests.passed")
             else:
                 self._say(f"[red]Tests failed: {summary}[/red]")
+                metrics.increment("orchestrator.tests.failed")
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
             if skipped:
@@ -245,6 +264,11 @@ class Orchestrator:
             )
             self._usage.add(cycle_usage)
             self._usage_seen = cumulative
+            metrics.increment("orchestrator.llm.calls", cycle_usage.calls)
+            metrics.increment("orchestrator.llm.input_tokens", cycle_usage.input_tokens)
+            metrics.increment("orchestrator.llm.output_tokens", cycle_usage.output_tokens)
+            if cycle_usage.cost_usd > 0:
+                metrics.increment("orchestrator.llm.cost_usd", cycle_usage.cost_usd)
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
@@ -253,6 +277,8 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+            cycle_duration = time.monotonic() - cycle_start
+            metrics.observe("orchestrator.cycle.duration_seconds", cycle_duration)
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
@@ -289,6 +315,7 @@ class Orchestrator:
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
                 )
+                metrics.increment("orchestrator.state_save.failures")
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
@@ -312,7 +339,15 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
-        return RunResult(
+        
+        total_duration = time.monotonic() - start_time
+        metrics.observe("orchestrator.run.duration_seconds", total_duration)
+        metrics.set_gauge("orchestrator.run.cycles_completed", self.cycles)
+        metrics.set_gauge("orchestrator.run.tasks_completed", completed)
+        metrics.set_gauge("orchestrator.run.tasks_failed", failed)
+        metrics.set_gauge("orchestrator.run.tasks_blocked", blocked)
+        
+        result = RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
             tasks_completed=completed,
@@ -325,6 +360,9 @@ class Orchestrator:
             usage=self._usage,
             files_changed=files_changed,
         )
+        
+        metrics.increment("orchestrator.runs.completed")
+        return result
 
     def _context(self) -> str:
         if self._feedback:

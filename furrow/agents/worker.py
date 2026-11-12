@@ -380,6 +380,17 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+                str(args.get("file_pattern", "")) if args.get("file_pattern") is not None else "",
+            )
+        if name == "patch_file":
+            return await self._patch_file(
+                str(args.get("path", "")),
+                str(args.get("patch", "")),
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -498,6 +509,101 @@ class WorkerAgent:
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
+
+    async def _search_files(self, pattern: str, path: str, file_pattern: str) -> str:
+        """Search for a pattern in files using grep."""
+        if not pattern.strip():
+            return "error: empty pattern"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            cmd = ["grep", "-r", "-n", "--color=never"]
+            if file_pattern:
+                cmd.extend(["--include", file_pattern])
+            cmd.extend([pattern, str(resolved)])
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(self.workspace),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+        except asyncio.TimeoutError:
+            return "search timed out"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        if proc.returncode == 1:
+            # grep returns 1 when no matches found
+            return "no matches found"
+        if proc.returncode is not None and proc.returncode > 1:
+            return f"search error: {err or out}"
+        combined = out + ("\n[stderr]\n" + err if err.strip() else "")
+        cap = 20000
+        if len(combined) > cap:
+            combined = "[... output truncated ...]\n" + combined[-cap:]
+        return combined
+
+    async def _patch_file(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file."""
+        if not patch.strip():
+            return "error: empty patch"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            # Read the original file
+            if not resolved.exists():
+                return f"error: file {path} does not exist"
+            original = await self.client.read_file(resolved)
+            # Apply the patch
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as pf:
+                pf.write(patch)
+                patch_file = pf.name
+            try:
+                # Use git apply or patch command
+                proc = await asyncio.create_subprocess_exec(
+                    "git", "apply", "--whitespace=nowarn", patch_file,
+                    cwd=str(self.workspace),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(patch_file)
+            if proc.returncode != 0:
+                err = stderr.decode("utf-8", errors="replace")
+                # Try with patch command as fallback
+                with tempfile.NamedTemporaryFile(mode="w", suffix=".patch", delete=False) as pf:
+                    pf.write(patch)
+                    patch_file = pf.name
+                try:
+                    proc2 = await asyncio.create_subprocess_exec(
+                        "patch", "-p1", "-i", patch_file,
+                        cwd=str(self.workspace),
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    )
+                    _stdout2, stderr2 = await asyncio.wait_for(proc2.communicate(), timeout=30.0)
+                finally:
+                    with contextlib.suppress(OSError):
+                        os.unlink(patch_file)
+                if proc2.returncode != 0:
+                    err2 = stderr2.decode("utf-8", errors="replace")
+                    return f"patch failed: {err2 or err}"
+            # Read the new content to track changes
+            new_content = await self.client.read_file(resolved)
+            if new_content != original:
+                rel = str(resolved.relative_to(self.workspace.resolve()))
+                self.files_changed.add(rel)
+                return f"patched {path} ({len(new_content.encode('utf-8'))} bytes)"
+            return "patch applied but no changes made"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
