@@ -83,6 +83,9 @@ def _print_summary(result: RunResult) -> None:
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
             click.echo(f"  LLM cost:        ${cost:.6f}")
+    dropped = getattr(result, "dropped_events", 0) or 0
+    if dropped > 0:
+        click.echo(f"  Events dropped:  {dropped}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")

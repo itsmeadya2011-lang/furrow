@@ -106,6 +106,7 @@ class RunResult(BaseModel):
     skipped: bool = False
     usage: Usage = Field(default_factory=Usage)
     files_changed: list[str] = Field(default_factory=list)
+    dropped_events: int = 0
 
 
 class Settings(BaseSettings):

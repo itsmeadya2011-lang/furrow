@@ -93,6 +93,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+    .header .dropped { color: #e0685f; }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
@@ -147,7 +148,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
-  </div>
+      <span id="dropped" class="dropped"></span>
+    </div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -160,6 +162,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const droppedEl = document.getElementById('dropped');
   let socket = null;
   let lastSummary = null;
 
@@ -209,6 +212,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    const dropped = Number(status && status.dropped_events) || 0;
+    if (dropped > 0) {
+      droppedEl.textContent = dropped + ' event(s) dropped';
+      droppedEl.style.display = '';
+    } else {
+      droppedEl.textContent = '';
+      droppedEl.style.display = 'none';
+    }
   }
 
   function renderTasks(tasks) {
