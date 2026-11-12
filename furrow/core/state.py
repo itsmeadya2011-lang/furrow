@@ -10,6 +10,8 @@ Design notes:
     A partially written state file can therefore never be observed.
   * Reading is forgiving: a missing or corrupt state file yields ``None``
     instead of raising, so a run can always start fresh.
+  * Migration: state files from older versions are automatically migrated to
+    the current version on load.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import os
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -27,7 +30,7 @@ from furrow.logging import get_logger
 
 logger = get_logger(__name__)
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 DEFAULT_STATE_RELATIVE_PATH = Path(".furrow/state.json")
 
@@ -76,6 +79,49 @@ def state_path_for(
     return Path(workspace) / Path(relative)
 
 
+def _migrate_v1_to_v2(data: dict[str, Any]) -> dict[str, Any]:
+    """Migrate state from version 1 to version 2.
+
+    Version 2 adds the `version` field default and ensures all required fields
+    have proper defaults.
+    """
+    # Ensure version is set to 2 (explicitly override)
+    data["version"] = STATE_VERSION
+    # Ensure all fields have defaults
+    data.setdefault("no_progress", 0)
+    data.setdefault("prev_sig", "")
+    data.setdefault("tests_run", 0)
+    data.setdefault("last_passed", None)
+    data.setdefault("last_skipped", False)
+    data.setdefault("last_summary", "")
+    data.setdefault("usage", {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_usd": 0.0})
+    # Ensure tasks have files_changed
+    for task in data.get("tasks", []):
+        task.setdefault("files_changed", [])
+    return data
+
+
+# Migration functions mapped from version -> function
+_MIGRATIONS: dict[int, callable] = {
+    1: _migrate_v1_to_v2,
+}
+
+
+def _migrate_state(data: dict[str, Any]) -> dict[str, Any]:
+    """Apply all necessary migrations to bring state to current version."""
+    version = data.get("version", 1)
+    while version < STATE_VERSION:
+        migrator = _MIGRATIONS.get(version)
+        if migrator is None:
+            logger.warning("No migration from version %d to %d, skipping", version, version + 1)
+            version += 1
+            continue
+        logger.info("Migrating state from version %d to %d", version, version + 1)
+        data = migrator(data)
+        version = data.get("version", version + 1)
+    return data
+
+
 class StateStore:
     """Reads and writes a :class:`RunState` JSON document."""
 
@@ -100,9 +146,16 @@ class StateStore:
             logger.warning("Could not read state file %s: %s", self.path, exc)
             return None
         try:
-            return RunState.model_validate_json(raw)
-        except (ValidationError, ValueError) as exc:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
             logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
+            return None
+        # Apply migrations
+        data = _migrate_state(data)
+        try:
+            return RunState.model_validate(data)
+        except (ValidationError, ValueError) as exc:
+            logger.warning("Ignoring corrupt state file %s after migration: %s", self.path, exc)
             return None
 
     def save(self, state: RunState) -> None:
@@ -113,6 +166,7 @@ class StateStore:
         fails the temporary file is removed and the error is re-raised.
         """
         state.updated_at = utcnow()
+        state.version = STATE_VERSION
         payload = json.dumps(state.model_dump(mode="json"), indent=2)
 
         parent = self.path.parent

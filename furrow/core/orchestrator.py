@@ -163,9 +163,9 @@ class Orchestrator:
                 break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
-            self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles, "max_cycles": self.settings.max_cycles}))
             try:
-                plan = await self.planner.plan(self.goal, context=self._context())
+                plan = await self.planner.plan(self.goal, context=self._context(), workspace=self.settings.workspace)
             except asyncio.CancelledError:
                 raise
             except Exception as e:

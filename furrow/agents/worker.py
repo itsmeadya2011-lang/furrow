@@ -374,6 +374,12 @@ class WorkerAgent:
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
             return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+        if name == "edit_file":
+            return await self._edit_file(
+                str(args.get("path", "")),
+                str(args.get("old_string", "")),
+                str(args.get("new_string", "")),
+            )
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -425,6 +431,27 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _edit_file(self, path: str, old_string: str, new_string: str) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if old_string not in content:
+            return f"error: old_string not found in file (file length: {len(content)} chars)"
+        new_content = content.replace(old_string, new_string)
+        if new_content == content:
+            return "error: no changes made (old_string may match multiple times or be identical to new_string)"
+        try:
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path} ({len(old_string)} chars -> {len(new_string)} chars)"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)

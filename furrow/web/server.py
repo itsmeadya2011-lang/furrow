@@ -74,10 +74,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.5;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -93,11 +95,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .progress-bar {
+    height: 6px; background: #2b3240; border-radius: 3px; overflow: hidden;
+    margin: .5rem 0;
+  }
+  .progress-bar .fill {
+    height: 100%; background: linear-gradient(90deg, #4c8dff, #57d38c);
+    transition: width 0.3s ease; border-radius: 3px;
+  }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color 0.2s, box-shadow 0.2s;
   }
+  .panel.running { border-color: #4c8dff; box-shadow: 0 0 0 1px #4c8dff44; }
+  .panel.completed { border-color: #57d38c; }
+  .panel.failed { border-color: #e0685f; }
+  .panel.blocked { border-color: #f0b367; }
+  .panel.skipped { border-color: #8a93a5; opacity: 0.7; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
   }
@@ -111,8 +127,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     word-break: break-word;
   }
   .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    display: flex; gap: .8rem; font-size: .8rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
+  }
+  .panel-files {
+    font-size: .75rem; color: #4c8dff; font-family: inherit;
+    background: #10131a; padding: .15rem .4rem; border-radius: 3px;
   }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
@@ -124,13 +144,37 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { color: #8a93a5; background: #2b3240; }
+  .status-running { color: #4c8dff; background: #1a3a5c; }
+  .status-completed { color: #57d38c; background: #1a3a2e; }
+  .status-failed { color: #e0685f; background: #3a1a1a; }
+  .status-blocked { color: #f0b367; background: #3a301a; }
+  .status-skipped { color: #8a93a5; background: #2b3240; }
+  .status-unknown { color: #8a93a5; background: #2b3240; }
+  .cycle-indicator {
+    display: inline-flex; align-items: center; gap: .4rem;
+    padding: .2rem .6rem; border-radius: 999px;
+    background: #2b3240; font-size: .85rem; font-weight: 600;
+  }
+  .cycle-indicator.running { background: #1a3a5c; color: #4c8dff; }
+  .cycle-indicator.complete { background: #1a3a2e; color: #57d38c; }
+  .summary-banner {
+    border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
+    margin-bottom: 1rem; background: #171b23;
+    display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+  }
+  .summary-banner.success { border-color: #57d38c; }
+  .summary-banner.failure { border-color: #e0685f; }
+  .summary-banner.skipped { border-color: #f0b367; }
+  .summary-banner .icon { font-size: 1.5rem; }
+  .summary-banner .text { flex: 1; min-width: 150px; }
+  .log-entry { display: flex; gap: .5rem; margin: .2rem 0; }
+  .log-entry .time { color: #5a6378; font-variant-numeric: tabular-nums; }
+  .log-entry .msg { color: #d7dae0; }
+  .log-entry.error .msg { color: #e0685f; }
+  .log-entry.success .msg { color: #57d38c; }
+  .log-entry.warning .msg { color: #f0b367; }
+  .log-entry.info .msg { color: #4c8dff; }
 </style>
 </head>
 <body>
@@ -139,16 +183,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
   <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
+    <span class="cycle-indicator" id="cycle">idle</span>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>usage <b id="usage">0 calls, 0 tokens, $0.00</b></span>
+  </div>
+  <div class="progress-bar" id="progress-bar" style="display:none;">
+    <div class="fill" id="progress-fill" style="width:0%"></div>
   </div>
 </div>
+<div id="summary-banner" class="summary-banner" style="display:none;"></div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
 <script>
@@ -156,15 +205,36 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const goalEl = document.getElementById('goal');
   const tasksEl = document.getElementById('tasks');
   const goalDisplayEl = document.getElementById('goal-display');
-  const cycleEl = document.getElementById('cycle');
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const cycleIndicatorEl = document.getElementById('cycle');
+  const progressBarEl = document.getElementById('progress-bar');
+  const progressFillEl = document.getElementById('progress-fill');
+  const summaryBannerEl = document.getElementById('summary-banner');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
+  const stopBtn = document.getElementById('stop');
   let socket = null;
   let lastSummary = null;
+  let currentCycle = 0;
+  let maxCycles = 0;
+  let taskStates = new Map();
 
-  function append(line) {
-    logEl.textContent += line + '\n';
+  function append(line, type = 'info') {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry ' + type;
+    const now = new Date();
+    const time = now.toLocaleTimeString();
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'time';
+    timeSpan.textContent = '[' + time + ']';
+    const msgSpan = document.createElement('span');
+    msgSpan.className = 'msg';
+    msgSpan.textContent = line;
+    entry.appendChild(timeSpan);
+    entry.appendChild(msgSpan);
+    logEl.appendChild(entry);
     logEl.scrollTop = logEl.scrollHeight;
   }
 
@@ -192,10 +262,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return 'unknown';
   }
 
+  function formatCost(cost) {
+    if (cost >= 1.0) return '$' + cost.toFixed(2);
+    if (cost >= 0.01) return '$' + cost.toFixed(4);
+    if (cost > 0) return '$' + cost.toFixed(6);
+    return '$0.00';
+  }
+
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
-    cycleEl.textContent =
-      text(status && status.cycles !== undefined ? status.cycles : '\u2014');
+    const cycles = status && status.cycles !== undefined ? status.cycles : '\u2014';
+    cycleIndicatorEl.textContent = 'cycle ' + cycles;
+    cycleIndicatorEl.className = 'cycle-indicator ' + (running ? 'running' : 'complete');
     stateEl.textContent = running ? 'running' : 'stopped';
     const reason =
       text(status && status.stopped_reason) ||
@@ -204,9 +282,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
     stoppedReasonEl.style.display = reason ? '' : 'none';
     const usage = (status && status.usage) || (result && result.usage) || {};
     const calls = Number(usage.calls) || 0;
-    const total = (Number(usage.input_tokens) || 0) +
-      (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const inputTokens = Number(usage.input_tokens) || 0;
+    const outputTokens = Number(usage.output_tokens) || 0;
+    const total = inputTokens + outputTokens;
+    const cost = Number(usage.cost_usd) || 0;
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens (in ' + inputTokens + ' / out ' + outputTokens + '), cost ' + formatCost(cost);
+
+    // Progress bar
+    if (running && maxCycles > 0) {
+      progressBarEl.style.display = 'block';
+      const pct = Math.min(100, (currentCycle / maxCycles) * 100);
+      progressFillEl.style.width = pct + '%';
+    } else if (!running) {
+      progressBarEl.style.display = 'none';
+    }
   }
 
   function renderTasks(tasks) {
@@ -225,7 +314,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = text(task.status) || 'pending';
 
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = 'panel ' + statusClass(status);
       panel.id = 'task-' + text(task.id);
 
       const head = document.createElement('div');
@@ -248,6 +337,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      // Files changed
+      if (task.files_changed && task.files_changed.length > 0) {
+        const files = document.createElement('span');
+        files.className = 'panel-files';
+        files.textContent = task.files_changed.slice(0, 5).join(', ') + (task.files_changed.length > 5 ? ' +' + (task.files_changed.length - 5) : '');
+        meta.appendChild(files);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -272,13 +369,60 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
   }
 
+  function renderSummary(result) {
+    const passed = result.passed === true;
+    const skipped = result.skipped === true;
+    let text = '';
+    let className = '';
+    let icon = '';
+    if (skipped) {
+      text = 'SKIPPED - no test runner detected.';
+      className = 'skipped';
+      icon = '\u26A0\uFE0F';
+    } else if (passed) {
+      text = 'PASSED - all tests passed.';
+      className = 'success';
+      icon = '\u2705';
+    } else if (result.tests_run === 0) {
+      text = 'NOT RUN - no tests were executed.';
+      className = 'skipped';
+      icon = '\u26A0\uFE0F';
+    } else {
+      text = 'FAILED - tests did not pass.';
+      className = 'failure';
+      icon = '\u274C';
+    }
+    const cost = Number(result.usage?.cost_usd) || 0;
+    const calls = Number(result.usage?.calls) || 0;
+    const totalTokens = (Number(result.usage?.input_tokens) || 0) + (Number(result.usage?.output_tokens) || 0);
+    summaryBannerEl.className = 'summary-banner ' + className;
+    summaryBannerEl.style.display = 'flex';
+    summaryBannerEl.textContent = '';
+    const iconSpan = document.createElement('span');
+    iconSpan.className = 'icon';
+    iconSpan.textContent = icon;
+    const textDiv = document.createElement('div');
+    textDiv.className = 'text';
+    const strong = document.createElement('strong');
+    strong.textContent = text;
+    textDiv.appendChild(strong);
+    textDiv.appendChild(document.createElement('br'));
+    textDiv.appendChild(document.createTextNode(
+      'Cycles: ' + result.cycles + ', Tasks: ' + result.tasks_completed + ' completed, ' +
+      result.tasks_failed + ' failed, ' + (result.tasks_blocked || 0) + ' blocked' +
+      ', Cost: ' + formatCost(cost) + ' (' + calls + ' calls, ' + totalTokens + ' tokens)'
+    ));
+    summaryBannerEl.appendChild(iconSpan);
+    summaryBannerEl.appendChild(textDiv);
+  }
+
   async function loadState() {
     try {
       const res = await fetch('/api/state');
       const body = await res.json();
       if (body.state && body.state.tasks) { renderTasks(body.state.tasks); }
     } catch (err) {
-      append('! could not load state');
+      append('! could not load state', 'error');
     }
   }
 
@@ -297,9 +441,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
           append('-- ' + summary);
           lastSummary = summary;
         }
+        renderSummary(body.result);
       }
     } catch (err) {
-      append('! could not load status');
+      append('! could not load status', 'error');
     }
   }
 
@@ -309,6 +454,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
+      summaryBannerEl.style.display = 'none';
+      startBtn.disabled = true;
+      resumeBtn.disabled = true;
+      stopBtn.disabled = false;
+      goalEl.disabled = true;
       // A new run starts: forget the previous summary so this run always
       // contributes its own summary line to the log.
       lastSummary = null;
@@ -331,44 +481,61 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const data = (msg && msg.data) || {};
       const time = eventTime(msg);
       let line = '';
-      let color = '#8a93a5';
+      let logType = 'info';
       if (type === 'cycle_started') {
+        currentCycle = data.cycle || 1;
+        maxCycles = data.max_cycles || 0;
         line = 'cycle ' + text(data.cycle) + ' started';
+        logType = 'info';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        logType = 'info';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+        logType = 'info';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
         line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
           truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
+        logType = ok ? 'success' : 'error';
       } else if (type === 'test_started') {
         line = 'running tests...';
+        logType = 'info';
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
+        logType = ok ? 'success' : 'error';
       } else if (type === 'state_saved') {
         line = 'state saved';
+        logType = 'info';
       } else if (type === 'log') {
         line = text(msg.message);
+        logType = 'info';
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
-        color = '#e0685f';
+        logType = 'error';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
-        color = '#57d38c';
+        logType = 'success';
+        startBtn.disabled = false;
+        resumeBtn.disabled = false;
+        stopBtn.disabled = true;
+        goalEl.disabled = false;
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
+      const span = document.createElement('div');
+      span.className = 'log-entry ' + logType;
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'time';
+      timeSpan.textContent = '[' + time + ']';
+      const msgSpan = document.createElement('span');
+      msgSpan.className = 'msg';
+      msgSpan.textContent = line;
+      span.appendChild(timeSpan);
+      span.appendChild(msgSpan);
       logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
       logEl.scrollTop = logEl.scrollHeight;
-      return line;
     }
 
     socket.onmessage = function (ev) {
@@ -376,7 +543,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       try {
         msg = JSON.parse(ev.data);
       } catch (err) {
-        append(ev.data);
+        append(ev.data, 'error');
         return;
       }
       renderEvent(msg);
@@ -388,13 +555,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
     };
     socket.onclose = function () {
-      append('-- closed');
+      append('-- closed', 'warning');
       socket = null;
+      startBtn.disabled = false;
+      resumeBtn.disabled = false;
+      stopBtn.disabled = true;
+      goalEl.disabled = false;
       loadStatus();
     };
     socket.onerror = function () {
-      append('!! websocket error');
+      append('!! websocket error', 'error');
     };
+  }
+
+  function stopRun() {
+    if (socket) {
+      socket.close();
+      append('-- stopping run...', 'warning');
+    }
   }
 
   document.getElementById('start').onclick = function () {
@@ -403,6 +581,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('stop').onclick = stopRun;
 
   loadState();
   loadStatus();
