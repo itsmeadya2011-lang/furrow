@@ -668,6 +668,50 @@ async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_merge_plan_drops_tasks_no_longer_in_the_plan(tmp_path, monkeypatch):
+    """Tasks dropped from a later plan must not linger as stale entries.
+
+    Regression test: ``self.tasks`` used to keep every task ever seen, so a run
+    whose plan changes across cycles accumulated stale tasks (returned by
+    ``status()`` and growing without bound). After the merge, ``self.tasks``
+    must match the current plan exactly.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    class ChangingPlanner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def plan(self, goal: str, context: str = "") -> Plan:
+            self.calls += 1
+            if self.calls == 1:
+                return Plan(
+                    tasks=[
+                        TaskModel(id="t1", description="one"),
+                        TaskModel(id="t2", description="two"),
+                    ],
+                    rationale="r",
+                )
+            # Cycle 2 drops t1 and keeps t2 unchanged (so it is skipped).
+            return Plan(
+                tasks=[TaskModel(id="t2", description="two")],
+                rationale="r",
+            )
+
+    orch.planner = ChangingPlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.cycles == 2
+    # t1 was dropped by the second plan: it must not remain in self.tasks.
+    assert [t.id for t in orch.tasks] == ["t2"]
+    assert orch.tasks[0].status == "completed"
+    assert orch._active_ids == {"t2"}
+
+
+@pytest.mark.asyncio
 async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

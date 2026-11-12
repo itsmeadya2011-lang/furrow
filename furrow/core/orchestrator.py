@@ -357,12 +357,10 @@ class Orchestrator:
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
-                    if old.attempts <= max_retries and (
-                        old.status == "failed" or old.status in ("pending", "running")
-                    ):
-                        pt.status = "pending"
-                    else:
-                        pt.status = "pending"
+                    # Not completed, failed or blocked (so pending or running,
+                    # or an untrusted status that normalised to pending). A
+                    # re-planned task is always re-attempted.
+                    pt.status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
@@ -376,8 +374,14 @@ class Orchestrator:
                     old.error = pt.error
                 plan.tasks[index] = old
             else:
-                self.tasks.append(pt)
+                # New task: it is already part of plan.tasks; self.tasks is
+                # rebuilt from plan.tasks below so dropped tasks do not linger.
+                pass
         self._active_ids = {t.id for t in plan.tasks}
+        # Replace self.tasks with the merged plan so that tasks dropped from the
+        # plan are not carried over as stale entries and the task list always
+        # reflects the current plan.
+        self.tasks = list(plan.tasks)
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}
