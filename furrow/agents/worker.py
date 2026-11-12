@@ -51,6 +51,12 @@ DENIED_PROGRAMS = frozenset(
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
+# Maximum number of grep matches returned by the ``grep_file`` tool.
+MAX_GREP_RESULTS = 200
+
+# Maximum length of a single line returned by grep (longer lines are truncated).
+MAX_GREP_LINE = 2000
+
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
 
@@ -378,6 +384,11 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "grep_file":
+            return await self._grep_file(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -443,6 +454,62 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _grep_file(self, pattern: str, path: str) -> str:
+        """Search for a regex pattern in files under *path* within the workspace.
+
+        Returns matching lines as ``relative_path:line_number:content``.  The
+        search is recursive when *path* is a directory.  Results are capped at
+        :data:`MAX_GREP_RESULTS` and individual lines are truncated at
+        :data:`MAX_GREP_LINE` so the output cannot flood the context window.
+        """
+        if not pattern.strip():
+            return "error: empty pattern"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not resolved.exists():
+            return f"error: no such path: {path}"
+
+        base = self.workspace.resolve()
+        matches: list[str] = []
+
+        def scan_file(file_path: Path) -> None:
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeError):
+                return
+            try:
+                rel = str(file_path.relative_to(base))
+            except ValueError:
+                rel = str(file_path)
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if regex.search(line):
+                    if len(line) <= MAX_GREP_LINE:
+                        truncated = line
+                    else:
+                        truncated = line[: MAX_GREP_LINE - 1] + "…"
+                    matches.append(f"{rel}:{lineno}:{truncated}")
+                    if len(matches) >= MAX_GREP_RESULTS:
+                        return
+
+        if resolved.is_file():
+            scan_file(resolved)
+        elif resolved.is_dir():
+            for file_path in sorted(resolved.rglob("*")):
+                if file_path.is_file():
+                    scan_file(file_path)
+                    if len(matches) >= MAX_GREP_RESULTS:
+                        break
+
+        if not matches:
+            return "no matches"
+        return "\n".join(matches)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
