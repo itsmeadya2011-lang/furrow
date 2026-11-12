@@ -977,3 +977,23 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_done_event_emitted_when_run_completes(tmp_path, monkeypatch):
+    """The orchestrator emits a DONE event via the event bus when the run finishes."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    events = drain(q)
+    done_events = [e for e in events if e.type == EventType.DONE]
+    assert len(done_events) == 1
+    assert done_events[0].data["passed"] is True
+    assert done_events[0].data["cycles"] == result.cycles
+    assert done_events[0].data["summary"] == result.summary
+    assert done_events[0].data["stopped_reason"] == result.stopped_reason

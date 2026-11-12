@@ -67,6 +67,24 @@ class FakeOrchestrator:
         if self.event_bus is not None:
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": 1}))
             self.event_bus.emit(Event(type=EventType.TASK_FINISHED, data={"task": "1"}))
+            self.event_bus.emit(
+                Event(
+                    type=EventType.DONE,
+                    message="stopped: goal complete",
+                    data={
+                        "passed": True,
+                        "cycles": 1,
+                        "tasks_completed": 1,
+                        "tasks_failed": 0,
+                        "tasks_blocked": 0,
+                        "tests_run": 0,
+                        "summary": "done",
+                        "stopped_reason": "goal complete",
+                        "skipped": False,
+                        "files_changed": [],
+                    },
+                )
+            )
         return RunResult(
             passed=True,
             cycles=1,
@@ -332,7 +350,7 @@ def test_websocket_streams_events(
 
     done = messages[-1]
     assert done["type"] == "done"
-    assert done["message"] == "done"
+    assert done["message"] == "stopped: goal complete"
     assert done["data"]["passed"] is True
 
 

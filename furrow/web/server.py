@@ -709,7 +709,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if run_task is None:  # pragma: no cover - defensive
             return
         # The run is over: clear the flag right away instead of waiting for the
-        # done-callback to be processed.
+        # done-callback to be processed.  The "done" event was already streamed
+        # through the event bus by the orchestrator itself, so we do not send a
+        # second one here.
         _clear_running_flag(run_task)
         if run_task.cancelled():
             return
@@ -718,14 +720,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             logger.error("Furrow run failed: %s", exc)
             await _send_error(websocket, f"run failed: {exc}")
             return
-        result = run_task.result()
-        await websocket.send_json(
-            {
-                "type": "done",
-                "message": result.summary,
-                "data": result.model_dump(mode="json"),
-            }
-        )
     except asyncio.CancelledError:
         # The client went away (or the server is shutting down): stop the run
         # and make sure the server does not stay stuck in the "running" state.

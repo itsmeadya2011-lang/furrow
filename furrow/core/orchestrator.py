@@ -303,6 +303,10 @@ class Orchestrator:
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
+        # Tell every subscriber that the run has finished, so consumers (CLI,
+        # web UI, ...) can react to a completed run without polling.  The event
+        # carries the run result so subscribers don't need to fetch status
+        # afterwards.
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
         )
@@ -312,6 +316,25 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=f"stopped: {self._stopped_reason}",
+                data={
+                    "passed": bool(self._last_test_passed),
+                    "cycles": self.cycles,
+                    "tasks_completed": completed,
+                    "tasks_failed": failed,
+                    "tasks_blocked": blocked,
+                    "tests_run": int(getattr(self, "_tests_run", 0) or 0),
+                    "summary": f"stopped: {self._stopped_reason}",
+                    "stopped_reason": self._stopped_reason,
+                    "skipped": bool(self._tests_skipped),
+                    "files_changed": files_changed,
+                },
+            )
+        )
+
         return RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
