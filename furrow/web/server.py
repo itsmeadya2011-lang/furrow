@@ -206,7 +206,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens';
+    const cost = Number(usage.cost_usd) || 0;
+    let usageText = calls + ' calls, ' + total + ' tokens';
+    if (cost > 0) {
+      usageText += ', $' + cost.toFixed(6);
+    }
+    usageEl.textContent = usageText;
   }
 
   function renderTasks(tasks) {
@@ -248,6 +253,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      const filesChanged = text(task.files_changed);
+      if (filesChanged) {
+        const filesEl = document.createElement('span');
+        filesEl.textContent = ' | files: ' + filesChanged;
+        meta.appendChild(filesEl);
+      }
+
+      const startedAt = text(task.started_at);
+      if (startedAt) {
+        const startedEl = document.createElement('span');
+        startedEl.textContent = ' | started: ' + startedAt;
+        meta.appendChild(startedEl);
+      }
+
+      const finishedAt = text(task.finished_at);
+      if (finishedAt) {
+        const finishedEl = document.createElement('span');
+        finishedEl.textContent = ' | finished: ' + finishedAt;
+        meta.appendChild(finishedEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
