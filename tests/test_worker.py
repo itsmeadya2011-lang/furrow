@@ -393,6 +393,63 @@ def test_resolve_in_workspace():
     assert inside == ws / "a.py"
 
 
+def test_resolve_in_workspace_rejects_absolute_traversal(tmp_path):
+    ws = (tmp_path / "ws").resolve()
+    ws.mkdir()
+    # An absolute path that only *looks* inside the workspace but climbs out
+    # with ``..`` must be rejected (a lexical prefix check alone is not enough).
+    sneaky = str(ws / ".." / "outside.txt")
+    assert resolve_in_workspace(ws, sneaky) is None
+
+
+def test_resolve_in_workspace_rejects_symlink_escape(tmp_path):
+    ws = (tmp_path / "ws").resolve()
+    ws.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret")
+    link = ws / "link.txt"
+    link.symlink_to(outside)
+    assert resolve_in_workspace(ws, str(link)) is None
+
+
+@pytest.mark.asyncio
+async def test_write_file_absolute_traversal_is_rejected(tmp_path):
+    ws = (tmp_path / "ws").resolve()
+    ws.mkdir()
+    target = tmp_path / "evil.py"
+    sneaky = str(ws / ".." / "evil.py")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="write_file",
+                    arguments={"path": sneaky, "content": "x"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(ws)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="escape")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=ws)
+    await agent.run()
+    assert not target.exists()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "path escapes workspace" in b["content"]
+                    found = True
+    assert found
+
+
 @pytest.mark.asyncio
 async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
     """Table-driven test with commands that MUST be denied.
