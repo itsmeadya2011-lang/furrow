@@ -131,6 +131,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .budget-bar {
+    height: 6px; background: #2b3240; border-radius: 3px; overflow: hidden;
+    margin-top: .5rem; display: none;
+  }
+  .budget-bar.fill { display: block; }
+  .budget-bar .fill-inner {
+    height: 100%; background: #57d38c; transition: width .3s, background .3s;
+  }
+  .budget-bar.warning .fill-inner { background: #f0b367; }
+  .budget-bar.danger .fill-inner { background: #e0685f; }
 </style>
 </head>
 <body>
@@ -147,6 +157,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+  </div>
+  <div class="budget-bar fill" id="budget-bar">
+    <div class="fill-inner" id="budget-fill" style="width: 0%"></div>
   </div>
 </div>
 <pre id="log"></pre>
@@ -207,8 +220,31 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
+    let usageText = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    const budget = (result && result.budget_usd) || (status && status.budget_usd) || 0;
+    const budgetBar = document.getElementById('budget-bar');
+    const budgetFill = document.getElementById('budget-fill');
+    if (budget > 0) {
+      const remaining = budget - cost;
+      const pct = budget > 0 ? (cost / budget * 100) : 0;
+      usageText += (
+        ' | budget: $' + budget.toFixed(6) +
+        ' (used ' + pct.toFixed(1) + '%, $' + remaining.toFixed(6) + ' remaining)'
+      );
+      budgetBar.classList.add('fill');
+      budgetFill.style.width = Math.min(pct, 100) + '%';
+      budgetBar.classList.remove('warning', 'danger');
+      if (pct >= 100) {
+        budgetBar.classList.add('danger');
+      } else if (pct >= 80) {
+        budgetBar.classList.add('warning');
+      }
+    } else {
+      budgetBar.classList.remove('fill', 'warning', 'danger');
+      budgetFill.style.width = '0%';
+    }
+    usageEl.textContent = usageText;
   }
 
   function renderTasks(tasks) {

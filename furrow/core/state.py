@@ -67,6 +67,7 @@ class RunState(BaseModel):
     last_passed: bool | None = None
     last_skipped: bool = False
     last_summary: str = ""
+    budget_usd: float = 0.0
 
 
 def state_path_for(

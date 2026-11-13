@@ -97,6 +97,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama OpenAI-compatible base URL |
 | `FURROW_MAX_PARALLEL_TASKS` | `5` | Maximum concurrent worker tasks per wave |
 | `FURROW_MAX_CYCLES` | `0` | Maximum cycles to run (0 = unlimited) |
+| `FURROW_MAX_COST_USD` | `0.0` | Maximum estimated USD cost per run (0 = unlimited) |
 | `FURROW_MAX_WORKER_ITERATIONS` | `12` | Maximum tool-call iterations per worker task |
 | `FURROW_MAX_RETRIES` | `3` | Retry attempts for transient LLM errors |
 | `FURROW_MAX_TASK_RETRIES` | `1` | Times a failed task is retried before it is marked failed |
@@ -109,7 +110,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 
 A `.env` file is read automatically via pydantic-settings.
 
-The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` rejects a negative value at the command line.
+The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_cost_usd` >= 0 (0 = unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` rejects a negative value at the command line.
 
 ## How the loop works
 

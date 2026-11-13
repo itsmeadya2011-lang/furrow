@@ -245,6 +245,16 @@ class Orchestrator:
             )
             self._usage.add(cycle_usage)
             self._usage_seen = cumulative
+            # Check cost budget after accumulating this cycle's usage
+            if self.settings.max_cost_usd and self._usage.cost_usd >= self.settings.max_cost_usd:
+                self._stopped_reason = (
+                    f"cost budget exceeded (${self._usage.cost_usd:.6f} "
+                    f">= ${self.settings.max_cost_usd:.6f})"
+                )
+                self.event_bus.emit(Event(type=EventType.LOG, message=self._stopped_reason))
+                guard_tripped = True
+            else:
+                guard_tripped = False
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
@@ -258,25 +268,27 @@ class Orchestrator:
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
             no_signal = (not test_result.passed) or skipped
-            guard_tripped = False
-            if no_signal and sig == self._prev_sig:
-                self._no_progress += 1
-                if self._no_progress >= 2:
-                    self._stopped_reason = (
-                        "no test runner detected" if skipped else "no progress"
-                    )
-                    guard_tripped = True
-            else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
-                    self._no_progress = 0
-                self._prev_sig = sig
+            # Don't overwrite guard_tripped if it was already set by budget check
+            if not guard_tripped:
+                if no_signal and sig == self._prev_sig:
+                    self._no_progress += 1
+                    if self._no_progress >= 2:
+                        self._stopped_reason = (
+                            "no test runner detected" if skipped else "no progress"
+                        )
+                        guard_tripped = True
+                else:
+                    if sig != self._prev_sig or (test_result.passed and not skipped):
+                        self._no_progress = 0
+                    self._prev_sig = sig
 
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
                              usage=self._usage, no_progress=self._no_progress,
                              prev_sig=self._prev_sig, tests_run=self._tests_run,
                              last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
+                             last_summary=test_result.summary,
+                             budget_usd=self.settings.max_cost_usd)
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:
@@ -324,6 +336,7 @@ class Orchestrator:
             skipped=bool(self._tests_skipped),
             usage=self._usage,
             files_changed=files_changed,
+            budget_usd=self.settings.max_cost_usd,
         )
 
     def _context(self) -> str:

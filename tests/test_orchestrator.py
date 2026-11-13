@@ -7,7 +7,7 @@ import pytest
 from furrow.agents.planner import Plan
 from furrow.agents.tester import TestResult
 from furrow.agents.worker import WorkerResult
-from furrow.config import RunResult, Settings, TaskModel
+from furrow.config import RunResult, Settings, TaskModel, Usage
 from furrow.core.events import EventType
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
@@ -977,3 +977,77 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_enforced(tmp_path, monkeypatch):
+    """Test that the run stops when cost budget is exceeded."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10, max_task_retries=0)
+    settings.max_cost_usd = 0.5  # Set budget to 50 cents
+    store = StateStore(tmp_path / "state.json")
+
+    class ExpensiveClient:
+        def __init__(self):
+            self.total_usage = Usage(
+                input_tokens=1000000, output_tokens=1000000, calls=1, cost_usd=1.0
+            )
+
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=ExpensiveClient())
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    result = await orch.run()
+    assert "cost budget exceeded" in result.stopped_reason
+    assert result.usage.cost_usd >= 0.5
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_in_run_result(tmp_path, monkeypatch):
+    """Test that budget is included in RunResult."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    settings.max_cost_usd = 10.0
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.budget_usd == 10.0
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_persisted_in_state(tmp_path, monkeypatch):
+    """Test that budget is persisted in RunState."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    settings.max_cost_usd = 5.0
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    st = store.load()
+    assert st.budget_usd == 5.0
+
+
+@pytest.mark.asyncio
+async def test_cost_budget_restored_on_resume(tmp_path, monkeypatch):
+    """Test that budget is restored when resuming a run."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    settings.max_cost_usd = 7.5
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    # Resume with same settings (budget should be in state)
+    settings2 = make_settings(tmp_path, max_cycles=1)
+    settings2.max_cost_usd = 7.5
+    orch2 = Orchestrator(goal="x", settings=settings2, state_store=store, resume=True)
+    assert orch2.settings.max_cost_usd == 7.5
+    orch2.planner = FakePlanner()
+    orch2.tester = FakeTester(passed=True)
+    result = await orch2.run()
+    assert result.budget_usd == 7.5
