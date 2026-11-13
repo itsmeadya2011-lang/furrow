@@ -977,3 +977,72 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_cost_limit_reached_after_one_cycle(tmp_path, monkeypatch):
+    class CostlyTester:
+        async def run(self, goal, tasks):
+            return TestResult(passed=False, summary="s", failures=["fail"], skipped=False)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10)
+    settings = settings.model_copy(update={"max_cost_usd": 0.5})
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = CostlyTester()
+
+    async def fake_tester_run(goal, tasks):
+        orch.client.total_usage.cost_usd += 1.0
+        return TestResult(passed=False, summary="s", failures=["fail"], skipped=False)
+
+    orch.tester.run = fake_tester_run
+    result = await orch.run()
+    assert result.cycles == 1
+    assert result.stopped_reason == "cost limit reached"
+    assert result.cost_limit_reached is True
+    assert orch.planner.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_cost_limit_reached_on_resume_stops_without_new_cycle(tmp_path, monkeypatch):
+    from furrow.config import Usage
+    from furrow.core.state import RunState
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10)
+    settings = settings.model_copy(update={"max_cost_usd": 0.5})
+    store = StateStore(tmp_path / "state.json")
+    state = RunState(
+        goal="g",
+        original_goal="g",
+        cycles=2,
+        tasks=[TaskModel(id="t1", description="do t1", status="completed")],
+        usage=Usage(calls=1, cost_usd=1.0),
+    )
+    store.save(state)
+    orch = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.cycles == 2
+    assert result.stopped_reason == "cost limit reached"
+    assert result.cost_limit_reached is True
+    assert orch.planner.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_max_cost_usd_zero_does_not_stop_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    settings = settings.model_copy(update={"max_cost_usd": 0.0})
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    orch.client.total_usage.cost_usd = 999.0
+    result = await orch.run()
+    assert result.cycles == 2
+    assert result.stopped_reason == "max_cycles reached"
+    assert result.cost_limit_reached is False

@@ -419,6 +419,7 @@ class StartRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -427,6 +428,7 @@ class SocketRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -441,17 +443,22 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override.
+def _run_settings(max_cycles: int | None, max_cost: float | None = None) -> Settings:
+    """Settings for a run, with optional ``max_cycles``/``max_cost`` overrides.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
     pydantic validation and would happily build a ``Settings`` object with an
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    updates: dict[str, Any] = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if max_cost is not None:
+        updates["max_cost_usd"] = max_cost
+    if not updates:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -460,6 +467,8 @@ def _describe_validation_error(exc: ValidationError) -> str:
         location = ".".join(str(part) for part in error.get("loc", ()))
         if location == "max_cycles":
             return "max_cycles must be greater than or equal to 0"
+        if location == "max_cost":
+            return "max_cost must be greater than or equal to 0"
         if location == "goal":
             return "goal must be a string"
     return "invalid request payload"
@@ -550,12 +559,12 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, max_cost: float | None, bus: EventBus
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
     return Orchestrator(
         goal=goal,
-        settings=_run_settings(max_cycles),
+        settings=_run_settings(max_cycles, max_cost),
         state_store=StateStore(settings.state_path()),
         event_bus=bus,
         resume=resume,
@@ -621,7 +630,9 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(
+            goal, request.resume, request.max_cycles, request.max_cost, bus
+        )
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -680,7 +691,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(
+                goal, resume, request.max_cycles, request.max_cost, bus
+            )
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

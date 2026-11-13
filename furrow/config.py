@@ -104,6 +104,7 @@ class RunResult(BaseModel):
     summary: str = ""
     stopped_reason: str = ""
     skipped: bool = False
+    cost_limit_reached: bool = False
     usage: Usage = Field(default_factory=Usage)
     files_changed: list[str] = Field(default_factory=list)
 
@@ -121,6 +122,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = Field(default=5, ge=1)
     max_cycles: int = Field(default=0, ge=0)
+    max_cost_usd: float = Field(default=0.0, ge=0)  # 0 means unlimited.
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
     max_worker_iterations: int = Field(default=12, ge=1)

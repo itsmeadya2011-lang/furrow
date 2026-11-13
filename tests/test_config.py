@@ -103,6 +103,30 @@ def test_skipped_can_be_set():
     assert r.skipped is True
 
 
+def test_run_result_cost_limit_reached_default_false():
+    assert RunResult().cost_limit_reached is False
+
+
+def test_settings_max_cost_usd_defaults_to_zero():
+    assert Settings().max_cost_usd == 0.0
+
+
+def test_settings_accepts_max_cost_usd():
+    assert Settings(max_cost_usd=1.5).max_cost_usd == 1.5
+
+
+def test_settings_rejects_negative_max_cost_usd():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(max_cost_usd=-1)
+
+
+def test_settings_reads_max_cost_usd_from_environment(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FURROW_MAX_COST_USD", "2.5")
+    assert Settings(_env_file=None).max_cost_usd == 2.5
+
+
 def test_settings_env_override(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FURROW_MAX_CYCLES", "7")
     s = Settings(_env_file=None)

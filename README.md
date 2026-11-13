@@ -15,6 +15,7 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Hardened provider calls: transient HTTP errors are retried when the status is exposed on the response, and a malformed provider response raises a clear error
 - Offline test suite with no API keys required
 - Estimated USD cost per LLM call/cycle/run tracked, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`
+- Run cost cap: stop before starting a new cycle once estimated spend reaches a limit (0 = unlimited), settable via `FURROW_MAX_COST_USD` or `--max-cost`
 
 ## Security
 
@@ -40,6 +41,7 @@ furrow start "Add JWT auth to the API"
 Options:
 - `--model` — override the LLM model
 - `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
+- `--max-cost N` — stop before a new cycle once estimated LLM cost reaches this many USD (0 = unlimited)
 - `--workspace PATH` — project directory to work in
 - `--resume` — resume the persisted run instead of starting fresh
 
@@ -55,7 +57,7 @@ furrow status
 furrow status --workspace /path/to/project
 ```
 
-The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
+The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests. A run stopped by the cost cap still reports `PASSED` or `FAILED` based on the tests that ran; exit-code semantics are unchanged.
 
 ### `furrow resume`
 Continue the persisted run.
@@ -106,10 +108,11 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 | `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |
+| `FURROW_MAX_COST_USD` | `0` | Stop starting new cycles once estimated LLM cost reaches this many USD (0 = unlimited) |
 
 A `.env` file is read automatically via pydantic-settings.
 
-The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` rejects a negative value at the command line.
+The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, `max_cost_usd` >= 0, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` and `--max-cost` reject negative values at the command line.
 
 ## How the loop works
 
@@ -123,6 +126,8 @@ The loop is fail-safe: a planner error, an execution error, a tester error or a 
 ## LLM token accounting
 
 The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Estimated USD cost is tracked alongside tokens using a built-in price snapshot, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`.
+
+The orchestrator checks the cost cap before starting each new cycle: if `max_cost_usd > 0` (from `FURROW_MAX_COST_USD` or `--max-cost`) and the accumulated estimated USD cost (`Usage.cost_usd`, which includes cost restored on resume) is at or above the cap, it stops with `stopped_reason` "cost limit reached", emits a LOG event, and does not start another cycle. A cycle already in flight may overshoot the cap. A capped run reports `RunResult.cost_limit_reached` (also available in the web status/done payload).
 
 The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released when a run ends: `LLMClient.aclose()` closes the ones that were created and leaves the client usable afterwards. The CLI releases the client when a run ends — including when the run raises — and the web server releases it when a run finishes, errors or is cancelled, so a long-running server no longer leaks a client per run.
 

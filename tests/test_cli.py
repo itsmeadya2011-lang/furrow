@@ -166,12 +166,21 @@ def test_resume_runs_orchestrator(
     assert "goal complete" in result.output
 
 
-def test_start_max_cycles_negative_rejected(
+def test_start_max_cost_negative_rejected(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
-    result = runner.invoke(main, ["start", "build a thing", "--max-cycles", "-1"])
+    result = runner.invoke(main, ["start", "build a thing", "--max-cost", "-1"])
 
     assert result.exit_code != 0
+
+
+def test_start_passes_max_cost_to_orchestrator_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(main, ["start", "build a thing", "--max-cost", "2.5"])
+
+    assert result.exit_code == 0
+    assert fake_orchestrator.init_kwargs["settings"].max_cost_usd == 2.5
 
 
 def test_resume_max_cycles_negative_rejected(

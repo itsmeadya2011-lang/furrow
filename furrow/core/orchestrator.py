@@ -161,6 +161,23 @@ class Orchestrator:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
                 break
+            max_cost = float(getattr(self.settings, "max_cost_usd", 0.0) or 0.0)
+            if max_cost > 0 and self._usage.cost_usd >= max_cost:
+                self._stopped_reason = "cost limit reached"
+                self._say(
+                    f"[yellow]Cost limit reached: "
+                    f"${self._usage.cost_usd:.6f} of ${max_cost:.6f}[/yellow]"
+                )
+                self.event_bus.emit(
+                    Event(
+                        type=EventType.LOG,
+                        message=(
+                            f"cost limit reached: ${self._usage.cost_usd:.6f} "
+                            f"of ${max_cost:.6f}"
+                        ),
+                    )
+                )
+                break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
@@ -322,6 +339,7 @@ class Orchestrator:
             summary=f"stopped: {self._stopped_reason}",
             stopped_reason=self._stopped_reason,
             skipped=bool(self._tests_skipped),
+            cost_limit_reached=self._stopped_reason == "cost limit reached",
             usage=self._usage,
             files_changed=files_changed,
         )

@@ -604,3 +604,40 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_api_start_rejects_negative_max_cost(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    response = client.post("/api/start", json={"goal": "x", "max_cost": -1})
+    assert response.status_code == 422
+    assert fake_orchestrator.instances == []
+
+
+def test_run_settings_max_cost_overrides_and_preserves_identity() -> None:
+    original = server.settings.max_cost_usd
+    try:
+        updated = server._run_settings(None, 2.5)
+        assert updated.max_cost_usd == 2.5
+        assert server.settings.max_cost_usd == original
+        assert server._run_settings(None, None) is server.settings
+    finally:
+        server.settings.max_cost_usd = original
+
+
+def test_websocket_applies_a_valid_max_cost_override(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "g", "max_cost": 2.5})
+        for _ in range(20):
+            try:
+                message = ws.receive_json()
+            except WebSocketDisconnect:
+                break
+            if message.get("type") == "done":
+                break
+
+    assert fake_orchestrator.instances, "the run must have started"
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_cost_usd == 2.5
