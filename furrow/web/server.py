@@ -585,6 +585,19 @@ async def api_state() -> dict[str, Any]:
     }
 
 
+@app.get("/api/health")
+async def api_health() -> dict[str, Any]:
+    """Health check endpoint.
+
+    Returns the server's liveness status and whether a run is currently in
+    progress.  Always returns 200 when the server is responsive.
+    """
+    return {
+        "status": "ok",
+        "running": bool(_CURRENT.get("running")),
+    }
+
+
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""

@@ -269,6 +269,17 @@ def test_api_state_with_state(client: TestClient, tmp_path: Path) -> None:
     assert body["state"]["original_goal"] == "ship it"
 
 
+def test_api_health_returns_ok(client: TestClient) -> None:
+    """The health endpoint always returns 200 with status "ok"."""
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert "running" in body
+    assert isinstance(body["running"], bool)
+
+
 def test_api_start_returns_started(
     client: TestClient, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
