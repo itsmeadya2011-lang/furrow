@@ -228,6 +228,7 @@ def status(workspace: Path | None) -> None:
 
 
 @main.command()
+@click.option("--model", default=None, help="Override the LLM model.")
 @click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
@@ -235,9 +236,13 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+def resume(
+    model: str | None,
+    workspace: Path | None,
+    max_cycles: int | None,
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

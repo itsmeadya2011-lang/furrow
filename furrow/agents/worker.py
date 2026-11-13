@@ -406,7 +406,12 @@ class WorkerAgent:
         if resolved is None:
             return "error: path escapes workspace"
         try:
-            content = await self.client.read_file(resolved)
+            real = resolved.resolve()
+            real.relative_to(self.workspace.resolve())
+        except (OSError, ValueError, RuntimeError):
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(real)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         if len(content) > 20000:

@@ -79,6 +79,8 @@ class Orchestrator:
                     self._tests_run = int(getattr(st, "tests_run", 0) or 0)
                 except Exception:
                     self._tests_run = 0
+                self._last_test_passed = getattr(st, "last_passed", None)
+                self._tests_skipped = bool(getattr(st, "last_skipped", False))
             else:
                 self._resume_state_missing = True
 

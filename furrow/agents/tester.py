@@ -296,7 +296,7 @@ class TesterAgent:
         if llm_result is None:
             # The LLM was unavailable: fall back to the raw output.
             passed = returncode == 0 and not _has_failure_keywords(combined)
-            failures = _extract_failures(combined)
+            failures = [] if passed else _extract_failures(combined)
             notes.append(combined[:500].strip())
         else:
             failures = list(llm_result.failures)
@@ -313,7 +313,7 @@ class TesterAgent:
                 notes.append("The command exited with status 0, but the LLM reported a failure.")
             else:
                 passed = llm_result.passed
-            if not failures:
+            if not failures and not passed:
                 failures = _extract_failures(combined)
             if llm_result.summary:
                 notes.append(llm_result.summary)
