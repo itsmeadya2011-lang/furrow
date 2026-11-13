@@ -47,6 +47,9 @@ If `goal` is omitted, Furrow will prompt for it.
 
 The command exits with status `1` when the run ends `FAILED` (tests ran and did not pass) and with status `0` for `PASSED` (all tests passed), `SKIPPED` (no test runner detected) and `NOT RUN` (no tests were executed).
 
+### `furrow --version`
+Print the installed Furrow version and exit.
+
 ### `furrow status`
 Show the persisted state of the last run for a workspace.
 
