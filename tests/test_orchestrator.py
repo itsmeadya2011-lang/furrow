@@ -279,6 +279,20 @@ async def test_console_output_does_not_break_the_run(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_status_includes_tests_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    status = orch.status()
+    assert "tests_run" in status
+    assert status["tests_run"] >= 1
+
+
+@pytest.mark.asyncio
 async def test_status_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

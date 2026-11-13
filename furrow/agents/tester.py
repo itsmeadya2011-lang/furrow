@@ -194,10 +194,12 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
-        ):
+        # Python projects with a tests/ directory use pytest.  A configuration
+        # file (pyproject.toml, pytest.ini, ...) is not strictly required: pytest
+        # works with sensible defaults, so a bare tests/ directory is enough to
+        # detect it.  This takes priority over Node.js runners so that a project
+        # with both tests/ and package.json still gets pytest.
+        if has_tests_dir:
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
