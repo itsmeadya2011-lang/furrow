@@ -3,18 +3,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
 import aiofiles
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
+from anthropic import AsyncAnthropic, APIConnectionError, APIStatusError, APITimeoutError
+from openai import AsyncOpenAI, APIConnectionError as OpenAIAPIConnectionError, APIStatusError as OpenAIAPIStatusError, APITimeoutError as OpenAIAPITimeoutError
 
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -23,42 +27,52 @@ try:
 except ImportError:  # pragma: no cover - tenacity is a declared dependency
     _TENACITY_AVAILABLE = False
 
+# Exception types that are retryable
+RETRYABLE_EXCEPTIONS = (
+    asyncio.TimeoutError,
+    ConnectionError,
+    APIConnectionError,
+    APITimeoutError,
+    OpenAIAPIConnectionError,
+    OpenAIAPITimeoutError,
+)
+
+# HTTP status codes that are retryable
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
-
-#: Result type of a single LLM request (a plain string for `complete`, an
-#: :class:`LLMResponse` for `chat`).
-T = TypeVar("T")
-
-
-@dataclass(slots=True)
-class ToolCall:
-    id: str
-    name: str
-    arguments: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
-class LLMResponse:
-    text: str = ""
-    tool_calls: list[ToolCall] = field(default_factory=list)
-    stop_reason: str | None = None
-    raw: Any = None
-    usage: Usage = field(default_factory=Usage)
 
 
 def _is_retryable(exc: BaseException) -> bool:
     """Return True if *exc* is a transient provider error worth retrying."""
-    if isinstance(exc, asyncio.TimeoutError):
+    # Check for known retryable exception types
+    if isinstance(exc, RETRYABLE_EXCEPTIONS):
         return True
-    if isinstance(exc, ConnectionError):
-        return True
+
+    # Check for status code in retryable codes
     status_code = None
     response = getattr(exc, "response", None)
     if response is not None:
         status_code = getattr(response, "status_code", None)
     if status_code is None:
         status_code = getattr(exc, "status_code", None)
-    return status_code in RETRYABLE_STATUS_CODES
+    if status_code in RETRYABLE_STATUS_CODES:
+        return True
+
+    # Check for specific error messages that indicate transient errors
+    error_msg = str(exc).lower()
+    transient_indicators = [
+        "rate limit",
+        "too many requests",
+        "service unavailable",
+        "gateway timeout",
+        "connection reset",
+        "connection refused",
+        "temporary failure",
+        "try again",
+    ]
+    if any(indicator in error_msg for indicator in transient_indicators):
+        return True
+
+    return False
 
 
 def _extract_anthropic_usage(response: Any) -> Usage:
@@ -211,6 +225,27 @@ def parse_tool_arguments(raw: Any) -> dict:
     return {}
 
 
+@dataclass(slots=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class LLMResponse:
+    text: str = ""
+    tool_calls: list[ToolCall] = field(default_factory=list)
+    stop_reason: str | None = None
+    raw: Any = None
+    usage: Usage = field(default_factory=Usage)
+
+
+#: Result type of a single LLM request (a plain string for `complete`, an
+#: :class:`LLMResponse` for `chat`).
+T = TypeVar("T")
+
+
 class LLMClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
@@ -218,6 +253,9 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        self._request_count: int = 0
+        self._error_count: int = 0
+        self._last_request_time: float | None = None
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -271,6 +309,29 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return client statistics."""
+        return {
+            "request_count": self._request_count,
+            "error_count": self._error_count,
+            "last_request_time": self._last_request_time,
+            "total_usage": self.total_usage.model_dump(),
+        }
+
+    async def health_check(self) -> bool:
+        """Check if the LLM provider is reachable.
+        
+        Returns True if a simple request succeeds, False otherwise.
+        """
+        try:
+            # Try a minimal request to check connectivity
+            await self.complete("ping", model=self.settings.model)
+            return True
+        except Exception as exc:
+            logger.warning("health_check_failed", error=str(exc), provider=self.settings.provider.value)
+            return False
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -297,7 +358,15 @@ class LLMClient:
                 last_exc = exc
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
-                await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
+                wait_time = min(20.0, float(2 ** attempt_index))
+                logger.warning(
+                    "llm_retry",
+                    attempt=attempt_index + 1,
+                    max_attempts=max_attempts,
+                    wait_time=wait_time,
+                    error=str(exc),
+                )
+                await asyncio.sleep(wait_time)
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
@@ -307,15 +376,37 @@ class LLMClient:
         provider = self.settings.provider
 
         async def call() -> str:
-            if provider == Provider.ANTHROPIC:
-                response = await self._complete_anthropic(prompt, system, model)
-            elif provider == Provider.OPENAI:
-                response = await self._complete_openai(self.openai, prompt, system, model)
-            elif provider == Provider.OLLAMA:
-                response = await self._complete_openai(self.ollama, prompt, system, model)
-            else:
-                raise ValueError(f"Unsupported provider: {provider}")
-            return response.text
+            self._request_count += 1
+            self._last_request_time = time.time()
+            start_time = time.time()
+            try:
+                if provider == Provider.ANTHROPIC:
+                    response = await self._complete_anthropic(prompt, system, model)
+                elif provider == Provider.OPENAI:
+                    response = await self._complete_openai(self.openai, prompt, system, model)
+                elif provider == Provider.OLLAMA:
+                    response = await self._complete_openai(self.ollama, prompt, system, model)
+                else:
+                    raise ValueError(f"Unsupported provider: {provider}")
+                elapsed = time.time() - start_time
+                logger.debug(
+                    "llm_request_complete",
+                    provider=provider.value,
+                    model=model,
+                    elapsed_ms=int(elapsed * 1000),
+                    tokens=response.usage.total_tokens,
+                )
+                return response.text
+            except Exception as exc:
+                self._error_count += 1
+                logger.error(
+                    "llm_request_failed",
+                    provider=provider.value,
+                    model=model,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                )
+                raise
 
         return await self._retry(call)
 
@@ -330,17 +421,42 @@ class LLMClient:
         provider = self.settings.provider
 
         async def call() -> LLMResponse:
-            if provider == Provider.ANTHROPIC:
-                return await self._chat_anthropic(messages, tools, system, model)
-            elif provider == Provider.OPENAI:
-                return await self._chat_openai_compatible(
-                    self.openai, messages, tools, system, model
+            self._request_count += 1
+            self._last_request_time = time.time()
+            start_time = time.time()
+            try:
+                if provider == Provider.ANTHROPIC:
+                    response = await self._chat_anthropic(messages, tools, system, model)
+                elif provider == Provider.OPENAI:
+                    response = await self._chat_openai_compatible(
+                        self.openai, messages, tools, system, model
+                    )
+                elif provider == Provider.OLLAMA:
+                    response = await self._chat_openai_compatible(
+                        self.ollama, messages, tools, system, model
+                    )
+                else:
+                    raise ValueError(f"Unsupported provider: {provider}")
+                elapsed = time.time() - start_time
+                logger.debug(
+                    "llm_request_complete",
+                    provider=provider.value,
+                    model=model,
+                    elapsed_ms=int(elapsed * 1000),
+                    tokens=response.usage.total_tokens,
+                    tool_calls=len(response.tool_calls),
                 )
-            elif provider == Provider.OLLAMA:
-                return await self._chat_openai_compatible(
-                    self.ollama, messages, tools, system, model
+                return response
+            except Exception as exc:
+                self._error_count += 1
+                logger.error(
+                    "llm_request_failed",
+                    provider=provider.value,
+                    model=model,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
                 )
-            raise ValueError(f"Unsupported provider: {provider}")
+                raise
 
         return await self._retry(call)
 

@@ -19,6 +19,7 @@ from typing import Any
 import click
 
 from furrow.config import RunResult, Settings, settings
+from furrow.core.events import Event, EventBus, EventType
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
@@ -155,14 +156,89 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
+    event_bus = EventBus()
     orchestrator = Orchestrator(
         goal=goal,
         settings=run_settings,
         state_store=store,
+        event_bus=event_bus,
         resume=resume,
     )
+    
+    # Subscribe to events for progress reporting
+    event_queue = event_bus.subscribe()
+    
+    async def _print_progress() -> None:
+        """Print progress events as they arrive."""
+        while True:
+            try:
+                event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                # Check if the run is done by looking at the orchestrator's state
+                # This is a bit of a hack - we'll rely on the run task completing
+                continue
+            except asyncio.CancelledError:
+                break
+            
+            if event.type == EventType.CYCLE_STARTED:
+                cycle = event.data.get("cycle", "?")
+                click.secho(f"\n═══ Cycle {cycle} ═══", fg="cyan", bold=True)
+            elif event.type == EventType.PLAN_CREATED:
+                rationale = event.data.get("rationale", "")
+                tasks_count = event.data.get("tasks", 0)
+                click.echo(f"Plan: {rationale} ({tasks_count} task{'s' if tasks_count != 1 else ''})")
+            elif event.type == EventType.TASK_STARTED:
+                task_id = event.data.get("task", "?")
+                click.echo(f"  → Task {task_id} started")
+            elif event.type == EventType.TASK_FINISHED:
+                task_id = event.data.get("task", "?")
+                success = event.data.get("success", False)
+                summary = event.data.get("summary", "")
+                if success:
+                    click.secho(f"  ✓ Task {task_id} completed", fg="green")
+                    if summary:
+                        click.echo(f"    {summary}")
+                else:
+                    click.secho(f"  ✗ Task {task_id} failed", fg="red")
+                    if summary:
+                        click.echo(f"    {summary}")
+            elif event.type == EventType.TEST_STARTED:
+                click.echo("  Running tests...")
+            elif event.type == EventType.TEST_FINISHED:
+                passed = event.data.get("passed", False)
+                summary = event.data.get("summary", "")
+                if passed:
+                    click.secho(f"  ✓ Tests passed: {summary}", fg="green")
+                else:
+                    click.secho(f"  ✗ Tests failed: {summary}", fg="red")
+            elif event.type == EventType.STATE_SAVED:
+                path = event.data.get("path", "")
+                click.echo(f"  State saved to {path}")
+            elif event.type == EventType.LOG:
+                message = event.message
+                if message:
+                    click.echo(f"  {message}")
+            elif event.type == EventType.ERROR:
+                click.secho(f"  ERROR: {event.message}", fg="red")
+            elif event.type == EventType.CYCLE_FINISHED:
+                cycle = event.data.get("cycle", "?")
+                click.secho(f"═══ Cycle {cycle} finished ═══\n", fg="cyan")
+    
+    async def _run_with_progress() -> RunResult:
+        """Run the orchestrator and print progress."""
+        progress_task = asyncio.create_task(_print_progress())
+        try:
+            result = await _run_and_release(orchestrator)
+        finally:
+            progress_task.cancel()
+            try:
+                await progress_task
+            except asyncio.CancelledError:
+                pass
+        return result
+    
     try:
-        result = asyncio.run(_run_and_release(orchestrator))
+        result = asyncio.run(_run_with_progress())
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)

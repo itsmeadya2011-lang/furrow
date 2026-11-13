@@ -10,6 +10,9 @@ Design notes:
     A partially written state file can therefore never be observed.
   * Reading is forgiving: a missing or corrupt state file yields ``None``
     instead of raising, so a run can always start fresh.
+  * State versioning: the state file includes a version number. When loading an
+    older version, migration functions are applied automatically to bring the
+    state up to the current version.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from furrow.logging import get_logger
 
 logger = get_logger(__name__)
 
-STATE_VERSION = 1
+STATE_VERSION = 2
 
 DEFAULT_STATE_RELATIVE_PATH = Path(".furrow/state.json")
 
@@ -35,6 +38,72 @@ DEFAULT_STATE_RELATIVE_PATH = Path(".furrow/state.json")
 def utcnow() -> str:
     """ISO-8601 UTC timestamp string, e.g. 2026-10-20T12:30:04.395123+00:00"""
     return datetime.now(timezone.utc).isoformat()
+
+
+def _migrate_v1_to_v2(data: dict) -> dict:
+    """Migrate state from version 1 to version 2.
+    
+    Version 2 adds:
+    - tasks_blocked field to track blocked tasks
+    - Proper handling of optional fields with defaults
+    """
+    # Ensure all fields have sensible defaults for v2
+    if "tasks_blocked" not in data:
+        data["tasks_blocked"] = 0
+    if "tests_run" not in data:
+        data["tests_run"] = 0
+    if "last_passed" not in data:
+        data["last_passed"] = None
+    if "last_skipped" not in data:
+        data["last_skipped"] = False
+    if "last_summary" not in data:
+        data["last_summary"] = ""
+    if "no_progress" not in data:
+        data["no_progress"] = 0
+    if "prev_sig" not in data:
+        data["prev_sig"] = ""
+    if "history" not in data:
+        data["history"] = []
+    if "usage" not in data:
+        data["usage"] = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_usd": 0.0}
+    
+    # Migrate each history entry if needed
+    for entry in data.get("history", []):
+        if "usage" not in entry:
+            entry["usage"] = {"input_tokens": 0, "output_tokens": 0, "calls": 0, "cost_usd": 0.0}
+        if "task_summaries" not in entry:
+            entry["task_summaries"] = []
+        if "tests_passed" not in entry:
+            entry["tests_passed"] = None
+        if "test_summary" not in entry:
+            entry["test_summary"] = ""
+    
+    return data
+
+
+MIGRATIONS = {
+    1: _migrate_v1_to_v2,
+}
+
+
+def _migrate_state(data: dict) -> tuple[dict, bool]:
+    """Apply migrations to bring state to current version.
+
+    Returns ``(data, migrated)`` where *migrated* is True when the state
+    was actually upgraded to a newer version.
+    """
+    original_version = data.get("version", 1)
+    version = original_version
+    while version < STATE_VERSION:
+        migrator = MIGRATIONS.get(version)
+        if migrator is None:
+            logger.warning("No migrator found for version %d to %d", version, version + 1)
+            break
+        logger.info("Migrating state from version %d to %d", version, version + 1)
+        data = migrator(data)
+        version += 1
+    data["version"] = STATE_VERSION
+    return data, version != original_version
 
 
 class HistoryEntry(BaseModel):
@@ -64,6 +133,7 @@ class RunState(BaseModel):
     no_progress: int = 0
     prev_sig: str = ""
     tests_run: int = 0
+    tasks_blocked: int = 0
     last_passed: bool | None = None
     last_skipped: bool = False
     last_summary: str = ""
@@ -91,6 +161,9 @@ class StateStore:
 
         A corrupt file must NOT raise - log a warning via the `logging` module and
         return None so a run can start fresh instead of crashing.
+
+        If the state file is an older version, it will be automatically migrated
+        to the current version.
         """
         if not self.path.is_file():
             return None
@@ -100,8 +173,13 @@ class StateStore:
             logger.warning("Could not read state file %s: %s", self.path, exc)
             return None
         try:
-            return RunState.model_validate_json(raw)
-        except (ValidationError, ValueError) as exc:
+            data = json.loads(raw)
+            migrated_data, was_migrated = _migrate_state(data)
+            state = RunState.model_validate(migrated_data)
+            if was_migrated:
+                self.save(state)
+            return state
+        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
             logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
             return None
 

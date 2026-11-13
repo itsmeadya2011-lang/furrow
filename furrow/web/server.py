@@ -8,6 +8,7 @@ orchestrator event to the browser:
     GET  /api/status status of the currently active run
     POST /api/start  start a background run
     WS   /ws         run a goal and stream its events
+    GET  /health     health check endpoint
 """
 
 from __future__ import annotations
@@ -15,11 +16,13 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from pathlib import Path
 from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, ValidationError
 
 from furrow.config import RunResult, Settings, settings
@@ -30,6 +33,10 @@ from furrow.core.state import StateStore
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Furrow")
+
+# Serve static files for development (CSS, JS)
+static_dir = Path(__file__).parent / "static"
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 POLL_INTERVAL = 0.05
 
@@ -48,6 +55,7 @@ _CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
 # while they are still pending.
 _TASKS: set[asyncio.Task[RunResult]] = set()
 
+# Inline HTML with embedded CSS and JS for production
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -571,7 +579,8 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """The single page UI."""
-    return HTMLResponse(content=INDEX_HTML)
+    index_path = static_dir / "index.html"
+    return HTMLResponse(content=index_path.read_text(encoding="utf-8"))
 
 
 @app.get("/api/state")
@@ -594,6 +603,15 @@ async def api_status() -> dict[str, Any]:
         "running": bool(_CURRENT.get("running")),
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
+    }
+
+
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for monitoring."""
+    return {
+        "status": "ok",
+        "running": bool(_CURRENT.get("running")),
     }
 
 

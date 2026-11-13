@@ -14,6 +14,12 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
+
+# Maximum number of file entries returned by a single list-files call.
+MAX_LIST_ENTRIES = 500
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -30,6 +36,49 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    # Network access to external destinations
+    "curl ",
+    "wget ",
+    "nc ",
+    "netcat ",
+    "telnet ",
+    "ssh ",
+    "scp ",
+    "rsync ",
+    # Privilege escalation
+    "sudo ",
+    "su ",
+    "doas ",
+    "pkexec ",
+    # Disk/device manipulation
+    "fdisk",
+    "parted",
+    "mkfs.",
+    "dd ",
+    "mount ",
+    "umount ",
+    # Process manipulation
+    "kill -9",
+    "killall",
+    "pkill",
+    # Shell builtins that can escape
+    "exec ",
+    "eval ",
+    "source ",
+    ". ",
+    # Package managers (can install arbitrary code)
+    "apt ",
+    "apt-get ",
+    "yum ",
+    "dnf ",
+    "pacman ",
+    "brew ",
+    "pip install",
+    "npm install",
+    "yarn add",
+    "pnpm add",
+    "cargo install",
+    "go install",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,11 +94,63 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
+        "mount",
+        "umount",
+        "fdisk",
+        "parted",
+        "mkfs.ext4",
+        "mkfs.ext3",
+        "mkfs.fat",
+        "mkfs.ntfs",
+        "nc",
+        "netcat",
+        "telnet",
+        "ssh",
+        "scp",
+        "rsync",
+        "curl",
+        "wget",
+        "apt",
+        "apt-get",
+        "yum",
+        "dnf",
+        "pacman",
+        "brew",
+        "killall",
+        "pkill",
     }
 )
 
-# Maximum number of entries returned by the ``list_files`` tool.
-MAX_LIST_ENTRIES = 500
+# Environment variables that should never be exposed to commands.
+# These are stripped from the command environment before execution.
+PROTECTED_ENV_VARS = frozenset(
+    {
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENAI_API_BASE",
+        "OLLAMA_BASE_URL",
+        "FURROW_ANTHROPIC_API_KEY",
+        "FURROW_OPENAI_API_KEY",
+        "FURROW_OLLAMA_BASE_URL",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_SESSION_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_TOKEN",
+        "GITLAB_TOKEN",
+        "DOCKER_TOKEN",
+        "KUBECONFIG",
+        "SSH_AUTH_SOCK",
+        "GPG_AGENT_INFO",
+    }
+)
+
+# Maximum command output size (bytes) to prevent memory exhaustion.
+MAX_COMMAND_OUTPUT = 50000
 
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
@@ -452,6 +553,7 @@ class WorkerAgent:
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            logger.warning("command_denied", command=command[:200])
             return "error: command denied"
         try:
             shlex.split(command)
@@ -464,6 +566,12 @@ class WorkerAgent:
         # killing the direct child only.
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+        
+        # Build environment with protected variables removed
+        env = os.environ.copy()
+        for var in PROTECTED_ENV_VARS:
+            env.pop(var, None)
+        
         try:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
@@ -471,6 +579,7 @@ class WorkerAgent:
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=env,
                     **spawn_kwargs,
                 )
             else:
@@ -482,6 +591,7 @@ class WorkerAgent:
                     cwd=str(self.workspace),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=env,
                     **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
@@ -494,9 +604,8 @@ class WorkerAgent:
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
-        cap = 20000
-        if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
+        if len(combined) > MAX_COMMAND_OUTPUT:
+            combined = "[... output truncated ...]\n" + combined[-MAX_COMMAND_OUTPUT:]
         return combined
 
     @staticmethod
