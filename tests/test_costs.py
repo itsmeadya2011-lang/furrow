@@ -12,11 +12,19 @@ from furrow.costs import (
 def test_default_pricing_covers_the_mainstream_models() -> None:
     for model in (
         "claude-sonnet-4",
+        "claude-sonnet-4-5",
         "claude-3-5-sonnet",
         "claude-3-5-haiku",
         "claude-opus-4",
+        "claude-opus-4-1",
         "gpt-4o",
         "gpt-4o-mini",
+        "o1",
+        "o1-pro",
+        "o3",
+        "o3-pro",
+        "o3-mini",
+        "o4-mini",
     ):
         assert model in DEFAULT_PRICING, model
 

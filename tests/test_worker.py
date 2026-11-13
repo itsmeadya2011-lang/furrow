@@ -311,6 +311,74 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_files_skips_noise_directories(tmp_path):
+    """``list_files`` prunes generated/cache directories from its output."""
+    (tmp_path / "real.py").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "pkg").mkdir()
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "real.cpython-313.pyc").write_text("x")
+    (tmp_path / ".venv").mkdir()
+    (tmp_path / ".venv" / "lib").mkdir()
+    (tmp_path / ".venv" / "lib" / "site.py").write_text("x")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    lines = out.splitlines()
+    assert "real.py" in lines
+    assert not any(".git" in line for line in lines)
+    assert not any("node_modules" in line for line in lines)
+    assert not any("__pycache__" in line for line in lines)
+    assert not any(".venv" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_list_files_keeps_files_in_subdir_of_skipped_dir_outside(tmp_path):
+    """A file whose path does not traverse a skipped dir is still listed."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x")
+    (tmp_path / "src" / ".pytest_cache").mkdir()
+    (tmp_path / "src" / ".pytest_cache" / "v").write_text("x")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    lines = out.splitlines()
+    assert "src/main.py" in lines
+    assert not any(".pytest_cache" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_list_files_empty_when_only_noise(tmp_path):
+    """When the tree contains only skipped directories, the listing is empty."""
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "pkg").write_text("x")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    assert out.strip() == ""
+
+
+@pytest.mark.asyncio
 async def test_list_files_caps_at_500_entries(tmp_path):
     for i in range(520):
         (tmp_path / f"f{i:04d}.txt").write_text("x")

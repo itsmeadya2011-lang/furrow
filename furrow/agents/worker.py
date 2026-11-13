@@ -13,7 +13,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.llm import SKIP_DIRS, LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -439,9 +439,12 @@ class WorkerAgent:
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
             try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
+                rel = str(Path(e).relative_to(base)) if Path(e).is_absolute() else e
             except ValueError:
-                rels.append(str(e))
+                rel = str(e)
+            if any(part in SKIP_DIRS for part in Path(rel).parts):
+                continue
+            rels.append(rel)
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:

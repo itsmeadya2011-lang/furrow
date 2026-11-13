@@ -16,6 +16,38 @@ from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
 
+#: Directories that are skipped by :meth:`LLMClient.list_files`. They contain
+#: generated or cached artefacts that no worker needs to read and that would
+#: otherwise flood the context with noise.
+SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".furrow",
+        ".venv",
+        "venv",
+        "env",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".eggs",
+        "node_modules",
+        ".next",
+        ".nuxt",
+        "dist",
+        "build",
+        "target",
+        ".cargo",
+        ".rustup",
+        ".gradle",
+        ".idea",
+        ".vscode",
+    }
+)
+
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
@@ -496,4 +528,19 @@ class LLMClient:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        return [
+            str(f.relative_to(p))
+            for f in p.rglob("*")
+            if f.is_file() and not self._should_skip(f)
+        ]
+
+    @staticmethod
+    def _should_skip(path: Path) -> bool:
+        """Return True when *path* is inside a generated/cache directory.
+
+        Walks the path parts from the root and stops as soon as it finds a
+        directory whose name is in :data:`SKIP_DIRS`. This prunes whole
+        subtrees (``.git``, ``node_modules``, ``__pycache__``, ...) instead of
+        returning every file inside them.
+        """
+        return any(part in SKIP_DIRS for part in path.parts)
