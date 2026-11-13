@@ -500,6 +500,30 @@ async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_passing_cycle_clears_stale_failure_feedback(tmp_path, monkeypatch):
+    class SequenceTester:
+        def __init__(self, results):
+            self.results = list(results)
+
+        async def run(self, goal, tasks):
+            passed = self.results.pop(0)
+            return TestResult(passed=passed, summary="s", failures=["fail"])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="ORIG", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = SequenceTester([False, True])
+    result = await orch.run()
+    assert orch.cycles == 2
+    assert orch.goal == orch.original_goal == "ORIG"
+    assert orch._feedback == ""
+    assert result.passed is True
+    assert result.skipped is False
+
+
+@pytest.mark.asyncio
 async def test_worker_files_changed_recorded_on_task_and_result(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):

@@ -233,6 +233,42 @@ def test_start_exits_0_on_skipped_run(
     assert "SKIPPED" in result.output
 
 
+def test_start_exits_1_on_not_run_max_cycles(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A run stopped before any test ran (max_cycles) exits 1, not 0."""
+    fake_orchestrator.result = _make_result(
+        passed=False,
+        skipped=False,
+        tests_run=0,
+        stopped_reason="max_cycles reached",
+    )
+
+    result = runner.invoke(main, ["start", "build a thing"])
+
+    assert result.exit_code == 1
+    assert "NOT RUN - no tests were executed." in result.output
+    assert "max_cycles reached" in result.output
+
+
+def test_start_exits_0_on_not_run_goal_complete(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A goal-complete run with no tests run (empty plan) still exits 0."""
+    fake_orchestrator.result = _make_result(
+        passed=False,
+        skipped=False,
+        tests_run=0,
+        stopped_reason="goal complete",
+    )
+
+    result = runner.invoke(main, ["start", "build a thing"])
+
+    assert result.exit_code == 0
+    assert "NOT RUN - no tests were executed." in result.output
+    assert "goal complete" in result.output
+
+
 def test_start_uses_max_cycles_and_workspace(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
 ) -> None:

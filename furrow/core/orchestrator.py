@@ -236,6 +236,11 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+            else:
+                # Tests passed and were not skipped: drop any feedback amended
+                # into the goal by an earlier failing cycle.
+                self.goal = self.original_goal
+                self._feedback = ""
             cumulative = self._client_usage()
             cycle_usage = Usage(
                 input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),

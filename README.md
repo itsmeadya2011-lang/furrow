@@ -45,7 +45,7 @@ Options:
 
 If `goal` is omitted, Furrow will prompt for it.
 
-The command exits with status `1` when the run ends `FAILED` (tests ran and did not pass) and with status `0` for `PASSED` (all tests passed), `SKIPPED` (no test runner detected) and `NOT RUN` (no tests were executed).
+The command exits with status `1` when the run ends `FAILED` (tests ran and did not pass) or when it stops without completing successfully (for example `max_cycles reached` or `no progress` before any tests ran). It exits with status `0` for `PASSED` (all tests passed), `SKIPPED` (no test runner detected), and `NOT RUN` only when the goal completed without executing any tests (e.g. an empty plan).
 
 ### `furrow status`
 Show the persisted state of the last run for a workspace.
@@ -65,7 +65,7 @@ furrow resume
 furrow resume --workspace /path/to/project --max-cycles 5
 ```
 
-The exit codes are the same as for `furrow start`: `1` when the resumed run ends `FAILED`, `0` for `PASSED`, `SKIPPED` and `NOT RUN`.
+The exit codes are the same as for `furrow start`: `1` when the resumed run ends `FAILED` or stops without completing successfully, `0` for `PASSED`, `SKIPPED`, and `NOT RUN` only when the goal completed without executing any tests.
 
 ### `furrow web`
 Serve the web UI and stream orchestrator events.

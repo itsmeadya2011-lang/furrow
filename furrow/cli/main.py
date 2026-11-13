@@ -171,8 +171,11 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         sys.exit(1)
     _print_summary(result)
     skipped = bool(getattr(result, "skipped", False))
-    tests_run = getattr(result, "tests_run", 0) or 0
-    if skipped or result.passed or tests_run == 0:
+    if (
+        skipped
+        or result.passed
+        or getattr(result, "stopped_reason", "") == "goal complete"
+    ):
         sys.exit(0)
     else:
         sys.exit(1)
