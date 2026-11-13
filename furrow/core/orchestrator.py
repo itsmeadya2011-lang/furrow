@@ -103,6 +103,10 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "last_test_passed": self._last_test_passed,
+            "tests_skipped": self._tests_skipped,
+            "tests_run": self._tests_run,
+            "no_progress": self._no_progress,
         }
 
     def _console(self) -> Any:

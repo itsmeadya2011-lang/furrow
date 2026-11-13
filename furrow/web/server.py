@@ -207,8 +207,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
-      (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    const costStr = cost > 0 ? ', $' + cost.toFixed(6) : ', $0.000000';
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens' + costStr;
   }
 
   function renderTasks(tasks) {

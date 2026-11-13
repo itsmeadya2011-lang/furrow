@@ -193,10 +193,12 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_setup_py = (self.workspace / "setup.py").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
+            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini
+            or has_requirements or has_setup_py
         ):
             return [sys.executable, "-m", "pytest", "-q"]
 
@@ -236,6 +238,7 @@ class TesterAgent:
             "setup.cfg",
             "tox.ini",
             "requirements.txt",
+            "setup.py",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
@@ -244,6 +247,16 @@ class TesterAgent:
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+        if (self.workspace / "Makefile").is_file():
+            # Check for a test target in the Makefile
+            try:
+                content = (self.workspace / "Makefile").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                if re.search(r"^test:", content, re.MULTILINE):
+                    return ["make", "test"]
+            except Exception:
+                pass
 
         return None
 
@@ -418,7 +431,12 @@ class TesterAgent:
 
 
 def _extract_failures(output: str, limit: int = 10) -> list[str]:
-    """Best-effort extraction of failure details from raw test output."""
+    """Best-effort extraction of failure details from raw test output.
+
+    Tries to extract structured failure information (test names, file locations,
+    error messages) before falling back to scanning for lines that look like
+    failures.  The output is truncated to *limit* entries.
+    """
     failures: list[str] = []
     seen: set[str] = set()
 
