@@ -303,6 +303,14 @@ class Orchestrator:
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=self._stopped_reason,
+                data={"stopped_reason": self._stopped_reason, "cycles": self.cycles},
+            )
+        )
+
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
         )

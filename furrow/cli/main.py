@@ -25,6 +25,8 @@ from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
+__version__ = "0.1.0"
+
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
 
@@ -259,6 +261,12 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+def version() -> None:
+    """Show the Furrow version."""
+    click.echo(f"furrow {__version__}")
 
 
 if __name__ == "__main__":

@@ -81,6 +81,13 @@ A task status comes from the LLM-planned task, so it is untrusted input: the UI 
 
 The web API refuses to start a second run while one is already in progress — both through `POST /api/start` and through the websocket.
 
+### `furrow version`
+Show the version of the Furrow package.
+
+```bash
+furrow version
+```
+
 ## Configuration
 
 Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file if present). Available settings:

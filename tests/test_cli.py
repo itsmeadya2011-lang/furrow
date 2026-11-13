@@ -669,6 +669,14 @@ def releasing_orchestrator(
     return ClientReleasingOrchestrator
 
 
+def test_version_prints_the_version(runner: CliRunner) -> None:
+    """The `version` command prints the package version."""
+    result = runner.invoke(main, ["version"])
+
+    assert result.exit_code == 0
+    assert "furrow 0.1.0" in result.output
+
+
 def test_start_releases_the_llm_client_after_a_run(
     runner: CliRunner,
     releasing_orchestrator: type[ClientReleasingOrchestrator],
