@@ -508,7 +508,7 @@ async def test_aclose_resets_so_fresh_client_created():
 
 class _FakeResponseNoChoices:
     def __init__(self) -> None:
-        self.choices = []
+        self.choices: list[Any] = []
         self.usage = None
 
 
@@ -868,3 +868,93 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+def test_classify_error_rate_limit():
+    from furrow.llm import LLMRateLimitError, _classify_error
+    
+    class _RateLimitError(Exception):
+        status_code = 429
+    
+    exc = _RateLimitError("rate limited")
+    error = _classify_error(exc, "openai")
+    assert isinstance(error, LLMRateLimitError)
+    assert error.retryable is True
+    assert error.provider == "openai"
+    assert error.status_code == 429
+
+
+def test_classify_error_server_error():
+    from furrow.llm import LLMProviderError, _classify_error
+    
+    class _ServerError(Exception):
+        status_code = 500
+    
+    exc = _ServerError("internal server error")
+    error = _classify_error(exc, "anthropic")
+    assert isinstance(error, LLMProviderError)
+    assert error.retryable is True
+    assert error.provider == "anthropic"
+    assert error.status_code == 500
+
+
+def test_classify_error_client_error():
+    from furrow.llm import LLMProviderError, _classify_error
+    
+    class _ClientError(Exception):
+        status_code = 400
+    
+    exc = _ClientError("bad request")
+    error = _classify_error(exc, "openai")
+    assert isinstance(error, LLMProviderError)
+    assert error.retryable is False
+    assert error.provider == "openai"
+    assert error.status_code == 400
+
+
+def test_classify_error_timeout():
+    from furrow.llm import LLMTimeoutError, _classify_error
+    
+    exc = asyncio.TimeoutError("request timed out")
+    error = _classify_error(exc, "anthropic")
+    assert isinstance(error, LLMTimeoutError)
+    assert error.retryable is True
+    assert error.provider == "anthropic"
+
+
+def test_classify_error_connection_error():
+    from furrow.llm import LLMError, _classify_error
+    
+    exc = ConnectionError("connection refused")
+    error = _classify_error(exc, "ollama")
+    assert isinstance(error, LLMError)
+    assert error.retryable is True
+    assert error.provider == "ollama"
+
+
+def test_classify_error_rate_limit_message():
+    from furrow.llm import LLMRateLimitError, _classify_error
+    
+    exc = ValueError("rate limit exceeded")
+    error = _classify_error(exc, "openai")
+    assert isinstance(error, LLMRateLimitError)
+    assert error.retryable is True
+
+
+def test_classify_error_quota_message():
+    from furrow.llm import LLMRateLimitError, _classify_error
+    
+    exc = ValueError("quota exceeded for this model")
+    error = _classify_error(exc, "anthropic")
+    assert isinstance(error, LLMRateLimitError)
+    assert error.retryable is True
+
+
+def test_classify_error_unknown():
+    from furrow.llm import LLMError, _classify_error
+    
+    exc = ValueError("unknown error")
+    error = _classify_error(exc, "openai")
+    assert isinstance(error, LLMError)
+    assert error.retryable is False
+    assert error.provider == "openai"

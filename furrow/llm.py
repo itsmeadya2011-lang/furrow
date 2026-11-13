@@ -58,7 +58,106 @@ def _is_retryable(exc: BaseException) -> bool:
         status_code = getattr(response, "status_code", None)
     if status_code is None:
         status_code = getattr(exc, "status_code", None)
-    return status_code in RETRYABLE_STATUS_CODES
+    if status_code in RETRYABLE_STATUS_CODES:
+        return True
+    # Check for rate limit errors in error message
+    error_msg = str(exc).lower()
+    return bool(
+        any(
+            keyword in error_msg
+            for keyword in ["rate limit", "too many requests", "quota exceeded"]
+        )
+    )
+
+
+class LLMError(Exception):
+    """Base exception for LLM-related errors."""
+    def __init__(self, message: str, provider: str | None = None, retryable: bool = False):
+        super().__init__(message)
+        self.provider = provider
+        self.retryable = retryable
+
+
+class LLMProviderError(LLMError):
+    """Error from the LLM provider API."""
+
+    def __init__(
+        self,
+        message: str,
+        provider: str,
+        status_code: int | None = None,
+        retryable: bool = False,
+    ):
+        super().__init__(message, provider, retryable)
+        self.status_code = status_code
+
+
+class LLMRateLimitError(LLMProviderError):
+    """Rate limit error from the LLM provider."""
+    def __init__(self, message: str, provider: str, retry_after: float | None = None):
+        super().__init__(message, provider, status_code=429, retryable=True)
+        self.retry_after = retry_after
+
+
+class LLMTimeoutError(LLMError):
+    """Timeout error when calling the LLM provider."""
+    def __init__(self, message: str, provider: str | None = None):
+        super().__init__(message, provider, retryable=True)
+
+
+def _classify_error(exc: BaseException, provider: str) -> LLMError:
+    """Classify an exception into a specific LLM error type."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return LLMTimeoutError(f"Request to {provider} timed out", provider)
+    if isinstance(exc, ConnectionError):
+        return LLMError(f"Connection error to {provider}: {exc}", provider, retryable=True)
+
+    status_code = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+    if status_code is None:
+        status_code = getattr(exc, "status_code", None)
+
+    error_msg = str(exc).lower()
+
+    is_rate_limit = (
+        status_code == 429
+        or "rate limit" in error_msg
+        or "too many requests" in error_msg
+        or "quota" in error_msg
+    )
+    if is_rate_limit:
+        retry_after = None
+        if response is not None:
+            retry_after = getattr(response, "retry_after", None)
+            if retry_after is None:
+                headers = getattr(response, "headers", {})
+                retry_after = headers.get("retry-after") or headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        retry_after = float(retry_after)
+                    except (ValueError, TypeError):
+                        retry_after = None
+        return LLMRateLimitError(f"Rate limited by {provider}: {exc}", provider, retry_after)
+
+    if status_code and status_code >= 500:
+        return LLMProviderError(
+            f"Provider {provider} server error ({status_code}): {exc}",
+            provider,
+            status_code,
+            retryable=True,
+        )
+
+    if status_code and status_code >= 400:
+        return LLMProviderError(
+            f"Provider {provider} client error ({status_code}): {exc}",
+            provider,
+            status_code,
+            retryable=False,
+        )
+
+    return LLMError(f"Error calling {provider}: {exc}", provider, retryable=_is_retryable(exc))
 
 
 def _extract_anthropic_usage(response: Any) -> Usage:
@@ -278,6 +377,7 @@ class LLMClient:
         are not retryable (see :func:`_is_retryable`) are raised immediately.
         """
         max_attempts = max(1, int(self.settings.max_retries))
+        provider = str(self.settings.provider)
 
         if _TENACITY_AVAILABLE:
             async for attempt_manager in AsyncRetrying(
@@ -295,9 +395,14 @@ class LLMClient:
                 return await call()
             except Exception as exc:
                 last_exc = exc
-                if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
+                llm_error = _classify_error(exc, provider)
+                if attempt_index + 1 >= max_attempts or not llm_error.retryable:
                     raise
-                await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
+                # Wait before retry, respecting retry-after for rate limits
+                if isinstance(llm_error, LLMRateLimitError) and llm_error.retry_after:
+                    await asyncio.sleep(min(llm_error.retry_after, 60.0))
+                else:
+                    await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")

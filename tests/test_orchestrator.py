@@ -205,6 +205,27 @@ async def test_no_progress_guard(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cycle_timeout(tmp_path, monkeypatch):
+    """Test that cycle_timeout stops the run when a cycle takes too long."""
+    
+    class SlowWorker(FakeWorker):
+        async def run(self):
+            await asyncio.sleep(10)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+    
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", SlowWorker)
+    settings = make_settings(tmp_path, max_cycles=5)
+    settings = settings.model_copy(update={"cycle_timeout": 0.1})
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert "cycle timeout" in result.stopped_reason
+    assert result.cycles == 1
+
+
+@pytest.mark.asyncio
 async def test_state_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

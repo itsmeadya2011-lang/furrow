@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import json
 import os
 import re
@@ -380,6 +381,22 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "grep":
+            return await self._grep(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") else ".",
+                str(args.get("include", "")) if args.get("include") else None,
+            )
+        if name == "diff":
+            return await self._diff(
+                str(args.get("path", "")),
+                str(args.get("new_content", "")),
+            )
+        if name == "patch":
+            return await self._patch(
+                str(args.get("path", "")),
+                str(args.get("patch", "")),
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -519,3 +536,202 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+
+    async def _grep(self, pattern: str, path: str, include: str | None = None) -> str:
+        """Search for a pattern in files within the workspace."""
+        if not pattern:
+            return "error: empty pattern"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        try:
+            # Validate the pattern up front so error messages are consistent
+            # whether or not ripgrep is available.
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                return f"error: invalid regex pattern: {exc}"
+
+            # Use ripgrep if available, otherwise fall back to Python's re
+            import shutil
+            rg_path = shutil.which("rg")
+            if rg_path:
+                cmd = [rg_path, "--line-number", "--no-heading", "--color=never"]
+                if include:
+                    cmd.extend(["--glob", include])
+                cmd.extend([pattern, str(resolved)])
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    cwd=str(self.workspace),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30.0)
+                out = stdout.decode("utf-8", errors="replace")
+                err = stderr.decode("utf-8", errors="replace")
+                if proc.returncode == 0:
+                    return out.strip() if out.strip() else "(no matches)"
+                elif proc.returncode == 1:
+                    return "(no matches)"
+                else:
+                    return f"error: {err.strip() or out.strip()}"
+            else:
+                # Fallback to Python implementation
+                return await self._grep_python(pattern, resolved, include)
+        except asyncio.TimeoutError:
+            return "error: grep timed out"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+    async def _grep_python(self, pattern: str, path: Path, include: str | None = None) -> str:
+        """Python fallback for grep when ripgrep is not available."""
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+        
+        results = []
+        file_count = 0
+        
+        def match_include(file_path: Path) -> bool:
+            if not include:
+                return True
+            # Simple glob matching
+            import fnmatch
+            return fnmatch.fnmatch(file_path.name, include)
+        
+        if path.is_file():
+            files = [path] if match_include(path) else []
+        else:
+            files = [f for f in path.rglob("*") if f.is_file() and match_include(f)]
+        
+        for file_path in files:
+            if file_count >= 100:  # Limit files searched
+                break
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            
+            for line_num, line in enumerate(content.splitlines(), 1):
+                if regex.search(line):
+                    rel_path = file_path.relative_to(self.workspace.resolve())
+                    results.append(f"{rel_path}:{line_num}:{line}")
+                    if len(results) >= 500:  # Limit total matches
+                        break
+            file_count += 1
+            if len(results) >= 500:
+                break
+        
+        if not results:
+            return "(no matches)"
+        return "\n".join(results)
+
+    async def _diff(self, path: str, new_content: str) -> str:
+        """Show a unified diff between the current file and new content."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        try:
+            if resolved.exists():
+                old_content = resolved.read_text(encoding="utf-8", errors="replace")
+            else:
+                old_content = ""
+            
+            old_lines = old_content.splitlines(keepends=True)
+            new_lines = new_content.splitlines(keepends=True)
+            
+            diff = difflib.unified_diff(
+                old_lines, new_lines,
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                lineterm=""
+            )
+            diff_output = "\n".join(diff)
+            return diff_output if diff_output else "(no changes)"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+    async def _patch(self, path: str, patch_content: str) -> str:
+        """Apply a unified diff patch to a file."""
+        if not patch_content.strip():
+            return "error: empty patch"
+        
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        try:
+            # Read current content
+            if resolved.exists():
+                old_content = resolved.read_text(encoding="utf-8", errors="replace")
+            else:
+                old_content = ""
+            
+            # Parse and apply the patch
+            new_content = self._apply_patch(old_content, patch_content, path)
+            
+            # Write the new content
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, new_content)
+            
+            rel = str(resolved.relative_to(self.workspace.resolve()))
+            self.files_changed.add(rel)
+            return f"patched {path} ({len(new_content.encode('utf-8'))} bytes)"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        except Exception as exc:
+            return f"error: failed to apply patch: {exc}"
+
+    def _apply_patch(self, old_content: str, patch_content: str, path: str) -> str:
+        """Apply a unified diff patch to content. Returns the new content."""
+        old_lines = old_content.splitlines(keepends=True)
+        patch_lines = patch_content.splitlines(keepends=True)
+        
+        # Parse unified diff
+        i = 0
+        new_lines = []
+        old_idx = 0
+        
+        while i < len(patch_lines):
+            line = patch_lines[i]
+            
+            # Skip header lines (--- and +++)
+            if line.startswith("--- ") or line.startswith("+++ "):
+                i += 1
+                continue
+            
+            # Skip @@ chunk header
+            if line.startswith("@@ "):
+                i += 1
+                continue
+            
+            if line.startswith(" "):
+                # Context line - should match old content
+                if old_idx < len(old_lines):
+                    if old_lines[old_idx].rstrip("\n") != line[1:].rstrip("\n"):
+                        # Context mismatch, but continue anyway
+                        pass
+                    new_lines.append(old_lines[old_idx])
+                    old_idx += 1
+                i += 1
+            elif line.startswith("-"):
+                # Deletion - skip in old, don't add to new
+                old_idx += 1
+                i += 1
+            elif line.startswith("+"):
+                # Addition - add to new
+                new_lines.append(line[1:] + ("\n" if not line.endswith("\n") else ""))
+                i += 1
+            else:
+                # Unknown line type, skip
+                i += 1
+        
+        # Add remaining old lines
+        while old_idx < len(old_lines):
+            new_lines.append(old_lines[old_idx])
+            old_idx += 1
+        
+        return "".join(new_lines)

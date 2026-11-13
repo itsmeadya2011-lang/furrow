@@ -375,8 +375,17 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    expected = [
+        "diff",
+        "grep",
+        "list_files",
+        "patch",
+        "read_file",
+        "run_command",
+        "write_file",
+    ]
+    assert sorted(names) == expected
+    assert len(WORKER_TOOLS) == 7
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -888,3 +897,104 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+
+@pytest.mark.asyncio
+async def test_grep_tool(tmp_path):
+    """Test the grep tool for searching patterns in files."""
+    from furrow.config import TaskModel
+    
+    (tmp_path / "a.py").write_text("def foo():\n    return 42\n")
+    (tmp_path / "b.py").write_text("def bar():\n    return foo()\n")
+    (tmp_path / "c.txt").write_text("hello world\n")
+    
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    
+    # Search for pattern
+    out = await agent._grep("foo", ".")
+    assert "a.py:1:def foo():" in out
+    assert "b.py:2:    return foo()" in out
+    
+    # Search with include pattern
+    out = await agent._grep("def", ".", "*.py")
+    assert "a.py:1:def foo():" in out
+    assert "b.py:1:def bar():" in out
+    assert "c.txt" not in out
+    
+    # No matches
+    out = await agent._grep("nonexistent", ".")
+    assert out == "(no matches)"
+    
+    # Invalid regex
+    out = await agent._grep("[invalid", ".")
+    assert "error: invalid regex pattern" in out
+
+
+@pytest.mark.asyncio
+async def test_diff_tool(tmp_path):
+    """Test the diff tool for showing changes."""
+    from furrow.config import TaskModel
+    
+    (tmp_path / "test.py").write_text("def foo():\n    return 1\n")
+    
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="diff")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    
+    # Diff existing file
+    out = await agent._diff("test.py", "def foo():\n    return 2\n")
+    assert "-    return 1" in out
+    assert "+    return 2" in out
+    
+    # Diff new file
+    out = await agent._diff("new.py", "def bar():\n    return 3\n")
+    assert "+def bar():" in out
+    assert "+    return 3" in out
+    
+    # No changes
+    out = await agent._diff("test.py", "def foo():\n    return 1\n")
+    assert out == "(no changes)"
+
+
+@pytest.mark.asyncio
+async def test_patch_tool(tmp_path):
+    """Test the patch tool for applying unified diffs."""
+    from furrow.config import TaskModel
+    
+    (tmp_path / "test.py").write_text("def foo():\n    return 1\n")
+    
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="patch")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    
+    # Apply a patch
+    patch = """--- a/test.py
++++ b/test.py
+@@ -1,2 +1,2 @@
+ def foo():
+-    return 1
++    return 2
+"""
+    out = await agent._patch("test.py", patch)
+    assert "patched test.py" in out
+    assert (tmp_path / "test.py").read_text() == "def foo():\n    return 2\n"
+    
+    # Patch new file
+    patch = """--- a/new.py
++++ b/new.py
+@@ -0,0 +1,2 @@
++def bar():
++    return 3
+"""
+    out = await agent._patch("new.py", patch)
+    assert "patched new.py" in out
+    assert (tmp_path / "new.py").read_text() == "def bar():\n    return 3\n"
+    
+    # Empty patch
+    out = await agent._patch("test.py", "")
+    assert "error: empty patch" in out

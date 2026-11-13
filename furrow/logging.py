@@ -24,12 +24,18 @@ try:
     import structlog
     _STRUCTLOG_AVAILABLE = True
 except ImportError:
-    structlog = None  # type: ignore[assignment]
+    import structlog as _structlog
+    structlog = _structlog
     _STRUCTLOG_AVAILABLE = False
 
 
-def configure_logging(level: str = "INFO") -> None:
-    """Configure structlog to wrap stdlib logging."""
+def configure_logging(level: str = "INFO", json_output: bool = False) -> None:
+    """Configure structlog to wrap stdlib logging.
+    
+    Args:
+        level: Log level (DEBUG, INFO, WARNING, ERROR)
+        json_output: If True, output JSON formatted logs. If False, use human-readable format.
+    """
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
         format="%(message)s",
@@ -42,8 +48,8 @@ def configure_logging(level: str = "INFO") -> None:
         _configure_stdlib_fallback(level)
         return
 
-    structlog.configure(
-        processors=[
+    if json_output:
+        processors = [
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
@@ -51,7 +57,20 @@ def configure_logging(level: str = "INFO") -> None:
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
             structlog.processors.JSONRenderer(),
-        ],
+        ]
+    else:
+        processors = [
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="%H:%M:%S"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.UnicodeDecoder(),
+            structlog.dev.ConsoleRenderer(colors=True),
+        ]
+
+    structlog.configure(
+        processors=processors,
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
