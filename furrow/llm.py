@@ -6,7 +6,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 import aiofiles
 from anthropic import AsyncAnthropic
@@ -15,6 +15,10 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+
+if TYPE_CHECKING:
+    from anthropic.types import Message as AnthropicMessage
+    from openai.types.chat import ChatCompletion as OpenAIChatCompletion
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -61,7 +65,7 @@ def _is_retryable(exc: BaseException) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
-def _extract_anthropic_usage(response: Any) -> Usage:
+def _extract_anthropic_usage(response: AnthropicMessage) -> Usage:
     """Pull token usage out of an Anthropic messages response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -71,7 +75,7 @@ def _extract_anthropic_usage(response: Any) -> Usage:
     return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1)
 
 
-def _extract_openai_usage(response: Any) -> Usage:
+def _extract_openai_usage(response: OpenAIChatCompletion) -> Usage:
     """Pull token usage out of an OpenAI-compatible response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -81,9 +85,9 @@ def _extract_openai_usage(response: Any) -> Usage:
     return Usage(input_tokens=prompt_tokens, output_tokens=completion_tokens, calls=1)
 
 
-def to_anthropic_tools(tools: list[dict]) -> list[dict]:
+def to_anthropic_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert neutral tool schemas to Anthropic tool definitions."""
-    converted: list[dict] = []
+    converted: list[dict[str, Any]] = []
     for tool in tools:
         converted.append(
             {
@@ -95,9 +99,9 @@ def to_anthropic_tools(tools: list[dict]) -> list[dict]:
     return converted
 
 
-def to_openai_tools(tools: list[dict]) -> list[dict]:
+def to_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert neutral tool schemas to OpenAI function definitions."""
-    converted: list[dict] = []
+    converted: list[dict[str, Any]] = []
     for tool in tools:
         converted.append(
             {
@@ -112,7 +116,7 @@ def to_openai_tools(tools: list[dict]) -> list[dict]:
     return converted
 
 
-def _anthropic_block(block: dict) -> dict:
+def _anthropic_block(block: dict[str, Any]) -> dict[str, Any]:
     btype = block.get("type")
     if btype == "text":
         return {"type": "text", "text": block.get("text", "")}
@@ -132,9 +136,9 @@ def _anthropic_block(block: dict) -> dict:
     return dict(block)
 
 
-def to_anthropic_messages(messages: list[dict]) -> list[dict]:
+def to_anthropic_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert neutral messages to Anthropic message format."""
-    converted: list[dict] = []
+    converted: list[dict[str, Any]] = []
     for message in messages:
         role = message["role"]
         content = message.get("content")
@@ -147,15 +151,15 @@ def to_anthropic_messages(messages: list[dict]) -> list[dict]:
     return converted
 
 
-def to_openai_messages(messages: list[dict]) -> list[dict]:
+def to_openai_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Convert neutral messages to OpenAI chat completions format."""
-    converted: list[dict] = []
+    converted: list[dict[str, Any]] = []
     for message in messages:
         role = message["role"]
         content = message.get("content")
         if role == "assistant" and isinstance(content, list):
             text_parts: list[str] = []
-            tool_calls: list[dict] = []
+            tool_calls: list[dict[str, Any]] = []
             for block in content:
                 btype = block.get("type")
                 if btype == "text":
@@ -198,7 +202,7 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
     return converted
 
 
-def parse_tool_arguments(raw: Any) -> dict:
+def parse_tool_arguments(raw: Any) -> dict[str, Any]:
     """Parse tool call arguments from a dict or JSON string ({} on failure)."""
     if isinstance(raw, dict):
         return raw
@@ -321,8 +325,8 @@ class LLMClient:
 
     async def chat(
         self,
-        messages: list[dict],
-        tools: list[dict] | None = None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
         system: str = "",
         model: str | None = None,
     ) -> LLMResponse:
@@ -392,8 +396,8 @@ class LLMClient:
 
     async def _chat_anthropic(
         self,
-        messages: list[dict],
-        tools: list[dict] | None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
         system: str,
         model: str,
     ) -> LLMResponse:
@@ -434,8 +438,8 @@ class LLMClient:
     async def _chat_openai_compatible(
         self,
         client: AsyncOpenAI,
-        messages: list[dict],
-        tools: list[dict] | None,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
         system: str,
         model: str,
     ) -> LLMResponse:

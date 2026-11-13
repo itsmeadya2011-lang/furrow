@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from furrow.costs import ModelPricing
+
+if TYPE_CHECKING:
+    from furrow.config import TaskModel
 
 
 class Provider(str, Enum):

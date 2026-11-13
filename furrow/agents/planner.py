@@ -8,11 +8,27 @@ from furrow.llm import LLMClient
 
 
 class PlannerAgent:
+    """Planner agent that breaks a goal into parallelizable tasks.
+
+    The planner uses an LLM to analyze the goal and create a plan consisting of
+    1-5 tasks that can be executed in parallel where possible. Each task specifies
+    its description, files to modify, and dependencies on other tasks.
+    """
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
 
     async def plan(self, goal: str, context: str = "") -> Plan:
+        """Create a plan for the given goal.
+
+        Args:
+            goal: The high-level goal to plan for.
+            context: Optional context from previous cycles (e.g., test failures).
+
+        Returns:
+            A Plan object containing tasks and rationale.
+        """
         prompt = PLANNER_PROMPT + "\n\nGoal: " + goal
         if context:
             prompt += "\n\nContext:\n" + context

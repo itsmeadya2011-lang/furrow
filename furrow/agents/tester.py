@@ -50,6 +50,12 @@ def resolve_test_timeout(settings: Settings) -> float:
     legitimately run for many minutes.  ``Settings.test_timeout`` is read
     defensively (``getattr``) so the tester also works with settings objects
     that do not define the setting yet.
+
+    Args:
+        settings: The settings object.
+
+    Returns:
+        The timeout in seconds.
     """
     raw = getattr(settings, "test_timeout", None)
     try:
@@ -61,9 +67,16 @@ def resolve_test_timeout(settings: Settings) -> float:
     return timeout
 
 
-def parse_test_output(output: str) -> list[dict]:
-    """Parse raw test output and return structured failure information."""
-    failures: list[dict] = []
+def parse_test_output(output: str) -> list[dict[str, Any]]:
+    """Parse raw test output and return structured failure information.
+
+    Args:
+        output: The raw test output.
+
+    Returns:
+        A list of failure dictionaries with keys: file, line, test, error.
+    """
+    failures: list[dict[str, Any]] = []
     seen_locations = set()
 
     # Patterns for pytest-style failures
@@ -186,6 +199,17 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        """Detect the appropriate test command for the current project.
+
+        Checks for various project types and returns the appropriate test command:
+        - Python projects with tests/ dir: pytest
+        - Node.js projects: npm/pnpm/yarn test
+        - Rust projects: cargo test
+        - Go projects: go test
+
+        Returns:
+            The test command as a list of arguments, or None if no test runner is detected.
+        """
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -418,7 +442,15 @@ class TesterAgent:
 
 
 def _extract_failures(output: str, limit: int = 10) -> list[str]:
-    """Best-effort extraction of failure details from raw test output."""
+    """Best-effort extraction of failure details from raw test output.
+
+    Args:
+        output: The raw test output.
+        limit: Maximum number of failures to return.
+
+    Returns:
+        A list of failure strings.
+    """
     failures: list[str] = []
     seen: set[str] = set()
 
@@ -453,7 +485,14 @@ def _extract_failures(output: str, limit: int = 10) -> list[str]:
 
 
 def _has_failure_keywords(text: str) -> bool:
-    """Return True when *text* reports a failure (zero counters do not count)."""
+    """Return True when *text* reports a failure (zero counters do not count).
+
+    Args:
+        text: The text to check.
+
+    Returns:
+        True if the text contains failure keywords that are not zero counters.
+    """
     return any(_looks_like_failure(line) for line in text.splitlines())
 
 
@@ -465,6 +504,12 @@ def _looks_like_failure(line: str) -> bool:
     "5 passed, 0 failed", "no failures", "0 errors", "failed: 0" or
     "FAILED (errors=0)" describe a green run, while "1 failed, 4 passed" and
     "FAILED tests/test_x.py::test_y" are real failures.
+
+    Args:
+        line: The line to check.
+
+    Returns:
+        True if the line reports a real failure.
     """
     text = line.strip()
     if not text:

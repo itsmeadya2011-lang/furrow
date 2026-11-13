@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
@@ -13,7 +13,10 @@ from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
 
-_UNSET = object()
+if TYPE_CHECKING:
+    from rich.console import Console
+
+_UNSET: Any = object()
 
 _MAX_TEXT = 120
 
@@ -44,7 +47,7 @@ class Orchestrator:
         self._resume = resume
         self._last_test_passed: bool | None = None
         self._tests_skipped: bool = False
-        self._console_obj: Any = _UNSET
+        self._console_obj: Console | None | object = _UNSET
         self._resume_state_missing = False
         self._usage: Usage = Usage()
         self._usage_seen: Usage = Usage()
@@ -101,11 +104,11 @@ class Orchestrator:
             "original_goal": self.original_goal,
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
-            "tasks": [t.model_dump() for t in self.tasks],
-            "usage": self._usage.model_dump(),
+            "tasks": [t.model_dump(mode="json") for t in self.tasks],
+            "usage": self._usage.model_dump(mode="json"),
         }
 
-    def _console(self) -> Any:
+    def _console(self) -> Console | None:
         """Return a rich Console, or None when rich is unavailable."""
         if self._console_obj is _UNSET:
             try:
