@@ -18,8 +18,6 @@ from furrow.llm import LLMClient, LLMResponse, ToolCall
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
 DENIED_COMMANDS = (
-    "rm -rf /",
-    "rm -fr /",
     "rm -rf /*",
     "rm -rf ~",
     "rm -rf $home",
@@ -64,6 +62,16 @@ _HOME_VAR_RE = re.compile(
 
 # The target of a redirection: "> file" or ">> file".
 _REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+
+# An ``rm`` invocation whose target is the filesystem root, including inside a
+# quoted argument (``sh -c 'rm -rf /'``). The target must end at a shell
+# boundary so an ordinary path such as ``/tmp/build`` is not matched.
+_RM_ROOT_RE = re.compile(
+    r"(?:^|[\s;&|(`'\"])"
+    r"rm\s+(?:-[A-Za-z]+\s+)*(?:--(?:recursive|force|no-preserve-root)\s+)*(?:--\s*)?"
+    r"/(?:\*|\.\.?)?/?(?=$|[\s;&|)`'\"])",
+    re.IGNORECASE,
+)
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -123,7 +131,7 @@ def _get_program_basename(segment: str) -> str | None:
 
 
 def _extract_command_substitutions(command: str) -> list[str]:
-    """Return the text of every ``$(...)`` and `` `...` `` substitution.
+    """Return the text of every ``$(...)``, `` `...` ``, ``<(...)`` and ``>(...)`` substitution.
 
     The shell runs the substituted text, so it has to be checked with the
     very same rules as the command itself.
@@ -161,6 +169,25 @@ def _extract_command_substitutions(command: str) -> list[str]:
                 substitutions.append(text)
             index = cursor + 1
             continue
+        # Process substitution: <(...) or >(...)
+        if char in ("<", ">") and command[index + 1 : index + 2] == "(":
+            depth = 0
+            cursor = index + 1
+            while cursor < length:
+                if command[cursor] == "(":
+                    depth += 1
+                elif command[cursor] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                cursor += 1
+            if cursor >= length:
+                break  # unbalanced parentheses
+            text = command[index + 2 : cursor]
+            if text.strip():
+                substitutions.append(text)
+            index = cursor + 1
+            continue
         index += 1
     return substitutions
 
@@ -169,6 +196,139 @@ def _expand_home(target: str) -> str:
     """Expand ``~`` and the HOME variable of a redirection target."""
     home = os.path.expanduser("~")
     return os.path.expanduser(_HOME_VAR_RE.sub(home, target))
+
+
+def _is_root_path(target: str) -> bool:
+    r"""Report whether a resolved target refers to the filesystem root.
+
+    Covers ``/``, ``//``, ``/.``, ``/..``, ``/*``, ``/.*`` and any
+    root-level wildcard or path that resolves to root (e.g. ``/tmp/..``).
+    """
+    if not target:
+        return False
+    t = target.rstrip("/")
+    if t in {"", "/", ".", "..", "*", ".*"}:
+        return True
+    if re.match(r"^/(?:\.{1,2})?\*?$", t):
+        return True
+    try:
+        resolved = Path(target).resolve()
+    except (OSError, ValueError, RuntimeError):
+        resolved = Path(os.path.normpath(target))
+    try:
+        return resolved == resolved.parent
+    except (OSError, ValueError, RuntimeError):
+        return os.path.normpath(str(resolved)) == os.sep
+
+
+def _is_home_path(target: str) -> bool:
+    """Report whether a resolved target refers to the user's home directory or an ancestor of it."""
+    if not target:
+        return False
+    home = os.path.expanduser("~")
+    try:
+        home_resolved = Path(home).resolve()
+    except (OSError, ValueError, RuntimeError):
+        home_resolved = Path(os.path.normpath(home))
+    expanded = _expand_home(target)
+    try:
+        resolved = Path(expanded).resolve()
+    except (OSError, ValueError, RuntimeError):
+        resolved = Path(os.path.normpath(expanded))
+    try:
+        return resolved == home_resolved or home_resolved.is_relative_to(resolved)
+    except (AttributeError, ValueError):
+        try:
+            home_resolved.relative_to(resolved)
+            return True
+        except ValueError:
+            return False
+
+
+def _rm_deletes_root_or_home(segment: str) -> bool:
+    """Report whether an ``rm`` command segment deletes the root or home directory.
+
+    Parses short flags (``-rf``, ``-fr``, ``-Rf``, ``-r -f``, etc.) and long
+    flags (``--recursive``, ``--force``, ``--no-preserve-root``). Treats ``--``
+    as the end-of-options marker. Resolves each non-option target with
+    ``_expand_home`` and denies when the target is the filesystem root or the
+    user's home directory. Denies ``rm --no-preserve-root /`` even without
+    ``-r``/``-f``.
+    """
+    tokens = _shell_tokens(segment)
+    if not tokens:
+        return False
+
+    # Find the rm token by basename (handles sudo rm, /bin/rm, busybox rm, etc.)
+    rm_index = -1
+    for i, token in enumerate(tokens):
+        if os.path.basename(token).lower() == "rm":
+            rm_index = i
+            break
+    if rm_index == -1:
+        return False
+
+    # Parse flags after the rm token
+    has_recursive = False
+    has_force = False
+    no_preserve_root = False
+    end_of_options = False
+    targets: list[str] = []
+
+    for token in tokens[rm_index + 1 :]:
+        if end_of_options:
+            targets.append(token)
+            continue
+        if token == "--":
+            end_of_options = True
+            continue
+        if not token.startswith("-"):
+            targets.append(token)
+            continue
+        if token == "-":
+            # "-" by itself is not an option, treat as target
+            targets.append(token)
+            continue
+
+        # Long options
+        if token.startswith("--"):
+            if token == "--recursive":
+                has_recursive = True
+            elif token == "--force":
+                has_force = True
+            elif token == "--no-preserve-root":
+                no_preserve_root = True
+            # Unknown long options are ignored (treated as non-targets)
+            continue
+
+        # Short options: can be combined like -rf, -fr, -Rf
+        for ch in token[1:]:
+            if ch in ("r", "R"):
+                has_recursive = True
+            elif ch == "f":
+                has_force = True
+            # Other short options are ignored
+
+    # If --no-preserve-root is used with a root target, deny even without -r/-f
+    # Otherwise, require both recursive and force for denial (matching the
+    # typical dangerous pattern rm -rf /)
+    require_rf = not no_preserve_root
+
+    if not targets:
+        return False
+
+    for target in targets:
+        expanded = _expand_home(target)
+        if _is_root_path(expanded):
+            if require_rf and not (has_recursive and has_force):
+                continue
+            return True
+        if _is_home_path(expanded):
+            if require_rf and not (has_recursive and has_force):
+                continue
+            return True
+
+    return False
 
 
 def _target_inside_workspace(target: str, workspace: Path) -> bool:
@@ -222,6 +382,13 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
         program = program.lower()
         if program in DENIED_PROGRAMS or program.startswith("mkfs."):
             return True
+
+    if _RM_ROOT_RE.search(normalized):
+        return True
+
+    # DENY rm that deletes root or home
+    if _rm_deletes_root_or_home(segment):
+        return True
 
     # DENY by PATTERN
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):

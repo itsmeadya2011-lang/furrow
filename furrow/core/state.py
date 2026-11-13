@@ -67,6 +67,7 @@ class RunState(BaseModel):
     last_passed: bool | None = None
     last_skipped: bool = False
     last_summary: str = ""
+    last_failures: list[str] = Field(default_factory=list)
 
 
 def state_path_for(

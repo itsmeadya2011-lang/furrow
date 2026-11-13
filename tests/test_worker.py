@@ -424,10 +424,28 @@ async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
         # command substitutions hide the dangerous part of the command
         "echo $(rm -rf /)",
         "echo `rm -rf /`",
+        # process substitutions
+        "cat <(rm -rf /)",
+        "tee >(rm -rf /) > out.txt",
         # every spelling of the HOME variable
         "rm -rf \"$HOME\"",
         "rm -rf ${HOME}",
         "rm -rf '$HOME'",
+        # new rm bypasses that must be denied
+        "rm -rf -- /",
+        "rm -r -f /",
+        "rm -Rf /",
+        "rm --recursive --force /",
+        "rm --no-preserve-root -rf /",
+        "rm -rf --no-preserve-root /",
+        "rm -rf ${HOME}/",
+        "rm -rf ~/",
+        "rm -rf -- ~",
+        "rm --recursive --force ~",
+        "sudo rm -rf /",
+        "/bin/rm -rf /",
+        "env FOO=bar rm -rf /",
+        "busybox rm -rf /",
         # redirections that escape the workspace
         "echo hi > ../../etc/passwd",
         "echo hi > ~/x",
@@ -553,14 +571,38 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "echo hi > ~/x",
         "echo hi > $HOME/x",
         "echo hi > ${HOME}/x",
+        # New rm bypasses that must be denied
+        "rm -rf -- /",
+        "rm -r -f /",
+        "rm -Rf /",
+        "rm --recursive --force /",
+        "rm --no-preserve-root -rf /",
+        "rm -rf --no-preserve-root /",
+        "rm -rf ${HOME}/",
+        "rm -rf ~/",
+        "rm -rf -- ~",
+        "rm --recursive --force ~",
+        "sudo rm -rf /",
+        "/bin/rm -rf /",
+        "env FOO=bar rm -rf /",
+        "busybox rm -rf /",
+        "rm -rf /tmp/..",
+        "rm -rf /.*",
+        "sh -c 'rm -rf /'",
     ]
     allowed_commands = [
         "pytest -q",
         "git status",
         "ls -f",
         "rm -rf build",
+        "rm -rf /tmp/build",
+        "rm -rf /tmp/foo",
+        "rm -f /tmp/foo",
         "echo hi > out.txt",
         "cd sub && ls",
+        "rm -f build",
+        "rm --recursive --force build",
+        "rm --no-preserve-root build",
     ]
 
     for cmd in denied_commands:
@@ -578,6 +620,9 @@ def test_is_command_denied_checks_command_substitutions(tmp_path):
     """
     assert is_command_denied("echo $(fdisk /dev/sda)", tmp_path) is True
     assert is_command_denied("echo `fdisk /dev/sda`", tmp_path) is True
+    # Process substitution <(...) and >(...) must also be checked
+    assert is_command_denied("cat <(rm -rf /)", tmp_path) is True
+    assert is_command_denied("tee >(rm -rf /) > out.txt", tmp_path) is True
 
 
 def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):

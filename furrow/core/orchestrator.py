@@ -79,6 +79,19 @@ class Orchestrator:
                     self._tests_run = int(getattr(st, "tests_run", 0) or 0)
                 except Exception:
                     self._tests_run = 0
+                # Restore the outcome of the last executed test cycle so a
+                # resumed run that stops before a new cycle (e.g. max_cycles
+                # already reached) still reports the persisted passed/skipped
+                # status and feeds the planner back the previous failures.
+                self._last_test_passed = st.last_passed
+                self._tests_skipped = st.last_skipped
+                if not st.last_skipped and not st.last_passed:
+                    failures = list(getattr(st, "last_failures", []) or [])
+                    if not failures and st.last_summary:
+                        failures = [st.last_summary]
+                    self._feedback = "\n".join(failures)
+                else:
+                    self._feedback = ""
             else:
                 self._resume_state_missing = True
 
@@ -276,7 +289,8 @@ class Orchestrator:
                              usage=self._usage, no_progress=self._no_progress,
                              prev_sig=self._prev_sig, tests_run=self._tests_run,
                              last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
+                             last_summary=test_result.summary,
+                             last_failures=list(test_result.failures))
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:

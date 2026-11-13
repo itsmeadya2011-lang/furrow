@@ -852,6 +852,65 @@ async def test_planner_runtimeerror_produces_error_event_and_stopped_reason(tmp_
 
 
 @pytest.mark.asyncio
+async def test_resume_reports_passed_when_max_cycles_reached(tmp_path, monkeypatch):
+    """A run whose last test passed, resumed with max_cycles already reached,
+    still reports passed=True with tests_run restored."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result1 = await orch.run()
+    assert result1.passed is True
+    assert result1.tests_run >= 1
+
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    result2 = await orch2.run()
+    assert result2.passed is True
+    assert result2.tests_run >= 1  # restored, no new cycle ran
+
+
+@pytest.mark.asyncio
+async def test_resume_reports_skipped_when_max_cycles_reached(tmp_path, monkeypatch):
+    """A run whose last test was skipped, resumed with max_cycles already
+    reached, still reports skipped=True."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=True)
+    await orch.run()
+
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    result2 = await orch2.run()
+    assert result2.skipped is True
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_feedback_from_last_failures(tmp_path, monkeypatch):
+    """A failed run persists last_failures, and a resumed orchestrator restores
+    _feedback containing the failure text."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+
+    st = store.load()
+    assert st is not None
+    assert st.last_failures == ["fail"]
+
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2._last_test_passed is False
+    assert orch2._tests_skipped is False
+    assert "fail" in orch2._feedback
+
+
+@pytest.mark.asyncio
 async def test_state_store_save_oserror_does_not_crash_run(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
