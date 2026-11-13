@@ -5,9 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "furrow"
 version = "0.1.0"
-description = "Autonomous coding agent with infinite parallel development loop"
+description = "Autonomous coding agent with an iterative development loop"
 readme = "README.md"
 requires-python = ">=3.10"
+license = {text = "Proprietary"}
+authors = [{name = "Furrow Contributors"}]
+keywords = ["agent", "coding", "automation", "llm"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: Other/Proprietary License",
+    "Topic :: Software Development :: Code Generators",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
