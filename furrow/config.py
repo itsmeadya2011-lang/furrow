@@ -13,6 +13,9 @@ class Provider(str, Enum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
     OLLAMA = "ollama"
+    GOOGLE = "google"
+    DEEPSEEK = "deepseek"
+    OPENROUTER = "openrouter"
 
 
 class TaskStatus(str, Enum):
@@ -119,6 +122,9 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
+    google_api_key: str | None = None
+    deepseek_api_key: str | None = None
+    openrouter_api_key: str | None = None
     max_parallel_tasks: int = Field(default=5, ge=1)
     max_cycles: int = Field(default=0, ge=0)
     workspace: Path = Field(default_factory=Path.cwd)

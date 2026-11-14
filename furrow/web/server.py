@@ -6,6 +6,7 @@ orchestrator event to the browser:
     GET  /            single page UI (inline HTML/CSS/JS)
     GET  /api/state  persisted run state
     GET  /api/status status of the currently active run
+    GET  /health      health check endpoint
     POST /api/start  start a background run
     WS   /ws         run a goal and stream its events
 """
@@ -13,12 +14,15 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
+import time
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -30,6 +34,32 @@ from furrow.core.state import StateStore
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Furrow")
+
+# Enable CORS for local development
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all HTTP requests with timing."""
+    start_time = time.perf_counter()
+    response = await call_next(request)
+    process_time = time.perf_counter() - start_time
+    logger.info(
+        "%s %s %.3fs %d",
+        request.method,
+        request.url.path,
+        process_time,
+        response.status_code,
+    )
+    return response
+
 
 POLL_INTERVAL = 0.05
 
@@ -47,6 +77,13 @@ _CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
 # Strong references to background tasks so they are never garbage collected
 # while they are still pending.
 _TASKS: set[asyncio.Task[RunResult]] = set()
+
+
+@app.get("/health")
+async def health_check() -> dict[str, str]:
+    """Health check endpoint for load balancers and monitoring."""
+    return {"status": "ok"}
+
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -644,6 +681,19 @@ async def api_start(request: StartRequest) -> JSONResponse:
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
 
 
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running task, if any."""
+    task = _CURRENT.get("task")
+    if task is None or not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run is currently in progress"},
+        )
+    task.cancel()
+    return JSONResponse(status_code=200, content={"stopped": True})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Run a goal and stream every event it emits to the client."""
@@ -651,6 +701,17 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     bus = EventBus()
     queue = bus.subscribe()
     run_task: asyncio.Task[RunResult] | None = None
+    ping_task: asyncio.Task[None] | None = None
+
+    async def ping_loop() -> None:
+        """Send periodic pings to keep the connection alive."""
+        try:
+            while True:
+                await asyncio.sleep(30)
+                await websocket.send_json({"type": "ping"})
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+
     try:
         try:
             payload = await websocket.receive_json()
@@ -698,14 +759,26 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "error": None,
             }
         )
-        while True:
-            if run_task.done() and queue.empty():
-                break
-            try:
-                event = await asyncio.wait_for(queue.get(), timeout=POLL_INTERVAL)
-            except asyncio.TimeoutError:
-                continue
-            await websocket.send_json(event.to_dict())
+        # Start ping loop to keep connection alive
+        ping_task = asyncio.create_task(ping_loop())
+        try:
+            while True:
+                if run_task.done() and queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=POLL_INTERVAL)
+                except asyncio.TimeoutError:
+                    continue
+                await websocket.send_json(event.to_dict())
+        except WebSocketDisconnect:
+            logger.info("WebSocket client disconnected")
+        except Exception as e:
+            logger.error("WebSocket error: %s", e)
+        finally:
+            if ping_task:
+                ping_task.cancel()
+                with contextlib.suppress(Exception):
+                    await ping_task
         if run_task is None:  # pragma: no cover - defensive
             return
         # The run is over: clear the flag right away instead of waiting for the

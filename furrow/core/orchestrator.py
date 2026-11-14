@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, TypeVar
 
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
@@ -148,6 +149,29 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    T = TypeVar("T")
+
+    async def _safe_run_step(
+        self,
+        step_name: str,
+        step_fn: Callable[[], Awaitable[T]],
+        error_prefix: str,
+    ) -> T | None:
+        """Run a step and handle errors consistently.
+
+        Returns the step result on success, or None on failure (which signals
+        the run loop to stop).
+        """
+        try:
+            return await step_fn()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+            self._stopped_reason = f"{error_prefix}: {e}"
+            self.cycles -= 1
+            return None
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
@@ -164,15 +188,15 @@ class Orchestrator:
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
-            try:
-                plan = await self.planner.plan(self.goal, context=self._context())
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"planner failed: {e}"
-                self.cycles -= 1
+
+            plan = await self._safe_run_step(
+                "plan",
+                lambda: self.planner.plan(self.goal, context=self._context()),
+                "planner failed",
+            )
+            if plan is None:
                 break
+
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
@@ -185,23 +209,21 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
                 break
             self._merge_plan(plan)
-            try:
-                await self._execute(plan)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"execute failed: {e}"
-                self.cycles -= 1
+
+            execute_result = await self._safe_run_step(
+                "execute",
+                lambda: self._execute(plan),
+                "execute failed",
+            )
+            if execute_result is None:
                 break
-            try:
-                test_result = await self.tester.run(self.original_goal, self.tasks)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"tester failed: {e}"
-                self.cycles -= 1
+
+            test_result = await self._safe_run_step(
+                "test",
+                lambda: self.tester.run(self.original_goal, self.tasks),
+                "tester failed",
+            )
+            if test_result is None:
                 break
             self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))

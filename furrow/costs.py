@@ -77,6 +77,15 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "o3": ModelPricing(input_per_million=2.0, output_per_million=8.0),
     "o3-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o4-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    # Google Gemini
+    "gemini-1.5-pro": ModelPricing(input_per_million=3.5, output_per_million=10.5),
+    "gemini-1.5-flash": ModelPricing(input_per_million=0.075, output_per_million=0.3),
+    "gemini-1.0-pro": ModelPricing(input_per_million=0.5, output_per_million=1.5),
+    # DeepSeek
+    "deepseek-chat": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "deepseek-coder": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    # OpenRouter (varies by model, these are rough averages)
+    "openrouter": ModelPricing(input_per_million=1.0, output_per_million=2.0),
 }
 
 #: Provider prefixes that are stripped from a model id before it is looked up.

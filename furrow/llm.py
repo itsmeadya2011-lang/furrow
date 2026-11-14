@@ -217,6 +217,9 @@ class LLMClient:
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
+        self._google: AsyncOpenAI | None = None
+        self._deepseek: AsyncOpenAI | None = None
+        self._openrouter: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
 
     @property
@@ -250,13 +253,62 @@ class LLMClient:
             )
         return self._ollama
 
+    @property
+    def google(self) -> AsyncOpenAI:
+        """Google Gemini via OpenAI-compatible API."""
+        if self._google is None:
+            api_key = self.settings.google_api_key or os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise ValueError("GOOGLE_API_KEY is not set")
+            self._google = AsyncOpenAI(
+                api_key=api_key,
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                timeout=self.settings.request_timeout,
+            )
+        return self._google
+
+    @property
+    def deepseek(self) -> AsyncOpenAI:
+        """DeepSeek via OpenAI-compatible API."""
+        if self._deepseek is None:
+            api_key = self.settings.deepseek_api_key or os.getenv("DEEPSEEK_API_KEY")
+            if not api_key:
+                raise ValueError("DEEPSEEK_API_KEY is not set")
+            self._deepseek = AsyncOpenAI(
+                api_key=api_key,
+                base_url="https://api.deepseek.com/v1",
+                timeout=self.settings.request_timeout,
+            )
+        return self._deepseek
+
+    @property
+    def openrouter(self) -> AsyncOpenAI:
+        """OpenRouter via OpenAI-compatible API."""
+        if self._openrouter is None:
+            api_key = self.settings.openrouter_api_key or os.getenv("OPENROUTER_API_KEY")
+            if not api_key:
+                raise ValueError("OPENROUTER_API_KEY is not set")
+            self._openrouter = AsyncOpenAI(
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+                timeout=self.settings.request_timeout,
+            )
+        return self._openrouter
+
     async def aclose(self) -> None:
         """Release any lazily-created provider clients.
 
         Reusable: cached references are reset to ``None`` so a later request
         creates a fresh client. Never raises.
         """
-        for attr in ("_anthropic", "_openai", "_ollama"):
+        for attr in (
+            "_anthropic",
+            "_openai",
+            "_ollama",
+            "_google",
+            "_deepseek",
+            "_openrouter",
+        ):
             client = getattr(self, attr)
             if client is None:
                 continue
@@ -313,6 +365,12 @@ class LLMClient:
                 response = await self._complete_openai(self.openai, prompt, system, model)
             elif provider == Provider.OLLAMA:
                 response = await self._complete_openai(self.ollama, prompt, system, model)
+            elif provider == Provider.GOOGLE:
+                response = await self._complete_openai(self.google, prompt, system, model)
+            elif provider == Provider.DEEPSEEK:
+                response = await self._complete_openai(self.deepseek, prompt, system, model)
+            elif provider == Provider.OPENROUTER:
+                response = await self._complete_openai(self.openrouter, prompt, system, model)
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
@@ -339,6 +397,18 @@ class LLMClient:
             elif provider == Provider.OLLAMA:
                 return await self._chat_openai_compatible(
                     self.ollama, messages, tools, system, model
+                )
+            elif provider == Provider.GOOGLE:
+                return await self._chat_openai_compatible(
+                    self.google, messages, tools, system, model
+                )
+            elif provider == Provider.DEEPSEEK:
+                return await self._chat_openai_compatible(
+                    self.deepseek, messages, tools, system, model
+                )
+            elif provider == Provider.OPENROUTER:
+                return await self._chat_openai_compatible(
+                    self.openrouter, messages, tools, system, model
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
