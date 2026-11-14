@@ -45,6 +45,14 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_detect_pytest_tests_dir_only(tmp_path):
+    """A tests/ directory alone (no config file) should still detect pytest."""
+    (tmp_path / "tests").mkdir()
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
 def test_detect_pyproject(tmp_path):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)

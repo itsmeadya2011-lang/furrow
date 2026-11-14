@@ -336,6 +336,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       let color = '#8a93a5';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
+      } else if (type === 'cycle_finished') {
+        line = 'cycle ' + text(data.cycle) + ' finished';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
       } else if (type === 'task_started') {

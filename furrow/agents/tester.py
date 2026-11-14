@@ -187,17 +187,11 @@ class TesterAgent:
 
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
-        has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
-        has_pytest_ini = (self.workspace / "pytest.ini").is_file()
-        has_setup_cfg = (self.workspace / "setup.cfg").is_file()
-        has_tox_ini = (self.workspace / "tox.ini").is_file()
-        has_requirements = (self.workspace / "requirements.txt").is_file()
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
-        ):
+        # Python projects with tests/ dir always use pytest, even if package.json exists.
+        # A config file is not required: pytest can run without one.
+        if has_tests_dir:
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
