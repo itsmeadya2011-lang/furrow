@@ -294,6 +294,12 @@ class Orchestrator:
                                         data={"path": str(self.state_store.path)}))
             if guard_tripped:
                 break
+            if test_result.passed and not skipped:
+                # The goal is achieved: stop instead of re-planning the same work.
+                # This also prevents an infinite loop when max_cycles == 0
+                # (unlimited) and the planner keeps returning the same tasks.
+                self._stopped_reason = "tests passed"
+                break
 
         if not self._stopped_reason:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:

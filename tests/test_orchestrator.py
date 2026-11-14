@@ -100,6 +100,20 @@ async def test_loops_three_cycles(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_stops_when_tests_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.stopped_reason == "tests passed"
+    assert result.passed is True
+    assert result.cycles == 1
+
+
+@pytest.mark.asyncio
 async def test_original_goal_survives(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
@@ -497,6 +511,7 @@ async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
     assert orch._feedback == ""
     assert result.skipped is True
     assert result.passed is True
+    assert result.stopped_reason == "max_cycles reached"
 
 
 @pytest.mark.asyncio
