@@ -1079,3 +1079,46 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_dependency_cycle_blocks_cycle_and_dependents(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    t_a = TaskModel(id="a", description="a", dependencies=["b"])
+    t_b = TaskModel(id="b", description="b", dependencies=["a"])
+    t_c = TaskModel(id="c", description="c", dependencies=["a"])
+    t_d = TaskModel(id="d", description="d")
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t_a, t_b, t_c, t_d])
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    by_id = {t.id: t.status for t in orch.tasks}
+    assert by_id["a"] == "blocked"
+    assert by_id["b"] == "blocked"
+    assert by_id["c"] == "blocked"
+    assert by_id["d"] == "completed"
+    events = drain(q)
+    assert any(
+        e.type == EventType.LOG and "dependency cycle detected" in e.message for e in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_self_dependency_is_a_cycle(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    t_a = TaskModel(id="a", description="a", dependencies=["a"])
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t_a])
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    assert orch.tasks[0].status == "blocked"
+    events = drain(q)
+    assert any(
+        e.type == EventType.LOG and "dependency cycle detected" in e.message for e in events
+    )

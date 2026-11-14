@@ -18,6 +18,42 @@ _UNSET = object()
 _MAX_TEXT = 120
 
 
+def _dependency_cycle(tasks: list[TaskModel]) -> list[str] | None:
+    """Return the ids of a dependency cycle in cycle order, or None when acyclic.
+
+    Only dependencies referring to ids present in the task set are considered
+    (deps outside the plan are ignored). A self-dependency is a cycle.
+    """
+    ids = {t.id for t in tasks}
+    deps = {t.id: [d for d in t.dependencies if d in ids] for t in tasks}
+    visited: set[str] = set()
+    stack: list[str] = []
+    on_stack: set[str] = set()
+
+    def dfs(node: str) -> list[str] | None:
+        visited.add(node)
+        stack.append(node)
+        on_stack.add(node)
+        for nxt in deps.get(node, []):
+            if nxt not in visited:
+                found = dfs(nxt)
+                if found is not None:
+                    return found
+            elif nxt in on_stack:
+                start = stack.index(nxt)
+                return [*stack[start:], nxt]
+        stack.pop()
+        on_stack.discard(node)
+        return None
+
+    for node in deps:
+        if node not in visited:
+            found = dfs(node)
+            if found is not None:
+                return found
+    return None
+
+
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None,
                  settings: Settings | None = None, state_store: StateStore | None = None,
@@ -378,7 +414,11 @@ class Orchestrator:
         ids = {t.id for t in tasks}
         waves: list[list[TaskModel]] = []
         done: set[str] = set()
-        remaining = list(tasks)
+        # A task already marked blocked (e.g. by cycle detection) is not
+        # runnable: treat it as done so its dependents are not scheduled either.
+        remaining = [t for t in tasks if t.status != "blocked"]
+        blocked_ids = {t.id for t in tasks if t.status == "blocked"}
+        done.update(blocked_ids)
         while remaining:
             wave = [t for t in remaining if all(d in done or d not in ids for d in t.dependencies)]
             if not wave:
@@ -392,6 +432,30 @@ class Orchestrator:
         return waves
 
     async def _execute(self, plan: Plan) -> None:
+        cycle = _dependency_cycle(plan.tasks)
+        if cycle is not None:
+            ids = {t.id for t in plan.tasks}
+            dependents: dict[str, list[str]] = {tid: [] for tid in ids}
+            for t in plan.tasks:
+                for d in t.dependencies:
+                    if d in ids:
+                        dependents[d].append(t.id)
+            blocked: set[str] = set(cycle)
+            queue = list(cycle)
+            while queue:
+                current = queue.pop()
+                for nxt in dependents[current]:
+                    if nxt not in blocked:
+                        blocked.add(nxt)
+                        queue.append(nxt)
+            for t in plan.tasks:
+                if t.id in blocked:
+                    t.status = "blocked"
+            self.event_bus.emit(
+                Event(type=EventType.LOG,
+                      message=f"dependency cycle detected: {' -> '.join(cycle)}; "
+                              f"blocking affected tasks")
+            )
         waves = self._plan_waves(plan.tasks)
         sem = asyncio.Semaphore(self.settings.max_parallel_tasks)
         max_retries = max(0, self.settings.max_task_retries)

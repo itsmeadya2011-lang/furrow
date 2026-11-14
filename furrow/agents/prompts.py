@@ -88,4 +88,26 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "search_files",
+        "description": "search file contents with a regex across the workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "a regular expression to search for in file contents",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "the file or directory to search (defaults to '.')",
+                },
+                "include": {
+                    "type": "string",
+                    "description": "a glob pattern (e.g. '*.py') to filter filenames",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
 ]

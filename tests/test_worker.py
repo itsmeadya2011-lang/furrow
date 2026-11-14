@@ -327,6 +327,148 @@ async def test_list_files_caps_at_500_entries(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_files_skips_ignored_directories(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "x.js").write_text("x")
+    (tmp_path / "real.py").write_text("x")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    lines = out.splitlines()
+    assert "real.py" in lines
+    assert ".git/config" not in lines
+    assert "node_modules/x.js" not in lines
+
+
+@pytest.mark.asyncio
+async def test_search_files_finds_match_and_formats_line(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "foo.py").write_text("first line\nneedle here\n")
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=make_settings(tmp_path), workspace=tmp_path
+    )
+    out = await agent._search_files("needle")
+    assert "foo.py:2: needle here" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_reports_no_matches(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "foo.py").write_text("hello\n")
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=make_settings(tmp_path), workspace=tmp_path
+    )
+    out = await agent._search_files("absent-pattern")
+    assert out == "no matches"
+
+
+@pytest.mark.asyncio
+async def test_search_files_invalid_regex(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "foo.py").write_text("hello\n")
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=make_settings(tmp_path), workspace=tmp_path
+    )
+    for pattern in ("(", "["):
+        out = await agent._search_files(pattern)
+        assert out.startswith("error: invalid regex")
+
+
+@pytest.mark.asyncio
+async def test_search_files_rejects_path_escape(tmp_path):
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=make_settings(tmp_path), workspace=tmp_path
+    )
+    out = await agent._search_files("needle", "../x")
+    assert "escapes workspace" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_respects_include_glob(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("needle\n")
+    (tmp_path / "b.txt").write_text("needle\n")
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=make_settings(tmp_path), workspace=tmp_path
+    )
+    out = await agent._search_files("needle", ".", include="*.py")
+    assert "a.py" in out
+    assert "b.txt" not in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_reachable_through_execute_tool(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "foo.py").write_text("needle\n")
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=make_settings(tmp_path), workspace=tmp_path
+    )
+    tc = ToolCall(id="t", name="search_files", arguments={"pattern": "needle"})
+    out = await agent._execute_tool(tc)
+    assert isinstance(out, str)
+    assert "foo.py" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_records_file_mutations(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(id="t1", name="run_command", arguments={"command": "echo hi > out.txt"})
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.files_changed == ["out.txt"]
+
+
+@pytest.mark.asyncio
+async def test_read_only_command_records_no_files_changed(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": "echo hi"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.files_changed == []
+
+
+@pytest.mark.asyncio
 async def test_client_exception(tmp_path):
     client = FakeLLMClient([RuntimeError("boom")])
     settings = make_settings(tmp_path)
@@ -376,8 +518,14 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == [
+        "list_files",
+        "read_file",
+        "run_command",
+        "search_files",
+        "write_file",
+    ]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -819,6 +967,7 @@ async def test_read_file_truncation_marker(tmp_path):
     agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
     out = await agent._read_file("big.txt")
     assert "[... output truncated ...]" in out
+    assert "25000" in out
 
 
  

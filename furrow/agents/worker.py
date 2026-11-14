@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fnmatch
 import json
 import os
 import re
@@ -50,6 +51,46 @@ DENIED_PROGRAMS = frozenset(
 
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
+
+# Directories skipped when walking the workspace: version control, caches,
+# virtual environments, dependency directories and build artifacts.
+IGNORE_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        "node_modules",
+        ".venv",
+        "venv",
+        "env",
+        ".tox",
+        "dist",
+        "build",
+        ".eggs",
+    }
+)
+
+# Programs whose first-token appearance suggests a command may mutate files.
+MUTATING_PROGRAMS = frozenset(
+    {
+        "chmod",
+        "chown",
+        "cp",
+        "install",
+        "ln",
+        "mkdir",
+        "mv",
+        "rm",
+        "sed",
+        "tee",
+        "touch",
+        "truncate",
+    }
+)
 
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
@@ -373,6 +414,12 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+                str(args["include"]) if args.get("include") is not None else None,
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -403,7 +450,11 @@ class WorkerAgent:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         if len(content) > 20000:
-            content = content[:20000] + "\n[... output truncated ...]"
+            total = len(content)
+            content = (
+                content[:20000]
+                + f"\n[... output truncated ...] ({total} chars total, showing first 20000)"
+            )
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -427,14 +478,19 @@ class WorkerAgent:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
-        rels = []
         base = self.workspace.resolve()
-        for e in entries[:MAX_LIST_ENTRIES]:
+        rels = []
+        for e in entries:
             try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
+                rel = str(Path(e).relative_to(base)) if Path(e).is_absolute() else e
             except ValueError:
-                rels.append(str(e))
+                rel = str(e)
+            # Drop anything that lives under an ignored directory.
+            if any(part in IGNORE_DIRS for part in Path(rel).parts):
+                continue
+            rels.append(rel)
+            if len(rels) >= MAX_LIST_ENTRIES:
+                break
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:
@@ -451,6 +507,17 @@ class WorkerAgent:
         except ValueError:
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+
+        # Attribute file mutations performed through run_command. Only snapshot
+        # when the command looks like it may write (redirect or mutating program
+        # as the first token of a segment); ordinary read-only commands skip it.
+        should_snapshot = self._command_might_mutate(command)
+        before: dict[str, tuple[int, int]] | None = None
+        if should_snapshot:
+            try:
+                before = self._snapshot_workspace()
+            except Exception:
+                before = None
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
         # instead of leaking orphans. On other platforms we fall back to
@@ -490,7 +557,117 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        # Record files changed by a successful mutating command (additive only;
+        # the returned string is unchanged).
+        if should_snapshot and before is not None and proc.returncode == 0:
+            try:
+                after = self._snapshot_workspace()
+                for rel in self._diff_files(before, after):
+                    self.files_changed.add(rel)
+            except Exception:
+                pass
         return combined
+
+    def _command_might_mutate(self, command: str) -> bool:
+        """Heuristic: report whether a command may mutate workspace files.
+
+        Conservative: any redirect operator (``>``/``>>``) or a known mutating
+        program as the first token of a segment counts as mutating. When unsure,
+        callers should snapshot.
+        """
+        if ">" in command:
+            return True
+        for segment in _split_command_segments(command):
+            program = _get_program_basename(segment)
+            if program and program.lower() in MUTATING_PROGRAMS:
+                return True
+        return False
+
+    def _snapshot_workspace(self) -> dict[str, tuple[int, int]]:
+        """Snapshot workspace files: relative path -> (size, mtime_ns).
+
+        Ignored directories are skipped. Never raises.
+        """
+        snapshot: dict[str, tuple[int, int]] = {}
+        base = self.workspace.resolve()
+        try:
+            for root, dirs, files in os.walk(base):
+                dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+                for name in files:
+                    f = Path(root) / name
+                    try:
+                        st = f.stat()
+                    except OSError:
+                        continue
+                    try:
+                        rel = str(f.relative_to(base))
+                    except ValueError:
+                        continue
+                    snapshot[rel] = (st.st_size, st.st_mtime_ns)
+        except OSError:
+            pass
+        return snapshot
+
+    def _diff_files(
+        self, before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]
+    ) -> list[str]:
+        """Return workspace-relative paths that were added or modified."""
+        changed: list[str] = []
+        for path, after_stat in after.items():
+            before_stat = before.get(path)
+            if before_stat is None or before_stat != after_stat:
+                changed.append(path)
+        return changed
+
+    async def _search_files(self, pattern: str, path: str = ".", include: str | None = None) -> str:
+        """Search file contents with a regex across the workspace.
+
+        Returns matching ``relative/path:line: text`` lines, capped at 200.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+
+        def _scan() -> list[str]:
+            base = self.workspace.resolve()
+            files: list[Path] = []
+            if resolved.is_file():
+                files = [resolved]
+            else:
+                for root, dirs, filenames in os.walk(resolved):
+                    dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+                    for name in filenames:
+                        if include is not None and not fnmatch.fnmatch(name, include):
+                            continue
+                        files.append(Path(root) / name)
+            found: list[str] = []
+            for f in files:
+                try:
+                    if f.stat().st_size > 1_000_000:
+                        continue
+                    with open(f, encoding="utf-8", errors="replace") as fh:
+                        for lineno, line in enumerate(fh, start=1):
+                            if regex.search(line):
+                                text = line.rstrip("\n")
+                                try:
+                                    rel = str(f.relative_to(base))
+                                except ValueError:
+                                    rel = str(f)
+                                found.append(f"{rel}:{lineno}: {text}")
+                                if len(found) >= 200:
+                                    return found
+                except OSError:
+                    continue
+            return found
+
+        matches = await asyncio.to_thread(_scan)
+        if not matches:
+            return "no matches"
+        return "\n".join(matches)
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

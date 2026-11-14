@@ -481,3 +481,48 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
     assert head_start not in prompt
+
+
+def test_green_command_without_llm_verdict_is_passed(tmp_path, monkeypatch):
+    """A zero exit with a green raw output passes even when the LLM is unavailable."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"5 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("api down"))
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is True
+    assert "api down" in res.summary
+    assert "LLM verdict was unavailable" in res.summary
+
+
+def test_failed_command_without_llm_verdict_reports_unavailable(tmp_path, monkeypatch):
+    """A non-zero exit is failed and surfaces the LLM classification error."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stdout=b"1 failed, 2 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("api down"))
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is False
+    assert any("LLM verdict unavailable" in f for f in res.failures)

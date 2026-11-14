@@ -257,6 +257,7 @@ class TesterAgent:
         spawn_error: str,
         timed_out: bool,
         timeout: float,
+        llm_error: str | None = None,
     ) -> TestResult:
         """Combine the exit status of the test command with the LLM verdict.
 
@@ -295,8 +296,15 @@ class TesterAgent:
         notes: list[str] = [status]
         if llm_result is None:
             # The LLM was unavailable: fall back to the raw output.
+            if llm_error is not None:
+                notes.append(
+                    "The LLM verdict was unavailable "
+                    f"({llm_error}); the result is based on the raw test output."
+                )
             passed = returncode == 0 and not _has_failure_keywords(combined)
             failures = _extract_failures(combined)
+            if llm_error is not None and not passed:
+                failures.append(f"LLM verdict unavailable: {llm_error}")
             notes.append(combined[:500].strip())
         else:
             failures = list(llm_result.failures)
@@ -388,6 +396,7 @@ class TesterAgent:
                 combined = "[... output truncated ...]\n" + combined[-20000:]
 
             llm_result: TestResult | None = None
+            llm_error: str | None = None
             if not spawn_failed:
                 # A runner that never started has no output worth summarising.
                 prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
@@ -396,7 +405,8 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                except Exception as exc:
+                    llm_error = f"{type(exc).__name__}: {exc}"
                     llm_result = None
 
             return self._finalize(
@@ -407,6 +417,7 @@ class TesterAgent:
                 spawn_error=spawn_error,
                 timed_out=timed_out,
                 timeout=timeout,
+                llm_error=llm_error,
             )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
