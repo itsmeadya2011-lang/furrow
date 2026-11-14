@@ -341,6 +341,17 @@ def test_ollama_base_url_ends_with_v1():
     assert str(client_custom.ollama.base_url).rstrip("/") == "http://localhost:11434/v1"
 
 
+def test_ollama_base_url_none_does_not_crash():
+    """The ollama property must not crash when ollama_base_url is not provided (uses default)."""
+    # Don't pass ollama_base_url - it should default to http://localhost:11434
+    client = LLMClient(settings=Settings(provider=Provider.OLLAMA))
+    # Accessing the property should not raise an exception
+    ollama_client = client.ollama
+    assert ollama_client is not None
+    # The base_url should default to localhost:11434/v1
+    assert str(ollama_client.base_url).rstrip("/") == "http://localhost:11434/v1"
+
+
 def test_usage_total_tokens():
     from furrow.config import Usage
 

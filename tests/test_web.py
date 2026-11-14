@@ -8,6 +8,7 @@ temporary directory.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import time
@@ -21,7 +22,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
 from furrow.config import RunResult, settings
-from furrow.core.events import Event, EventType
+from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import RunState, StateStore
 from furrow.web import server
 
@@ -592,7 +593,10 @@ def test_run_settings_applies_a_valid_max_cycles_override() -> None:
 
 def test_run_settings_without_override_returns_the_current_settings() -> None:
     """Without an override the current settings are used as they are."""
-    assert server._run_settings(None) is server.settings
+    result = server._run_settings(None)
+    assert result == server.settings
+    # It's a copy, not the same object
+    assert result is not server.settings
 
 
 def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
@@ -604,3 +608,60 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+@pytest.mark.asyncio
+async def test_drain_consumes_all_events():
+    """_drain continuously consumes events from the queue."""
+    bus = EventBus()
+    queue = bus.subscribe()
+
+    # Emit a few events
+    bus.emit(Event(type=EventType.LOG, message="first"))
+    bus.emit(Event(type=EventType.LOG, message="second"))
+    bus.emit(Event(type=EventType.LOG, message="third"))
+
+    # Start draining
+    drain_task = asyncio.create_task(server._drain(queue))
+
+    # Give it time to consume
+    await asyncio.sleep(0.05)
+
+    # Queue should be empty
+    assert queue.empty()
+
+    # Cancel the drain task
+    drain_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await drain_task
+
+
+@pytest.mark.asyncio
+async def test_run_and_drain_runs_orchestrator_and_discards_events(tmp_path, monkeypatch):
+    """_run_and_drain runs the orchestrator and discards events via _drain."""
+    # Use a fake orchestrator that completes quickly
+    class QuickOrchestrator:
+        def __init__(self):
+            self.event_bus = EventBus()
+
+        async def run(self):
+            self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": 1}))
+            self.event_bus.emit(Event(type=EventType.TASK_FINISHED, data={"task": "1"}))
+            return RunResult(
+                passed=True,
+                cycles=1,
+                tasks_completed=1,
+                summary="done",
+                stopped_reason="goal complete",
+            )
+
+    orchestrator = QuickOrchestrator()
+    bus = EventBus()
+
+    result = await server._run_and_drain(orchestrator, bus)
+
+    assert isinstance(result, RunResult)
+    assert result.passed is True
+    assert result.cycles == 1
+    # The bus queue should be empty because _drain consumed the events
+    # (we can't directly test the internal queue, but the function should complete)

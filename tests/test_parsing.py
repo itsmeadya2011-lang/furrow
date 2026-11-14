@@ -94,6 +94,13 @@ def test_parse_test_result_heuristic_two_failed_or_failed_tests():
     assert r.passed is False
 
 
+def test_parse_test_result_heuristic_all_zero_summary_is_green():
+    r = parsing.parse_test_result("FAILED (errors=0)")
+    assert r.passed is True
+    r = parsing.parse_test_result("FAILED (failures=0, errors=0)")
+    assert r.passed is True
+
+
 def test_parse_test_result_heuristic_all_passed():
     r = parsing.parse_test_result("All tests passed")
     assert r.passed is True

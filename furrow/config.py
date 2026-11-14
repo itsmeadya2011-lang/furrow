@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from enum import Enum
 from pathlib import Path
 
@@ -7,6 +8,8 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from furrow.costs import ModelPricing
+
+logger = logging.getLogger(__name__)
 
 
 class Provider(str, Enum):
@@ -48,6 +51,7 @@ class TaskModel(BaseModel):
         s = v.strip().lower()
         if s in known:
             return s
+        logger.warning("Unknown task status %r, defaulting to 'pending'", v)
         return "pending"
 
 

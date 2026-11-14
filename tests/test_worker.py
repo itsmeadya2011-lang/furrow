@@ -586,6 +586,38 @@ def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
 
 
+def test_is_command_denied_nested_substitutions(tmp_path):
+    """Nested command substitutions are checked up to the max depth.
+
+    The denial logic recurses into command substitutions up to
+    _MAX_SUBSTITUTION_DEPTH (3). A deeply nested denied command should
+    still be caught.
+    """
+    # Depth 1: direct substitution
+    assert is_command_denied("echo $(rm -rf /)", tmp_path) is True
+    assert is_command_denied("echo `rm -rf /`", tmp_path) is True
+
+    # Depth 2: nested substitution
+    assert is_command_denied("echo $(echo $(rm -rf /))", tmp_path) is True
+    assert is_command_denied("echo `echo `rm -rf /``", tmp_path) is True
+
+    # Depth 3: deeply nested substitution
+    assert is_command_denied("echo $(echo $(echo $(rm -rf /)))", tmp_path) is True
+
+    # Beyond max depth: the innermost is not checked, but the outer
+    # substitutions themselves are checked at each level. The "echo" at
+    # depth 3 is allowed, but the "rm -rf /" at depth 4 is not reached.
+    # However, the denial at depth 3 is caught because the substitution
+    # at depth 2 contains "echo $(rm -rf /)" which is denied at depth 2.
+    # So even at depth 4 nesting, it should still be denied because
+    # the depth-2 substitution is checked.
+    assert is_command_denied("echo $(echo $(echo $(echo $(rm -rf /))))", tmp_path) is True
+
+    # Allowed nested substitutions (no denied commands inside)
+    assert is_command_denied("echo $(echo hello)", tmp_path) is False
+    assert is_command_denied("echo $(echo $(echo world))", tmp_path) is False
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel
@@ -940,3 +972,47 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups require POSIX")
+@pytest.mark.asyncio
+async def test_kill_process_tree_kills_process_group(tmp_path, monkeypatch):
+    """Test that _kill_process_tree kills the process group on POSIX."""
+    import signal
+
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="test")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+
+    # Create a mock process with a valid pid and wait method
+    wait_called = {"count": 0}
+    
+    async def mock_wait(self):
+        wait_called["count"] += 1
+
+    mock_proc = type("MockProcess", (), {"pid": 12345, "wait": mock_wait})()
+
+    # Track if killpg was called with the correct pgid
+    killpg_called = {"pgid": None}
+
+    def mock_getpgid(pid):
+        assert pid == 12345
+        return 54321
+
+    def mock_killpg(pgid, sig):
+        killpg_called["pgid"] = pgid
+        assert sig == signal.SIGKILL
+
+    async def mock_wait_for(coro, timeout):
+        return await coro
+
+    monkeypatch.setattr(os, "getpgid", mock_getpgid)
+    monkeypatch.setattr(os, "killpg", mock_killpg)
+    monkeypatch.setattr(asyncio, "wait_for", mock_wait_for)
+
+    await agent._kill_process_tree(mock_proc, new_session=True)
+
+    assert killpg_called["pgid"] == 54321
+    assert wait_called["count"] == 1

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -15,6 +17,28 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+
+logger = logging.getLogger(__name__)
+
+
+async def _release_client(client: Any) -> None:
+    """Release the HTTP resources of an LLM client, when it supports closing.
+
+    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
+    method, so it is looked up defensively and only awaited when the result
+    is awaitable.  A failing close is logged and ignored: closing must never
+    turn a successful run into a failed one.
+    """
+    closer = getattr(client, "aclose", None)
+    if closer is None:
+        return
+    try:
+        outcome = closer()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except Exception as exc:
+        logger.warning("Could not close the LLM client: %s", exc)
+
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -244,7 +268,7 @@ class LLMClient:
     @property
     def ollama(self) -> AsyncOpenAI:
         if self._ollama is None:
-            base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
+            base_url = (getattr(self.settings, "ollama_base_url", "") or "").rstrip("/") + "/v1"
             self._ollama = AsyncOpenAI(
                 api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
             )
@@ -493,6 +517,12 @@ class LLMClient:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
+        """List files in a directory (blocking I/O).
+
+        This method performs synchronous filesystem operations and must be
+        called via ``asyncio.to_thread`` or a similar mechanism to avoid
+        blocking the event loop.
+        """
         p = Path(directory)
         if not p.exists():
             return []

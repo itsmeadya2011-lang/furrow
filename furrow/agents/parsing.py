@@ -6,6 +6,24 @@ from typing import Any
 
 from furrow.config import Plan, TaskModel, TestResult
 
+# Counter phrases that mention a failure keyword but report *zero* failures,
+# e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",
+# "errors=0".  They describe a green run and must not be read as a failure.
+_ZERO_COUNT_RE = re.compile(
+    r"\b(?:0|no|none|zero)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
+    r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\b\s*[:=]?\s*(?:0|none|zero)\b"
+    r"(?=\s*[,;)]|\s*$)",
+    re.IGNORECASE,
+)
+
+# A summary whose counter block is entirely zero, e.g. unittest's
+# "FAILED (errors=0)" or "FAILED (failures=0, errors=0)".
+_ALL_ZERO_SUMMARY_RE = re.compile(
+    r"\bfail(?:ed|ure|ures)?\b\s*\(\s*"
+    r"(?:\w+\s*[:=]\s*(?:0|none|zero)\s*[,;]?\s*)*\)",
+    re.IGNORECASE,
+)
+
 
 def strip_code_fences(text: str) -> str:
     """Remove ```json ... ``` / ``` ... ``` fences. If the text contains exactly one
@@ -171,9 +189,11 @@ def parse_test_result(text: str) -> TestResult:
                 if m_success:
                     passed = True
                 else:
+                    remainder = _ALL_ZERO_SUMMARY_RE.sub(" ", lower)
+                    remainder = _ZERO_COUNT_RE.sub(" ", remainder)
                     m_fail = re.search(
                         r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-                        lower,
+                        remainder,
                     )
                     passed = not m_fail
 

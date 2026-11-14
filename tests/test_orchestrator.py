@@ -877,7 +877,7 @@ async def test_state_store_save_oserror_does_not_crash_run(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_state_saved_is_emitted_only_for_cycles_whose_save_succeeded(tmp_path, monkeypatch):
+async def test_state_store_save_oserror_stops_the_run(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=2)
     store = StateStore(tmp_path / "state.json")
@@ -886,31 +886,47 @@ async def test_state_saved_is_emitted_only_for_cycles_whose_save_succeeded(tmp_p
     orch.tester = FakeTester(passed=False)
 
     attempts = []
-    original_save = store.save
 
-    def flaky_save(state):
+    def boom(state):
         attempts.append(1)
-        if len(attempts) == 1:
-            raise OSError("disk full")
-        return original_save(state)
+        raise OSError("disk full")
 
-    monkeypatch.setattr(store, "save", flaky_save)
+    monkeypatch.setattr(store, "save", boom)
     q = orch.event_bus.subscribe()
     result = await orch.run()
 
     assert isinstance(result, RunResult)
-    assert result.cycles == 2
-    assert len(attempts) == 2
+    # A failed save stops the run instead of spinning forever on a full disk.
+    assert result.cycles == 1
+    assert len(attempts) == 1
+    assert result.stopped_reason.startswith("could not save state")
     events = drain(q)
     state_saved = [e for e in events if e.type == EventType.STATE_SAVED]
     errors = [e for e in events if e.type == EventType.ERROR]
-    # Only the cycle whose save succeeded reports a saved state.
-    assert len(state_saved) == 1
-    assert state_saved[0].data["path"] == str(store.path)
-    # The failed cycle reports the failure instead.
+    assert not state_saved
     assert len(errors) == 1
     assert "disk full" in errors[0].message
     assert str(store.path) in errors[0].message
+
+
+@pytest.mark.asyncio
+async def test_cyclic_plan_emits_error_and_blocks_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[
+        TaskModel(id="a", description="do a", dependencies=["b"]),
+        TaskModel(id="b", description="do b", dependencies=["a"]),
+    ])
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+
+    assert result.stopped_reason.startswith("cyclic dependencies")
+    assert all(t.status == "blocked" for t in orch.tasks)
+    events = drain(q)
+    assert any(e.type == EventType.ERROR and "cyclic" in e.message for e in events)
 
 
 @pytest.mark.asyncio
