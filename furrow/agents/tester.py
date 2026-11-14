@@ -61,6 +61,23 @@ def resolve_test_timeout(settings: Settings) -> float:
     return timeout
 
 
+async def _drain_after_kill(communicate: Any) -> tuple[bytes, bytes]:
+    """Return whatever a killed test command wrote before it was killed.
+
+    ``communicate`` is the task that is already reading the pipes: it is awaited
+    again with a short budget so the failure report a suite printed before it
+    hung is not lost. If it never finishes it is cancelled and empty output is
+    returned. A cancellation of the *caller* is not swallowed.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.shield(communicate), timeout=2.0)
+    except asyncio.TimeoutError:
+        communicate.cancel()
+        return b"", b""
+    except Exception:  # pragma: no cover - defensive
+        return b"", b""
+
+
 def parse_test_output(output: str) -> list[dict]:
     """Parse raw test output and return structured failure information."""
     failures: list[dict] = []
@@ -193,10 +210,16 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_setup_py = (self.workspace / "setup.py").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
+            has_pyproject
+            or has_pytest_ini
+            or has_setup_cfg
+            or has_tox_ini
+            or has_requirements
+            or has_setup_py
         ):
             return [sys.executable, "-m", "pytest", "-q"]
 
@@ -205,30 +228,22 @@ class TesterAgent:
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
+                    return self._node_test_runner()
+            # Check package.json for a test script
+            scripts: dict = {}
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
-                scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                if isinstance(pkg_data, dict) and isinstance(pkg_data.get("scripts"), dict):
+                    scripts = pkg_data["scripts"]
             except Exception:
-                pass
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+                scripts = {}
+            if "test" in scripts:
+                return self._node_test_runner()
+            # A package.json without a test script has no test command: running
+            # `npm test` would only produce "missing script: test" and be
+            # reported as a failing suite, so treat it as "no runner".
+            return None
 
         python_markers = [
             "pyproject.toml",
@@ -236,16 +251,38 @@ class TesterAgent:
             "setup.cfg",
             "tox.ini",
             "requirements.txt",
+            "setup.py",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        if self._has_make_test_target():
+            return ["make", "test"]
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
 
         return None
+
+    def _node_test_runner(self) -> list[str]:
+        """The package-manager test command for a Node.js project."""
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            return ["pnpm", "test", "--silent"]
+        if (self.workspace / "yarn.lock").is_file():
+            return ["yarn", "test", "--silent"]
+        return ["npm", "test", "--silent"]
+
+    def _has_make_test_target(self) -> bool:
+        """True when the Makefile declares a ``test`` target."""
+        makefile = self.workspace / "Makefile"
+        if not makefile.is_file():
+            return False
+        try:
+            text = makefile.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return False
+        return re.search(r"^test\s*:", text, re.MULTILINE) is not None
 
     def _finalize(
         self,
@@ -368,14 +405,22 @@ class TesterAgent:
                 stdout = b""
                 stderr = b""
             else:
+                # Keep a handle on the communication task: on a timeout it is
+                # shielded from the wait_for cancellation so the output the
+                # suite wrote before it was killed can still be collected.
+                communicate = asyncio.ensure_future(proc.communicate())
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    stdout, stderr = await asyncio.wait_for(
+                        asyncio.shield(communicate), timeout=timeout
+                    )
                 except asyncio.TimeoutError:
                     await self._kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
-                    stdout = b""
-                    stderr = f"Test command timed out after {timeout:g}s.".encode()
+                    stdout, stderr = await _drain_after_kill(communicate)
+                    stderr = (stderr or b"") + (
+                        f"\nTest command timed out after {timeout:g}s.".encode()
+                    )
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
 

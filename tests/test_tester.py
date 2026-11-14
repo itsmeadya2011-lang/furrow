@@ -53,7 +53,7 @@ def test_detect_pyproject(tmp_path):
 
 
 def test_detect_packagejson(tmp_path):
-    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None and "npm" in cmd
@@ -481,3 +481,82 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
     assert head_start not in prompt
+
+
+def test_detect_packagejson_without_a_test_script_is_skipped(tmp_path):
+    """A package.json with no test script has no test command to run."""
+    (tmp_path / "package.json").write_text('{"name": "x"}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    assert run(agent.detect_command()) is None
+
+
+def test_detect_makefile_with_a_test_target(tmp_path):
+    (tmp_path / "Makefile").write_text("build:\n\techo build\n\ntest:\n\tpytest -q\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["make", "test"]
+
+
+def test_detect_makefile_without_a_test_target_is_ignored(tmp_path):
+    (tmp_path / "Makefile").write_text("build:\n\techo build\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    assert run(agent.detect_command()) is None
+
+
+def test_detect_setup_py_with_tests_dir(tmp_path):
+    (tmp_path / "setup.py").write_text("from setuptools import setup\n")
+    (tmp_path / "tests").mkdir()
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_timeout_keeps_the_output_written_before_the_kill(tmp_path, monkeypatch):
+    """A timed-out suite still reports what it printed before it was killed."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    class SlowProc:
+        pid = 4242
+        returncode = None
+
+        def __init__(self) -> None:
+            self.killed = False
+
+        async def communicate(self):
+            while not self.killed:
+                await asyncio.sleep(0.01)
+            return b"FAILED tests/test_x.py::test_y - AssertionError: boom\n", b""
+
+        async def wait(self):
+            self.returncode = -9
+            return -9
+
+        def kill(self):
+            self.killed = True
+
+    proc = SlowProc()
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return proc
+
+    async def fake_kill(process):
+        process.kill()
+        await process.wait()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(TesterAgent, "_kill_process_tree", staticmethod(fake_kill))
+
+    settings = Settings(_env_file=None, workspace=tmp_path, request_timeout=30)
+    settings = settings.model_copy(update={"test_timeout": 0.2})
+    agent = TesterAgent(
+        client=FakeLLMClient(raises=RuntimeError("llm down")),
+        settings=settings,
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is False
+    assert "timed out" in res.summary.lower()
+    assert "test_y" in res.summary
+    assert any("test_y" in failure for failure in res.failures)

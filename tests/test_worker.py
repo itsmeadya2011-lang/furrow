@@ -306,7 +306,7 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
     task = TaskModel(id="1", description="cmd")
     agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
     out = await agent._run_command(command)
-    assert out == "command timed out"
+    assert "timed out" in out
     await asyncio.sleep(1.0)
     assert not marker.exists()
 
@@ -940,3 +940,76 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_reports_a_nonzero_exit_code(tmp_path):
+    """A silent command that fails still tells the worker it failed."""
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("exit 3")
+    assert "[exit code 3]" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_omits_the_exit_code_on_success(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("echo hi")
+    assert "hi" in out
+    assert "exit code" not in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_reports_the_duration(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 0.2})
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("sleep 5")
+    assert "timed out after 0.2s" in out
+
+
+def test_is_command_denied_covers_clobber_redirect_and_tee(tmp_path):
+    assert is_command_denied("echo hi >| /etc/passwd", tmp_path) is True
+    assert is_command_denied("echo hi 2>| /etc/passwd", tmp_path) is True
+    assert is_command_denied("echo hi | tee /etc/passwd", tmp_path) is True
+    assert is_command_denied("echo hi | tee -a /etc/passwd", tmp_path) is True
+    # Writes that stay inside the workspace remain allowed.
+    assert is_command_denied("echo hi >| out.txt", tmp_path) is False
+    assert is_command_denied("echo hi | tee out.txt", tmp_path) is False
+    assert is_command_denied("echo hi | tee -a out.txt", tmp_path) is False
+
+
+def test_is_command_denied_allows_dev_null_redirect(tmp_path):
+    """`2>/dev/null` is a normal, safe idiom and must not be denied."""
+    assert is_command_denied("pytest -q > /dev/null", tmp_path) is False
+    assert is_command_denied("pytest -q 2>/dev/null", tmp_path) is False
+    assert is_command_denied("pytest -q > /dev/sda", tmp_path) is True
+
+
+def test_is_command_denied_covers_find_exec_and_xargs(tmp_path):
+    assert is_command_denied("find / -exec rm -rf {} ;", tmp_path) is True
+    assert is_command_denied("find . -execdir rm {} ;", tmp_path) is True
+    assert is_command_denied("echo / | xargs rm -rf", tmp_path) is True
+    assert is_command_denied("echo / | xargs -0 rm -rf", tmp_path) is True
+
+
+def test_is_command_denied_covers_privileged_programs(tmp_path):
+    for cmd in (
+        "sudo rm -rf /",
+        "chown root /etc/passwd",
+        "kill -9 1",
+        "mount /dev/sda /mnt",
+        "systemctl restart ssh",
+        "useradd attacker",
+        "shred -u secret.txt",
+    ):
+        assert is_command_denied(cmd, tmp_path) is True, cmd

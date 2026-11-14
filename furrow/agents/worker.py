@@ -30,12 +30,21 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    # A denied program hidden behind `find -exec` / `xargs`.
+    "-exec rm",
+    "-execdir rm",
+    "xargs rm",
+    "xargs -0 rm",
+    "xargs -r rm",
+    "xargs --null rm",
 )
 
 # Programs that are denied by name: the basename of the first token of a
 # segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
 DENIED_PROGRAMS = frozenset(
     {
+        # Destroyers of disks and filesystems.
+        "blkdiscard",
         "dd",
         "fdisk",
         "halt",
@@ -45,6 +54,40 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "shred",
+        "wipefs",
+        # System state, mounts, services and other users' processes.
+        "chgrp",
+        "chpasswd",
+        "chroot",
+        "chown",
+        "crontab",
+        "groupadd",
+        "insmod",
+        "iptables",
+        "kill",
+        "killall",
+        "modprobe",
+        "mkswap",
+        "mount",
+        "nc",
+        "netcat",
+        "nft",
+        "passwd",
+        "pkill",
+        "rmmod",
+        "service",
+        "socat",
+        "su",
+        "sudo",
+        "swapoff",
+        "swapon",
+        "systemctl",
+        "umount",
+        "useradd",
+        "userdel",
+        "usermod",
+        "visudo",
     }
 )
 
@@ -62,8 +105,16 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
+# The target of a redirection: "> file" or ">> file". ``>|`` (clobber) is
+# normalized to ``>`` before the match so it is covered by the same rule.
 _REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+
+# Programs that copy their standard input into files even without a
+# redirection: every file argument is a write target.
+_TEE_PROGRAMS = frozenset({"tee", "gtee"})
+
+# Redirection targets that are always safe: the null device discards output.
+_ALLOWED_REDIRECT_TARGETS = frozenset({"/dev/null"})
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -187,11 +238,35 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
     return True
 
 
-def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
-    """Report whether a segment redirects output outside of the workspace."""
-    for match in _REDIRECT_RE.finditer(segment):
+def _redirect_targets(segment: str) -> list[str]:
+    """Every file *segment* writes to, through a redirection or through ``tee``.
+
+    ``tee`` copies its standard input to each of its file arguments, so it is a
+    writer even though it carries no ``>`` operator. Its flags (``-a``,
+    ``--append``, ...) are skipped.
+    """
+    targets: list[str] = []
+    normalized = segment.replace(">|", ">")
+    for match in _REDIRECT_RE.finditer(normalized):
         target = match.group(1).strip().strip("\"'")
-        if not target:
+        if target:
+            targets.append(target)
+    tokens = _shell_tokens(segment)
+    for index, token in enumerate(tokens):
+        if os.path.basename(token).lower() in _TEE_PROGRAMS:
+            for argument in tokens[index + 1 :]:
+                if argument.startswith("-"):
+                    continue
+                target = argument.strip("\"'")
+                if target:
+                    targets.append(target)
+    return targets
+
+
+def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
+    """Report whether a segment writes a file outside of the workspace."""
+    for target in _redirect_targets(segment):
+        if target in _ALLOWED_REDIRECT_TARGETS:
             continue
         if not _target_inside_workspace(target, workspace):
             return True
@@ -259,6 +334,23 @@ def is_command_denied(command: str, workspace: Path) -> bool:
     if not command or not command.strip():
         return False
     return _text_is_denied(command, workspace, depth=0)
+
+
+async def _drain_after_kill(communicate: Any) -> tuple[bytes, bytes]:
+    """Return whatever a killed command wrote before it was killed.
+
+    ``communicate`` is the task that is already reading the pipes: it is awaited
+    again with a short budget so output produced before the kill is not lost.
+    If it never finishes it is cancelled and empty output is returned. A
+    cancellation of the *caller* is not swallowed.
+    """
+    try:
+        return await asyncio.wait_for(asyncio.shield(communicate), timeout=2.0)
+    except asyncio.TimeoutError:
+        communicate.cancel()
+        return b"", b""
+    except Exception:  # pragma: no cover - defensive
+        return b"", b""
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -442,8 +534,8 @@ class WorkerAgent:
             return "error: empty command"
         # The hardened check subsumes the legacy pattern list: it normalizes
         # the command, checks every segment against DENIED_COMMANDS and
-        # DENIED_PROGRAMS, and denies force pushes and redirections outside
-        # the workspace.
+        # DENIED_PROGRAMS, and denies force pushes and writes outside the
+        # workspace (redirections and ``tee``).
         if is_command_denied(command, self.workspace):
             return "error: command denied"
         try:
@@ -479,17 +571,35 @@ class WorkerAgent:
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
+        # Keep a handle on the communication task: on a timeout it is shielded
+        # from the wait_for cancellation so its buffered output can still be
+        # collected after the process group has been killed.
+        communicate = asyncio.ensure_future(proc.communicate())
+        timed_out = False
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout, stderr = await asyncio.wait_for(
+                asyncio.shield(communicate), timeout=timeout
+            )
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
-            return "command timed out"
+            timed_out = True
+            stdout, stderr = await _drain_after_kill(communicate)
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        if timed_out:
+            suffix = f"command timed out after {timeout:g}s"
+            return f"{combined}\n{suffix}" if combined.strip() else suffix
+        # The exit status is the only reliable success signal for a command
+        # that prints nothing: report it so the worker does not read an empty
+        # result as success.
+        returncode = proc.returncode if proc.returncode is not None else 0
+        if returncode != 0:
+            status = f"[exit code {returncode}]"
+            combined = f"{combined}\n{status}" if combined.strip() else status
         return combined
 
     @staticmethod

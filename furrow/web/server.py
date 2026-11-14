@@ -141,7 +141,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="resume">Resume</button>
 </div>
 <div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
+  <div class="goal" id="goal-display">&mdash;</div>
   <div class="meta" id="header-meta">
     <span>cycle <b id="cycle">\u2014</b></span>
     <span>state <b id="state">idle</b></span>

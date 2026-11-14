@@ -225,6 +225,12 @@ class Orchestrator:
                 # does not chase a test runner that does not exist.
                 self.goal = self.original_goal
                 self._feedback = ""
+            elif test_result.passed:
+                # The tests pass: drop the failure feedback of the previous
+                # cycle so the planner starts from the original goal again
+                # instead of chasing a failure that no longer exists.
+                self.goal = self.original_goal
+                self._feedback = ""
             elif not test_result.passed:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:

@@ -1079,3 +1079,36 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_goal_and_feedback_reset_when_the_tests_start_passing(tmp_path, monkeypatch):
+    """A passing cycle drops the failure feedback of an earlier failing cycle."""
+
+    class FlakyTester:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run(self, goal, tasks):
+            self.calls += 1
+            passed = self.calls > 1
+            return TestResult(
+                passed=passed,
+                summary="s",
+                failures=[] if passed else ["boom"],
+                skipped=False,
+            )
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="ORIG", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FlakyTester()
+    result = await orch.run()
+
+    assert result.cycles == 3
+    # Cycle 1 failed and amended the goal...
+    # ...but cycles 2 and 3 pass, so the stale feedback must be gone.
+    assert orch.goal == "ORIG"
+    assert orch._feedback == ""

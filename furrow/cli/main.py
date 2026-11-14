@@ -203,9 +203,19 @@ def start(
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
+    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    if not goal and resume:
+        # Resuming does not need a goal: the persisted run carries it, and the
+        # orchestrator restores it from the state file. Prompting here would
+        # only collect a goal that is then silently discarded.
+        state = StateStore(run_settings.state_path()).load()
+        if state is not None:
+            goal = state.original_goal or state.goal
+        if not goal:
+            click.secho("No furrow run state found to resume.", fg="red")
+            sys.exit(1)
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 

@@ -700,3 +700,45 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_start_resume_without_a_goal_uses_the_persisted_goal(
+    runner: CliRunner,
+    fake_orchestrator: type[FakeOrchestrator],
+    tmp_path: Path,
+) -> None:
+    """`start --resume` with no goal does not prompt and reuses the stored goal."""
+    _write_state(tmp_path)
+
+    result = runner.invoke(main, ["start", "--resume", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Enter your goal for Furrow" not in result.output
+    assert fake_orchestrator.init_kwargs["goal"] == "ship it"
+    assert fake_orchestrator.init_kwargs["resume"] is True
+
+
+def test_start_resume_without_a_goal_and_without_state_fails(
+    runner: CliRunner,
+    fake_orchestrator: type[FakeOrchestrator],
+    tmp_path: Path,
+) -> None:
+    """`start --resume` with no goal and no saved run is a clear error."""
+    result = runner.invoke(main, ["start", "--resume", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert "No furrow run state found to resume." in result.output
+    assert fake_orchestrator.init_kwargs == {}
+
+
+def test_start_with_a_goal_still_prompts_when_omitted(
+    runner: CliRunner,
+    fake_orchestrator: type[FakeOrchestrator],
+    tmp_path: Path,
+) -> None:
+    """Without --resume an omitted goal is still prompted for."""
+    result = runner.invoke(main, ["start", "--workspace", str(tmp_path)], input="typed goal\n")
+
+    assert result.exit_code == 0
+    assert "Enter your goal for Furrow" in result.output
+    assert fake_orchestrator.init_kwargs["goal"] == "typed goal"
