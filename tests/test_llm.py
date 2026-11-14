@@ -868,3 +868,64 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+class _AsyncCloseClient:
+    """Fake client whose ``aclose`` is an async method."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def aclose(self) -> None:
+        self.calls += 1
+
+
+class _SyncCloseClient:
+    """Fake client whose ``aclose`` is a plain sync function."""
+
+    def __init__(self) -> None:
+        self.called = False
+
+    def aclose(self) -> None:
+        self.called = True
+
+
+class _NoCloseClient:
+    """Fake client with no ``aclose`` attribute at all."""
+
+
+class _RaisingCloseClient:
+    """Fake client whose ``aclose`` raises."""
+
+    async def aclose(self) -> None:
+        raise RuntimeError("boom")
+
+
+async def test_release_client_awaits_async_aclose_exactly_once():
+    from furrow.llm import release_client
+
+    client = _AsyncCloseClient()
+    await release_client(client)
+    assert client.calls == 1
+
+
+async def test_release_client_calls_sync_aclose_without_error():
+    from furrow.llm import release_client
+
+    client = _SyncCloseClient()
+    await release_client(client)
+    assert client.called is True
+
+
+async def test_release_client_no_aclose_is_noop():
+    from furrow.llm import release_client
+
+    client = _NoCloseClient()
+    await release_client(client)  # must not raise
+
+
+async def test_release_client_swallows_aclose_errors():
+    from furrow.llm import release_client
+
+    client = _RaisingCloseClient()
+    await release_client(client)  # must not raise

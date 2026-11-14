@@ -944,6 +944,42 @@ async def test_worker_result_attribute_access_failure_marks_task_failed(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_worker_result_raising_success_is_recorded_and_retried(tmp_path, monkeypatch):
+    class ExplodingResult:
+        @property
+        def success(self):
+            raise RuntimeError("boom")
+
+    class FW(FakeWorker):
+        async def run(self):
+            return ExplodingResult()
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    task = orch.tasks[0]
+    # The exploding `success` property is not suppressed by getattr(..., False):
+    # each attempt consumes one retry until the budget is spent.
+    assert task.status == "failed"
+    assert task.attempts == 2  # max_task_retries + 1
+    assert task.error == "RuntimeError: boom"
+    assert task.finished_at
+    assert result.tasks_failed == 1
+    events = drain(q)
+    assert any(e.type == EventType.ERROR and "raised" in e.message for e in events)
+    assert any("RuntimeError: boom" in e.message for e in events if e.type == EventType.ERROR)
+    assert any(
+        e.type == EventType.TASK_FINISHED and not e.data.get("success", True)
+        for e in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_cancelled_error_propagates_out_of_run(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):

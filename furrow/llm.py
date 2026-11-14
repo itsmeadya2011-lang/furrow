@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -15,6 +17,8 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+
+logger = logging.getLogger(__name__)
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -209,6 +213,25 @@ def parse_tool_arguments(raw: Any) -> dict:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+async def release_client(client: Any) -> None:
+    """Release the HTTP resources of an LLM client, when it supports closing.
+
+    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
+    method, so it is looked up defensively and only awaited when the result
+    is awaitable.  A failing close is logged and ignored: closing must never
+    turn a successful run into a failed one.
+    """
+    closer = getattr(client, "aclose", None)
+    if closer is None:
+        return
+    try:
+        outcome = closer()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except Exception as exc:
+        logger.warning("Could not close the LLM client: %s", exc)
 
 
 class LLMClient:

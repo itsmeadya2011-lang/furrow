@@ -8,7 +8,12 @@ from __future__ import annotations
 
 import logging
 import sys
+from types import ModuleType
 from typing import Any
+
+# structlog is imported lazily so the module can fall back to stdlib logging
+# when the dependency is not installed.
+structlog: ModuleType | None = None
 
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
@@ -24,7 +29,7 @@ try:
     import structlog
     _STRUCTLOG_AVAILABLE = True
 except ImportError:
-    structlog = None  # type: ignore[assignment]
+    structlog = None
     _STRUCTLOG_AVAILABLE = False
 
 
@@ -42,6 +47,7 @@ def configure_logging(level: str = "INFO") -> None:
         _configure_stdlib_fallback(level)
         return
 
+    assert structlog is not None
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -62,5 +68,6 @@ def configure_logging(level: str = "INFO") -> None:
 def get_logger(name: str) -> Any:
     """Return a structlog logger, falling back to stdlib if needed."""
     if _STRUCTLOG_AVAILABLE:
+        assert structlog is not None
         return structlog.get_logger(name)
     return logging.getLogger(name)
