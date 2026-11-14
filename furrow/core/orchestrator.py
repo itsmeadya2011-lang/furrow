@@ -19,6 +19,8 @@ _MAX_TEXT = 120
 
 
 class Orchestrator:
+    """Main orchestrator that coordinates planning, execution, and testing cycles."""
+
     def __init__(self, goal: str, client: LLMClient | None = None,
                  settings: Settings | None = None, state_store: StateStore | None = None,
                  event_bus: EventBus | None = None, resume: bool = False) -> None:
@@ -103,6 +105,7 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "status_summary": f"Running {len(self.tasks)} tasks, {self.cycles} cycles completed",
         }
 
     def _console(self) -> Any:
@@ -169,8 +172,9 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"planner failed: {e}"
+                error_msg = f"planner failed: {e}"
+                self.event_bus.emit(Event(type=EventType.ERROR, message=error_msg))
+                self._stopped_reason = error_msg
                 self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
@@ -190,8 +194,9 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"execute failed: {e}"
+                error_msg = f"execute failed: {e}"
+                self.event_bus.emit(Event(type=EventType.ERROR, message=error_msg))
+                self._stopped_reason = error_msg
                 self.cycles -= 1
                 break
             try:
@@ -199,8 +204,9 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"tester failed: {e}"
+                error_msg = f"tester failed: {e}"
+                self.event_bus.emit(Event(type=EventType.ERROR, message=error_msg))
+                self._stopped_reason = error_msg
                 self.cycles -= 1
                 break
             self._tests_run += 1

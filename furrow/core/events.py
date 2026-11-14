@@ -56,12 +56,7 @@ class Event:
 
 
 class EventBus:
-    """Fan-out bus: subscribers each get their own bounded queue.
-
-    Every subscriber queue holds at most :data:`MAX_QUEUE_SIZE` events. When a
-    subscriber stops draining, the oldest queued event is dropped to make room
-    for the newest one, so a slow consumer still sees the most recent events.
-    """
+    """Fan-out event bus that streams orchestrator progress to subscribers."""
 
     def __init__(self) -> None:
         self._subscribers: list[asyncio.Queue[Event]] = []

@@ -158,6 +158,8 @@ def parse_test_output(output: str) -> list[dict]:
 
 
 class TesterAgent:
+    """Tester agent that runs test commands and analyzes results."""
+
     __test__ = False  # not a pytest test class
 
     def __init__(
@@ -325,6 +327,7 @@ class TesterAgent:
         return TestResult(passed=passed, summary=summary, failures=failures)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        """Run tests and return the result."""
         try:
             cmd = await self.detect_command()
             if cmd is None:
@@ -409,11 +412,11 @@ class TesterAgent:
                 timeout=timeout,
             )
         except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
+            message = f"tester error: {exc}"
             return TestResult(
                 passed=False,
-                summary=f"Tester error: {message}",
-                failures=[f"tester error: {message}"],
+                summary=message,
+                failures=[message],
             )
 
 

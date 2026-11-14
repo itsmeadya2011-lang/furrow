@@ -77,76 +77,44 @@ def state_path_for(
 
 
 class StateStore:
-    """Reads and writes a :class:`RunState` JSON document."""
+    """Persistent storage for orchestrator run state."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
 
     def exists(self) -> bool:
-        """True when the state file is present on disk."""
-        return self.path.is_file()
+        """Check if a state file exists."""
+        return self.path.exists()
 
     def load(self) -> RunState | None:
-        """Return the saved RunState, or None when the file is missing or corrupt.
-
-        A corrupt file must NOT raise - log a warning via the `logging` module and
-        return None so a run can start fresh instead of crashing.
-        """
-        if not self.path.is_file():
-            return None
+        """Load the run state from disk."""
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            if self.path.exists():
+                with open(self.path) as f:
+                    data = json.load(f)
+                return RunState(**data)
+        except (json.JSONDecodeError, ValidationError):
+            logger.warning("Ignoring corrupt state file %s", self.path)
         except OSError as exc:
             logger.warning("Could not read state file %s: %s", self.path, exc)
-            return None
-        try:
-            return RunState.model_validate_json(raw)
-        except (ValidationError, ValueError) as exc:
-            logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
-            return None
+        return None
 
     def save(self, state: RunState) -> None:
-        """Serialize state to JSON and write it ATOMICALLY.
-
-        The payload is written to a temporary file in the same directory, then
-        flushed, fsync'ed and moved into place with ``os.replace``. If anything
-        fails the temporary file is removed and the error is re-raised.
-        """
-        state.updated_at = utcnow()
-        payload = json.dumps(state.model_dump(mode="json"), indent=2)
-
-        parent = self.path.parent
-        parent.mkdir(parents=True, exist_ok=True)
-
-        tmp_name: str | None = None
+        """Save the run state to disk atomically."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.path.with_suffix(".tmp")
         try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                delete=False,
-                dir=parent,
-                prefix=f"{self.path.name}.",
-                suffix=".tmp",
-            ) as tmp:
-                tmp_name = tmp.name
-                tmp.write(payload)
-                tmp.write("\n")
-                tmp.flush()
-                os.fsync(tmp.fileno())
-            os.replace(tmp_name, self.path)
-            tmp_name = None
-        finally:
-            if tmp_name is not None:
-                try:
-                    os.unlink(tmp_name)
-                except OSError:  # pragma: no cover - best effort cleanup
-                    logger.warning("Could not remove temporary file %s", tmp_name)
+            with open(temp_path, "w") as f:
+                json.dump(state.dict(), f, indent=2)
+            temp_path.replace(self.path)
+        except OSError as e:
+            logger.error("Failed to save state to %s: %s", self.path, e)
+            raise
 
     def clear(self) -> None:
-        """Delete the state file if it exists; never raise when it is already missing."""
+        """Remove the state file if it exists."""
         try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
-        except OSError as exc:  # pragma: no cover - best effort cleanup
-            logger.warning("Could not remove state file %s: %s", self.path, exc)
+            if self.path.exists():
+                self.path.unlink()
+        except OSError as e:
+            logger.warning("Failed to clear state file %s: %s", self.path, e)

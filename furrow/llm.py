@@ -212,6 +212,8 @@ def parse_tool_arguments(raw: Any) -> dict:
 
 
 class LLMClient:
+    """Client for interacting with language models."""
+
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
         self._anthropic: AsyncAnthropic | None = None
@@ -221,6 +223,7 @@ class LLMClient:
 
     @property
     def anthropic(self) -> AsyncAnthropic:
+        """Get or create the Anthropic client."""
         if self._anthropic is None:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
@@ -232,6 +235,7 @@ class LLMClient:
 
     @property
     def openai(self) -> AsyncOpenAI:
+        """Get or create the OpenAI client."""
         if self._openai is None:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
@@ -243,6 +247,7 @@ class LLMClient:
 
     @property
     def ollama(self) -> AsyncOpenAI:
+        """Get or create the Ollama client."""
         if self._ollama is None:
             base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
             self._ollama = AsyncOpenAI(

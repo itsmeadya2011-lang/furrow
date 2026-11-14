@@ -283,6 +283,8 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
 
 
 class WorkerAgent:
+    """Worker agent that executes tasks using LLM-powered tool calling."""
+
     def __init__(
         self,
         task: TaskModel,
@@ -299,10 +301,12 @@ class WorkerAgent:
         self.files_changed: set[str] = set()
 
     async def run(self) -> WorkerResult:
+        """Execute the assigned task and return the result."""
         try:
             return await self._run()
         except Exception as exc:  # pragma: no cover - defensive
-            return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
+            error_msg = f"worker error: {exc}"
+            return WorkerResult(summary=error_msg, success=False, error=error_msg, iterations=0)
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations

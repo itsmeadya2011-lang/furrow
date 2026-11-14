@@ -8,11 +8,14 @@ from furrow.llm import LLMClient
 
 
 class PlannerAgent:
+    """Planner agent that breaks down goals into actionable tasks."""
+
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
 
     async def plan(self, goal: str, context: str = "") -> Plan:
+        """Generate a plan for the given goal."""
         prompt = PLANNER_PROMPT + "\n\nGoal: " + goal
         if context:
             prompt += "\n\nContext:\n" + context
@@ -32,7 +35,5 @@ class PlannerAgent:
                 return parse_plan(response2)
             except ValueError as second:
                 raw = response2 if isinstance(response2, str) else str(response2)
-                raise ValueError(
-                    "Planner output could not be parsed. "
-                    f"attempt 1: {first}. attempt 2: {second}. Response: {raw[:500]}"
-                ) from second
+                error_msg = f"planner failed to parse output after 2 attempts: {second}"
+                raise ValueError(error_msg) from second
