@@ -83,6 +83,16 @@ def _print_summary(result: RunResult) -> None:
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
             click.echo(f"  LLM cost:        ${cost:.6f}")
+        # Per-model breakdown
+        if hasattr(usage, "by_model") and usage.by_model:
+            click.echo("  LLM usage by model:")
+            for model_usage in usage.model_summary():
+                click.echo(
+                    f"    {model_usage['model']}: {model_usage['calls']} calls, "
+                    f"{model_usage['total_tokens']} tokens "
+                    f"(in {model_usage['input_tokens']} / out {model_usage['output_tokens']}), "
+                    f"${model_usage['cost_usd']:.6f}"
+                )
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -109,6 +119,16 @@ def _print_state(state: RunState) -> None:
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
             click.echo(f"  LLM cost:        ${cost:.6f}")
+        # Per-model breakdown
+        if hasattr(usage, "by_model") and usage.by_model:
+            click.echo("  LLM usage by model:")
+            for model_usage in usage.model_summary():
+                click.echo(
+                    f"    {model_usage['model']}: {model_usage['calls']} calls, "
+                    f"{model_usage['total_tokens']} tokens "
+                    f"(in {model_usage['input_tokens']} / out {model_usage['output_tokens']}), "
+                    f"${model_usage['cost_usd']:.6f}"
+                )
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:

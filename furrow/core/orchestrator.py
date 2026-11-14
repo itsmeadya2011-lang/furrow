@@ -12,6 +12,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import CorrelationContext, set_correlation_id
 
 _UNSET = object()
 
@@ -21,7 +22,8 @@ _MAX_TEXT = 120
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None,
                  settings: Settings | None = None, state_store: StateStore | None = None,
-                 event_bus: EventBus | None = None, resume: bool = False) -> None:
+                 event_bus: EventBus | None = None, resume: bool = False,
+                 correlation_id: str | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
@@ -50,6 +52,7 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._correlation_id = correlation_id or set_correlation_id()
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -149,151 +152,161 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
-        if self._resume and self._resume_state_missing:
-            # The state file was already looked up in __init__; it was missing.
-            self._resume_state_missing = False
-            self.event_bus.emit(Event(type=EventType.LOG,
-                                      message="no state file found, starting fresh"))
+        # Use correlation context for the entire run
+        with CorrelationContext(self._correlation_id):
+            if self._resume and self._resume_state_missing:
+                # The state file was already looked up in __init__; it was missing.
+                self._resume_state_missing = False
+                self.event_bus.emit(Event(type=EventType.LOG,
+                                          message="no state file found, starting fresh"))
 
-        self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
+            self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
-        while True:
-            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
-                self._stopped_reason = "max_cycles reached"
-                break
-            self.cycles += 1
-            self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
-            self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
-            try:
-                plan = await self.planner.plan(self.goal, context=self._context())
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"planner failed: {e}"
-                self.cycles -= 1
-                break
-            self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
-                                    data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
-            planned = len(plan.tasks)
-            unit = "task" if planned == 1 else "tasks"
-            self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
-            if not plan.tasks:
+            while True:
+                if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
+                    self._stopped_reason = "max_cycles reached"
+                    break
+                self.cycles += 1
+                self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
                 self.event_bus.emit(
-                    Event(type=EventType.LOG, message="no tasks planned - goal complete")
+                    Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles})
                 )
-                self._stopped_reason = "goal complete"
-                break
-            self._merge_plan(plan)
-            try:
-                await self._execute(plan)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"execute failed: {e}"
-                self.cycles -= 1
-                break
-            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
-            try:
-                test_result = await self.tester.run(self.original_goal, self.tasks)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"tester failed: {e}"
-                self.cycles -= 1
-                break
-            self._tests_run += 1
-            skipped = bool(getattr(test_result, "skipped", False))
-            self.event_bus.emit(
-                Event(
-                    type=EventType.TEST_FINISHED,
-                    data={"passed": test_result.passed, "summary": test_result.summary},
-                )
-            )
-            summary = self._escape(self._one_line(test_result.summary))
-            if test_result.passed:
-                self._say(f"[green]Tests passed: {summary}[/green]")
-            else:
-                self._say(f"[red]Tests failed: {summary}[/red]")
-            self._last_test_passed = test_result.passed
-            self._tests_skipped = skipped
-            if skipped:
-                # A skipped run (e.g. no test runner detected) is not a failure:
-                # keep the original goal and drop the stale feedback so the loop
-                # does not chase a test runner that does not exist.
-                self.goal = self.original_goal
-                self._feedback = ""
-            elif not test_result.passed:
-                failures = [f for f in test_result.failures if f and f.strip()]
-                if not failures:
-                    failures = [
-                        test_result.summary
-                        or "the test suite failed without a detailed report"
-                    ]
-                self._feedback = "\n".join(failures)
-                self.goal = (f"{self.original_goal}\n\n"
-                             "The previous cycle left failing tests. Fix them:\n"
-                             f"{self._feedback}")
-            cumulative = self._client_usage()
-            cycle_usage = Usage(
-                input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
-                output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
-                calls=max(0, cumulative.calls - self._usage_seen.calls),
-                cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
-            )
-            self._usage.add(cycle_usage)
-            self._usage_seen = cumulative
-            self.history.append(HistoryEntry(
-                cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
-                task_summaries=[t.id for t in self.tasks],
-                tests_passed=test_result.passed, test_summary=test_result.summary,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                usage=cycle_usage,
-            ))
-            self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
-            # A skipped run (no test runner) reports passed=True but gives the
-            # loop no verification signal, so it must trip the no-progress
-            # guard as well - otherwise the loop never stops.
-            no_signal = (not test_result.passed) or skipped
-            guard_tripped = False
-            if no_signal and sig == self._prev_sig:
-                self._no_progress += 1
-                if self._no_progress >= 2:
-                    self._stopped_reason = (
-                        "no test runner detected" if skipped else "no progress"
+                try:
+                    plan = await self.planner.plan(self.goal, context=self._context())
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                    self._stopped_reason = f"planner failed: {e}"
+                    self.cycles -= 1
+                    break
+                self.event_bus.emit(
+                    Event(
+                        type=EventType.PLAN_CREATED,
+                        data={"rationale": plan.rationale, "tasks": len(plan.tasks)},
                     )
-                    guard_tripped = True
-            else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
-                    self._no_progress = 0
-                self._prev_sig = sig
-
-            state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
-            try:
-                self.state_store.save(state)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # The state was NOT written: report the failure (including the
-                # path that could not be written) and do NOT emit STATE_SAVED,
-                # which would tell consumers the state was saved when it was not.
-                self.event_bus.emit(
-                    Event(type=EventType.ERROR,
-                         message=f"could not save state to {self.state_store.path}: {e}")
                 )
-            else:
-                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                        data={"path": str(self.state_store.path)}))
-            if guard_tripped:
-                break
+                planned = len(plan.tasks)
+                unit = "task" if planned == 1 else "tasks"
+                self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
+                if not plan.tasks:
+                    self.event_bus.emit(
+                        Event(type=EventType.LOG, message="no tasks planned - goal complete")
+                    )
+                    self._stopped_reason = "goal complete"
+                    break
+                self._merge_plan(plan)
+                try:
+                    await self._execute(plan)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                    self._stopped_reason = f"execute failed: {e}"
+                    self.cycles -= 1
+                    break
+                self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+                try:
+                    test_result = await self.tester.run(self.original_goal, self.tasks)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                    self._stopped_reason = f"tester failed: {e}"
+                    self.cycles -= 1
+                    break
+                self._tests_run += 1
+                skipped = bool(getattr(test_result, "skipped", False))
+                self.event_bus.emit(
+                    Event(
+                        type=EventType.TEST_FINISHED,
+                        data={"passed": test_result.passed, "summary": test_result.summary},
+                    )
+                )
+                summary = self._escape(self._one_line(test_result.summary))
+                if test_result.passed:
+                    self._say(f"[green]Tests passed: {summary}[/green]")
+                else:
+                    self._say(f"[red]Tests failed: {summary}[/red]")
+                self._last_test_passed = test_result.passed
+                self._tests_skipped = skipped
+                if skipped:
+                    # A skipped run (e.g. no test runner detected) is not a failure:
+                    # keep the original goal and drop the stale feedback so the loop
+                    # does not chase a test runner that does not exist.
+                    self.goal = self.original_goal
+                    self._feedback = ""
+                elif not test_result.passed:
+                    failures = [f for f in test_result.failures if f and f.strip()]
+                    if not failures:
+                        failures = [
+                            test_result.summary
+                            or "the test suite failed without a detailed report"
+                        ]
+                    self._feedback = "\n".join(failures)
+                    self.goal = (f"{self.original_goal}\n\n"
+                                 "The previous cycle left failing tests. Fix them:\n"
+                                 f"{self._feedback}")
+                cumulative = self._client_usage()
+                cycle_usage = Usage(
+                    input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
+                    output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
+                    calls=max(0, cumulative.calls - self._usage_seen.calls),
+                    cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
+                )
+                self._usage.add(cycle_usage)
+                self._usage_seen = cumulative
+                self.history.append(HistoryEntry(
+                    cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
+                    task_summaries=[t.id for t in self.tasks],
+                    tests_passed=test_result.passed, test_summary=test_result.summary,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    usage=cycle_usage,
+                ))
+                self.event_bus.emit(
+                    Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles})
+                )
+                sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+                # A skipped run (no test runner) reports passed=True but gives the
+                # loop no verification signal, so it must trip the no-progress
+                # guard as well - otherwise the loop never stops.
+                no_signal = (not test_result.passed) or skipped
+                guard_tripped = False
+                if no_signal and sig == self._prev_sig:
+                    self._no_progress += 1
+                    if self._no_progress >= 2:
+                        self._stopped_reason = (
+                            "no test runner detected" if skipped else "no progress"
+                        )
+                        guard_tripped = True
+                else:
+                    if sig != self._prev_sig or (test_result.passed and not skipped):
+                        self._no_progress = 0
+                    self._prev_sig = sig
+
+                state = RunState(goal=self.goal, original_goal=self.original_goal,
+                                 cycles=self.cycles, tasks=self.tasks, history=self.history,
+                                 usage=self._usage, no_progress=self._no_progress,
+                                 prev_sig=self._prev_sig, tests_run=self._tests_run,
+                                 last_passed=test_result.passed, last_skipped=skipped,
+                                 last_summary=test_result.summary)
+                try:
+                    self.state_store.save(state)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    # The state was NOT written: report the failure (including the
+                    # path that could not be written) and do NOT emit STATE_SAVED,
+                    # which would tell consumers the state was saved when it was not.
+                    self.event_bus.emit(
+                        Event(type=EventType.ERROR,
+                              message=f"could not save state to {self.state_store.path}: {e}")
+                    )
+                else:
+                    self.event_bus.emit(Event(type=EventType.STATE_SAVED,
+                                              data={"path": str(self.state_store.path)}))
+                if guard_tripped:
+                    break
 
         if not self._stopped_reason:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:

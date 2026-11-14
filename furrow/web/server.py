@@ -26,6 +26,7 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.logging import CorrelationContext
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +210,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    // Per-model breakdown
+    if (usage.by_model && Object.keys(usage.by_model).length > 0) {
+      const parts = [];
+      for (const [model, m] of Object.entries(usage.by_model)) {
+        const mcalls = Number(m.calls) || 0;
+        const mtotal = (Number(m.input_tokens) || 0) + (Number(m.output_tokens) || 0);
+        const mcost = Number(m.cost_usd) || 0;
+        parts.push(`${model}: ${mcalls} calls, ${mtotal} tokens, $${mcost.toFixed(6)}`);
+      }
+      usageEl.textContent += ' (by model: ' + parts.join('; ') + ')';
+    }
   }
 
   function renderTasks(tasks) {
@@ -540,13 +552,16 @@ async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
     """Run an orchestrator in the background and discard the emitted events."""
-    queue = bus.subscribe()
-    drain = asyncio.create_task(_drain(queue))
-    try:
-        return await _run_orchestrator(orchestrator)
-    finally:
-        drain.cancel()
-        bus.unsubscribe(queue)
+    # Get the correlation ID from the orchestrator
+    correlation_id = getattr(orchestrator, "_correlation_id", None)
+    with CorrelationContext(correlation_id):
+        queue = bus.subscribe()
+        drain = asyncio.create_task(_drain(queue))
+        try:
+            return await _run_orchestrator(orchestrator)
+        finally:
+            drain.cancel()
+            bus.unsubscribe(queue)
 
 
 def _build_orchestrator(

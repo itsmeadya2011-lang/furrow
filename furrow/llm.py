@@ -315,6 +315,8 @@ class LLMClient:
                 response = await self._complete_openai(self.ollama, prompt, system, model)
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
+            self.total_usage.add(response.usage)
+            self.total_usage.add_model_usage(model, response.usage)
             return response.text
 
         return await self._retry(call)
@@ -331,16 +333,20 @@ class LLMClient:
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
-                return await self._chat_anthropic(messages, tools, system, model)
+                response = await self._chat_anthropic(messages, tools, system, model)
             elif provider == Provider.OPENAI:
-                return await self._chat_openai_compatible(
+                response = await self._chat_openai_compatible(
                     self.openai, messages, tools, system, model
                 )
             elif provider == Provider.OLLAMA:
-                return await self._chat_openai_compatible(
+                response = await self._chat_openai_compatible(
                     self.ollama, messages, tools, system, model
                 )
-            raise ValueError(f"Unsupported provider: {provider}")
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+            self.total_usage.add(response.usage)
+            self.total_usage.add_model_usage(model, response.usage)
+            return response
 
         return await self._retry(call)
 
@@ -360,7 +366,6 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _complete_openai(
@@ -387,7 +392,6 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
         return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _chat_anthropic(
@@ -422,7 +426,6 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
@@ -473,7 +476,6 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,

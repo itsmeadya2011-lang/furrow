@@ -79,6 +79,8 @@ class Usage(BaseModel):
     output_tokens: int = 0
     calls: int = 0
     cost_usd: float = 0.0
+    # Per-model breakdown: model_name -> Usage
+    by_model: dict[str, Usage] = Field(default_factory=dict)
 
     @property
     def total_tokens(self) -> int:
@@ -92,6 +94,26 @@ class Usage(BaseModel):
         self.calls += other.calls
         self.cost_usd += other.cost_usd
         return self
+
+    def add_model_usage(self, model: str, usage: Usage) -> None:
+        """Add usage for a specific model."""
+        if model not in self.by_model:
+            self.by_model[model] = Usage()
+        self.by_model[model].add(usage)
+
+    def model_summary(self) -> list[dict]:
+        """Return a summary of usage per model."""
+        return [
+            {
+                "model": model,
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+                "total_tokens": u.total_tokens,
+                "calls": u.calls,
+                "cost_usd": round(u.cost_usd, 6),
+            }
+            for model, u in sorted(self.by_model.items())
+        ]
 
 
 class RunResult(BaseModel):
@@ -132,6 +154,43 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    @field_validator("model", "planner_model", "worker_model", "tester_model", mode="before")
+    @classmethod
+    def _validate_model_not_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Model name cannot be empty")
+        return v.strip()
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        if not v:
+            return "INFO"
+        level = v.strip().upper()
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if level not in valid_levels:
+            raise ValueError(f"Invalid log level: {v}. Must be one of {valid_levels}")
+        return level
+
+    @field_validator("ollama_base_url", mode="before")
+    @classmethod
+    def _validate_ollama_url(cls, v: str) -> str:
+        if not v:
+            return "http://localhost:11434"
+        url = v.strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError(f"ollama_base_url must start with http:// or https://: {url}")
+        return url.rstrip("/")
+
+    @field_validator("workspace", mode="before")
+    @classmethod
+    def _validate_workspace(cls, v: str | Path) -> Path:
+        path = Path(v) if isinstance(v, str) else v
+        try:
+            return path.resolve()
+        except Exception as e:
+            raise ValueError(f"Invalid workspace path: {e}") from e
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

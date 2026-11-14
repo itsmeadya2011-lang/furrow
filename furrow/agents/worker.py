@@ -30,6 +30,33 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    # Network exfiltration / remote access
+    "curl ",
+    "wget ",
+    "nc ",
+    "netcat ",
+    "ssh ",
+    "scp ",
+    "rsync ",
+    "sftp ",
+    "ftp ",
+    "telnet ",
+    # Process manipulation
+    "kill -9",
+    "pkill -9",
+    "killall",
+    # Kernel / system
+    "insmod",
+    "rmmod",
+    "modprobe",
+    "sysctl -w",
+    # File system destruction
+    "shred",
+    "wipefs",
+    "fdisk",
+    "parted",
+    "cfdisk",
+    "sfdisk",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,6 +72,37 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        # Network tools
+        "curl",
+        "wget",
+        "nc",
+        "netcat",
+        "ssh",
+        "scp",
+        "rsync",
+        "sftp",
+        "ftp",
+        "telnet",
+        "nmap",
+        "socat",
+        # Process tools
+        "killall",
+        "pkill",
+        # System tools
+        "insmod",
+        "rmmod",
+        "modprobe",
+        "sysctl",
+        "mount",
+        "umount",
+        "fsck",
+        "mkfs.ext4",
+        "mkfs.xfs",
+        "mkfs.btrfs",
+        "shred",
+        "wipefs",
+        "cfdisk",
+        "sfdisk",
     }
 )
 
@@ -62,6 +120,18 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Common environment variables that could be used to bypass filters.
+# We canonicalize them to a fixed token so patterns like "$PATH" or "${USER}"
+# cannot be used to evade the DENIED_COMMANDS list.
+_ENV_VARS = (
+    "HOME", "USER", "PATH", "SHELL", "PWD", "OLDPWD", "LANG", "LC_ALL",
+    "TERM", "USERNAME", "LOGNAME", "MAIL", "TMPDIR", "TEMP", "TMP",
+)
+_ENV_VAR_RE = re.compile(
+    rf'\$\{{?({"|".join(_ENV_VARS)})}}?(?![A-Za-z0-9_])',
+    re.IGNORECASE,
+)
+
 # The target of a redirection: "> file" or ">> file".
 _REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
 
@@ -75,9 +145,9 @@ def _normalize_command(command: str) -> str:
 
     The command is lower-cased, runs of whitespace are collapsed into a
     single space, the quotes around the whole command are removed and every
-    spelling of the HOME variable (``$HOME``, ``${HOME}``, ``"$HOME"``,
-    ``'$HOME'``, ``$home``, ``${home}``) is canonicalised to the single
-    token ``$home``.
+    spelling of common environment variables (``$HOME``, ``${HOME}``, ``$PATH``,
+    ``${USER}``, etc.) is canonicalised to a fixed token (``$home``, ``$path``,
+    ``$user``, etc.).
     """
     if not command:
         return ""
@@ -88,6 +158,8 @@ def _normalize_command(command: str) -> str:
     cmd = cmd.lower()
     # Canonicalize every spelling of the HOME variable to "$home".
     cmd = _HOME_VAR_RE.sub("$home", cmd)
+    # Canonicalize other common environment variables
+    cmd = _ENV_VAR_RE.sub(lambda m: f"${m.group(1).lower()}", cmd)
     # Collapse runs of whitespace to single space
     cmd = re.sub(r'\s+', ' ', cmd)
     return cmd
@@ -232,7 +304,39 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
         return True
 
     # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    if _redirects_outside_workspace(segment, workspace):
+        return True
+
+    # DENY reading sensitive files (ssh keys, aws credentials, .env, etc.)
+    sensitive_patterns = (
+        ".ssh/id_",
+        ".ssh/authorized_keys",
+        ".aws/credentials",
+        ".aws/config",
+        ".env",
+        ".netrc",
+        ".npmrc",
+        ".dockercfg",
+        "id_rsa",
+        "id_ed25519",
+        "id_dsa",
+        "id_ecdsa",
+    )
+    for pattern in sensitive_patterns:
+        if pattern in normalized:
+            return True
+
+    # DENY commands that try to exfiltrate data via environment variables
+    # e.g., `env | curl ...` or `printenv | nc ...`
+    exfil_patterns = (
+        "env |",
+        "printenv |",
+        "cat /etc/passwd",
+        "cat /etc/shadow",
+        "cat /proc/",
+        "cat /sys/",
+    )
+    return any(pattern in normalized for pattern in exfil_patterns)
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
@@ -373,7 +477,78 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "git_status":
+            return await self._git_status()
+        if name == "git_diff":
+            return await self._git_diff(bool(args.get("staged", False)), args.get("path"))
+        if name == "git_log":
+            return await self._git_log(
+                int(args.get("max_count", 10)), bool(args.get("oneline", True))
+            )
+        if name == "git_commit":
+            return await self._git_commit(str(args.get("message", "")))
+        if name == "git_add":
+            return await self._git_add(args.get("paths"))
+        if name == "git_reset":
+            return await self._git_reset(args.get("paths"), bool(args.get("hard", False)))
         return f"unknown tool: {name}"
+
+    async def _git_status(self) -> str:
+        """Show the working tree status."""
+        return await self._run_git_command(["status", "--short"])
+
+    async def _git_diff(self, staged: bool, path: str | None) -> str:
+        """Show changes between commits, commit and working tree, etc."""
+        cmd = ["diff"]
+        if staged:
+            cmd.append("--cached")
+        if path:
+            cmd.append("--")
+            cmd.append(path)
+        return await self._run_git_command(cmd)
+
+    async def _git_log(self, max_count: int, oneline: bool) -> str:
+        """Show commit logs."""
+        cmd = ["log", f"--max-count={max_count}"]
+        if oneline:
+            cmd.append("--oneline")
+        return await self._run_git_command(cmd)
+
+    async def _git_commit(self, message: str) -> str:
+        """Create a commit with the given message (stages all changes first)."""
+        # First stage all changes
+        stage_result = await self._run_git_command(["add", "-A"])
+        if stage_result.startswith("error:"):
+            return stage_result
+        # Then commit
+        return await self._run_git_command(["commit", "-m", message])
+
+    async def _git_add(self, paths: list[str] | None) -> str:
+        """Stage files for commit."""
+        cmd = ["add"]
+        if paths:
+            cmd.extend(paths)
+        else:
+            cmd.append("-A")
+        return await self._run_git_command(cmd)
+
+    async def _git_reset(self, paths: list[str] | None, hard: bool) -> str:
+        """Unstage files or reset working tree."""
+        if hard:
+            # Hard reset is dangerous - deny it for safety
+            return "error: hard reset is not allowed for safety reasons"
+        cmd = ["reset"]
+        if paths:
+            cmd.extend(paths)
+        else:
+            cmd.append("HEAD")
+        return await self._run_git_command(cmd)
+
+    async def _run_git_command(self, args: list[str]) -> str:
+        """Run a git command safely within the workspace."""
+        # Verify git is available
+        command = "git " + " ".join(shlex.quote(arg) for arg in args)
+        return await self._run_command(command)
 
     @staticmethod
     def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:
