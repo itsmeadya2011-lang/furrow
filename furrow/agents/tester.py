@@ -15,6 +15,7 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.plugins import PluginManager
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
@@ -165,10 +166,16 @@ class TesterAgent:
         client: LLMClient | None = None,
         settings: Settings | None = None,
         workspace: Path | None = None,
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self.plugin_manager = (
+            plugin_manager
+            if plugin_manager is not None
+            else PluginManager(settings=self.settings)
+        )
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
@@ -186,6 +193,13 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        try:
+            plugin_cmd = await self.plugin_manager.detect_test_command(self, self.workspace)
+        except Exception:
+            plugin_cmd = None
+        if plugin_cmd:
+            return list(plugin_cmd)
+
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -326,6 +340,10 @@ class TesterAgent:
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
         try:
+            plugin_result = await self.plugin_manager.run_tests(self, goal, tasks)
+            if isinstance(plugin_result, TestResult):
+                return plugin_result
+
             cmd = await self.detect_command()
             if cmd is None:
                 return TestResult(

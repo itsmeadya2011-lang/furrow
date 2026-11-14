@@ -14,6 +14,7 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.plugins import PluginManager
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -50,6 +51,19 @@ DENIED_PROGRAMS = frozenset(
 
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
+
+# Maximum number of search results returned by the ``search_files`` tool.
+MAX_SEARCH_RESULTS = 1000
+
+
+def _is_binary_file(path: Path) -> bool:
+    """Check if a file is binary by reading a sample and checking for null bytes."""
+    try:
+        with path.open("rb") as f:
+            sample = f.read(512)
+        return b"\x00" in sample
+    except (OSError, ValueError):
+        return True
 
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
@@ -283,6 +297,7 @@ class WorkerAgent:
         settings: Settings | None = None,
         workspace: Path | None = None,
         goal: str = "",
+        plugin_manager: PluginManager | None = None,
     ) -> None:
         self.task = task
         self.settings = settings if settings is not None else global_settings
@@ -290,6 +305,11 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self.plugin_manager = (
+            plugin_manager
+            if plugin_manager is not None
+            else PluginManager(settings=self.settings)
+        )
 
     async def run(self) -> WorkerResult:
         try:
@@ -306,10 +326,11 @@ class WorkerAgent:
             }
         ]
         iterations = 0
+        tools = list(WORKER_TOOLS) + self.plugin_manager.get_worker_tools()
         for i in range(max_iters):
             iterations = i + 1
             response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+                messages, tools=tools, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
@@ -373,6 +394,25 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "search_files":
+            return await self._search_files(
+                pattern=str(args.get("pattern", "")),
+                path=str(args.get("path", ".")),
+                file_pattern=args.get("file_pattern"),
+                max_results=(
+                    int(args.get("max_results", 100))
+                    if args.get("max_results") is not None
+                    else 100
+                ),
+                context_lines=(
+                    int(args.get("context_lines", 2))
+                    if args.get("context_lines") is not None
+                    else 2
+                ),
+            )
+        plugin_result = await self.plugin_manager.execute_worker_tool(name, args, self)
+        if plugin_result is not None:
+            return plugin_result
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -436,6 +476,98 @@ class WorkerAgent:
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
+
+    async def _search_files(
+        self,
+        pattern: str,
+        path: str = ".",
+        file_pattern: str | None = None,
+        max_results: int = 100,
+        context_lines: int = 2,
+    ) -> str:
+        """Search for a regex pattern in files within the workspace."""
+        # Resolve the search path within the workspace
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+
+        # Validate max_results
+        if max_results < 1:
+            max_results = 1
+        if max_results > MAX_SEARCH_RESULTS:
+            max_results = MAX_SEARCH_RESULTS
+
+        # Validate context_lines
+        if context_lines < 0:
+            context_lines = 0
+        if context_lines > 10:
+            context_lines = 10
+
+        try:
+            compiled_pattern = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+
+        # Find files to search
+        try:
+            if file_pattern:
+                # Use glob pattern
+                files = list(resolved.rglob(file_pattern))
+            else:
+                files = list(resolved.rglob("*"))
+        except (OSError, ValueError) as exc:
+            return f"error: {exc}"
+
+        # Filter to only files (not directories) and sort for consistent output
+        files = [f for f in files if f.is_file()]
+        # Skip binary files
+        files = [f for f in files if not _is_binary_file(f)]
+        files.sort()
+
+        results: list[str] = []
+        total_matches = 0
+
+        for file_path in files:
+            if total_matches >= max_results:
+                break
+
+            try:
+                # Read file content
+                content = await self.client.read_file(file_path)
+            except (OSError, ValueError, RuntimeError, UnicodeDecodeError):
+                # Skip unreadable files
+                continue
+
+            lines = content.splitlines()
+            if not lines:
+                continue
+
+            # Search for matches
+            for i, line in enumerate(lines):
+                if total_matches >= max_results:
+                    break
+
+                if compiled_pattern.search(line):
+                    # Calculate context range
+                    start = max(0, i - context_lines)
+                    end = min(len(lines), i + context_lines + 1)
+
+                    # Build result with context
+                    rel_path = file_path.relative_to(self.workspace.resolve())
+                    context_block = []
+                    for j in range(start, end):
+                        prefix = ">" if j == i else " "
+                        context_block.append(f"{prefix} {j + 1:4d}: {lines[j]}")
+
+                    results.append(f"{rel_path}:\n" + "\n".join(context_block))
+                    total_matches += 1
+
+        if not results:
+            return "no matches found"
+
+        # Add summary
+        header = f"Found {total_matches} match(es) in {len(results)} file(s):"
+        return header + "\n\n" + "\n\n---\n\n".join(results)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

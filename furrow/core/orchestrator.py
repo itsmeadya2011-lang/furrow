@@ -7,11 +7,12 @@ from typing import Any
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
-from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
+from furrow.config import Plan, RunResult, Settings, TaskModel, Usage, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.plugins import PluginManager
 
 _UNSET = object()
 
@@ -21,7 +22,8 @@ _MAX_TEXT = 120
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None,
                  settings: Settings | None = None, state_store: StateStore | None = None,
-                 event_bus: EventBus | None = None, resume: bool = False) -> None:
+                 event_bus: EventBus | None = None, resume: bool = False,
+                 plugin_manager: PluginManager | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
@@ -29,12 +31,18 @@ class Orchestrator:
         self.cycles = 0
         self.tasks: list[TaskModel] = []
         self.event_bus = event_bus if event_bus is not None else EventBus()
+        self.plugin_manager = (
+            plugin_manager
+            if plugin_manager is not None
+            else PluginManager.from_settings(self.settings)
+        )
         self.state_store = (
             state_store if state_store is not None else StateStore(self.settings.state_path())
         )
         self.planner = PlannerAgent(client=self.client, settings=self.settings)
         self.tester = TesterAgent(client=self.client, settings=self.settings,
-                                 workspace=self.settings.workspace)
+                                 workspace=self.settings.workspace,
+                                 plugin_manager=self.plugin_manager)
         self.history: list[HistoryEntry] = []
         self._feedback = ""
         self._active_ids: set[str] = set()
@@ -164,6 +172,7 @@ class Orchestrator:
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            await self.plugin_manager.pre_cycle(self, self.cycles)
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
@@ -253,6 +262,7 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+            await self.plugin_manager.post_cycle(self, self.cycles, plan)
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
@@ -292,6 +302,12 @@ class Orchestrator:
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
+            if (
+                self.settings.max_cost_usd > 0
+                and self._usage.cost_usd > self.settings.max_cost_usd
+            ):
+                self._stopped_reason = "budget exceeded"
+                break
             if guard_tripped:
                 break
 
@@ -401,8 +417,23 @@ class Orchestrator:
             """Return the worker for *task*, creating it once so retries reuse it."""
             worker = workers.get(task.id)
             if worker is None:
-                worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
-                                     workspace=self.settings.workspace, goal=self.original_goal)
+                try:
+                    worker = WorkerAgent(
+                        task=task,
+                        client=self.client,
+                        settings=self.settings,
+                        workspace=self.settings.workspace,
+                        goal=self.original_goal,
+                        plugin_manager=self.plugin_manager,
+                    )
+                except TypeError:
+                    worker = WorkerAgent(
+                        task=task,
+                        client=self.client,
+                        settings=self.settings,
+                        workspace=self.settings.workspace,
+                        goal=self.original_goal,
+                    )
                 workers[task.id] = worker
             return worker
 
@@ -415,6 +446,7 @@ class Orchestrator:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                await self.plugin_manager.pre_task_execution(task)
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -444,6 +476,15 @@ class Orchestrator:
                                 "summary": str(task.error or ""),
                             },
                         )
+                    )
+                    await self.plugin_manager.post_task_execution(
+                        task,
+                        WorkerResult(
+                            summary=str(task.error or ""),
+                            success=False,
+                            files_changed=list(getattr(task, "files_changed", None) or []),
+                            error=task.error,
+                        ),
                     )
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
@@ -482,6 +523,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    await self.plugin_manager.post_task_execution(task, result)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error or "unknown error"))
                     if task.status == "completed":
@@ -519,6 +561,15 @@ class Orchestrator:
                                 "summary": str(task.error or ""),
                             },
                         )
+                    )
+                    await self.plugin_manager.post_task_execution(
+                        task,
+                        WorkerResult(
+                            summary=str(task.error or ""),
+                            success=False,
+                            files_changed=list(getattr(task, "files_changed", None) or []),
+                            error=task.error,
+                        ),
                     )
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))

@@ -1008,7 +1008,54 @@ async def test_dependents_of_a_blocked_task_are_blocked(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_failed_task_is_not_executed_again_in_a_later_cycle(tmp_path, monkeypatch):
+async def test_stops_when_budget_exceeded(tmp_path, monkeypatch):
+    from furrow.config import Usage
+
+    class CostClient:
+        def __init__(self):
+            self.total_usage = Usage()
+
+        def bump(self):
+            self.total_usage = Usage(
+                input_tokens=10, output_tokens=10, calls=1, cost_usd=1.5
+            )
+
+    client = CostClient()
+
+    async def bump_after_execute(*a, **k):
+        client.bump()
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=5)
+    settings = Settings.model_validate({**settings.model_dump(), "max_cost_usd": 1.0})
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=client)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    monkeypatch.setattr(orch, "_execute", bump_after_execute)
+    result = await orch.run()
+    assert result.cycles == 1
+    assert result.stopped_reason == "budget exceeded"
+    assert result.usage.cost_usd == 1.5
+
+
+@pytest.mark.asyncio
+async def test_unlimited_budget_does_not_stop_on_cost(tmp_path, monkeypatch):
+    from furrow.config import Usage
+
+    class CostClient:
+        def __init__(self):
+            self.total_usage = Usage(input_tokens=10, output_tokens=10, calls=1, cost_usd=100.0)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=CostClient())
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.stopped_reason == "max_cycles reached"
+
     calls = []
 
     class FW(FakeWorker):

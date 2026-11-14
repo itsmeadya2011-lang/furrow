@@ -700,3 +700,36 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_start_max_cost_usd_negative_rejected(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(main, ["start", "build a thing", "--max-cost-usd", "-1"])
+
+    assert result.exit_code != 0
+    assert fake_orchestrator.init_kwargs == {}
+
+
+def test_start_passes_max_cost_usd_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        main, ["start", "build a thing", "--workspace", str(tmp_path), "--max-cost-usd", "1.5"]
+    )
+
+    assert result.exit_code == 0
+    assert fake_orchestrator.init_kwargs["settings"].max_cost_usd == 1.5
+
+
+def test_resume_passes_max_cost_usd_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(
+        main, ["resume", "--workspace", str(tmp_path), "--max-cost-usd", "2.0"]
+    )
+
+    assert result.exit_code == 0
+    assert fake_orchestrator.init_kwargs["settings"].max_cost_usd == 2.0

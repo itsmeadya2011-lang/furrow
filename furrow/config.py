@@ -1,12 +1,84 @@
 from __future__ import annotations
 
+import os
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 from furrow.costs import ModelPricing
+
+DEFAULT_CONFIG_FILE = "furrow.yaml"
+
+
+def _dotenv_values(
+    settings_cls: type[BaseSettings], init_kwargs: dict[str, Any]
+) -> dict[str, str]:
+    """Read the configured .env file(s) so the config path can be resolved before load."""
+    if init_kwargs.get("_env_file", ...) is None:
+        return {}
+    env_file = settings_cls.model_config.get("env_file")
+    if env_file is None:
+        return {}
+    files = [env_file] if isinstance(env_file, (str, os.PathLike)) else list(env_file)
+    try:
+        from dotenv import dotenv_values
+    except ImportError:  # pragma: no cover - python-dotenv is a declared dependency
+        return {}
+    values: dict[str, str] = {}
+    for file in files:
+        path = Path(file)
+        if path.is_file():
+            values.update({k: v for k, v in dotenv_values(path).items() if v is not None})
+    return values
+
+
+def _resolve_config_files(
+    settings_cls: type[BaseSettings],
+    init_kwargs: dict[str, Any],
+    dotenv_values: dict[str, str],
+) -> list[Path]:
+    """Locate the YAML config file relative to the workspace.
+
+    The workspace and config file name may themselves come from init arguments,
+    environment variables or the .env file. Only values known before the YAML
+    file is read can be used here.
+    """
+
+    def lookup(name: str) -> Any | None:
+        if name in init_kwargs and init_kwargs[name] is not None:
+            return init_kwargs[name]
+        value = os.environ.get(f"FURROW_{name.upper()}")
+        if value is not None:
+            return value
+        value = dotenv_values.get(f"FURROW_{name.upper()}")
+        if value is not None:
+            return value
+        return None
+
+    workspace_value = lookup("workspace")
+    workspace = Path(workspace_value) if workspace_value is not None else Path.cwd()
+
+    config_value = lookup("config_file")
+    config_name = str(config_value) if config_value is not None else DEFAULT_CONFIG_FILE
+    config_path = Path(config_name).expanduser()
+    if not config_path.is_absolute():
+        config_path = workspace / config_path
+
+    candidates = [config_path]
+    # When the default name is used, also accept the .yml spelling.
+    if config_name == DEFAULT_CONFIG_FILE:
+        alternative = config_path.with_suffix(".yml")
+        if alternative != config_path:
+            candidates.append(alternative)
+    return candidates
 
 
 class Provider(str, Enum):
@@ -130,8 +202,39 @@ class Settings(BaseSettings):
     command_timeout: float = Field(default=300.0, gt=0)
     test_timeout: float = Field(default=600.0, gt=0)
     max_tokens: int = Field(default=4096, ge=1)
+    max_cost_usd: float = Field(default=0.0, ge=0)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    plugins: list[str] = Field(default_factory=list)
+    config_file: Path = Path(DEFAULT_CONFIG_FILE)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Load from init args, environment variables, .env, then the YAML file.
+
+        Sources earlier in the tuple take precedence, so environment variables
+        (``FURROW_*``) override values from ``furrow.yaml``.
+        """
+        init_kwargs = getattr(init_settings, "init_kwargs", {}) or {}
+        dotenv_values = _dotenv_values(settings_cls, init_kwargs)
+        yaml_source = YamlConfigSettingsSource(
+            settings_cls,
+            yaml_file=_resolve_config_files(settings_cls, init_kwargs, dotenv_values),
+        )
+        return (
+            init_settings,
+            env_settings,
+            dotenv_settings,
+            yaml_source,
+            file_secret_settings,
+        )
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

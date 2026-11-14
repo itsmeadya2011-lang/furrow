@@ -376,8 +376,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["list_files", "read_file", "run_command", "search_files", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -392,6 +392,213 @@ def test_resolve_in_workspace():
     assert resolve_in_workspace(ws, "/etc/passwd") is None
     inside = resolve_in_workspace(ws, str(ws / "a.py"))
     assert inside == ws / "a.py"
+
+
+@pytest.mark.asyncio
+async def test_search_files_basic(tmp_path):
+    """Test basic search functionality."""
+    (tmp_path / "a.py").write_text("def hello():\n    print('hello')\n")
+    (tmp_path / "b.py").write_text("def world():\n    print('world')\n")
+    (tmp_path / "c.txt").write_text("hello world\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("hello")
+    assert "hello" in out
+    assert "a.py" in out
+    assert "print('hello')" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_with_path(tmp_path):
+    """Test search with specific path."""
+    (tmp_path / "subdir").mkdir()
+    (tmp_path / "subdir" / "a.py").write_text("def target():\n    pass\n")
+    (tmp_path / "b.py").write_text("def target():\n    pass\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    # Search only in subdir
+    out = await agent._search_files("target", path="subdir")
+    assert "subdir/a.py" in out
+    assert "b.py" not in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_with_file_pattern(tmp_path):
+    """Test search with file pattern filter."""
+    (tmp_path / "a.py").write_text("def hello():\n    pass\n")
+    (tmp_path / "b.js").write_text("function hello() {\n    }\n")
+    (tmp_path / "c.txt").write_text("hello\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    # Search only in .py files
+    out = await agent._search_files("hello", file_pattern="*.py")
+    assert "a.py" in out
+    assert "b.js" not in out
+    assert "c.txt" not in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_max_results(tmp_path):
+    """Test max_results limit."""
+    for i in range(10):
+        (tmp_path / f"file{i}.py").write_text(f"target {i}\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("target", max_results=3)
+    # Should find exactly 3 matches
+    assert "Found 3 match(es)" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_context_lines(tmp_path):
+    """Test context lines around matches."""
+    content = "\n".join([f"line {i}" for i in range(10)]) + "\n"
+    (tmp_path / "test.py").write_text(content)
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("line 5", context_lines=2)
+    # Should show lines 3-7 (line 5 +/- 2 context)
+    assert "line 3" in out
+    assert "line 4" in out
+    assert "line 5" in out
+    assert "line 6" in out
+    assert "line 7" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_no_matches(tmp_path):
+    """Test search with no matches."""
+    (tmp_path / "a.py").write_text("def hello():\n    pass\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("nonexistent")
+    assert "no matches found" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_search_files_invalid_regex(tmp_path):
+    """Test search with invalid regex pattern."""
+    (tmp_path / "a.py").write_text("def hello():\n    pass\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("[invalid")
+    assert "error: invalid regex pattern" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_path_escape(tmp_path):
+    """Test search with path that escapes workspace."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("test", path="../etc")
+    assert "error: path escapes workspace" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_binary_skip(tmp_path):
+    """Test that binary files are skipped."""
+    (tmp_path / "text.py").write_text("target\n")
+    # Create a binary file
+    (tmp_path / "binary.bin").write_bytes(b"\x00\x01\x02\x03target\x04\x05")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("target")
+    # Should only find in text file, binary should be skipped
+    assert "text.py" in out
+    assert "binary.bin" not in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_via_tool_execution(tmp_path):
+    """Test search_files through the tool execution path."""
+    (tmp_path / "test.py").write_text("def hello():\n    print('hello')\n")
+
+    from furrow.config import TaskModel
+    from furrow.llm import LLMResponse, ToolCall
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="search_files",
+                    arguments={"pattern": "hello", "file_pattern": "*.py"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+
+    # Check tool result
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "hello" in b["content"]
+                    assert "test.py" in b["content"]
+                    found = True
+    assert found
 
 
 @pytest.mark.asyncio

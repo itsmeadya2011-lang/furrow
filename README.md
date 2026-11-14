@@ -83,7 +83,7 @@ The web API refuses to start a second run while one is already in progress — b
 
 ## Configuration
 
-Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file if present). Available settings:
+Furrow reads settings from a YAML file in the workspace (`furrow.yaml`, or `furrow.yml`) and from environment variables with the `FURROW_` prefix (and a `.env` file if present). Environment variables take precedence over the YAML file. The config file is optional; when it is missing, environment variables and defaults are used. Available settings:
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -106,6 +106,20 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 | `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |
+| `FURROW_CONFIG_FILE` | `furrow.yaml` | YAML config file path (relative to the workspace) |
+
+A `furrow.yaml` example:
+
+```yaml
+provider: openai
+model: gpt-4o-mini
+max_cycles: 3
+workspace: /path/to/project
+model_pricing:
+  gpt-4o-mini:
+    input_per_million: 0.15
+    output_per_million: 0.6
+```
 
 A `.env` file is read automatically via pydantic-settings.
 

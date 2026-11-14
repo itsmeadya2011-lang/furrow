@@ -604,3 +604,39 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_start_request_rejects_negative_max_cost_usd(client: TestClient) -> None:
+    response = client.post("/api/start", json={"goal": "x", "max_cost_usd": -1})
+
+    assert response.status_code == 422
+
+
+def test_api_start_rejects_negative_max_cost_usd_without_starting_a_run(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    response = client.post("/api/start", json={"goal": "x", "max_cost_usd": -1})
+
+    assert response.status_code == 422
+    assert fake_orchestrator.init_kwargs == {}
+    assert server._CURRENT["running"] is False
+
+
+def test_websocket_rejects_negative_max_cost_usd(client: TestClient) -> None:
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "x", "max_cost_usd": -1})
+        messages = []
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                messages.append(ws.receive_json())
+
+    assert messages[0]["type"] == "error"
+    assert "max_cost_usd" in messages[0]["message"]
+
+
+def test_run_settings_applies_max_cost_usd_override() -> None:
+    original = server.settings.max_cost_usd
+    run_settings = server._run_settings(None, 1.25)
+
+    assert run_settings.max_cost_usd == 1.25
+    assert server.settings.max_cost_usd == original

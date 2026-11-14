@@ -259,3 +259,75 @@ def test_pricing_overrides_returns_a_copy():
     overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
     assert s.model_pricing["my-model"].input_per_million == 1.0
 
+
+def test_settings_max_cost_usd_default_and_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("FURROW_MAX_COST_USD", raising=False)
+    s = Settings(_env_file=None)
+    assert s.max_cost_usd == 0.0
+    monkeypatch.setenv("FURROW_MAX_COST_USD", "1.25")
+    s2 = Settings(_env_file=None)
+    assert s2.max_cost_usd == 1.25
+
+
+def test_settings_max_cost_usd_validation():
+    from pydantic import ValidationError
+
+    assert Settings(max_cost_usd=0.0).max_cost_usd == 0.0
+    assert Settings(max_cost_usd=2.5).max_cost_usd == 2.5
+    with pytest.raises(ValidationError):
+        Settings(max_cost_usd=-0.01)
+    s = Settings(_env_file=None)
+    assert s.config_file == Path("furrow.yaml")
+
+
+def test_settings_loads_yaml_relative_to_workspace(tmp_path: Path):
+    (tmp_path / "furrow.yaml").write_text(
+        "max_cycles: 4\n"
+        "model: yaml-model\n"
+        "provider: openai\n"
+        "model_pricing:\n"
+        "  my-model:\n"
+        "    input_per_million: 1.5\n"
+        "    output_per_million: 2.5\n"
+    )
+    s = Settings(_env_file=None, workspace=tmp_path)
+    assert s.max_cycles == 4
+    assert s.model == "yaml-model"
+    assert s.provider == Provider.OPENAI
+    assert s.model_pricing["my-model"].input_per_million == 1.5
+    assert s.model_pricing["my-model"].output_per_million == 2.5
+
+
+def test_settings_env_overrides_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "furrow.yaml").write_text("max_cycles: 4\nmodel: yaml-model\n")
+    monkeypatch.setenv("FURROW_MAX_CYCLES", "9")
+    s = Settings(_env_file=None, workspace=tmp_path)
+    assert s.max_cycles == 9
+    assert s.model == "yaml-model"
+
+
+def test_settings_falls_back_to_furrow_yml(tmp_path: Path):
+    (tmp_path / "furrow.yml").write_text("max_cycles: 3\n")
+    s = Settings(_env_file=None, workspace=tmp_path)
+    assert s.max_cycles == 3
+
+
+def test_settings_yaml_is_optional(tmp_path: Path):
+    s = Settings(_env_file=None, workspace=tmp_path / "does-not-exist")
+    assert s.max_cycles == 0
+    assert s.model == "claude-sonnet-4-20250514"
+
+
+def test_settings_accepts_custom_config_file(tmp_path: Path):
+    (tmp_path / "custom.yaml").write_text("max_cycles: 5\n")
+    s = Settings(_env_file=None, workspace=tmp_path, config_file=Path("custom.yaml"))
+    assert s.max_cycles == 5
+    assert s.config_file == Path("custom.yaml")
+
+
+def test_settings_max_cost_usd_from_yaml(tmp_path: Path):
+    (tmp_path / "furrow.yaml").write_text("max_cost_usd: 2.0\n")
+    s = Settings(_env_file=None, workspace=tmp_path)
+    assert s.max_cost_usd == 2.0
