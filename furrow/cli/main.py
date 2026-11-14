@@ -204,7 +204,16 @@ def start(
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
-        goal = click.prompt("Enter your goal for Furrow")
+        while True:
+            goal = click.prompt("Enter your goal for Furrow").strip()
+            if goal:
+                break
+            click.echo("Goal must not be empty. Please try again.")
+    else:
+        goal = goal.strip()
+        if not goal and not resume:
+            click.echo("Goal must not be empty.")
+            sys.exit(1)
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 

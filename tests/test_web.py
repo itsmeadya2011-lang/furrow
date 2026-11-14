@@ -604,3 +604,47 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_index_script_dedups_repeated_summaries(client: TestClient) -> None:
+    """The run summary is appended to the log only when it changes.
+
+    Regression test for the bug where two consecutive runs ending with the
+    same summary produced two summary lines. The script must compare the new
+    summary against the previous one and skip the append when they match.
+    """
+    script = _inline_script(client)
+    assert "lastSummary" in script, "the script tracks the previous summary"
+    assert re.search(r"summary\s*!==\s*lastSummary", script), (
+        "the script does not compare the new summary against the previous one"
+    )
+
+
+def test_index_script_appends_summary_when_it_changes(client: TestClient) -> None:
+    """When the summary differs from the previous one it is appended to the log."""
+    script = _inline_script(client)
+    assert re.search(r"append\(['\"]-- ['\"]\s*\+\s*summary", script), (
+        "the script does not append the summary to the log"
+    )
+
+
+async def test_websocket_run_failure_sends_an_error_frame(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run that raises is reported through the websocket as an error frame."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", FailingOrchestrator)
+
+    messages: list[dict[str, Any]] = []
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "x"})
+        for _ in range(20):
+            try:
+                messages.append(ws.receive_json())
+            except WebSocketDisconnect:
+                break
+            if messages and messages[-1].get("type") in ("error", "done"):
+                break
+
+    assert messages, "the server must answer instead of hanging"
+    assert messages[-1]["type"] == "error"
+    assert "boom" in messages[-1]["message"].lower()

@@ -887,4 +887,25 @@ async def test_run_command_stderr_newline_format(tmp_path):
     progress["done"] = True
     await t
     assert seen["tid"] != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_run_command_output_truncation_keeps_tail(tmp_path):
+    """Output longer than 20000 chars keeps the tail with a truncation marker."""
+    from furrow.config import TaskModel
+
+    head = "HEAD_MARKER_111"
+    padding = "X" * 25000
+    tail = "TAIL_MARKER_777"
+    command = f"printf '%s' '{head}{padding}{tail}'"
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="cmd"),
+        client=FakeLLMClient([]),
+        settings=make_settings(tmp_path),
+        workspace=tmp_path,
+    )
+    out = await agent._run_command(command)
+    assert "[... output truncated ...]" in out
+    assert "TAIL_MARKER_777" in out
+    assert "HEAD_MARKER_111" not in out
     assert progress["n"] > 0

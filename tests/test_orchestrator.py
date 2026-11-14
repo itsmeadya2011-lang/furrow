@@ -852,6 +852,133 @@ async def test_planner_runtimeerror_produces_error_event_and_stopped_reason(tmp_
 
 
 @pytest.mark.asyncio
+async def test_planner_error_does_not_persist_state(tmp_path, monkeypatch):
+    """A cycle that ends early (a planner error) is NOT persisted.
+
+    The saved cycle count can lag the reported one by one, and no STATE_SAVED
+    event is emitted for the cycle that never completed.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(raise_valueerror=True)
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    assert not store.exists(), "state must not be saved for a cycle that errored"
+    events = drain(q)
+    assert not any(e.type == EventType.STATE_SAVED for e in events)
+
+
+@pytest.mark.asyncio
+async def test_empty_plan_does_not_persist_state(tmp_path, monkeypatch):
+    """A plan with no tasks ends the cycle without saving state."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[])
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    assert result.stopped_reason == "goal complete"
+    assert not store.exists()
+    events = drain(q)
+    assert not any(e.type == EventType.STATE_SAVED for e in events)
+
+
+@pytest.mark.asyncio
+async def test_execute_failure_is_reported_and_does_not_persist(tmp_path, monkeypatch):
+    """An exception raised inside ``_execute`` ends the run cleanly.
+
+    The orchestrator catches it, emits an ERROR event, sets a stopped reason
+    of the form ``execute failed: ...`` and does not persist the cycle.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+
+    def boom(tasks):
+        raise RuntimeError("execute boom")
+
+    monkeypatch.setattr(orch, "_plan_waves", boom)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    assert result.stopped_reason.startswith("execute failed")
+    assert "execute boom" in result.stopped_reason
+    assert not store.exists()
+    events = drain(q)
+    assert any(e.type == EventType.ERROR and "execute boom" in e.message for e in events)
+
+
+@pytest.mark.asyncio
+async def test_completed_task_is_executed_again_when_the_files_changed(tmp_path, monkeypatch):
+    """A completed task is re-run when the new plan changes its files.
+
+    Only the description+files pair is compared: changing the files (even
+    while keeping the same description) resets the task to pending.
+    """
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1", files=["a.py"])])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()  # cycle 1: task t1 completed
+
+    # Same description, different files -> the task counts as new work.
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1", files=["b.py"])])
+    await orch.run()  # cycle 2
+    assert len(calls) == 2
+    assert orch.tasks[0].attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_task_skipped_when_files_unchanged(tmp_path, monkeypatch):
+    """A completed task is skipped when both description and files are unchanged."""
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(
+        [TaskModel(id="t1", description="do t1", files=["a.py", "b.py"])]
+    )
+    orch.tester = FakeTester(passed=False)
+    q = orch.event_bus.subscribe()
+    await orch.run()  # cycle 1
+    assert len(calls) == 1
+
+    # Identical description AND identical files -> skipped, no second call.
+    orch.planner = FakePlanner(
+        [TaskModel(id="t1", description="do t1", files=["a.py", "b.py"])]
+    )
+    await orch.run()  # cycle 2
+    assert len(calls) == 1
+    events = drain(q)
+    assert any(
+        e.type == EventType.LOG and "already completed" in e.message for e in events
+    )
+
+
+@pytest.mark.asyncio
 async def test_state_store_save_oserror_does_not_crash_run(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -868,3 +869,36 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+async def test_read_file_helper(tmp_path: Path) -> None:
+    """``LLMClient.read_file`` reads a UTF-8 file from disk."""
+    p = tmp_path / "a.txt"
+    p.write_text("hello\nworld", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
+    assert await client.read_file(p) == "hello\nworld"
+
+
+async def test_write_file_helper_creates_parents(tmp_path: Path) -> None:
+    """``LLMClient.write_file`` creates parent directories and writes the content."""
+    p = tmp_path / "nested" / "dir" / "b.txt"
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
+    await client.write_file(p, "payload")
+    assert p.read_text(encoding="utf-8") == "payload"
+
+
+async def test_list_files_helper_lists_files(tmp_path: Path) -> None:
+    """``LLMClient.list_files`` returns relative paths for every file under a dir."""
+    (tmp_path / "x.py").write_text("x", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "y.py").write_text("y", encoding="utf-8")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
+    entries = client.list_files(tmp_path)
+    assert "x.py" in entries
+    assert any("y.py" in e for e in entries)
+
+
+def test_list_files_helper_missing_directory_returns_empty(tmp_path: Path) -> None:
+    """``LLMClient.list_files`` returns ``[]`` when the directory does not exist."""
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
+    assert client.list_files(tmp_path / "nope") == []

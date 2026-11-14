@@ -126,6 +126,29 @@ def test_start_prompts_and_uses_the_typed_goal(
     assert fake_orchestrator.init_kwargs["goal"] == "build a thing"
 
 
+def test_start_reprompts_when_prompted_goal_is_empty(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """An empty answer at the prompt is not accepted: Furrow re-prompts."""
+    result = runner.invoke(main, ["start"], input="\n   \nbuild a thing\n")
+
+    assert result.exit_code == 0
+    assert "Enter your goal for Furrow" in result.output
+    assert "must not be empty" in result.output
+    assert fake_orchestrator.init_kwargs["goal"] == "build a thing"
+
+
+def test_start_rejects_whitespace_only_goal_on_command_line(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A whitespace-only goal passed on the command line is rejected."""
+    result = runner.invoke(main, ["start", "   "])
+
+    assert result.exit_code == 1
+    assert "Goal must not be empty" in result.output
+    assert fake_orchestrator.init_kwargs == {}
+
+
 def test_status_without_state(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
 
@@ -531,6 +554,81 @@ def test_summary_handles_a_result_without_the_new_fields(
 
     assert re.search(r"Tasks blocked:\s+0\b", output)
     assert "PASSED" in output
+
+
+def test_start_uses_model_override(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The ``--model`` flag overrides the LLM model for the run.
+
+    The global settings object must not be mutated: a fresh validated
+    ``Settings`` is built for this run only.
+    """
+    from furrow.config import settings as global_settings
+
+    model_before = global_settings.model
+
+    result = runner.invoke(main, ["start", "build a thing", "--model", "gpt-4o"])
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.model == "gpt-4o"
+    assert global_settings.model == model_before
+
+
+def test_status_with_failed_task(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command renders a failed task with its error message."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        tasks=[
+            TaskModel(
+                id="t1",
+                description="do the thing",
+                status="failed",
+                error="boom",
+                attempts=2,
+            )
+        ],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "ship it" in result.output
+    assert "t1" in result.output
+    assert "failed" in result.output
+    assert "do the thing" in result.output
+
+
+def test_status_with_blocked_task(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command renders a blocked task."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        tasks=[
+            TaskModel(
+                id="t2",
+                description="blocked task",
+                status="blocked",
+            )
+        ],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "t2" in result.output
+    assert "blocked" in result.output
+    assert "blocked task" in result.output
 
 
 def test_status_shows_per_task_files_changed(

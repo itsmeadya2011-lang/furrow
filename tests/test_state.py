@@ -189,3 +189,69 @@ def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Pa
     assert loaded is not None
     assert loaded.tests_run == 0
 
+
+def test_history_entry_usage_round_trips(tmp_path: Path) -> None:
+    """Per-cycle token usage survives a save/load round trip."""
+    from furrow.config import Usage
+
+    store = StateStore(tmp_path / "s.json")
+    entry = HistoryEntry(
+        cycle=2,
+        goal="ship it",
+        plan_rationale="three steps",
+        task_summaries=["t1"],
+        tests_passed=True,
+        test_summary="12 passed",
+        usage=Usage(input_tokens=1000, output_tokens=200, calls=3, cost_usd=0.0042),
+    )
+    state = RunState(goal="ship it", original_goal="ship it", cycles=2, history=[entry])
+    store.save(state)
+
+    loaded = store.load()
+    assert loaded is not None
+    assert len(loaded.history) == 1
+    assert loaded.history[0].usage.input_tokens == 1000
+    assert loaded.history[0].usage.output_tokens == 200
+    assert loaded.history[0].usage.calls == 3
+    assert loaded.history[0].usage.cost_usd == 0.0042
+
+
+def test_run_state_last_passed_last_skipped_last_summary_round_trip(tmp_path: Path) -> None:
+    """The most recent test outcome is persisted and restored verbatim."""
+    store = StateStore(tmp_path / "s.json")
+    state = RunState(
+        goal="g",
+        original_goal="g",
+        cycles=3,
+        last_passed=False,
+        last_skipped=False,
+        last_summary="2 failed, 1 passed",
+    )
+    store.save(state)
+
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.last_passed is False
+    assert loaded.last_skipped is False
+    assert loaded.last_summary == "2 failed, 1 passed"
+
+
+def test_run_state_last_skipped_round_trips(tmp_path: Path) -> None:
+    """A skipped test outcome is persisted as ``last_skipped=True``."""
+    store = StateStore(tmp_path / "s.json")
+    state = RunState(
+        goal="g",
+        original_goal="g",
+        cycles=1,
+        last_passed=True,
+        last_skipped=True,
+        last_summary="No test runner detected",
+    )
+    store.save(state)
+
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.last_passed is True
+    assert loaded.last_skipped is True
+    assert loaded.last_summary == "No test runner detected"
+

@@ -65,14 +65,88 @@ def test_parse_plan_builds_plan_tolerates_missing_rationale():
     assert plan.rationale == ""
 
 
+def test_parse_plan_raises_on_tasks_not_a_list():
+    with pytest.raises(ValueError):
+        parsing.parse_plan('{"tasks": "not-a-list"}')
+
+
 def test_parse_plan_raises_on_garbage():
     with pytest.raises(ValueError):
         parsing.parse_plan("garbage")
 
 
-def test_parse_plan_raises_on_tasks_not_a_list():
-    with pytest.raises(ValueError):
-        parsing.parse_plan('{"tasks": "not-a-list"}')
+def test_strip_code_fences_returns_inner_block_for_single_fence():
+    """A single fenced block yields its inner content, info string dropped."""
+    text = "```json\n{\"tasks\": [], \"rationale\": \"x\"}\n```"
+    assert parsing.strip_code_fences(text) == '{"tasks": [], "rationale": "x"}'
+
+
+def test_strip_code_fences_plain_fence():
+    """A plain `````` fence (no info string) is also unwrapped."""
+    text = "```\n{\"tasks\": []}\n```"
+    assert parsing.strip_code_fences(text) == '{"tasks": []}'
+
+
+def test_strip_code_fences_multiple_blocks_keeps_remainder():
+    """Multiple fenced blocks are unwrapped and the surrounding text kept."""
+    text = "intro\n```json\n{\"a\": 1}\n```\noutro\n```\n{\"b\": 2}\n```"
+    result = parsing.strip_code_fences(text)
+    assert "intro" in result
+    assert "outro" in result
+    assert '{"a": 1}' in result
+    assert '{"b": 2}' in result
+    assert "```" not in result
+
+
+def test_strip_code_fences_no_fences_returns_text_unchanged():
+    text = '{"tasks": []}'
+    assert parsing.strip_code_fences(text) == text
+
+
+def test_strip_code_fences_non_string_input_is_stringified():
+    assert parsing.strip_code_fences(None) == "None"  # type: ignore[arg-type]
+
+
+def test_parse_plan_missing_tasks_defaults_to_empty_list():
+    """A plan with no ``tasks`` key yields an empty task list."""
+    plan = parsing.parse_plan('{"rationale": "nothing to do"}')
+    assert plan.tasks == []
+
+
+def test_parse_plan_error_message_includes_reason_and_excerpt():
+    """A parse failure carries the underlying reason and a short excerpt."""
+    text = "garbage"
+    with pytest.raises(ValueError) as exc_info:
+        parsing.parse_plan(text)
+    message = str(exc_info.value)
+    assert "Excerpt" in message
+    assert text[:300] in message
+
+
+def test_parse_plan_missing_rationale_defaults_to_empty_string():
+    """A plan without ``rationale`` yields an empty rationale."""
+    plan = parsing.parse_plan('{"tasks": [{"id": "t1", "description": "d"}]}')
+    assert plan.rationale == ""
+
+
+def test_parse_plan_none_rationale_defaults_to_empty_string():
+    """An explicit ``null`` rationale is treated as an empty string."""
+    plan = parsing.parse_plan('{"tasks": [], "rationale": null}')
+    assert plan.rationale == ""
+
+
+def test_parse_plan_none_tasks_defaults_to_empty_list():
+    """An explicit ``null`` tasks value is treated as an empty list."""
+    plan = parsing.parse_plan('{"tasks": null, "rationale": "r"}')
+    assert plan.tasks == []
+
+
+def test_parse_plan_normalises_unknown_task_status_to_pending():
+    """An unrecognised status from untrusted planner output becomes ``pending``."""
+    plan = parsing.parse_plan(
+        '{"tasks": [{"id": "t1", "description": "d", "status": "wut"}], "rationale": "r"}'
+    )
+    assert plan.tasks[0].status == "pending"
 
 
 def test_parse_test_result_json():
