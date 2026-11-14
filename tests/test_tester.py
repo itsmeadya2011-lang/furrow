@@ -387,8 +387,8 @@ def test_green_summary_line_is_not_reported_as_a_failure(tmp_path, monkeypatch):
     assert res.failures == []
 
 
-def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
-    """Output longer than 20000 chars keeps the tail (with summary) and adds marker."""
+def test_truncation_keeps_head_and_tail_with_marker(tmp_path, monkeypatch):
+    """Output longer than 20000 chars keeps head and tail with a marker."""
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
     head_start = "START_OF_ORIGINAL_OUTPUT_ABCDEFG"
@@ -413,16 +413,14 @@ def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
 
     res = run(agent.run("goal", []))
     assert res.passed is False
-    assert "[... output truncated ...]" in res.summary
     assert "2 failed" in " ".join(res.failures)
-    # Beginning of original output is no longer what is kept
-    assert head_start not in res.summary
-    assert head_start not in " ".join(res.failures)
+    # Both the head and the tail are preserved around the truncation marker.
+    assert head_start in res.summary
     assert client.prompts
     prompt = client.prompts[0]
     assert "[... output truncated ...]" in prompt
     assert "2 failed" in prompt
-    assert head_start not in prompt
+    assert head_start in prompt
 
 
  
@@ -446,7 +444,7 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert res.failures
     assert any("RuntimeError" in f for f in res.failures)
 
-    """Old head-only behaviour is gone - beginning of output is not kept."""
+    """Truncation keeps both head and tail around the marker."""
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
     head_start = "UNIQUE_HEAD_MARKER_111"
@@ -471,13 +469,12 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
 
     res = run(agent.run("goal", []))
     assert res.passed is False
-    assert "[... output truncated ...]" in res.summary
     assert "2 failed" in " ".join(res.failures)
-    assert head_start not in res.summary
-    assert head_start not in " ".join(res.failures)
+    # The head survives truncation too, not just the tail.
+    assert head_start in res.summary
     assert client.prompts
     prompt = client.prompts[0]
     assert "[... output truncated ...]" in prompt
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
-    assert head_start not in prompt
+    assert head_start in prompt

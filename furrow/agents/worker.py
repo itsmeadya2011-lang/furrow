@@ -268,11 +268,12 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
         return None
     p = Path(path)
     if p.is_absolute():
+        resolved = p.resolve()
         try:
-            p.relative_to(workspace)
+            resolved.relative_to(workspace)
         except ValueError:
             return None
-        return p
+        return resolved
     # reject traversal
     candidate = (workspace / p).resolve()
     try:
@@ -496,7 +497,9 @@ class WorkerAgent:
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
+            head_len = cap // 2
+            tail_len = cap - head_len
+            combined = combined[:head_len] + "\n[... output truncated ...]\n" + combined[-tail_len:]
         return combined
 
     @staticmethod

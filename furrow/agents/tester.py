@@ -12,6 +12,7 @@ from typing import Any
 
 from furrow.agents.parsing import parse_test_result
 from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
+from furrow.agents.worker import is_command_denied
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
@@ -335,6 +336,17 @@ class TesterAgent:
                     failures=[],
                 )
 
+            command_str = " ".join(cmd)
+            if is_command_denied(command_str, self.workspace):
+                return TestResult(
+                    passed=False,
+                    summary=(
+                        "The detected test command was refused by the command policy: "
+                        f"{command_str}"
+                    ),
+                    failures=[f"test command refused by policy: {command_str}"],
+                )
+
             # The test-suite timeout is a separate concern from the LLM request
             # timeout: `request_timeout` bounds a single API call, while a test
             # suite may legitimately run for minutes.
@@ -384,8 +396,15 @@ class TesterAgent:
                 + "\n"
                 + stderr.decode("utf-8", errors="replace")
             )
-            if len(combined) > 20000:
-                combined = "[... output truncated ...]\n" + combined[-20000:]
+            cap = 20000
+            if len(combined) > cap:
+                head_len = cap // 2
+                tail_len = cap - head_len
+                combined = (
+                    combined[:head_len]
+                    + "\n[... output truncated ...]\n"
+                    + combined[-tail_len:]
+                )
 
             llm_result: TestResult | None = None
             if not spawn_failed:

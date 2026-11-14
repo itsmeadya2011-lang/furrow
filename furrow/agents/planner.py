@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from furrow.agents.parsing import parse_plan
 from furrow.agents.prompts import PLANNER_PROMPT, PLANNER_SYSTEM
 from furrow.config import Plan, Settings
@@ -18,7 +20,10 @@ class PlannerAgent:
             prompt += "\n\nContext:\n" + context
 
         model = self.settings.planner_model
-        response = await self.client.complete(prompt, system=PLANNER_SYSTEM, model=model)
+        timeout = float(getattr(self.settings, "request_timeout", 120.0) or 120.0)
+        response = await asyncio.wait_for(
+            self.client.complete(prompt, system=PLANNER_SYSTEM, model=model), timeout=timeout
+        )
         try:
             return parse_plan(response)
         except ValueError as first:
@@ -27,7 +32,9 @@ class PlannerAgent:
                 + "\n\nYour previous reply could not be parsed. Reply with ONLY a JSON object "
                 + "matching the required shape, no prose, no markdown fences."
             )
-            response2 = await self.client.complete(stricter, system=PLANNER_SYSTEM, model=model)
+            response2 = await asyncio.wait_for(
+                self.client.complete(stricter, system=PLANNER_SYSTEM, model=model), timeout=timeout
+            )
             try:
                 return parse_plan(response2)
             except ValueError as second:
