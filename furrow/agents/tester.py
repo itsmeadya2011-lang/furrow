@@ -389,6 +389,15 @@ class TesterAgent:
 
             llm_result: TestResult | None = None
             if not spawn_failed:
+                # Pytest exits with 5 when no tests were collected. Treat that as
+                # a skipped run rather than a failure: there is nothing to fix.
+                if cmd and "pytest" in " ".join(cmd) and returncode == 5:
+                    return TestResult(
+                        passed=True,
+                        skipped=True,
+                        summary="No tests were collected by pytest (tests skipped).",
+                        failures=[],
+                    )
                 # A runner that never started has no output worth summarising.
                 prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
                 try:

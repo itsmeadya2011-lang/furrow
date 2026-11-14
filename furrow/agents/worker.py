@@ -175,8 +175,10 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
     """Resolve a redirection target and report whether it stays in the workspace.
 
     An absolute target is resolved as it is, a relative one against the
-    workspace.
+    workspace. Standard output sinks like /dev/null are always allowed.
     """
+    if target in {"/dev/null", "/dev/stdout", "/dev/stderr"}:
+        return True
     base = workspace.resolve()
     path = Path(_expand_home(target))
     resolved = path if path.is_absolute() else base / path

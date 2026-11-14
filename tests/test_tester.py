@@ -87,19 +87,24 @@ def test_run_no_runner_is_reported_as_skipped(tmp_path):
     assert res.failures == []
 
 
-def test_run_llm_result(tmp_path):
+def test_run_llm_result(tmp_path, monkeypatch):
     client = FakeLLMClient(response='{"passed": false, "summary": "boom", "failures": ["x"]}')
     agent = TesterAgent(
         client=client,
         settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
         workspace=tmp_path,
     )
-    # create pyproject so detect_command returns pytest; empty workspace -> None.
+    # create pyproject so detect_command returns pytest; an empty workspace collects no tests.
     (tmp_path / "pyproject.toml").write_text("[project]\n")
-    # pytest with no tests collects 0 -> exit 0.
+    # Pytest exits with 5 when no tests were collected; treat that as skipped.
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=5, stdout=b"collected 0 items\n", stderr=b"")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     res = run(agent.run("goal", []))
-    assert res.passed is False
-    assert res.failures == ["x"]
+    assert res.passed is True
+    assert res.skipped is True
+    assert res.failures == []
 
 
 def test_run_llm_raises_fallback(tmp_path):

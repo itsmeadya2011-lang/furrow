@@ -55,7 +55,7 @@ def test_round_trip_tasks_and_history(tmp_path: Path) -> None:
         cycle=1,
         goal="ship it",
         plan_rationale="three steps",
-        task_summaries=["t1 completed", "t2 pending"],
+        task_summaries=["t1: completed", "t2: pending"],
         tests_passed=True,
         test_summary="12 passed",
     )
@@ -83,7 +83,7 @@ def test_round_trip_tasks_and_history(tmp_path: Path) -> None:
     assert loaded.history[0] == entry
     assert loaded.history[0].cycle == 1
     assert loaded.history[0].tests_passed is True
-    assert loaded.history[0].task_summaries == ["t1 completed", "t2 pending"]
+    assert loaded.history[0].task_summaries == ["t1: completed", "t2: pending"]
 
 
 def test_save_leaves_no_stray_files(tmp_path: Path) -> None:

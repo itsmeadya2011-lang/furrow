@@ -712,6 +712,30 @@ async def test_completed_task_is_not_executed_again_when_the_plan_is_unchanged(t
 
 
 @pytest.mark.asyncio
+async def test_completed_task_is_executed_again_when_the_dependencies_changed(tmp_path, monkeypatch):
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1")])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()  # cycle 1
+
+    # Now change dependencies for next cycle
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1", dependencies=["t0"])])
+    await orch.run()  # cycle 2
+    assert len(calls) == 2
+    assert orch.tasks[0].attempts == 2
+
+
+@pytest.mark.asyncio
 async def test_completed_task_is_executed_again_when_the_description_changed(tmp_path, monkeypatch):
     calls = []
 

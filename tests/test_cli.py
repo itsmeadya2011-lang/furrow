@@ -259,6 +259,19 @@ def test_start_uses_max_cycles_and_workspace(
     assert global_settings.workspace == workspace_before
 
 
+def test_start_model_override_applies_to_all_agents(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(main, ["start", "build a thing", "--model", "gpt-4o"])
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.model == "gpt-4o"
+    assert run_settings.planner_model == "gpt-4o"
+    assert run_settings.worker_model == "gpt-4o"
+    assert run_settings.tester_model == "gpt-4o"
+
+
 def test_start_stops_gracefully_on_keyboard_interrupt(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

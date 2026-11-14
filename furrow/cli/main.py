@@ -42,6 +42,11 @@ def _run_settings(
     updates: dict[str, Any] = {}
     if model is not None:
         updates["model"] = model
+        # The CLI exposes a single --model flag; apply it to all agents so the
+        # override actually affects planning, implementation and testing.
+        updates["planner_model"] = model
+        updates["worker_model"] = model
+        updates["tester_model"] = model
     if max_cycles is not None:
         updates["max_cycles"] = max_cycles
     if workspace is not None:

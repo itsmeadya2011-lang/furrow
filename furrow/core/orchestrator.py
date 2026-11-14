@@ -66,6 +66,9 @@ class Orchestrator:
                 # zero, so the baseline for the per-cycle delta is the client's
                 # CURRENT usage, not the persisted total.
                 self._usage_seen = self._client_usage()
+                self._active_ids = {
+                    t.id for t in self.tasks if t.status in {"pending", "running"}
+                }
                 # Restore no-progress guard state from persisted run state
                 try:
                     self._no_progress = int(getattr(st, "no_progress", 0) or 0)
@@ -79,6 +82,8 @@ class Orchestrator:
                     self._tests_run = int(getattr(st, "tests_run", 0) or 0)
                 except Exception:
                     self._tests_run = 0
+                self._last_test_passed = getattr(st, "last_passed", None)
+                self._tests_skipped = bool(getattr(st, "last_skipped", False))
             else:
                 self._resume_state_missing = True
 
@@ -247,13 +252,16 @@ class Orchestrator:
             self._usage_seen = cumulative
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
-                task_summaries=[t.id for t in self.tasks],
+                task_summaries=[f"{t.id}: {t.status}" for t in self.tasks],
                 tests_passed=test_result.passed, test_summary=test_result.summary,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+            sig = "|".join(
+                f"{t.id}:{t.description}:{','.join(t.files)}:{','.join(t.dependencies)}"
+                for t in plan.tasks
+            )
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
@@ -340,11 +348,12 @@ class Orchestrator:
             if old is not None:
                 old_desc = old.description
                 old_files = list(old.files)
+                old_deps = list(old.dependencies)
                 # Preserve terminal states; only retry-eligible failed tasks may
                 # be reset to pending. Blocked tasks must remain blocked so that
                 # retry budgets and dependency outcomes are not lost across cycles.
                 if old.status == "completed":
-                    if old_desc == pt.description and old_files == pt.files:
+                    if old_desc == pt.description and old_files == pt.files and old_deps == pt.dependencies:
                         pt.status = "completed"
                         self._skip_ids.add(pt.id)
                     else:
@@ -386,9 +395,10 @@ class Orchestrator:
                     t.status = "blocked"
                 break
             waves.append(wave)
+            wave_ids = {t.id for t in wave}
             for t in wave:
                 done.add(t.id)
-            remaining = [t for t in remaining if t not in wave]
+            remaining = [t for t in remaining if t.id not in wave_ids]
         return waves
 
     async def _execute(self, plan: Plan) -> None:
