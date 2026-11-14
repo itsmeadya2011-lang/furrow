@@ -466,24 +466,27 @@ def _describe_validation_error(exc: ValidationError) -> str:
 
 
 def _on_run_done(task: asyncio.Task[RunResult]) -> None:
-    """Finalise the registry when a run ends."""
-    _TASKS.discard(task)
-    if _CURRENT.get("task") is not task:
-        # Another run owns the registry: never clobber its data, but keep the
-        # "running" flag in sync with the run that is actually in flight.
-        current = _CURRENT.get("task")
-        _CURRENT["running"] = bool(current is not None and not current.done())
-        return
-    _CURRENT["running"] = False
-    if task.cancelled():
-        _CURRENT["error"] = "run cancelled"
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Furrow run failed: %s", exc)
-        _CURRENT["error"] = str(exc)
-        return
-    _CURRENT["result"] = task.result()
+        """Finalise the registry when a run ends."""
+        _TASKS.discard(task)
+        if _CURRENT.get("task") is not task:
+            # Another run owns the registry: never clobber its data, but keep the
+            # "running" flag in sync with the run that is actually in flight.
+            current = _CURRENT.get("task")
+            _CURRENT["running"] = bool(current is not None and not current.done())
+            return
+        _CURRENT["running"] = False
+        if task.cancelled():
+            _CURRENT["error"] = "run cancelled"
+            _CURRENT["result"] = None
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("Furrow run failed: %s", exc)
+            _CURRENT["error"] = str(exc)
+            _CURRENT["result"] = None
+            return
+        _CURRENT["result"] = task.result()
+        _CURRENT["error"] = None
 
 
 def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
@@ -493,11 +496,12 @@ def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
 
 
 def _cancel_run(task: asyncio.Task[RunResult]) -> None:
-    """Cancel a run and make sure the server does not stay stuck in "running"."""
-    task.cancel()
-    if _CURRENT.get("task") is task:
-        _CURRENT["running"] = False
-        _CURRENT["error"] = "run cancelled"
+        """Cancel a run and make sure the server does not stay stuck in "running"."""
+        task.cancel()
+        if _CURRENT.get("task") is task:
+            _CURRENT["running"] = False
+            _CURRENT["error"] = "run cancelled"
+            _CURRENT["result"] = None
 
 
 async def _drain(queue: asyncio.Queue[Event]) -> None:

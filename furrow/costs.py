@@ -55,7 +55,11 @@ class ModelPricing(BaseModel):
 DEFAULT_PRICING: dict[str, ModelPricing] = {
     "claude-opus-4": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-opus-4-1": ModelPricing(input_per_million=15.0, output_per_million=75.0),
+    "claude-opus-4-5": ModelPricing(input_per_million=15.0, output_per_million=75.0),
+    "claude-opus-4-6": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-sonnet-4": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-sonnet-4-5": ModelPricing(input_per_million=3.0, output_per_million=15.0),
+    "claude-sonnet-4-6": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-haiku-4-5": ModelPricing(input_per_million=1.0, output_per_million=5.0),
     "claude-3-7-sonnet": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-3-5-opus": ModelPricing(input_per_million=15.0, output_per_million=75.0),
@@ -72,11 +76,21 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "gpt-4": ModelPricing(input_per_million=30.0, output_per_million=60.0),
     "gpt-4-turbo": ModelPricing(input_per_million=10.0, output_per_million=30.0),
     "gpt-3.5-turbo": ModelPricing(input_per_million=0.5, output_per_million=1.5),
+    "gpt-5": ModelPricing(input_per_million=5.0, output_per_million=15.0),
+    "gpt-5-mini": ModelPricing(input_per_million=1.0, output_per_million=4.0),
+    "gpt-5-nano": ModelPricing(input_per_million=0.25, output_per_million=1.0),
     "o1": ModelPricing(input_per_million=15.0, output_per_million=60.0),
     "o1-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    "o1-pro": ModelPricing(input_per_million=50.0, output_per_million=200.0),
     "o3": ModelPricing(input_per_million=2.0, output_per_million=8.0),
+    "o3-pro": ModelPricing(input_per_million=10.0, output_per_million=40.0),
     "o3-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o4-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    "gemini-2.5-pro": ModelPricing(input_per_million=2.5, output_per_million=10.0),
+    "gemini-2.5-flash": ModelPricing(input_per_million=0.15, output_per_million=0.6),
+    "gemini-2.0-flash": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+    "deepseek-chat": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "deepseek-reasoner": ModelPricing(input_per_million=0.55, output_per_million=2.19),
 }
 
 #: Provider prefixes that are stripped from a model id before it is looked up.

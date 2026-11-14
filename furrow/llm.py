@@ -199,16 +199,93 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
 
 
 def parse_tool_arguments(raw: Any) -> dict:
-    """Parse tool call arguments from a dict or JSON string ({} on failure)."""
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str):
+        """Parse tool call arguments from a dict or JSON string ({} on failure)."""
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+
+#: Directories that are skipped during file listing because they contain
+#: VCS internals, dependency trees, or build artifacts that flood the context
+#: with noise rather than useful signal.
+_IGNORED_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".bzr",
+        "node_modules",
+        ".venv",
+        "venv",
+        "__pycache__",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".next",
+        "dist",
+        "build",
+        "target",
+        ".idea",
+        ".vscode",
+    }
+)
+
+#: Maximum number of files returned by :meth:`LLMClient.list_files` by default.
+DEFAULT_MAX_LIST_ENTRIES = 500
+
+
+def _walk_files(
+    directory: Path, max_entries: int, ignored_dirs: frozenset[str]
+) -> list[str]:
+    """Walk *directory* and return up to *max_entries* relative file paths.
+
+    Common VCS/junk directories are pruned before descending, so a full
+    ``.git`` or ``node_modules`` tree is never walked.  The traversal stops
+    once *max_entries* files have been collected, so the result is bounded
+    both in time and in memory.
+    """
+    base = directory.resolve()
+    results: list[str] = []
+    stack: list[Path] = [base]
+    while stack and len(results) < max_entries:
+        current = stack.pop()
         try:
-            parsed = json.loads(raw)
-        except (TypeError, ValueError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
+            entries = sorted(current.iterdir(), key=lambda p: p.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if len(results) >= max_entries:
+                break
+            name = entry.name
+            try:
+                if entry.is_dir():
+                    if name in ignored_dirs:
+                        continue
+                    stack.append(entry)
+                elif entry.is_file():
+                    results.append(str(entry.relative_to(base)))
+            except OSError:
+                continue
+    return results
+
+
+def _list_files(directory: str | Path, max_entries: int = DEFAULT_MAX_LIST_ENTRIES) -> list[str]:
+    """Return up to *max_entries* file paths under *directory*, pruned.
+
+    The traversal is bounded: it stops once the cap is reached, and common
+    VCS/junk directories (``.git``, ``node_modules``, ``__pycache__``, ...)
+    are pruned before descending so they never contribute entries.
+    """
+    p = Path(directory)
+    if not p.exists():
+        return []
+    return _walk_files(p, max_entries, _IGNORED_DIRS)
 
 
 class LLMClient:
@@ -441,7 +518,20 @@ class LLMClient:
     ) -> LLMResponse:
         request_messages = to_openai_messages(messages)
         if system:
-            request_messages.insert(0, {"role": "system", "content": system})
+            # Merge the *system* argument into an existing system message when
+            # one is already present, so the request never carries two system
+            # messages (which can confuse some models about which wins).
+            existing = next(
+                (m for m in request_messages if m.get("role") == "system"), None
+            )
+            if existing is not None:
+                existing_content = existing.get("content", "")
+                if isinstance(existing_content, str) and existing_content:
+                    existing["content"] = system + "\n\n" + existing_content
+                else:
+                    existing["content"] = system
+            else:
+                request_messages.insert(0, {"role": "system", "content": system})
         request_tools = to_openai_tools(tools or [])
         kwargs: dict[str, Any] = {
             "model": model,
@@ -493,7 +583,4 @@ class LLMClient:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
-        p = Path(directory)
-        if not p.exists():
-            return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        return _list_files(directory)
