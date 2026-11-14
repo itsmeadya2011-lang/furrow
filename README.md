@@ -55,7 +55,7 @@ furrow status
 furrow status --workspace /path/to/project
 ```
 
-The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
+The status command shows the original goal, current goal, cycle count, last update time, token usage (if any) with a calls/total-tokens and input/output breakdown and cost when recorded, the persisted run summary when one was recorded, and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage (calls, total tokens, input/output breakdown) and estimated cost when non-zero, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
 
 ### `furrow resume`
 Continue the persisted run.
@@ -102,6 +102,8 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_TASK_RETRIES` | `1` | Times a failed task is retried before it is marked failed |
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
 | `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Command execution timeout in seconds (must be > 0) |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Test-suite timeout in seconds (must be > 0) |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |

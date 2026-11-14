@@ -12,7 +12,7 @@ from typing import Any
 
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
-    """Configure standard library logging as a fallback."""
+    """Configure standard library logging as a fallback, in one call."""
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         level=getattr(logging, level.upper(), logging.INFO),
@@ -31,16 +31,18 @@ except ImportError:
 def configure_logging(level: str = "INFO") -> None:
     """Configure structlog to wrap stdlib logging."""
     log_level = getattr(logging, level.upper(), logging.INFO)
+
+    if not _STRUCTLOG_AVAILABLE:
+        # Fall back to stdlib logging if structlog is not available; configure it
+        # once with the timestamped format rather than calling basicConfig twice.
+        _configure_stdlib_fallback(level)
+        return
+
     logging.basicConfig(
         format="%(message)s",
         level=log_level,
         stream=sys.stdout,
     )
-
-    if not _STRUCTLOG_AVAILABLE:
-        # Fall back to stdlib logging if structlog is not available
-        _configure_stdlib_fallback(level)
-        return
 
     structlog.configure(
         processors=[

@@ -6,6 +6,7 @@ always replaced by :class:`FakeOrchestrator`.
 
 from __future__ import annotations
 
+import importlib
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,10 @@ from click.testing import CliRunner
 from furrow.cli.main import main
 from furrow.config import RunResult, TaskModel, Usage
 from furrow.core.state import RunState, StateStore
+
+# Import the submodule object explicitly: the package exports ``main`` (the
+# click group), which shadows the ``furrow.cli.main`` attribute.
+cli_main = importlib.import_module("furrow.cli.main")
 
 
 class FakeOrchestrator:
@@ -65,7 +70,7 @@ def fake_orchestrator(monkeypatch: pytest.MonkeyPatch) -> type[FakeOrchestrator]
     FakeOrchestrator.init_kwargs = {}
     FakeOrchestrator.error = None
     FakeOrchestrator.result = None
-    monkeypatch.setattr("furrow.cli.main.Orchestrator", FakeOrchestrator)
+    monkeypatch.setattr(cli_main, "Orchestrator", FakeOrchestrator)
     return FakeOrchestrator
 
 
@@ -289,14 +294,14 @@ def test_main_passes_configured_log_level_to_configure_logging(
     main() used to call configure_logging() with no level, silently dropping
     settings.log_level.
     """
-    monkeypatch.setattr("furrow.cli.main.settings.log_level", "DEBUG")
+    monkeypatch.setattr(cli_main.settings, "log_level", "DEBUG")
 
     captured: list[str] = []
 
     def fake_configure_logging(level: str) -> None:
         captured.append(level)
 
-    monkeypatch.setattr("furrow.cli.main.configure_logging", fake_configure_logging)
+    monkeypatch.setattr(cli_main, "configure_logging", fake_configure_logging)
 
     result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
 
@@ -575,6 +580,29 @@ def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> Non
     assert "LLM usage:" in result.output
     assert "12 calls" in result.output
     assert "4321 tokens" in result.output
+    assert "in 3900" in result.output
+    assert "out 421" in result.output
+
+
+def test_status_prints_persisted_summary(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command shows the summary persisted in the run state."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        last_summary="all tests green",
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "ship it" in result.output
+    assert "Summary:" in result.output
+    assert "all tests green" in result.output
 
 
 def test_status_prints_persisted_cost_when_usage_has_positive_cost_usd(
@@ -665,7 +693,7 @@ def releasing_orchestrator(
     """Replace the orchestrator with a fake that owns a closable client."""
     ClientReleasingOrchestrator.error = None
     ClientReleasingOrchestrator.instances.clear()
-    monkeypatch.setattr("furrow.cli.main.Orchestrator", ClientReleasingOrchestrator)
+    monkeypatch.setattr(cli_main, "Orchestrator", ClientReleasingOrchestrator)
     return ClientReleasingOrchestrator
 
 
