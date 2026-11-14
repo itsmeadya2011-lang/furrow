@@ -205,6 +205,35 @@ async def test_no_progress_guard(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_no_progress_guard_resets_when_files_change(tmp_path, monkeypatch):
+    """Changing only the files of a task (same id and description) must not
+    trip the no-progress guard, because the plan describes different work."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    cycle = {"n": 0}
+
+    class ChangingPlanner:
+        async def plan(self, goal, context=""):
+            cycle["n"] += 1
+            files = ["a.py"] if cycle["n"] == 1 else ["b.py"]
+            return Plan(
+                tasks=[TaskModel(id="t1", description="do it", files=files)],
+                rationale="r",
+            )
+
+    orch.planner = ChangingPlanner()
+    orch.tester = FakeTester(passed=False)
+    result = await orch.run()
+    # Files changed between cycles, so the guard must not trip.
+    # The run reaches max_cycles instead of stopping for "no progress".
+    assert result.cycles == 3
+    assert result.stopped_reason == "max_cycles reached"
+
+
+@pytest.mark.asyncio
 async def test_state_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

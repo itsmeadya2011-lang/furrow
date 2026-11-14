@@ -253,7 +253,9 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+            sig = "|".join(
+                f"{t.id}:{t.description}:{','.join(sorted(t.files))}" for t in plan.tasks
+            )
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.

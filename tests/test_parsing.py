@@ -108,3 +108,28 @@ def test_parse_test_result_heuristic_assertion_error():
 def test_parse_test_result_never_raises_on_empty_string():
     r = parsing.parse_test_result("")
     assert isinstance(r, TestResult)
+
+
+def test_parse_plan_raises_on_duplicate_task_id():
+    text = (
+        '{"tasks": ['
+        '{"id": "t1", "description": "first"}, '
+        '{"id": "t1", "description": "second"}'
+        '], "rationale": "r"}'
+    )
+    with pytest.raises(ValueError) as exc:
+        parsing.parse_plan(text)
+    assert "duplicate task id" in str(exc).lower()
+
+
+def test_parse_plan_tolerates_unique_task_ids():
+    text = (
+        '{"tasks": ['
+        '{"id": "t1", "description": "first"}, '
+        '{"id": "t2", "description": "second"}'
+        '], "rationale": "r"}'
+    )
+    plan = parsing.parse_plan(text)
+    assert len(plan.tasks) == 2
+    assert plan.tasks[0].id == "t1"
+    assert plan.tasks[1].id == "t2"

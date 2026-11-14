@@ -133,6 +133,11 @@ def parse_plan(text: str) -> Plan:
                     raise ValueError("Each task must be an object")
         else:
             raise ValueError("tasks must be a list")
+        seen_ids: set[str] = set()
+        for t in tasks:
+            if t.id in seen_ids:
+                raise ValueError(f"duplicate task id: {t.id}")
+            seen_ids.add(t.id)
         return Plan(tasks=tasks, rationale=rationale)
     except (ValueError, TypeError) as e:
         excerpt = text[:300] if isinstance(text, str) else str(text)[:300]
