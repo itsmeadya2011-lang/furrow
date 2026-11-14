@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import pytest
@@ -888,3 +889,54 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
+@pytest.mark.skipif(os.name != "posix", reason="symlinks require POSIX")
+def test_resolve_in_workspace_rejects_symlink_escape(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("secret")
+    link = ws / "link.txt"
+    link.symlink_to(secret)
+    assert resolve_in_workspace(ws, str(link)) is None
+
+
+@pytest.mark.skipif(os.name != "posix", reason="symlinks require POSIX")
+@pytest.mark.asyncio
+async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = ws / "link"
+    link.symlink_to(outside)
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="write_file",
+                    arguments={"path": str(ws / "link" / "evil.py"), "content": "x"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(ws)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="escape")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=ws)
+    await agent.run()
+    assert not (outside / "evil.py").exists()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "escapes workspace" in b["content"]
+                    found = True
+    assert found

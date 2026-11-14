@@ -977,3 +977,105 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+@pytest.mark.asyncio
+async def test_dependents_of_a_blocked_task_are_blocked(tmp_path, monkeypatch):
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            if self.task.id == "1":
+                return WorkerResult(summary="fail", success=False, files_changed=[], error="boom")
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    t1 = TaskModel(id="1", description="one")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    t3 = TaskModel(id="3", description="three", dependencies=["2"])
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2, t3])
+    orch.tester = FakeTester(passed=False)
+    result = await orch.run()
+    by_id = {t.id: t.status for t in orch.tasks}
+    assert by_id["1"] == "failed"
+    assert by_id["2"] == "blocked"
+    assert by_id["3"] == "blocked"
+    assert "3" not in calls
+    assert result.tasks_blocked == 2
+
+
+@pytest.mark.asyncio
+async def test_failed_task_is_not_executed_again_in_a_later_cycle(tmp_path, monkeypatch):
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary="fail", success=False, files_changed=[], error="boom")
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=2, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[TaskModel(id="t1", description="do t1")])
+    orch.tester = FakeTester(passed=False)
+    result = await orch.run()
+    assert calls == ["t1"]
+    assert orch.tasks[0].status == "failed"
+    assert result.cycles == 2
+
+
+@pytest.mark.asyncio
+async def test_dependency_outside_the_plan_is_not_blocked_by_a_stale_failure(tmp_path, monkeypatch):
+    calls = []
+
+    class OW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", OW)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.tasks = [TaskModel(id="old", description="old", status="failed", attempts=1)]
+    orch.planner = FakePlanner(tasks=[TaskModel(id="new", description="new", dependencies=["old"])])
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    by_id = {t.id: t for t in orch.tasks}
+    assert by_id["new"].status == "completed"
+    assert calls == ["new"]
+    assert result.tasks_completed >= 1
+
+
+@pytest.mark.asyncio
+async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypatch):
+    from furrow.core.events import EventBus
+
+    class RecordingBus(EventBus):
+        def __init__(self):
+            super().__init__()
+            self.types = []
+
+        def emit(self, event):
+            self.types.append(event.type)
+            super().emit(event)
+
+    class AssertTester(FakeTester):
+        async def run(self, goal, tasks):
+            assert EventType.TEST_STARTED in bus.types
+            assert EventType.TEST_FINISHED not in bus.types
+            return TestResult(passed=True, summary="ok", failures=[], skipped=False)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    bus = RecordingBus()
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, event_bus=bus)
+    orch.planner = FakePlanner()
+    orch.tester = AssertTester(passed=True)
+    await orch.run()
+    assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)

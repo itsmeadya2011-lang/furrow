@@ -263,20 +263,13 @@ def is_command_denied(command: str, workspace: Path) -> bool:
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
-    workspace = workspace.resolve()
+    base = Path(workspace).resolve()
     if not path:
         return None
     p = Path(path)
-    if p.is_absolute():
-        try:
-            p.relative_to(workspace)
-        except ValueError:
-            return None
-        return p
-    # reject traversal
-    candidate = (workspace / p).resolve()
+    candidate = (p if p.is_absolute() else base / p).resolve()
     try:
-        candidate.relative_to(workspace)
+        candidate.relative_to(base)
     except ValueError:
         return None
     return candidate

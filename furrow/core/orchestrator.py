@@ -194,6 +194,7 @@ class Orchestrator:
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 break
+            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -205,7 +206,6 @@ class Orchestrator:
                 break
             self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
-            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             self.event_bus.emit(
                 Event(
                     type=EventType.TEST_FINISHED,
@@ -559,13 +559,32 @@ class Orchestrator:
                     if t.status == "pending" and t.attempts <= max_retries:
                         retry_queue.append(t)
 
+        # Outcomes of THIS execution only. A task that fails or is blocked here
+        # blocks its dependents; a stale failed task from an earlier cycle (one
+        # that is not part of the current plan) must not block a fresh task.
+        unavailable: set[str] = set()
         for wave in waves:
-            failed_ids = {t.id for t in self.tasks if t.status == "failed"}
             runnable = []
             for t in wave:
-                if any(d in failed_ids for d in t.dependencies):
+                if t.status == "failed":
+                    # The retry budget was exhausted in an earlier cycle and the
+                    # plan kept the task unchanged: it stays failed and is not
+                    # executed again.
+                    self.event_bus.emit(
+                        Event(
+                            type=EventType.LOG,
+                            message=f"task {t.id} already failed - not retrying",
+                        )
+                    )
+                    unavailable.add(t.id)
+                    continue
+                if any(d in unavailable for d in t.dependencies):
                     t.status = "blocked"
-                else:
-                    runnable.append(t)
+                    unavailable.add(t.id)
+                    continue
+                runnable.append(t)
             await run_tasks(runnable)
             await run_retries(runnable)
+            for t in wave:
+                if t.status in {"failed", "blocked"}:
+                    unavailable.add(t.id)
