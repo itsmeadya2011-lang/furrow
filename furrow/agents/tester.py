@@ -127,7 +127,166 @@ def parse_test_output(output: str) -> list[dict]:
             )
             seen_locations.add(location_key)
 
-    # Extract exception types and messages
+    # Java/Maven/Gradle patterns
+    java_failure_pattern = re.compile(
+        r"^(\s*at\s+)?([a-zA-Z_$][\w$.]*)\.([a-zA-Z_$][\w$]*)"
+        r"\(([^:]+):(\d+)\)",
+        re.MULTILINE,
+    )
+    for match in java_failure_pattern.finditer(output):
+        class_name = match.group(2)
+        method_name = match.group(3)
+        file_path = match.group(4)
+        line_num = int(match.group(5))
+        location_key = f"{file_path}:{line_num}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": file_path,
+                    "line": line_num,
+                    "test": f"{class_name}.{method_name}",
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Go test patterns
+    go_failure_pattern = re.compile(
+        r"^--- FAIL: (\S+)\s+\((\d+\.\d+)s\)",
+        re.MULTILINE,
+    )
+    for match in go_failure_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"go:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Rust/Cargo test patterns
+    rust_failure_pattern = re.compile(
+        r"^test (\S+) \.\.\. FAILED",
+        re.MULTILINE,
+    )
+    for match in rust_failure_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"rust:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # JavaScript/Jest/Vitest patterns
+    js_failure_pattern = re.compile(
+        r"^\s*●\s+(.+?)\s*\n\s*(.+?)(?=\n\s*●|\n\s*$)",
+        re.MULTILINE | re.DOTALL,
+    )
+    for match in js_failure_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        error_msg = match.group(2).strip()
+        location_key = f"js:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
+    # .NET test patterns
+    dotnet_failure_pattern = re.compile(
+        r"^\s+Failed\s+(\S+)\s+\[(\d+)\s+ms\]",
+        re.MULTILINE,
+    )
+    for match in dotnet_failure_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"dotnet:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Ruby/RSpec patterns
+    rspec_failure_pattern = re.compile(
+        r"^\s+\d+\)\s+(.+?)\s*\n\s+Failure/Error:\s*(.+?)(?=\n\s+\d+\)|\n\s*$)",
+        re.MULTILINE | re.DOTALL,
+    )
+    for match in rspec_failure_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        error_msg = match.group(2).strip()
+        location_key = f"rspec:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
+    # PHP/PHPUnit patterns
+    phpunit_failure_pattern = re.compile(
+        r"^\d+\)\s+(.+?)\s*\n\s+Failed asserting",
+        re.MULTILINE,
+    )
+    for match in phpunit_failure_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        location_key = f"phpunit:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Swift/XCTest patterns
+    swift_failure_pattern = re.compile(
+        r"^\s+(\S+)\s+failed:\s*(.+?)(?=\n\s+\S+\s+failed:|\n\s*$)",
+        re.MULTILINE | re.DOTALL,
+    )
+    for match in swift_failure_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        error_msg = match.group(2).strip()
+        location_key = f"swift:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Extract exception types and messages (fallback)
     exception_pattern = re.compile(r"([A-Za-z]+Error|[A-Za-z]+Exception):\s*(.+)$", re.MULTILINE)
     if not failures:
         for match in exception_pattern.finditer(output):
@@ -155,6 +314,140 @@ def parse_test_output(output: str) -> list[dict]:
                     break
 
     return failures
+
+
+class TestRunner:
+    """Represents a test runner configuration."""
+
+    def __init__(
+        self,
+        name: str,
+        command: list[str],
+        detection_patterns: list[str] | None = None,
+        config_files: list[str] | None = None,
+    ) -> None:
+        self.name = name
+        self.command = command
+        self.detection_patterns = detection_patterns or []
+        self.config_files = config_files or []
+
+    def matches(self, workspace: Path) -> bool:
+        """Check if this test runner matches the workspace."""
+        # Check config files
+        for config_file in self.config_files:
+            if (workspace / config_file).exists():
+                return True
+        # Check detection patterns
+        for pattern in self.detection_patterns:
+            for _f in workspace.glob(pattern):
+                return True
+        return False
+
+
+# Registry of known test runners
+TEST_RUNNERS: list[TestRunner] = [
+    # Python
+    TestRunner(
+        "pytest",
+        [sys.executable, "-m", "pytest", "-q"],
+        config_files=["pytest.ini", "pyproject.toml", "setup.cfg", "tox.ini"],
+    ),
+    TestRunner(
+        "unittest",
+        [sys.executable, "-m", "unittest", "discover", "-v"],
+        config_files=[],
+    ),
+    # Node.js
+    TestRunner(
+        "jest",
+        ["npx", "jest", "--silent"],
+        config_files=["jest.config.js", "jest.config.ts", "jest.config.json"],
+    ),
+    TestRunner(
+        "vitest",
+        ["npx", "vitest", "run", "--silent"],
+        config_files=["vitest.config.js", "vitest.config.ts", "vitest.config.json"],
+    ),
+    TestRunner(
+        "npm test",
+        ["npm", "test", "--silent"],
+        config_files=["package.json"],
+    ),
+    TestRunner(
+        "pnpm test",
+        ["pnpm", "test", "--silent"],
+        config_files=["pnpm-lock.yaml"],
+    ),
+    TestRunner(
+        "yarn test",
+        ["yarn", "test", "--silent"],
+        config_files=["yarn.lock"],
+    ),
+    # Rust
+    TestRunner(
+        "cargo test",
+        ["cargo", "test", "-q"],
+        config_files=["Cargo.toml"],
+    ),
+    # Go
+    TestRunner(
+        "go test",
+        ["go", "test", "./..."],
+        config_files=["go.mod"],
+    ),
+    # Java
+    TestRunner(
+        "maven test",
+        ["./mvnw", "test", "-q"],
+        config_files=["pom.xml"],
+    ),
+    TestRunner(
+        "gradle test",
+        ["./gradlew", "test", "-q"],
+        config_files=["build.gradle", "build.gradle.kts"],
+    ),
+    # .NET
+    TestRunner(
+        "dotnet test",
+        ["dotnet", "test", "--no-build", "-v", "q"],
+        config_files=["*.csproj", "*.fsproj", "*.vbproj", "*.sln"],
+    ),
+    # Ruby
+    TestRunner(
+        "rspec",
+        ["bundle", "exec", "rspec"],
+        config_files=[".rspec", "Gemfile"],
+    ),
+    TestRunner(
+        "rails test",
+        ["rails", "test"],
+        config_files=["config/application.rb"],
+    ),
+    # PHP
+    TestRunner(
+        "phpunit",
+        ["./vendor/bin/phpunit", "--no-coverage"],
+        config_files=["phpunit.xml", "phpunit.xml.dist", "composer.json"],
+    ),
+    # Swift
+    TestRunner(
+        "xcodebuild test",
+        ["xcodebuild", "test", "-quiet"],
+        config_files=["*.xcodeproj", "*.xcworkspace", "Package.swift"],
+    ),
+    # Elixir
+    TestRunner(
+        "mix test",
+        ["mix", "test"],
+        config_files=["mix.exs"],
+    ),
+    # Kotlin
+    TestRunner(
+        "kotlin test",
+        ["./gradlew", "test", "-q"],
+        config_files=["build.gradle.kts", "settings.gradle.kts"],
+    ),
+]
 
 
 class TesterAgent:
@@ -185,67 +478,71 @@ class TesterAgent:
         with contextlib.suppress(Exception):
             await proc.wait()
 
+    def _detect_test_runners(self) -> list[TestRunner]:
+        """Detect all matching test runners in the workspace."""
+        matched = []
+        for runner in TEST_RUNNERS:
+            if runner.matches(self.workspace):
+                matched.append(runner)
+        return matched
+
+    def _select_best_runner(self, runners: list[TestRunner]) -> TestRunner | None:
+        """Select the best test runner from the matched ones.
+
+        Priority order:
+        1. Explicit config files (pytest.ini, jest.config.js, etc.)
+        2. Language-specific runners (Cargo.toml, go.mod, etc.)
+        3. Package managers with test scripts
+        """
+        if not runners:
+            return None
+
+        # Priority: runners with config files first
+        with_config = [r for r in runners if r.config_files and any((self.workspace / f).exists() for f in r.config_files)]
+        if with_config:
+            return with_config[0]
+
+        # Priority: language-specific runners
+        language_priority = {
+            "cargo test": 10,
+            "go test": 9,
+            "maven test": 8,
+            "gradle test": 7,
+            "dotnet test": 6,
+            "rspec": 5,
+            "phpunit": 4,
+            "xcodebuild test": 3,
+            "mix test": 2,
+            "pytest": 1,
+        }
+        runners.sort(key=lambda r: language_priority.get(r.name, 0), reverse=True)
+        return runners[0]
+
     async def detect_command(self) -> list[str] | None:
-        has_package = (self.workspace / "package.json").is_file()
-        has_pyproject = (self.workspace / "pyproject.toml").is_file()
-        has_tests_dir = (self.workspace / "tests").is_dir()
-        has_pytest_ini = (self.workspace / "pytest.ini").is_file()
-        has_setup_cfg = (self.workspace / "setup.cfg").is_file()
-        has_tox_ini = (self.workspace / "tox.ini").is_file()
-        has_requirements = (self.workspace / "requirements.txt").is_file()
+        runners = self._detect_test_runners()
+        best = self._select_best_runner(runners)
+        if best is None:
+            return None
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
-        ):
-            return [sys.executable, "-m", "pytest", "-q"]
-
-        # Check for Node.js test runners
-        if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
-            try:
-                with open(self.workspace / "package.json") as fh:
-                    pkg_data = json.load(fh)
-                scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            except Exception:
-                pass
-            # Fallback: npm test if package.json exists (Python case handled above)
+        # Special handling for npm/pnpm/yarn based on lock files
+        if best.name in ("npm test", "pnpm test", "yarn test"):
             if (self.workspace / "pnpm-lock.yaml").is_file():
                 return ["pnpm", "test", "--silent"]
             if (self.workspace / "yarn.lock").is_file():
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
-        python_markers = [
-            "pyproject.toml",
-            "pytest.ini",
-            "setup.cfg",
-            "tox.ini",
-            "requirements.txt",
-        ]
-        if any((self.workspace / m).is_file() for m in python_markers):
-            return [sys.executable, "-m", "pytest", "-q"]
+        # Special handling for Maven/Gradle wrapper
+        if best.name == "maven test" and not (self.workspace / "mvnw").exists():
+            return ["mvn", "test", "-q"]
+        if best.name == "gradle test" and not (self.workspace / "gradlew").exists():
+            return ["gradle", "test", "-q"]
 
-        if (self.workspace / "Cargo.toml").is_file():
-            return ["cargo", "test", "-q"]
-        if (self.workspace / "go.mod").is_file():
-            return ["go", "test", "./..."]
+        # Special handling for PHPUnit
+        if best.name == "phpunit" and not (self.workspace / "vendor/bin/phpunit").exists():
+            return ["phpunit", "--no-coverage"]
 
-        return None
+        return best.command
 
     def _finalize(
         self,

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Furrow</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+<h1>Furrow</h1>
+<div class="bar">
+  <input id="goal" placeholder="What should Furrow build?" autofocus />
+  <button id="start">Start</button>
+  <button id="resume">Resume</button>
+</div>
+<div class="header" id="header">
+  <div class="goal" id="goal-display">\u2014</div>
+  <div class="meta" id="header-meta">
+    <span>cycle <b id="cycle">\u2014</b></span>
+    <span>state <b id="state">idle</b></span>
+    <span id="stopped-reason" class="reason"></span>
+    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+  </div>
+</div>
+<pre id="log"></pre>
+<div class="panels" id="tasks"></div>
+<script type="module" src="/static/app.js"></script>
+</body>
+</html>
