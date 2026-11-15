@@ -6,6 +6,51 @@ from typing import Any
 
 from furrow.config import Plan, TaskModel, TestResult
 
+# Keywords that mark a line as reporting a failure.
+FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
+
+# Counter phrases that mention a failure keyword but report *zero* failures,
+# e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",
+# "errors=0".  They describe a green run and must not be read as a failure.
+_ZERO_COUNT_RE = re.compile(
+    r"\b(?:0|no|none|zero)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
+    r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\b\s*[:=]?\s*(?:0|none|zero)\b"
+    r"(?=\s*[,;)]|\s*$)",
+    re.IGNORECASE,
+)
+
+# A summary whose counter block is entirely zero, e.g. unittest's
+# "FAILED (errors=0)" or "FAILED (failures=0, errors=0)".
+_ALL_ZERO_SUMMARY_RE = re.compile(
+    r"\bfail(?:ed|ure|ures)?\b\s*\(\s*"
+    r"(?:\w+\s*[:=]\s*(?:0|none|zero)\s*[,;]?\s*)*\)",
+    re.IGNORECASE,
+)
+
+
+def line_reports_failure(line: str) -> bool:
+    """Return True when *line* reports a real failure.
+
+    A line only counts as a failure when it contains a failure keyword that is
+    not part of a negated / zero-count phrase.  Summary lines such as
+    "5 passed, 0 failed", "no failures", "0 errors", "failed: 0" or
+    "FAILED (errors=0)" describe a green run, while "1 failed, 4 passed" and
+    "FAILED tests/test_x.py::test_y" are real failures.
+    """
+    text = line.strip()
+    if not text:
+        return False
+    if not any(k in text.lower() for k in FAILURE_KEYWORDS):
+        return False
+    remainder = _ALL_ZERO_SUMMARY_RE.sub(" ", text)
+    remainder = _ZERO_COUNT_RE.sub(" ", remainder)
+    return any(k in remainder.lower() for k in FAILURE_KEYWORDS)
+
+
+def _line_has_failure(text: str) -> bool:
+    """True when any line of *text* reports a failure (zero counters excluded)."""
+    return any(line_reports_failure(line) for line in text.splitlines())
+
 
 def strip_code_fences(text: str) -> str:
     """Remove ```json ... ``` / ``` ... ``` fences. If the text contains exactly one
@@ -168,28 +213,19 @@ def parse_test_result(text: str) -> TestResult:
                     r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
                     lower,
                 )
-                if m_success:
-                    passed = True
-                else:
-                    m_fail = re.search(
-                        r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-                        lower,
-                    )
-                    passed = not m_fail
+                # A line that only reports zero counters ("0 errors",
+                # "no failures") is a green run, not a failure.
+                passed = bool(m_success) or not _line_has_failure(s)
 
         summary = s.strip()[:500]
 
-        failure_words = re.compile(
-            r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-            re.IGNORECASE,
-        )
         failures = []
         seen = set()
         for line in s.splitlines():
             line_stripped = line.strip()
             if not line_stripped:
                 continue
-            if failure_words.search(line_stripped):
+            if line_reports_failure(line_stripped):
                 if line_stripped not in seen:
                     seen.add(line_stripped)
                     failures.append(line_stripped)

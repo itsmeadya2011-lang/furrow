@@ -108,3 +108,24 @@ def test_parse_test_result_heuristic_assertion_error():
 def test_parse_test_result_never_raises_on_empty_string():
     r = parsing.parse_test_result("")
     assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_heuristic_zero_errors_is_pass():
+    """'0 errors' reports a green run and must not be read as a failure."""
+    r = parsing.parse_test_result("Ran 5 tests in 0.1s\n0 errors")
+    assert r.passed is True
+    assert r.failures == []
+
+
+def test_parse_test_result_heuristic_no_failures_is_pass():
+    r = parsing.parse_test_result("no failures")
+    assert r.passed is True
+
+
+def test_line_reports_failure_distinguishes_zero_counters():
+    assert parsing.line_reports_failure("1 failed, 4 passed") is True
+    assert parsing.line_reports_failure("FAILED tests/test_x.py::test_y") is True
+    assert parsing.line_reports_failure("0 errors") is False
+    assert parsing.line_reports_failure("no failures") is False
+    assert parsing.line_reports_failure("5 passed, 0 failed") is False
+    assert parsing.line_reports_failure("") is False

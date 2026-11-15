@@ -499,6 +499,58 @@ async def test_skipped_tests_do_not_amend_goal(tmp_path, monkeypatch):
     assert result.passed is True
 
 
+class SequentialTester:
+    """A tester that returns a different result on each call."""
+
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = 0
+
+    async def run(self, goal, tasks):
+        res = self.results[min(self.calls, len(self.results) - 1)]
+        self.calls += 1
+        return res
+
+
+class ContextRecordingPlanner:
+    """A planner that records the context it was called with."""
+
+    def __init__(self):
+        self.contexts = []
+
+    async def plan(self, goal, context=""):
+        self.contexts.append(context)
+        return Plan(tasks=[TaskModel(id="t1", description="do t1")], rationale="r")
+
+
+@pytest.mark.asyncio
+async def test_passing_cycle_clears_stale_feedback(tmp_path, monkeypatch):
+    """After a green cycle the planner must not see the previous failure.
+
+    Regression: ``_feedback`` used to be left populated when tests passed, so
+    the planner kept being fed an already-fixed failure on the next cycle.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="ORIG", settings=settings, state_store=store)
+    orch.planner = ContextRecordingPlanner()
+    # Cycle 1 fails, cycles 2-3 pass.
+    orch.tester = SequentialTester(
+        [
+            TestResult(passed=False, summary="s", failures=["old failure"]),
+            TestResult(passed=True, summary="s", failures=[]),
+            TestResult(passed=True, summary="s", failures=[]),
+        ]
+    )
+    await orch.run()
+    # The failure was reported on cycle 2's context...
+    assert "old failure" in orch.planner.contexts[1]
+    # ...but the green cycle cleared it, so cycle 3's context is empty.
+    assert orch.planner.contexts[2] == ""
+    assert orch._feedback == ""
+
+
 @pytest.mark.asyncio
 async def test_worker_files_changed_recorded_on_task_and_result(tmp_path, monkeypatch):
     class FW(FakeWorker):

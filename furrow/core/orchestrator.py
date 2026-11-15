@@ -219,13 +219,14 @@ class Orchestrator:
                 self._say(f"[red]Tests failed: {summary}[/red]")
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
-            if skipped:
-                # A skipped run (e.g. no test runner detected) is not a failure:
-                # keep the original goal and drop the stale feedback so the loop
-                # does not chase a test runner that does not exist.
-                self.goal = self.original_goal
+            if test_result.passed:
+                # A green (or skipped) run resolves the previous cycle's
+                # failures: drop the stale feedback so the planner is not fed an
+                # already-fixed problem on the next cycle, and keep the
+                # original goal.
                 self._feedback = ""
-            elif not test_result.passed:
+                self.goal = self.original_goal
+            else:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:
                     failures = [

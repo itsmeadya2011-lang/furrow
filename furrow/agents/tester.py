@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from furrow.agents.parsing import parse_test_result
+from furrow.agents.parsing import line_reports_failure, parse_test_result
 from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
@@ -19,27 +19,6 @@ from furrow.llm import LLMClient
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
 DEFAULT_TEST_TIMEOUT = 600.0
-
-# Keywords that mark a line as reporting a failure.
-_FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
-
-# Counter phrases that mention a failure keyword but report *zero* failures,
-# e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",
-# "errors=0".  They describe a green run and must not be read as a failure.
-_ZERO_COUNT_RE = re.compile(
-    r"\b(?:0|no|none|zero)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
-    r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\b\s*[:=]?\s*(?:0|none|zero)\b"
-    r"(?=\s*[,;)]|\s*$)",
-    re.IGNORECASE,
-)
-
-# A summary whose counter block is entirely zero, e.g. unittest's
-# "FAILED (errors=0)" or "FAILED (failures=0, errors=0)".
-_ALL_ZERO_SUMMARY_RE = re.compile(
-    r"\bfail(?:ed|ure|ures)?\b\s*\(\s*"
-    r"(?:\w+\s*[:=]\s*(?:0|none|zero)\s*[,;]?\s*)*\)",
-    re.IGNORECASE,
-)
 
 
 def resolve_test_timeout(settings: Settings) -> float:
@@ -223,12 +202,11 @@ class TesterAgent:
                     return ["npm", "test", "--silent"]
             except Exception:
                 pass
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            # A package.json without a test script and without a runner config
+            # has no runnable test suite: `npm test` would exit non-zero with
+            # "missing script: test", which would make every cycle look like a
+            # test failure. Report "no test runner" (skipped) instead.
+            return None
 
         python_markers = [
             "pyproject.toml",
@@ -454,25 +432,13 @@ def _extract_failures(output: str, limit: int = 10) -> list[str]:
 
 def _has_failure_keywords(text: str) -> bool:
     """Return True when *text* reports a failure (zero counters do not count)."""
-    return any(_looks_like_failure(line) for line in text.splitlines())
+    return any(line_reports_failure(line) for line in text.splitlines())
 
 
 def _looks_like_failure(line: str) -> bool:
     """Return True when *line* reports a real failure.
 
-    Rule: a line only counts as a failure when it contains a failure keyword
-    that is not part of a negated / zero-count phrase.  Summary lines such as
-    "5 passed, 0 failed", "no failures", "0 errors", "failed: 0" or
-    "FAILED (errors=0)" describe a green run, while "1 failed, 4 passed" and
-    "FAILED tests/test_x.py::test_y" are real failures.
+    Thin wrapper around the shared classifier in :mod:`furrow.agents.parsing`
+    so the tester and the parser cannot drift apart.
     """
-    text = line.strip()
-    if not text:
-        return False
-    if not any(k in text.lower() for k in _FAILURE_KEYWORDS):
-        return False
-    # Drop the all-zero summary blocks and the zero counter phrases: whatever
-    # keyword survives is a genuine failure signal.
-    remainder = _ALL_ZERO_SUMMARY_RE.sub(" ", text)
-    remainder = _ZERO_COUNT_RE.sub(" ", remainder)
-    return any(k in remainder.lower() for k in _FAILURE_KEYWORDS)
+    return line_reports_failure(line)

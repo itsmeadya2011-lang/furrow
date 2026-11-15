@@ -52,8 +52,16 @@ def test_detect_pyproject(tmp_path):
     assert cmd is not None and "pytest" in cmd
 
 
-def test_detect_packagejson(tmp_path):
+def test_detect_packagejson_without_test_script_is_skipped(tmp_path):
+    """A package.json with no test script has no runnable suite -> None."""
     (tmp_path / "package.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
+def test_detect_packagejson_with_test_script(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None and "npm" in cmd
@@ -445,39 +453,3 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "RuntimeError" in res.summary
     assert res.failures
     assert any("RuntimeError" in f for f in res.failures)
-
-    """Old head-only behaviour is gone - beginning of output is not kept."""
-    (tmp_path / "pyproject.toml").write_text("[project]\n")
-
-    head_start = "UNIQUE_HEAD_MARKER_111"
-    filler = "M" * 25005
-    tail = (
-        "\n=========================== 2 failed, 5 passed in 1.23s "
-        "===========================\nUNIQUE_TAIL_MARKER_777\n"
-    )
-    stdout = (head_start + filler + tail).encode()
-
-    async def fake_create_subprocess_exec(*args, **kwargs):
-        return fake_proc(returncode=1, stdout=stdout)
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-
-    client = FakeLLMClient(raises=RuntimeError("llm down"))
-    agent = TesterAgent(
-        client=client,
-        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
-        workspace=tmp_path,
-    )
-
-    res = run(agent.run("goal", []))
-    assert res.passed is False
-    assert "[... output truncated ...]" in res.summary
-    assert "2 failed" in " ".join(res.failures)
-    assert head_start not in res.summary
-    assert head_start not in " ".join(res.failures)
-    assert client.prompts
-    prompt = client.prompts[0]
-    assert "[... output truncated ...]" in prompt
-    assert "2 failed" in prompt
-    assert "UNIQUE_TAIL_MARKER_777" in prompt
-    assert head_start not in prompt

@@ -852,7 +852,16 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
+
+@pytest.mark.asyncio
+async def test_list_files_offloads_to_thread(tmp_path):
+    """``_list_files`` runs the blocking listing on a worker thread.
+
+    The blocking ``list_files`` call must not run on the event loop thread, so
+    that a ticker coroutine can make progress while it runs.
+    """
     import threading
+    import time
 
     for i in range(5):
         (tmp_path / f"f{i}.txt").write_text("x")
@@ -869,10 +878,8 @@ async def test_run_command_stderr_newline_format(tmp_path):
 
     def slow_list(directory):
         seen["tid"] = threading.get_ident()
-        import time
         time.sleep(0.1)
-        from pathlib import Path as _P
-        return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
+        return [str(p) for p in Path(directory).rglob("*") if p.is_file()]
 
     client.list_files = slow_list
 
@@ -940,3 +947,79 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+def test_rm_root_delete_bypasses_are_denied(tmp_path, tmp_path_factory, monkeypatch):
+    """``rm`` variants that wipe the root are denied even without the exact
+    ``rm -rf /`` spelling: split flags, ``--no-preserve-root``, and ``-fr``.
+    """
+    fake_home = tmp_path_factory.mktemp("fake_home")
+    assert not fake_home.is_relative_to(tmp_path)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.setenv("USERPROFILE", str(fake_home))
+
+    for cmd in [
+        "rm -r -f /",
+        "rm -fr /",
+        "rm -rf --no-preserve-root /",
+        "rm --recursive --force /",
+        "rm -Rf /",
+        "rm -rf /*",
+        "rm -rf ~",
+        "rm -rf $HOME",
+    ]:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+
+
+def test_rm_absolute_path_under_root_is_allowed(tmp_path):
+    """Ordinary cleanup under an absolute path is not a root wipe.
+
+    ``rm -rf /tmp/build`` used to be a false positive of the substring check.
+    """
+    assert is_command_denied("rm -rf /tmp/build", tmp_path) is False
+    assert is_command_denied("rm -rf /var/tmp/cache", tmp_path) is False
+
+
+@pytest.mark.asyncio
+async def test_write_file_without_content_is_error_not_truncation(tmp_path):
+    """A write_file tool call missing ``content`` must not blank the file."""
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+
+    (tmp_path / "keep.py").write_text("important = 1\n")
+    tc = ToolCall(id="t", name="write_file", arguments={"path": "keep.py"})
+    out = await agent._execute_tool(tc)
+    assert out.startswith("error: ")
+    assert "content" in out
+    # The existing file is untouched.
+    assert (tmp_path / "keep.py").read_text() == "important = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_read_file_without_path_is_error(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    tc = ToolCall(id="t", name="read_file", arguments={})
+    out = await agent._execute_tool(tc)
+    assert out.startswith("error: ")
+    assert "path" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_reports_exit_status(tmp_path):
+    """The tool result carries the exit status so the model can self-correct."""
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("sh -c 'exit 3'")
+    assert out.startswith("[exit status 3]")
+    ok = await agent._run_command("true")
+    assert ok.startswith("[exit status 0]")

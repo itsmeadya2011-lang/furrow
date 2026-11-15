@@ -17,12 +17,11 @@ from furrow.llm import LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
+#
+# ``rm`` is NOT matched here: it is checked structurally by
+# ``_is_rm_root_delete`` so that split flags (``rm -r -f /``) are caught while
+# legitimate cleanup (``rm -rf /tmp/build``) is not falsely denied.
 DENIED_COMMANDS = (
-    "rm -rf /",
-    "rm -fr /",
-    "rm -rf /*",
-    "rm -rf ~",
-    "rm -rf $home",
     ":(){:|:&};:",
     "mkfs",
     "dd if=",
@@ -31,6 +30,14 @@ DENIED_COMMANDS = (
     "chmod -R 777 /",
     "> /dev/sda",
 )
+
+# Paths that must never be the target of a recursive+force delete: the root
+# itself and the wildcard/dot forms directly under it ("/", "/*", "/.", "/..").
+_ROOT_DELETE_RE = re.compile(r"^/(?:\**|\.+)?$")
+
+# Tokens that mean "recursive" and "force" for ``rm``.
+_RM_RECURSIVE_FLAGS = frozenset({"r", "R", "recursive"})
+_RM_FORCE_FLAGS = frozenset({"f", "force"})
 
 # Programs that are denied by name: the basename of the first token of a
 # segment. ``mkfs`` variants (``mkfs.ext4`` and friends) are denied as well.
@@ -198,6 +205,55 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
     return False
 
 
+def _is_rm_root_delete(segment: str) -> bool:
+    """Report whether *segment* is an ``rm`` that would wipe the filesystem root.
+
+    A plain substring check ("rm -rf /") both misses real bypasses (split flags
+    such as ``rm -r -f /``, an option terminator such as
+    ``rm -rf --no-preserve-root /``, or ``rm -fr /``) and produces false
+    positives on legitimate cleanup (``rm -rf /tmp/build``).  Instead the flags
+    are parsed per token, so only an ``rm`` that is both recursive and forceful
+    *and* targets the root (or home) is denied.
+    """
+    tokens = _shell_tokens(segment)
+    if not tokens or os.path.basename(tokens[0]).lower() != "rm":
+        return False
+    recursive = False
+    force = False
+    targets: list[str] = []
+    for token in tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("--"):
+            name = token[2:].split("=", 1)[0].lower()
+            recursive = recursive or name in _RM_RECURSIVE_FLAGS
+            force = force or name in _RM_FORCE_FLAGS
+            continue
+        if token.startswith("-") and len(token) > 1:
+            for flag in token[1:].lower():
+                recursive = recursive or flag in _RM_RECURSIVE_FLAGS
+                force = force or flag in _RM_FORCE_FLAGS
+            continue
+        targets.append(token)
+    if not (recursive and force):
+        return False
+    home = Path(os.path.expanduser("~")).resolve()
+    for target in targets:
+        expanded = _expand_home(target)
+        if _ROOT_DELETE_RE.match(expanded):
+            return True
+        # ``rm -rf ~`` / ``$HOME`` and the wildcard/dot forms under home wipe
+        # the user's whole home directory.
+        cleaned = re.sub(r"/(?:\*+|\.+)+$", "", expanded)
+        try:
+            resolved = Path(cleaned).resolve()
+        except (OSError, ValueError):
+            continue
+        if resolved == home:
+            return True
+    return False
+
+
 def _is_force_push(segment: str, normalized: str) -> bool:
     """Report whether a segment is a git force push."""
     if "git" not in normalized or "push" not in normalized:
@@ -229,6 +285,10 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
 
     # DENY a force push
     if _is_force_push(segment, normalized):
+        return True
+
+    # DENY an ``rm`` that would wipe the filesystem root or home.
+    if _is_rm_root_delete(segment):
         return True
 
     # DENY a redirection that escapes the workspace
@@ -364,9 +424,17 @@ class WorkerAgent:
         if args is None:
             return "error: invalid tool arguments"
         if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
+            if "path" not in args or not str(args.get("path", "")).strip():
+                return "error: read_file requires a non-empty 'path'"
+            return await self._read_file(str(args["path"]))
         if name == "write_file":
-            return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+            if "path" not in args or not str(args.get("path", "")).strip():
+                return "error: write_file requires a non-empty 'path'"
+            if "content" not in args:
+                # A missing content argument must not silently truncate the
+                # target file to empty: that is data loss.
+                return "error: write_file requires a 'content' argument"
+            return await self._write_file(str(args["path"]), str(args["content"]))
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -490,7 +558,11 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
-        return combined
+        # The exit status is what tells the model whether the command actually
+        # succeeded; without it a silent success and a silent failure look the
+        # same and the model cannot self-correct.
+        status = proc.returncode if proc.returncode is not None else 0
+        return f"[exit status {status}]\n{combined}"
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
