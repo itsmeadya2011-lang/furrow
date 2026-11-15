@@ -259,6 +259,82 @@ def test_start_uses_max_cycles_and_workspace(
     assert global_settings.workspace == workspace_before
 
 
+def test_start_uses_max_task_retries_and_max_parallel_tasks(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    from furrow.config import settings as global_settings
+
+    mtr_before = global_settings.max_task_retries
+    mpt_before = global_settings.max_parallel_tasks
+
+    result = runner.invoke(
+        main,
+        [
+            "start",
+            "build a thing",
+            "--max-task-retries",
+            "3",
+            "--max-parallel-tasks",
+            "7",
+            "--workspace",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    kwargs = fake_orchestrator.init_kwargs
+    run_settings = kwargs["settings"]
+    assert run_settings.max_task_retries == 3
+    assert run_settings.max_parallel_tasks == 7
+    # The global settings must not be mutated by a single run.
+    assert global_settings.max_task_retries == mtr_before
+    assert global_settings.max_parallel_tasks == mpt_before
+
+
+def test_start_rejects_negative_max_task_retries(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(
+        main, ["start", "build a thing", "--max-task-retries", "-1"]
+    )
+    assert result.exit_code != 0
+
+
+def test_start_rejects_zero_max_parallel_tasks(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(
+        main, ["start", "build a thing", "--max-parallel-tasks", "0"]
+    )
+    assert result.exit_code != 0
+
+
+def test_resume_uses_max_task_retries_and_max_parallel_tasks(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(
+        main,
+        [
+            "resume",
+            "--workspace",
+            str(tmp_path),
+            "--max-task-retries",
+            "2",
+            "--max-parallel-tasks",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0
+    kwargs = fake_orchestrator.init_kwargs
+    assert kwargs["resume"] is True
+    run_settings = kwargs["settings"]
+    assert run_settings.max_task_retries == 2
+    assert run_settings.max_parallel_tasks == 4
+
+
 def test_start_stops_gracefully_on_keyboard_interrupt(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

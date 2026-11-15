@@ -48,6 +48,7 @@ class HistoryEntry(BaseModel):
     test_summary: str = ""
     timestamp: str = Field(default_factory=utcnow)
     usage: Usage = Field(default_factory=Usage)
+    files_changed: list[str] = Field(default_factory=list)
 
 
 class RunState(BaseModel):

@@ -33,6 +33,8 @@ def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    max_task_retries: int | None = None,
+    max_parallel_tasks: int | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +48,10 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if max_task_retries is not None:
+        updates["max_task_retries"] = max_task_retries
+    if max_parallel_tasks is not None:
+        updates["max_parallel_tasks"] = max_parallel_tasks
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -189,6 +195,18 @@ def main() -> None:
 @click.option("--model", default=None, help="Override the LLM model.")
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 @click.option(
+    "--max-task-retries",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Maximum times a failed task is retried before being marked failed.",
+)
+@click.option(
+    "--max-parallel-tasks",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum concurrent worker tasks per wave.",
+)
+@click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
@@ -199,13 +217,21 @@ def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
+    max_task_retries: int | None,
+    max_parallel_tasks: int | None,
     workspace: Path | None,
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        max_cycles=max_cycles,
+        max_task_retries=max_task_retries,
+        max_parallel_tasks=max_parallel_tasks,
+        workspace=workspace,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +261,31 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option(
+    "--max-task-retries",
+    type=click.IntRange(min=0),
+    default=None,
+    help="Maximum times a failed task is retried before being marked failed.",
+)
+@click.option(
+    "--max-parallel-tasks",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Maximum concurrent worker tasks per wave.",
+)
+def resume(
+    workspace: Path | None,
+    max_cycles: int | None,
+    max_task_retries: int | None,
+    max_parallel_tasks: int | None,
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        max_task_retries=max_task_retries,
+        max_parallel_tasks=max_parallel_tasks,
+        workspace=workspace,
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

@@ -251,6 +251,9 @@ class Orchestrator:
                 tests_passed=test_result.passed, test_summary=test_result.summary,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
+                files_changed=sorted(
+                    {f for t in self.tasks for f in (getattr(t, "files_changed", None) or [])}
+                ),
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
