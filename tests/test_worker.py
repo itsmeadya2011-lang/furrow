@@ -852,15 +852,17 @@ async def test_run_command_stderr_newline_format(tmp_path):
                     found = True
     assert found
 
+
+@pytest.mark.asyncio
+async def test_list_files_runs_off_event_loop(tmp_path):
     import threading
+    from furrow.config import TaskModel
 
     for i in range(5):
         (tmp_path / f"f{i}.txt").write_text("x")
 
     client = FakeLLMClient([])
     settings = make_settings(tmp_path)
-    from furrow.config import TaskModel
-
     task = TaskModel(id="1", description="list")
     agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
 
@@ -889,7 +891,6 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
-
 @pytest.mark.skipif(os.name != "posix", reason="symlinks require POSIX")
 def test_resolve_in_workspace_rejects_symlink_escape(tmp_path):
     ws = tmp_path / "ws"
