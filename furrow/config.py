@@ -180,11 +180,12 @@ class Settings(BaseSettings):
 
         Falls back to the global defaults when the role entry does not override
         them, so a router with no entries behaves exactly like the old flat
-        configuration.
+        configuration. An unknown role name falls back to the global provider
+        and model rather than raising.
         """
         entry: RouteEntry = getattr(self.routing, role, RouteEntry())
         provider = entry.provider if entry.provider is not None else self.provider
-        model = entry.model or getattr(self, f"{role}_model")
+        model = entry.model or getattr(self, f"{role}_model", None) or self.model
         return provider, model
 
 
