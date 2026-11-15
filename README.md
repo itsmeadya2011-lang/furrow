@@ -134,9 +134,10 @@ State is persisted atomically at the end of every completed cycle to `<workspace
 
 ```bash
 cd /workspace/app
-python -m pytest -q           # run the full offline test suite
-python -m ruff check .        # linting
-python -m mypy furrow         # type checking
+make check          # run all checks (test, lint, typecheck)
+make test           # run the full offline test suite
+make lint           # linting
+make typecheck      # type checking
 ```
 
 All tests run offline and do not require API keys.
