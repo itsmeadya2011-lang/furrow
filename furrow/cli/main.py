@@ -10,7 +10,6 @@ Commands:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import sys
 from pathlib import Path
@@ -22,6 +21,7 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
+from furrow.util import run_orchestrator
 
 logger = logging.getLogger(__name__)
 

@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -15,6 +13,7 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.util import MAX_OUTPUT_BYTES, kill_process_tree, truncate_output
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
@@ -173,17 +172,7 @@ class TesterAgent:
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
         """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        await kill_process_tree(proc, new_session=os.name == "posix")
 
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
@@ -384,8 +373,8 @@ class TesterAgent:
                 + "\n"
                 + stderr.decode("utf-8", errors="replace")
             )
-            if len(combined) > 20000:
-                combined = "[... output truncated ...]\n" + combined[-20000:]
+if len(combined) > MAX_OUTPUT_BYTES:
+            combined = truncate_output(combined)
 
             llm_result: TestResult | None = None
             if not spawn_failed:
