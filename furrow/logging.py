@@ -10,6 +10,14 @@ import logging
 import sys
 from typing import Any
 
+try:
+    import structlog
+except ImportError:
+    structlog = None  # type: ignore[assignment,unused-ignore]
+    _STRUCTLOG_AVAILABLE = False
+else:
+    _STRUCTLOG_AVAILABLE = True
+
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
     """Configure standard library logging as a fallback."""
@@ -18,14 +26,6 @@ def _configure_stdlib_fallback(level: str = "INFO") -> None:
         level=getattr(logging, level.upper(), logging.INFO),
         stream=sys.stdout,
     )
-
-
-try:
-    import structlog
-    _STRUCTLOG_AVAILABLE = True
-except ImportError:
-    structlog = None  # type: ignore[assignment]
-    _STRUCTLOG_AVAILABLE = False
 
 
 def configure_logging(level: str = "INFO") -> None:
