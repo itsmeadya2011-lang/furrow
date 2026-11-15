@@ -557,6 +557,45 @@ def test_status_shows_per_task_files_changed(
     assert "[furrow/core/orchestrator.py, furrow/config.py]" in result.output
 
 
+def test_status_prints_last_summary_when_present(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command shows the persisted last summary when it is non-empty."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        last_summary="stopped: planner failed: boom",
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Last summary:" in result.output
+    assert "stopped: planner failed: boom" in result.output
+
+
+def test_status_omits_last_summary_when_empty(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command does not print a Last summary line when the value is empty/whitespace."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        last_summary="   ",
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Last summary:" not in result.output
+
+
 def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> None:
     """The status command prints the usage persisted in the run state."""
     state = RunState(

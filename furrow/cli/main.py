@@ -103,6 +103,8 @@ def _print_state(state: RunState) -> None:
     text, colour = _result_line(passed=passed, skipped=skipped, tests_run=tests_run)
     click.echo(f"  Tests run:     {tests_run}")
     click.secho(f"  Result:        {text}", fg=colour)
+    if state.last_summary and state.last_summary.strip():
+        click.echo(f"  Last summary: {state.last_summary}")
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")
