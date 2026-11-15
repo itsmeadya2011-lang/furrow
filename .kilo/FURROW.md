@@ -4,18 +4,15 @@ This document describes both the **Kilo integration** (orchestrator/subagents/co
 
 ## Components
 
-### Kilo integration (`.kilo/`)
+### Kilo integration (optional)
 
-The Kilo-side setup defines primary/subagents and a slash command for running Furrow inside Kilo:
+Kilo integration artifacts (custom agents/commands under `.kilo/agent/` and `.kilo/command/`, and a `/furrow` slash command) are not currently present in this repository. If you add them, document them here.
+
+Current project-level config:
 
 | File | Type | Role |
 | --- | --- | --- |
-| `.kilo/agent/furrow.md` | Primary agent | Orchestrator for the infinite development loop. Coordinates planning, spawning workers, testing, and repeating. |
-| `.kilo/agent/furrow-planner.md` | Subagent | Breaks a high-level goal into parallelizable tasks with IDs, descriptions, files, and dependencies. |
-| `.kilo/agent/furrow-worker.md` | Subagent | Executes a single assigned task with targeted changes. |
-| `.kilo/agent/furrow-tester.md` | Subagent | Runs tests/lint/type checks, fixes failures when possible, and returns pass/fail results. |
-| `.kilo/command/furrow.md` | Slash command | Entry point (`/furrow <goal>`). Invokes the `furrow` orchestrator with `$ARGUMENTS`. |
-| `kilo.json` | Project config | Sets the default agent to `furrow` and opens permissions for `bash`/`edit`/`read`. |
+| `kilo.json` | Project config | Sets the default agent to `furrow` and opens permissions for `bash`/`edit`/`read` (see `permission.bash`, `permission.edit`, `permission.read`). |
 
 ### Python package (`furrow/`)
 
@@ -103,7 +100,6 @@ A Furrow run works in a disposable workspace, so a change is only durable once i
 
 ## Future Work
 
-- Richer web UI with per-agent panels — delivered (status header with cycle/state/usage, per-task panels, timestamped event log).
-- A richer `furrow` package plugin system
-- Multi-provider model routing
-- Cost accounting: token accounting is delivered (per-call, per-cycle and per-run counts, persisted in state and printed by the CLI); currency cost estimation is delivered (tracked, persisted, displayed, overridable).
+- Richer `furrow` package plugin system (pluggable runners/providers/hooks).
+- Multi-provider model routing (per-agent or per-task model selection/cost-aware routing).
+- Additional cost controls (hard budgets/caps beyond estimates and overrides).

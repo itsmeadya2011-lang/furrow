@@ -2,6 +2,8 @@
 
 Furrow is an autonomous coding agent that plans, implements, and tests changes to a codebase through an iterative loop. It coordinates a planner, a worker (which edits files using real tool calls), and a tester to move toward a goal while persisting state and optionally streaming progress via a web UI.
 
+> **Two layers, same name:** the installable Python package/CLI (`furrow/`, command `furrow`) is the core runtime described below. Optional Kilo editor/agent integration files may live under `.kilo/` if present; this repo currently ships the Python package and `kilo.json` (see `.kilo/FURROW.md`).
+
 ## Features
 
 - Plans tasks with dependency tracking and parallel execution
