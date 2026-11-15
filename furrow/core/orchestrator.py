@@ -50,6 +50,7 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._executed_ids: set[str] = set()  # ids of tasks this cycle actually ran
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -254,20 +255,26 @@ class Orchestrator:
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
-            # A skipped run (no test runner) reports passed=True but gives the
-            # loop no verification signal, so it must trip the no-progress
-            # guard as well - otherwise the loop never stops.
-            no_signal = (not test_result.passed) or skipped
+            # A cycle that executed no task made no progress either: the plan
+            # only repeated work that is already finished, so without this the
+            # loop would spin forever (max_cycles defaults to unlimited).  A
+            # skipped run (no test runner) also gives the loop no verification
+            # signal, so it has to trip the guard as well.
+            work_done = bool(self._executed_ids)
+            no_signal = (not test_result.passed) or skipped or not work_done
             guard_tripped = False
             if no_signal and sig == self._prev_sig:
                 self._no_progress += 1
                 if self._no_progress >= 2:
-                    self._stopped_reason = (
-                        "no test runner detected" if skipped else "no progress"
-                    )
+                    if skipped:
+                        self._stopped_reason = "no test runner detected"
+                    elif not work_done and test_result.passed:
+                        self._stopped_reason = "no new work to do"
+                    else:
+                        self._stopped_reason = "no progress"
                     guard_tripped = True
             else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
+                if sig != self._prev_sig or (work_done and test_result.passed and not skipped):
                     self._no_progress = 0
                 self._prev_sig = sig
 
@@ -333,6 +340,7 @@ class Orchestrator:
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()
+        self._executed_ids = set()
         by_id = {t.id: t for t in self.tasks}
         max_retries = max(0, self.settings.max_task_retries)
         for index, pt in enumerate(plan.tasks):
@@ -412,6 +420,7 @@ class Orchestrator:
                                         message=f"task {task.id} already completed - skipping"))
                 return
             async with sem:
+                self._executed_ids.add(task.id)
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))

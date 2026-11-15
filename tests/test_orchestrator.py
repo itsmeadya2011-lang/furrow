@@ -1079,3 +1079,76 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_run_stops_when_a_cycle_does_no_work(tmp_path, monkeypatch):
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=10)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert calls == ["t1"]
+    assert result.cycles == 3
+    assert result.stopped_reason == "no new work to do"
+    st = store.load()
+    assert st is not None
+    assert st.no_progress >= 2
+
+
+@pytest.mark.asyncio
+async def test_work_every_cycle_keeps_the_loop_alive(tmp_path, monkeypatch):
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    class CountingPlanner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def plan(self, goal, context=""):
+            self.calls += 1
+            return Plan(tasks=[TaskModel(id="t1", description=f"work {self.calls}")], rationale="r")
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = CountingPlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.cycles == 5
+    assert result.stopped_reason == "max_cycles reached"
+    assert calls == ["t1"] * 5
+
+
+@pytest.mark.asyncio
+async def test_failed_tests_with_no_work_still_report_no_progress(tmp_path, monkeypatch):
+    calls = []
+
+    class CW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=10)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    result = await orch.run()
+    assert calls == ["t1"]
+    assert result.stopped_reason == "no progress"

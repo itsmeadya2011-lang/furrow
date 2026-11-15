@@ -81,7 +81,10 @@ WORKER_TOOLS: list[dict] = [
     },
     {
         "name": "run_command",
-        "description": "run a shell command in the workspace and return its output.",
+        "description": (
+            "run a shell command in the workspace and return its output; "
+            "a non-zero exit status is reported as [exit status N]."
+        ),
         "parameters": {
             "type": "object",
             "properties": {"command": {"type": "string"}},

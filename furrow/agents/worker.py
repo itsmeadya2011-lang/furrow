@@ -484,12 +484,18 @@ class WorkerAgent:
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
+        returncode = proc.returncode
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        # The exit status is appended AFTER truncation so it is always visible,
+        # and only for a failure: a successful command stays quiet.
+        if returncode:
+            marker = f"[exit status {returncode}]"
+            combined = f"{combined}\n{marker}" if combined.strip() else marker
         return combined
 
     @staticmethod

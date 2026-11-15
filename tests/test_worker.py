@@ -312,6 +312,66 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_command_reports_a_non_zero_exit_status(tmp_path):
+    """A failing command returns its exit status as a marker."""
+    from furrow.config import TaskModel
+
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="cmd"),
+        client=FakeLLMClient([]),
+        settings=make_settings(tmp_path),
+        workspace=tmp_path,
+    )
+    out = await agent._run_command("exit 3")
+    assert "[exit status 3]" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_is_quiet_about_a_successful_command(tmp_path):
+    """A successful command does not emit an exit-status marker."""
+    from furrow.config import TaskModel
+
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="cmd"),
+        client=FakeLLMClient([]),
+        settings=make_settings(tmp_path),
+        workspace=tmp_path,
+    )
+    out = await agent._run_command("echo hi")
+    assert "hi" in out
+    assert "[exit status" not in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_exit_marker_reaches_model(tmp_path):
+    """End-to-end: the [exit status N] marker appears in the tool_result sent
+    to the model after a failing run_command."""
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": "exit 4"})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "[exit status 4]" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
 async def test_list_files_caps_at_500_entries(tmp_path):
     for i in range(520):
         (tmp_path / f"f{i:04d}.txt").write_text("x")
