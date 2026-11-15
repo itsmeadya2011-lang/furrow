@@ -1079,3 +1079,43 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_fail_task_records_failure_and_emits_events(tmp_path):
+    """The _fail_task helper increments attempts, sets error/status, and emits events."""
+    from furrow.core.events import EventType
+
+    settings = make_settings(tmp_path, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    class EventRecorder:
+        def __init__(self) -> None:
+            self.types = []
+
+        def emit(self, event) -> None:
+            self.types.append(event.type)
+
+    recorder = EventRecorder()
+    orch.event_bus = recorder
+
+    task = TaskModel(id="t1", description="do it", attempts=0, status="pending")
+
+    # First failure: retries remain -> pending
+    orch._fail_task(task, ValueError("boom"), max_retries=1)
+    assert task.attempts == 1
+    assert task.error == "ValueError: boom"
+    assert task.finished_at is not None
+    assert task.status == "pending"
+    assert EventType.ERROR in recorder.types
+    assert EventType.TASK_FINISHED in recorder.types
+
+    # Second failure: budget spent -> failed
+    recorder.types.clear()
+    orch._fail_task(task, RuntimeError("kaboom"), max_retries=1)
+    assert task.attempts == 2
+    assert task.error == "RuntimeError: kaboom"
+    assert task.status == "failed"
+    assert EventType.ERROR in recorder.types
+    assert EventType.TASK_FINISHED in recorder.types

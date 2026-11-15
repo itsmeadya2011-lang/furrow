@@ -700,3 +700,36 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_clear_without_state(runner: CliRunner, tmp_path: Path) -> None:
+    """Clearing when no state exists reports nothing to delete."""
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found" in result.output
+
+
+def test_clear_with_state_and_yes(runner: CliRunner, tmp_path: Path) -> None:
+    """Passing --yes deletes the persisted state without prompting."""
+    _write_state(tmp_path)
+    state_path = tmp_path / ".furrow" / "state.json"
+    assert state_path.is_file()
+
+    result = runner.invoke(main, ["clear", "--yes", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Furrow run state cleared." in result.output
+    assert not state_path.is_file()
+
+
+def test_clear_with_state_aborts_without_yes(runner: CliRunner, tmp_path: Path) -> None:
+    """Declining the confirmation keeps the state file intact."""
+    _write_state(tmp_path)
+    state_path = tmp_path / ".furrow" / "state.json"
+    assert state_path.is_file()
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)], input="n\n")
+
+    assert result.exit_code != 0
+    assert state_path.is_file()
