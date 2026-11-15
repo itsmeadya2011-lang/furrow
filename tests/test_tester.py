@@ -12,10 +12,12 @@ class FakeLLMClient:
         self.raises = raises
         self.prompts = []
         self.models = []
+        self.routes = []
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, route=None):
         self.prompts.append(prompt)
         self.models.append(model)
+        self.routes.append(route)
         if self.raises:
             raise self.raises
         return self.response

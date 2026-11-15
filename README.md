@@ -106,6 +106,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 | `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |
+| `FURROW_ROUTING` | (none) | JSON object mapping agent roles (`planner`, `worker`, `tester`) to `{"provider": ..., "model": ...}` overrides. Each role entry is optional: an unset `provider` falls back to `FURROW_PROVIDER` and an unset `model` falls back to the role's dedicated model setting |
 
 A `.env` file is read automatically via pydantic-settings.
 
@@ -129,6 +130,34 @@ The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released
 ## State & resume
 
 State is persisted atomically at the end of every completed cycle to `<workspace>/.furrow/state.json`; a cycle that ends early (a planner error, or a plan with no tasks) is not persisted, so the saved cycle count can lag the reported one by one. Each completed cycle writes the state exactly once, after the no-progress guard has been evaluated, so the saved `no_progress` counter and plan signature are the current ones. A `STATE_SAVED` event is emitted only when the state file was actually written; a failed write is reported as an ERROR event with the path that could not be written instead. The state file also carries the number of test-suite executions (`tests_run`); it is restored on resume, so `RunResult.tests_run` counts the whole run and not only the cycles since the resume. Use `furrow resume` or `furrow start --resume` to continue a previous run. Corrupt state files are ignored and the run starts fresh. On resume, the persisted state file is loaded exactly once, so restored values cannot be overwritten by a second read.
+
+## Multi-provider routing
+
+Furrow can send different agent roles to different providers and models. Each
+role entry is optional and falls back to the global defaults when unset, so a
+router with no entries behaves exactly like the flat configuration.
+
+Configure per-role overrides through the `FURROW_ROUTING` environment variable
+(JSON) or programmatically through `Settings.routing`:
+
+```bash
+export FURROW_ROUTING='{"planner":{"provider":"openai","model":"gpt-4o-mini"},"worker":{"provider":"ollama","model":"qwen2.5-coder:7b"}}'
+```
+
+```python
+from furrow.config import Settings, RouteEntry, Provider
+
+settings = Settings(
+    routing={
+        "planner": {"provider": "openai", "model": "gpt-4o-mini"},
+        "worker": {"provider": "ollama", "model": "qwen2.5-coder:7b"},
+    }
+)
+```
+
+An explicit `model=` argument passed to `LLMClient.complete`/`chat` still
+wins over the routed model, while the routed provider applies when the global
+provider would not.
 
 ## Development
 

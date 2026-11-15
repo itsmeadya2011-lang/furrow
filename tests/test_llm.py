@@ -599,6 +599,84 @@ async def test_chat_openai_choice_no_message_raises_valueerror():
         await client.chat([{"role": "user", "content": "hi"}])
 
 
+async def test_complete_uses_the_route_provider_and_model():
+    """A call with a route resolves the provider/model from the router."""
+    settings = Settings(
+        provider=Provider.ANTHROPIC,
+        planner_model="claude-3-5-haiku-20241022",
+        routing={"planner": {"provider": "openai", "model": "gpt-4o-mini"}},
+    )
+    client = LLMClient(settings=settings)
+    fake = _FakeOpenAI("ok")
+    client._openai = fake
+
+    result = await client.complete("plan this", route="planner")
+
+    assert result == "ok"
+    # The call must have used the routed provider (openai) and model.
+    assert fake.chat.completions.last_kwargs["model"] == "gpt-4o-mini"
+    # The global provider is untouched.
+    assert settings.provider == Provider.ANTHROPIC
+
+
+async def test_chat_uses_the_route_provider_and_model():
+    settings = Settings(
+        provider=Provider.ANTHROPIC,
+        worker_model="claude-3-5-sonnet-20241022",
+        routing={"worker": {"provider": "ollama", "model": "qwen"}},
+    )
+    client = LLMClient(settings=settings)
+    fake = _FakeOpenAI("ok")
+    client._ollama = fake
+
+    await client.chat([{"role": "user", "content": "do it"}], route="worker")
+
+    assert fake.chat.completions.last_kwargs["model"] == "qwen"
+
+
+async def test_route_without_an_override_falls_back_to_global_defaults():
+    """A route that exists in the router but carries no override still falls back."""
+    settings = Settings(
+        provider=Provider.OPENAI,
+        planner_model="gpt-4o",
+        routing={"worker": {}},  # empty entry
+    )
+    client = LLMClient(settings=settings)
+    fake = _FakeOpenAI("ok")
+    client._openai = fake
+
+    await client.complete("hi", route="worker")
+
+    assert fake.chat.completions.last_kwargs["model"] == settings.worker_model
+
+
+async def test_explicit_model_argument_wins_over_the_route_model():
+    """An explicit model= argument overrides the routed model, but the routed
+    provider still applies when the global provider would not."""
+    settings = Settings(
+        provider=Provider.ANTHROPIC,
+        routing={"worker": {"provider": "openai", "model": "gpt-4o-mini"}},
+    )
+    client = LLMClient(settings=settings)
+    fake = _FakeOpenAI("ok")
+    client._openai = fake
+
+    await client.complete("hi", route="worker", model="gpt-4o")
+
+    assert fake.chat.completions.last_kwargs["model"] == "gpt-4o"
+
+
+async def test_call_without_route_uses_the_global_provider_and_model():
+    settings = Settings(provider=Provider.OPENAI, model="gpt-4o-mini")
+    client = LLMClient(settings=settings)
+    fake = _FakeOpenAI("ok")
+    client._openai = fake
+
+    await client.complete("hi")
+
+    assert fake.chat.completions.last_kwargs["model"] == "gpt-4o-mini"
+
+
 async def test_complete_anthropic_none_content_yields_empty():
     class _Resp:
         content = None

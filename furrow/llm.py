@@ -302,9 +302,9 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
-        provider = self.settings.provider
+    async def complete(self, prompt: str, system: str = "", model: str | None = None,
+                       route: str | None = None) -> str:
+        provider, model = self._resolve(route, model)
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
@@ -325,9 +325,9 @@ class LLMClient:
         tools: list[dict] | None = None,
         system: str = "",
         model: str | None = None,
+        route: str | None = None,
     ) -> LLMResponse:
-        model = model or self.settings.model
-        provider = self.settings.provider
+        provider, model = self._resolve(route, model)
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
@@ -343,6 +343,20 @@ class LLMClient:
             raise ValueError(f"Unsupported provider: {provider}")
 
         return await self._retry(call)
+
+    def _resolve(self, route: str | None, model: str | None) -> tuple[Provider, str]:
+        """Resolve the effective (provider, model) for a call.
+
+        An explicit ``model`` argument wins over the route's model, and a
+        route's provider wins over the configured default. This keeps the
+        per-call override and the per-role routing independent.
+        """
+        provider = self.settings.provider
+        if route:
+            provider, routed_model = self.settings.route_for(route)
+            if model is None:
+                model = routed_model
+        return provider, model or self.settings.model
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(

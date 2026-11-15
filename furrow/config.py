@@ -24,6 +24,38 @@ class TaskStatus(str, Enum):
     SKIPPED = "skipped"
 
 
+class RouteEntry(BaseModel):
+    """A single role's provider/model override.
+
+    Both fields are optional: an unset ``provider`` falls back to the global
+    ``Settings.provider`` and an unset ``model`` falls back to the role's
+    dedicated model setting (``planner_model``/``worker_model``/``tester_model``).
+    """
+
+    provider: Provider | None = None
+    model: str | None = None
+
+
+class ModelRouter(BaseModel):
+    """Per-role provider/model routing.
+
+    Furrow can send different agent roles to different providers and models:
+    a cheap model for planning, a powerful one for the worker, and so on. Each
+    role entry is optional and falls back to the global defaults when unset.
+    """
+
+    planner: RouteEntry = Field(default_factory=RouteEntry)
+    worker: RouteEntry = Field(default_factory=RouteEntry)
+    tester: RouteEntry = Field(default_factory=RouteEntry)
+
+    def is_empty(self) -> bool:
+        """True when no role carries an override."""
+        return all(
+            getattr(self, role).provider is None and getattr(self, role).model is None
+            for role in ("planner", "worker", "tester")
+        )
+
+
 class TaskModel(BaseModel):
     id: str
     description: str
@@ -132,6 +164,7 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    routing: ModelRouter = Field(default_factory=ModelRouter)
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
@@ -141,6 +174,18 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def route_for(self, role: str) -> tuple[Provider, str]:
+        """Resolve the (provider, model) for an agent role.
+
+        Falls back to the global defaults when the role entry does not override
+        them, so a router with no entries behaves exactly like the old flat
+        configuration.
+        """
+        entry: RouteEntry = getattr(self.routing, role, RouteEntry())
+        provider = entry.provider if entry.provider is not None else self.provider
+        model = entry.model or getattr(self, f"{role}_model")
+        return provider, model
 
 
 settings = Settings()

@@ -12,10 +12,12 @@ class FakeLLMClient:
         self.raises = raises
         self.prompts = []
         self.models = []
+        self.routes = []
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, route=None):
         self.prompts.append(prompt)
         self.models.append(model)
+        self.routes.append(route)
         if self.raises:
             raise self.raises
         return self.response
@@ -73,9 +75,10 @@ def test_context_included():
     assert "FAILING TESTS" in client.prompts[0]
 
 
-def test_uses_planner_model():
+def test_uses_planner_route():
     client = FakeLLMClient(response='{"tasks":[],"rationale":""}')
     s = Settings(_env_file=None, planner_model="my-model")
     agent = PlannerAgent(client=client, settings=s)
     run(agent.plan("g"))
-    assert client.models[0] == "my-model"
+    assert client.routes[0] == "planner"
+    assert client.models[0] is None
