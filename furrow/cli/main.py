@@ -116,6 +116,10 @@ def _print_state(state: RunState) -> None:
             line = f"  {task.id}  {task.status}  {task.description}"
             if files_changed:
                 line += f"  [{', '.join(files_changed)}]"
+            if task.result:
+                line += f"  result: {task.result}"
+            if task.error:
+                line += f"  error: {task.error}"
             click.echo(line)
     else:
         click.echo("Tasks:  (none)")
