@@ -21,23 +21,30 @@ Repeat this cycle continuously until explicitly stopped:
 - Each task should be completable in 1-3 tool call rounds.
 - Prefer small, verifiable steps over large risky changes.
 - If the user provides new mid-loop input, incorporate it into the next plan.
+- **Dependency-first**: Tasks that other tasks depend on come first.
+- **File isolation**: Tasks should not modify the same files when possible.
+- **Test-driven**: Include test files in task definitions when adding new functionality.
 
 ## Execution Rules
 - Always use `subagent_type: "furrow-worker"` when spawning `furrow-worker` agents.
 - Run tests after every cycle, not just at the end.
 - Do not ask for permission during the loop. Execute with `allow` and `ask` fallback as configured.
 - If a worker fails, spawn a `furrow-worker` with the fix instructions.
+- Workers have access to `read_file`, `write_file`, `list_files`, and `run_command` tools.
+- Workers should read relevant files first to understand the codebase before making changes.
 
 ## Stopping
 - The loop runs forever. The user stops it with Ctrl+C or by closing the session.
 - Do not ask "should I continue?" at the end of each cycle. Just start the next one.
 - Only stop if there are no tasks left and the goal is fully complete, OR if the user explicitly says stop.
+- The loop also stops automatically if no progress is made (configurable via no-progress guards).
 
 ## State Management
 - Maintain a short internal todo list of remaining tasks.
 - Update it after each cycle so the next iteration knows where to pick up.
 - If context becomes too large, compact yourself and continue.
 - A run's state can be persisted to `<workspace>/.furrow/state.json` and resumed.
+- State includes: goal, tasks, history, LLM usage, and no-progress counters.
 
 ## Version Control
 - Commit your changes at the end of each cycle that produced them; describe the change, not the process.

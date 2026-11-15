@@ -50,6 +50,9 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        # Track consecutive cycles without meaningful progress
+        self._cycles_without_completion = 0
+        self._total_tasks_completed = 0
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -219,6 +222,11 @@ class Orchestrator:
                 self._say(f"[red]Tests failed: {summary}[/red]")
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
+            
+            # Track progress for no-progress guard
+            completed_this_cycle = sum(1 for t in self.tasks if t.id in self._active_ids and t.status == "completed")
+            self._total_tasks_completed += completed_this_cycle
+            
             if skipped:
                 # A skipped run (e.g. no test runner detected) is not a failure:
                 # keep the original goal and drop the stale feedback so the loop
@@ -270,6 +278,16 @@ class Orchestrator:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
                     self._no_progress = 0
                 self._prev_sig = sig
+            
+            # Additional no-progress check: if we haven't completed any tasks
+            # in the last few cycles and tests are failing, stop
+            if not test_result.passed and completed_this_cycle == 0:
+                self._cycles_without_completion += 1
+                if self._cycles_without_completion >= 3:
+                    self._stopped_reason = "no progress: no tasks completed in 3 consecutive cycles"
+                    guard_tripped = True
+            else:
+                self._cycles_without_completion = 0
 
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,

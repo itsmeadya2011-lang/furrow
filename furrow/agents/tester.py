@@ -91,6 +91,44 @@ def parse_test_output(output: str) -> list[dict]:
             )
             seen_locations.add(location_key)
 
+    # Pattern for vitest failures
+    vitest_failed_pattern = re.compile(
+        r"^\s*✓?\s*×\s+([^\n]+)\n\s+→\s+(.+?)(?:\n\s+(?:at|Error))?", re.MULTILINE
+    )
+    for match in vitest_failed_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        error_msg = match.group(2).strip() if match.group(2) else ""
+        location_key = f"vitest::{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg,
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Pattern for Jest failures
+    jest_failed_pattern = re.compile(
+        r"^\s*●\s+([^\n]+)\n\s+(.+?)(?:\n\s+at|\n\s+Expect)", re.MULTILINE | re.DOTALL
+    )
+    for match in jest_failed_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        error_msg = match.group(2).strip() if match.group(2) else ""
+        location_key = f"jest::{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": error_msg[:500],
+                }
+            )
+            seen_locations.add(location_key)
+
     # Pattern for file:line:col
     file_line_col_pattern = re.compile(r"([^\s:]+\.py):(\d+):(\d+)")
     for match in file_line_col_pattern.finditer(output):
@@ -111,6 +149,25 @@ def parse_test_output(output: str) -> list[dict]:
     # Pattern for file:line (without col)
     file_line_pattern = re.compile(r"([^\s:]+\.py):(\d+)(?!\d*:)")
     for match in file_line_pattern.finditer(output):
+        file_path = match.group(1)
+        line_num = int(match.group(2))
+        location_key = f"{file_path}:{line_num}"
+        if location_key not in seen_locations and not any(
+            f.get("line") == line_num and f.get("file") == file_path for f in failures
+        ):
+            failures.append(
+                {
+                    "file": file_path,
+                    "line": line_num,
+                    "test": None,
+                    "error": "",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Pattern for JS/TS file:line
+    js_file_line_pattern = re.compile(r"([^\s:]+\.(?:js|ts|jsx|tsx)):(\d+)(?:\d*:)?")
+    for match in js_file_line_pattern.finditer(output):
         file_path = match.group(1)
         line_num = int(match.group(2))
         location_key = f"{file_path}:{line_num}"
@@ -202,20 +259,42 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+            # Check for vitest config (prefer vitest over jest when both present)
+            if any(self.workspace.glob("vitest.config.*")):
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
+            
+            # Check for jest config
+            if any(self.workspace.glob("jest.config.*")):
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
+            
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
+                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                        return ["pnpm", "test", "--silent"]
+                    if (self.workspace / "yarn.lock").is_file():
+                        return ["yarn", "test", "--silent"]
+                    return ["npm", "test", "--silent"]
+                # Check for vitest/jest in devDependencies
+                deps = {**pkg_data.get("devDependencies", {}), **pkg_data.get("dependencies", {})}
+                if "vitest" in deps:
+                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                        return ["pnpm", "test", "--silent"]
+                    if (self.workspace / "yarn.lock").is_file():
+                        return ["yarn", "test", "--silent"]
+                    return ["npm", "test", "--silent"]
+                if "jest" in deps:
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
@@ -244,6 +323,14 @@ class TesterAgent:
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+        # Check for Makefile with test target
+        if (self.workspace / "Makefile").is_file():
+            try:
+                content = (self.workspace / "Makefile").read_text()
+                if "test:" in content:
+                    return ["make", "test"]
+            except Exception:
+                pass
 
         return None
 
@@ -384,8 +471,9 @@ class TesterAgent:
                 + "\n"
                 + stderr.decode("utf-8", errors="replace")
             )
-            if len(combined) > 20000:
-                combined = "[... output truncated ...]\n" + combined[-20000:]
+            test_output_limit = getattr(self.settings, "test_output_limit", 20000)
+            if len(combined) > test_output_limit:
+                combined = "[... output truncated ...]\n" + combined[-test_output_limit:]
 
             llm_result: TestResult | None = None
             if not spawn_failed:

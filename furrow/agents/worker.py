@@ -49,7 +49,7 @@ DENIED_PROGRAMS = frozenset(
 )
 
 # Maximum number of entries returned by the ``list_files`` tool.
-MAX_LIST_ENTRIES = 500
+MAX_LIST_ENTRIES = 500  # Default, overridden by settings.list_files_limit
 
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
@@ -290,6 +290,8 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._error_count = 0
+        self._last_error: str | None = None
 
     async def run(self) -> WorkerResult:
         try:
@@ -336,6 +338,25 @@ class WorkerAgent:
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
+                # Track errors for context
+                if result.startswith("error:"):
+                    self._error_count += 1
+                    self._last_error = result
+            
+            # Add error context if there have been repeated errors
+            if self._error_count >= 3 and self._last_error:
+                error_context = (
+                    f"\n\nNote: You've encountered {self._error_count} errors so far. "
+                    f"Last error: {self._last_error}. "
+                    f"Consider reading relevant files first or adjusting your approach."
+                )
+                result_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": "system",
+                    "content": error_context
+                })
+                self._error_count = 0  # Reset after adding context
+
             messages.append({"role": "user", "content": result_blocks})
 
         # budget exhausted: the worker was truncated, so this is NOT a success.
@@ -356,6 +377,23 @@ class WorkerAgent:
         parts.append(f"Task: {self.task.description}")
         parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
         parts.append(f"Workspace: {self.workspace}")
+        
+        # Add project context
+        try:
+            project_files = []
+            skip_dirs = {".git", "__pycache__", ".pytest_cache", "node_modules", ".venv", "venv", "dist", "build", ".furrow"}
+            for path in self.workspace.rglob("*"):
+                if path.is_file():
+                    rel = path.relative_to(self.workspace)
+                    if not any(part in skip_dirs for part in rel.parts):
+                        project_files.append(str(rel))
+                        if len(project_files) >= 30:
+                            break
+            if project_files:
+                parts.append(f"Project files: {', '.join(project_files)}")
+        except Exception:
+            pass
+            
         return "\n".join(parts)
 
     async def _execute_tool(self, tc: ToolCall) -> str:
@@ -402,8 +440,9 @@ class WorkerAgent:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        if len(content) > 20000:
-            content = content[:20000] + "\n[... output truncated ...]"
+        limit = getattr(self.settings, "read_file_limit", 20000)
+        if len(content) > limit:
+            content = content[:limit] + "\n[... output truncated ...]"
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -427,10 +466,11 @@ class WorkerAgent:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
+        # Cap the listing at list_files_limit so huge trees cannot flood the context.
+        limit = getattr(self.settings, "list_files_limit", 500)
         rels = []
         base = self.workspace.resolve()
-        for e in entries[:MAX_LIST_ENTRIES]:
+        for e in entries[:limit]:
             try:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
@@ -487,7 +527,7 @@ class WorkerAgent:
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
-        cap = 20000
+        cap = getattr(self.settings, "command_output_limit", 20000)
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined

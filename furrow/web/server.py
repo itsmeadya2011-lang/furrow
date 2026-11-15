@@ -74,10 +74,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: 0.85rem;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -97,7 +99,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color 0.2s;
   }
+  .panel:hover { border-color: #4c8dff; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
   }
@@ -114,6 +118,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    font-size: .8rem; color: #4c8dff; margin-top: .3rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -124,13 +132,40 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { color: #8a93a5; background: rgba(138, 147, 165, 0.15); }
+  .status-running { color: #4c8dff; background: rgba(76, 141, 255, 0.15); }
+  .status-completed { color: #57d38c; background: rgba(87, 211, 140, 0.15); }
+  .status-failed { color: #e0685f; background: rgba(224, 104, 95, 0.15); }
+  .status-blocked { color: #f0b367; background: rgba(240, 179, 103, 0.15); }
+  .status-skipped { color: #8a93a5; background: rgba(138, 147, 165, 0.15); }
+  .status-unknown { color: #8a93a5; background: rgba(138, 147, 165, 0.15); }
+  .log-entry { margin: 0.1rem 0; }
+  .log-time { color: #555; margin-right: 0.5rem; }
+  .log-cycle { color: #4c8dff; }
+  .log-plan { color: #f0b367; }
+  .log-task { color: #57d38c; }
+  .log-test-pass { color: #57d38c; }
+  .log-test-fail { color: #e0685f; }
+  .log-error { color: #e0685f; }
+  .log-done { color: #57d38c; font-weight: bold; }
+  .progress-bar {
+    height: 4px; background: #2b3240; border-radius: 2px; overflow: hidden;
+    margin: 0.5rem 0;
+  }
+  .progress-fill {
+    height: 100%; background: linear-gradient(90deg, #4c8dff, #57d38c);
+    transition: width 0.3s ease;
+  }
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem; margin: 1rem 0;
+  }
+  .stat-card {
+    background: #171b23; border: 1px solid #2b3240; border-radius: 6px;
+    padding: 0.75rem; text-align: center;
+  }
+  .stat-value { font-size: 1.5rem; font-weight: bold; color: #f0f2f5; }
+  .stat-label { font-size: 0.75rem; color: #8a93a5; text-transform: uppercase; }
 </style>
 </head>
 <body>
@@ -139,6 +174,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -148,6 +184,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
   </div>
+</div>
+<div class="stats-grid" id="stats">
+  <div class="stat-card"><div class="stat-value" id="stat-cycles">0</div><div class="stat-label">Cycles</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-completed">0</div><div class="stat-label">Completed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-failed">0</div><div class="stat-label">Failed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-blocked">0</div><div class="stat-label">Blocked</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-tests">0</div><div class="stat-label">Test Runs</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-cost">$0.00</div><div class="stat-label">Est. Cost</div></div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -160,8 +204,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
+  const stopBtn = document.getElementById('stop');
+  const statCycles = document.getElementById('stat-cycles');
+  const statCompleted = document.getElementById('stat-completed');
+  const statFailed = document.getElementById('stat-failed');
+  const statBlocked = document.getElementById('stat-blocked');
+  const statTests = document.getElementById('stat-tests');
+  const statCost = document.getElementById('stat-cost');
   let socket = null;
   let lastSummary = null;
+  let isRunning = false;
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -172,8 +226,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
+  function setRunning(running) {
+    isRunning = running;
+    startBtn.disabled = running;
+    resumeBtn.disabled = running;
+    stopBtn.disabled = !running;
+  }
+
   const SAFE_STATUSES = {
     pending: 'pending',
     running: 'running',
@@ -193,6 +252,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   function renderStatus(status, result, running) {
+    setRunning(running);
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
       text(status && status.cycles !== undefined ? status.cycles : '\u2014');
@@ -209,6 +269,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    
+    // Update stats
+    if (status) {
+      statCycles.textContent = status.cycles || 0;
+      const tasks = status.tasks || [];
+      statCompleted.textContent = tasks.filter(t => t.status === 'completed').length;
+      statFailed.textContent = tasks.filter(t => t.status === 'failed').length;
+      statBlocked.textContent = tasks.filter(t => t.status === 'blocked').length;
+    }
+    if (result) {
+      statTests.textContent = result.tests_run || 0;
+      statCost.textContent = '$' + (Number(result.usage?.cost_usd) || 0).toFixed(4);
+    }
   }
 
   function renderTasks(tasks) {
@@ -250,6 +323,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      
+      // Show files changed
+      const files = task.files_changed || [];
+      if (files.length > 0) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        filesEl.textContent = 'files: ' + files.join(', ');
+        panel.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -311,8 +393,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
       socket.send(JSON.stringify(payload));
     };
@@ -334,23 +414,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const time = eventTime(msg);
       let line = '';
       let color = '#8a93a5';
+      let logClass = '';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
+        logClass = 'log-cycle';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        logClass = 'log-plan';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+        logClass = 'log-task';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
         line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
           truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+        logClass = ok ? 'log-task' : 'log-error';
       } else if (type === 'test_started') {
         line = 'running tests...';
+        logClass = 'log-test';
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+        logClass = ok ? 'log-test-pass' : 'log-test-fail';
       } else if (type === 'state_saved') {
         line = 'state saved';
       } else if (type === 'log') {
@@ -358,17 +445,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
         color = '#e0685f';
+        logClass = 'log-error';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
         color = '#57d38c';
+        logClass = 'log-done';
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
+      const entry = document.createElement('div');
+      entry.className = 'log-entry' + (logClass ? ' ' + logClass : '');
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'log-time';
+      timeSpan.textContent = time;
+      const msgSpan = document.createElement('span');
+      msgSpan.style.color = color;
+      msgSpan.textContent = line;
+      entry.appendChild(timeSpan);
+      entry.appendChild(msgSpan);
+      logEl.appendChild(entry);
       logEl.scrollTop = logEl.scrollHeight;
       return line;
     }
@@ -387,6 +482,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
       if (msg.type === 'done') {
         loadStatus();
+        setRunning(false);
       }
     };
     socket.onclose = function () {
@@ -404,6 +500,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('stop').onclick = function () {
+    if (socket) {
+      socket.close();
+      append('-- stopping...');
+    }
   };
 
   loadState();

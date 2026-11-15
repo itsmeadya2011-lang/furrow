@@ -132,6 +132,19 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    
+    # Advanced settings
+    no_progress_threshold: int = Field(default=2, ge=1, description="Cycles without progress before stopping")
+    max_cycles_without_completion: int = Field(default=3, ge=1, description="Max cycles with no task completions before stopping")
+    list_files_limit: int = Field(default=500, ge=1, le=5000, description="Max files returned by list_files tool")
+    read_file_limit: int = Field(default=20000, ge=1000, le=100000, description="Max characters returned by read_file tool")
+    command_output_limit: int = Field(default=20000, ge=1000, le=100000, description="Max characters in command output")
+    test_output_limit: int = Field(default=20000, ge=1000, le=100000, description="Max characters in test output")
+    enable_web_ui: bool = Field(default=True, description="Enable web UI server")
+    web_host: str = Field(default="127.0.0.1", description="Web UI host")
+    web_port: int = Field(default=8000, ge=1, le=65535, description="Web UI port")
+    auto_save_state: bool = Field(default=True, description="Automatically save state after each cycle")
+    preserve_history_on_resume: bool = Field(default=True, description="Preserve history when resuming a run")
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
