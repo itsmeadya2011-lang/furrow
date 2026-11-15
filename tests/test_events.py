@@ -132,3 +132,26 @@ async def test_emit_async_delivers_event_to_subscribers() -> None:
     await bus.emit_async(event)
     got = await queue.get()
     assert got is event
+
+
+def test_eventtype_documented_contract() -> None:
+    """Every documented EventType value must exist on the enum.
+
+    The set is pinned here so that a future refactor that drops or renames a
+    lifecycle event is caught by the tests instead of silently breaking the
+    CLI/web consumers that key off the event names.
+    """
+    values = {member.value for member in EventType}
+    expected = {
+        "cycle_started",
+        "cycle_finished",
+        "plan_created",
+        "task_started",
+        "task_finished",
+        "test_started",
+        "test_finished",
+        "state_saved",
+        "log",
+        "error",
+    }
+    assert expected.issubset(values), f"missing documented event types: {expected - values}"

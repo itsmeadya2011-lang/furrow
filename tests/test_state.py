@@ -189,3 +189,73 @@ def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Pa
     assert loaded is not None
     assert loaded.tests_run == 0
 
+
+def test_last_test_verdict_fields_round_trip(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "s.json")
+    state = RunState(
+        goal="g",
+        last_passed=True,
+        last_skipped=False,
+        last_summary="12 passed",
+    )
+    store.save(state)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.last_passed is True
+    assert loaded.last_skipped is False
+    assert loaded.last_summary == "12 passed"
+
+
+def test_last_test_verdict_fields_default_to_none_and_false() -> None:
+    state = RunState(goal="g")
+    assert state.last_passed is None
+    assert state.last_skipped is False
+    assert state.last_summary == ""
+
+
+def test_legacy_state_without_last_verdict_fields_loads(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.json"
+    legacy = {
+        "version": 1,
+        "goal": "g",
+        "original_goal": "g",
+        "cycles": 0,
+        "tasks": [],
+        "history": [],
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "calls": 0},
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    store = StateStore(path)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.last_passed is None
+    assert loaded.last_skipped is False
+    assert loaded.last_summary == ""
+
+
+def test_runstate_has_documented_fields() -> None:
+    """RunState must expose every field the architecture document references.
+
+    This pins the persisted schema so a refactor that drops a documented
+    field is caught by the tests instead of silently breaking consumers.
+    """
+    documented = {
+        "version",
+        "goal",
+        "original_goal",
+        "cycles",
+        "tasks",
+        "history",
+        "updated_at",
+        "usage",
+        "no_progress",
+        "prev_sig",
+        "tests_run",
+        "last_passed",
+        "last_skipped",
+        "last_summary",
+    }
+    actual = set(RunState.model_fields)
+    assert documented.issubset(actual), f"missing documented fields: {documented - actual}"
+

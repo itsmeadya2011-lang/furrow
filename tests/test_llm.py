@@ -868,3 +868,85 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+class _AsyncClose:
+    """A stand-in for an LLM client that tracks whether aclose() was awaited."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.awaited = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+        self.awaited = True
+
+
+class _SyncClose:
+    """A stand-in whose close() is synchronous."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _BrokenClose:
+    """A stand-in whose aclose() raises; release must swallow the error."""
+
+    async def aclose(self) -> None:
+        raise RuntimeError("boom")
+
+
+async def test_release_client_calls_aclose():
+    from furrow.llm import release_client
+
+    closer = _AsyncClose()
+    await release_client(closer)
+    assert closer.closed is True
+    assert closer.awaited is True
+
+
+async def test_release_client_falls_back_to_close():
+    from furrow.llm import release_client
+
+    closer = _SyncClose()
+    await release_client(closer)
+    assert closer.closed is True
+
+
+async def test_release_client_swallows_close_errors():
+    from furrow.llm import release_client
+
+    closer = _BrokenClose()
+    # Must not raise.
+    await release_client(closer)
+
+
+async def test_release_client_no_close_method_is_noop():
+    from furrow.llm import release_client
+
+    class Bare:
+        pass
+
+    # Must not raise even though there is nothing to close.
+    await release_client(Bare())
+
+
+async def test_release_client_none_is_noop():
+    from furrow.llm import release_client
+
+    await release_client(None)
+
+
+async def test_release_client_resets_cached_clients():
+    """release_client must reset cached provider references so the client is reusable."""
+    from furrow.llm import release_client
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o-mini"))
+    fake = _AsyncClose()
+    client._openai = fake
+    await release_client(client)
+    assert client._openai is None
+    assert fake.closed is True

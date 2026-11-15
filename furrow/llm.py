@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -497,3 +498,24 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+
+async def release_client(client: Any) -> None:
+    """Release the HTTP resources of an LLM client, when it supports closing.
+
+    ``LLMClient.aclose()`` may not exist and may be a plain or an async method,
+    so it is looked up defensively and only awaited when the result is awaitable.
+    A failing close is logged and ignored: closing must never turn a successful
+    run into a failed one.
+    """
+    closer = getattr(client, "aclose", None)
+    if closer is None:
+        closer = getattr(client, "close", None)
+    if closer is None:
+        return
+    try:
+        outcome = closer()
+        if inspect.isawaitable(outcome):
+            await outcome
+    except Exception:
+        pass
