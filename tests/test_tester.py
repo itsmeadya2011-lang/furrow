@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
+from furrow.agents.tester import (
+    DEFAULT_TEST_TIMEOUT,
+    TesterAgent,
+    _looks_like_failure,
+    resolve_test_timeout,
+)
 from furrow.config import Settings, TestResult
 
 
@@ -352,6 +357,41 @@ def test_test_timeout_defaults_to_a_dedicated_value(tmp_path):
     """Without an explicit `test_timeout` the tester still gets its own timeout."""
     settings = Settings(_env_file=None, workspace=tmp_path, request_timeout=1.0)
     assert resolve_test_timeout(settings) == 600.0
+
+
+def test_resolve_test_timeout_none_defaults_to_default(tmp_path):
+    settings = Settings(_env_file=None, workspace=tmp_path)
+    assert resolve_test_timeout(settings) == DEFAULT_TEST_TIMEOUT
+
+
+def test_resolve_test_timeout_non_numeric_string_defaults(tmp_path):
+    settings = Settings(_env_file=None, workspace=tmp_path)
+    settings = settings.model_copy(update={"test_timeout": "abc"})
+    assert resolve_test_timeout(settings) == DEFAULT_TEST_TIMEOUT
+
+
+def test_resolve_test_timeout_zero_defaults(tmp_path):
+    settings = Settings(_env_file=None, workspace=tmp_path)
+    settings = settings.model_copy(update={"test_timeout": 0})
+    assert resolve_test_timeout(settings) == DEFAULT_TEST_TIMEOUT
+
+
+def test_resolve_test_timeout_negative_defaults(tmp_path):
+    settings = Settings(_env_file=None, workspace=tmp_path)
+    settings = settings.model_copy(update={"test_timeout": -1})
+    assert resolve_test_timeout(settings) == DEFAULT_TEST_TIMEOUT
+
+
+def test_resolve_test_timeout_positive_value(tmp_path):
+    settings = Settings(_env_file=None, workspace=tmp_path)
+    settings = settings.model_copy(update={"test_timeout": 30.0})
+    assert resolve_test_timeout(settings) == 30.0
+
+
+def test_resolve_test_timeout_integer_value(tmp_path):
+    settings = Settings(_env_file=None, workspace=tmp_path)
+    settings = settings.model_copy(update={"test_timeout": 120})
+    assert resolve_test_timeout(settings) == 120.0
 
 
 def test_looks_like_failure_ignores_zero_counters():

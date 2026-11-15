@@ -732,7 +732,9 @@ async def test_completed_task_is_executed_again_when_the_description_changed(tmp
     orch.planner = FakePlanner([TaskModel(id="t1", description="do t1 differently")])
     await orch.run()  # cycle 2
     assert len(calls) == 2
-    assert orch.tasks[0].attempts == 2
+    # The retry budget is per-cycle: attempts reset to 0 when the task is
+    # re-planned with a changed description, so after re-execution it is 1.
+    assert orch.tasks[0].attempts == 1
 
 
 @pytest.mark.asyncio
@@ -1079,3 +1081,167 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+def test_plan_waves_two_task_cycle_all_blocked(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    a = TaskModel(id="a", description="a", dependencies=["b"])
+    b = TaskModel(id="b", description="b", dependencies=["a"])
+    waves = orch._plan_waves([a, b])
+    assert waves == []
+    assert a.status == "blocked"
+    assert b.status == "blocked"
+
+
+def test_plan_waves_three_task_cycle_all_blocked(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    a = TaskModel(id="a", description="a", dependencies=["b"])
+    b = TaskModel(id="b", description="b", dependencies=["c"])
+    c = TaskModel(id="c", description="c", dependencies=["a"])
+    waves = orch._plan_waves([a, b, c])
+    assert waves == []
+    assert a.status == "blocked"
+    assert b.status == "blocked"
+    assert c.status == "blocked"
+
+
+def test_plan_waves_cycle_plus_independent_task(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    a = TaskModel(id="a", description="a", dependencies=["b"])
+    b = TaskModel(id="b", description="b", dependencies=["a"])
+    c = TaskModel(id="c", description="c", dependencies=[])
+    waves = orch._plan_waves([a, b, c])
+    assert waves == [[c]]
+    assert c.status != "blocked"
+    assert a.status == "blocked"
+    assert b.status == "blocked"
+
+
+def _make_orch(max_task_retries: int) -> Orchestrator:
+    settings = Settings(_env_file=None, max_task_retries=max_task_retries)
+    return Orchestrator(goal="g", settings=settings)
+
+
+def test_merge_plan_completed_task_same_description_and_files_keeps_completed_and_skips():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="completed", attempts=1)
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"])],
+                rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].status == "completed"
+    assert "1" in orch._skip_ids
+
+
+def test_merge_plan_completed_task_changed_description_resets_to_pending():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="completed", attempts=3)
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing differently",
+                                 files=["a.py"])], rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].status == "pending"
+    assert orch.tasks[0].attempts == 0
+
+
+def test_merge_plan_completed_task_changed_files_resets_to_pending():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="completed", attempts=3)
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["b.py"])],
+                rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].status == "pending"
+    assert orch.tasks[0].attempts == 0
+
+
+def test_merge_plan_failed_task_with_attempts_left_resets_to_pending():
+    orch = _make_orch(max_task_retries=2)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="failed", attempts=1, error="boom")
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"])],
+                rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].status == "pending"
+    assert orch.tasks[0].attempts == 0
+
+
+def test_merge_plan_failed_task_with_exhausted_budget_stays_failed():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="failed", attempts=2, error="boom")
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"])],
+                rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].status == "failed"
+    assert orch.tasks[0].attempts == 2
+
+
+def test_merge_plan_blocked_task_stays_blocked():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="blocked", attempts=1)
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"])],
+                rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].status == "blocked"
+
+
+def test_merge_plan_new_task_is_appended_to_tasks():
+    orch = _make_orch(max_task_retries=1)
+    orch.tasks = [TaskModel(id="1", description="existing")]
+    plan = Plan(tasks=[TaskModel(id="2", description="new task")], rationale="test")
+    orch._merge_plan(plan)
+    assert len(orch.tasks) == 2
+    assert orch.tasks[1].id == "2"
+    assert orch.tasks[1].status == "pending"
+
+
+def test_merge_plan_preserves_result_and_error_when_plan_values_are_none():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="completed", attempts=1, result="did the thing",
+                         error="old error")
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"])],
+                rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].result == "did the thing"
+    assert orch.tasks[0].error == "old error"
+
+
+def test_merge_plan_adopts_non_none_result_and_error_from_plan():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="completed", attempts=1, result="old result",
+                         error="old error")
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"],
+                                 result="new result", error="new error")],
+                rationale="test")
+    orch._merge_plan(plan)
+    assert orch.tasks[0].result == "new result"
+    assert orch.tasks[0].error == "new error"
+
+
+def test_merge_plan_sets_active_ids_from_plan():
+    orch = _make_orch(max_task_retries=1)
+    existing = TaskModel(id="1", description="do thing", files=["a.py"],
+                         status="completed", attempts=1)
+    orch.tasks = [existing]
+    plan = Plan(tasks=[TaskModel(id="1", description="do thing", files=["a.py"]),
+                       TaskModel(id="2", description="new task")], rationale="test")
+    orch._merge_plan(plan)
+    assert orch._active_ids == {"1", "2"}

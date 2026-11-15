@@ -61,6 +61,27 @@ def resolve_test_timeout(settings: Settings) -> float:
     return timeout
 
 
+def _build_task_summary(tasks: list[TaskModel]) -> str:
+    """Build a human-readable summary of the tasks executed in this cycle.
+
+    The summary is included in the LLM prompt so the model has context about
+    what was changed when classifying test results.
+    """
+    if not tasks:
+        return "(no tasks)"
+
+    lines: list[str] = []
+    for task in tasks:
+        lines.append(f"- [{task.id}] {task.description}")
+        lines.append(f"    status: {task.status}")
+        if task.files_changed:
+            files = ", ".join(task.files_changed)
+            lines.append(f"    files changed: {files}")
+        if task.error:
+            lines.append(f"    error: {task.error}")
+    return "\n".join(lines)
+
+
 def parse_test_output(output: str) -> list[dict]:
     """Parse raw test output and return structured failure information."""
     failures: list[dict] = []
@@ -390,7 +411,16 @@ class TesterAgent:
             llm_result: TestResult | None = None
             if not spawn_failed:
                 # A runner that never started has no output worth summarising.
-                prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+                task_summary = _build_task_summary(tasks)
+                prompt = (
+                    TESTER_PROMPT
+                    + "\n\nGoal: "
+                    + goal
+                    + "\n\nTasks executed:\n"
+                    + task_summary
+                    + "\n\nTest output:\n"
+                    + combined
+                )
                 try:
                     response = await self.client.complete(
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
