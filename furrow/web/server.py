@@ -13,7 +13,6 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from typing import Any
 
@@ -26,6 +25,7 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.util import release_client, run_orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -507,35 +507,23 @@ async def _drain(queue: asyncio.Queue[Event]) -> None:
 
 
 async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
+    """Release the HTTP resources of an LLM client.
 
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
+    Thin wrapper around :func:`furrow.util.release_client` kept for backwards
+    compatibility with code that imports it from the server module.
     """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
+    await release_client(client)
 
 
 async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
     """Run an orchestrator and release its LLM client afterwards.
 
-    The client is closed in a ``finally`` block, so its HTTP connections are
-    released when the run finishes, when it fails and when it is cancelled
-    (e.g. because the websocket client went away).
+    The shared helper in :mod:`furrow.util` closes the client in a ``finally``
+    block, so its HTTP connections are released when the run finishes, when it
+    fails and when it is cancelled (e.g. because the websocket client went
+    away).
     """
-    try:
-        return await orchestrator.run()
-    finally:
-        await _release_client(getattr(orchestrator, "client", None))
+    return await run_orchestrator(orchestrator)
 
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:

@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
 import shlex
-import signal
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +12,7 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.util import MAX_OUTPUT_BYTES, kill_process_tree, truncate_head, truncate_output
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -402,8 +401,8 @@ class WorkerAgent:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        if len(content) > 20000:
-            content = content[:20000] + "\n[... output truncated ...]"
+        if len(content) > MAX_OUTPUT_BYTES:
+            content = truncate_head(content)
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -482,33 +481,9 @@ class WorkerAgent:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
-            await self._kill_process_tree(proc, new_session)
+            await kill_process_tree(proc, new_session)
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
-        cap = 20000
-        if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
-        return combined
-
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
-        """Kill a timed-out command together with every process it spawned."""
-        if new_session:
-            try:
-                pgid = os.getpgid(proc.pid)
-            except (OSError, AttributeError):
-                pgid = None
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (OSError, AttributeError):
-                    pass
-                else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
-        # Fallback: no process group available (or killing it failed).
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
+        return truncate_output(combined)

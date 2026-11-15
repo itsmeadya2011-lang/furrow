@@ -101,11 +101,13 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_MAX_RETRIES` | `3` | Retry attempts for transient LLM errors |
 | `FURROW_MAX_TASK_RETRIES` | `1` | Times a failed task is retried before it is marked failed |
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
-| `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
+| `FURROW_REQUEST_TIMEOUT` | `120.0` | Timeout in seconds for a single LLM request |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Timeout in seconds for worker shell commands |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Timeout in seconds for the test command |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
-| `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |
+| `FURROW_MODEL_PRICING` | `{}` | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}`; empty by default with the built-in pricing table used as fallback |
 
 A `.env` file is read automatically via pydantic-settings.
 
