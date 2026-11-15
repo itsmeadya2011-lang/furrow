@@ -492,8 +492,40 @@ class LLMClient:
         async with aiofiles.open(p, "w") as f:
             await f.write(content)
 
+    # Directories whose contents carry no value for a coding agent and would
+    # only flood the context: VCS metadata, dependency caches, virtualenvs and
+    # tool caches.  Build outputs (``dist``, ``build``, ``target``) are *not*
+    # excluded: a worker may legitimately need to inspect or clean them.
+    _LIST_EXCLUDE_DIRS = frozenset(
+        {
+            ".git",
+            ".hg",
+            ".svn",
+            ".furrow",
+            "node_modules",
+            "__pycache__",
+            ".venv",
+            "venv",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+        }
+    )
+
     def list_files(self, directory: str | Path) -> list[str]:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        exclude = self._LIST_EXCLUDE_DIRS
+        results: list[str] = []
+        for f in p.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(p)
+            # Skip any file that lives under an excluded directory.  Only the
+            # directory parts are checked, so a file named ``.gitignore`` at the
+            # root is still listed.
+            if any(part in exclude for part in rel.parts[:-1]):
+                continue
+            results.append(str(rel))
+        return results

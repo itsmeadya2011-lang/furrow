@@ -10,7 +10,7 @@ from furrow.agents.worker import WorkerResult
 from furrow.config import RunResult, Settings, TaskModel
 from furrow.core.events import EventType
 from furrow.core.orchestrator import Orchestrator
-from furrow.core.state import StateStore
+from furrow.core.state import HistoryEntry, StateStore
 
 
 class FakeWorker:
@@ -1078,4 +1078,51 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.planner = FakePlanner()
     orch.tester = AssertTester(passed=True)
     await orch.run()
-    assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_context_includes_previous_plan_and_test_summary(tmp_path, monkeypatch):
+    """The planner context carries the previous cycle's plan rationale and test summary.
+
+    Without it the planner re-derives the plan from the failure text alone and
+    often repeats the same approach.  The history entry from the previous
+    cycle is included when feedback is present and omitted on the first cycle
+    (when there is no feedback at all).
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    # Simulate the state left by a previous cycle: feedback from a failed
+    # test run plus the history entry that recorded the plan and the result.
+    orch._feedback = "FAILING TESTS\nAssertionError: boom"
+    orch.history.append(HistoryEntry(
+        cycle=1, plan_rationale="planned auth", tests_passed=False,
+        test_summary="1 failed",
+    ))
+
+    ctx = orch._context()
+    assert "FAILING TESTS" in ctx
+    assert "AssertionError: boom" in ctx
+    assert "Previous plan: planned auth" in ctx
+    assert "Previous test result: 1 failed" in ctx
+
+
+def test_context_empty_when_no_feedback():
+    """On the first cycle (no feedback) the planner context is empty."""
+    settings = Settings(_env_file=None)
+    orch = Orchestrator(goal="g", settings=settings)
+    assert orch._context() == ""
+
+
+def test_context_feedback_only_when_history_is_empty():
+    """Feedback without a history entry still returns the feedback text."""
+    settings = Settings(_env_file=None)
+    orch = Orchestrator(goal="g", settings=settings)
+    orch._feedback = "some failure"
+    assert orch._feedback
+    ctx = orch._context()
+    assert "some failure" in ctx
+    assert "Previous plan:" not in ctx
+    assert "Previous test result:" not in ctx

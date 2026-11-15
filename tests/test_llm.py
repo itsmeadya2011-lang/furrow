@@ -868,3 +868,39 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+def test_list_files_excludes_noise_directories(tmp_path):
+    """list_files skips VCS metadata, caches and vendored deps.
+
+    A worker asking for the project tree must not be flooded with the
+    contents of ``.git``, ``node_modules`` or ``__pycache__``: those carry
+    no value for the agent and would only burn context.  Real source files
+    at the root of the directory are still listed.
+    """
+    (tmp_path / "real.py").write_text("x")
+    (tmp_path / ".gitignore").write_text("*.pyc")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("secret")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "pkg").mkdir()
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "x.pyc").write_text("x")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x")
+
+    client = LLMClient(settings=Settings(_env_file=None))
+    result = client.list_files(tmp_path)
+
+    assert "real.py" in result
+    assert ".gitignore" in result
+    assert "src/main.py" in result
+    assert ".git/config" not in result
+    assert "node_modules/pkg/index.js" not in result
+    assert "__pycache__/x.pyc" not in result
+
+
+def test_list_files_empty_when_directory_missing(tmp_path):
+    client = LLMClient(settings=Settings(_env_file=None))
+    assert client.list_files(tmp_path / "does-not-exist") == []

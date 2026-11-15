@@ -327,9 +327,23 @@ class Orchestrator:
         )
 
     def _context(self) -> str:
-        if self._feedback:
-            return self._feedback
-        return ""
+        """Build the context block handed to the planner.
+
+        The planner gets more than the raw failure text: it also learns what
+        the previous cycle planned and how the test run ended, so it can
+        adjust the plan instead of re-deriving it from scratch.  When there is
+        no feedback (the first cycle, or a skipped run) the context is empty.
+        """
+        if not self._feedback:
+            return ""
+        last = self.history[-1] if self.history else None
+        parts: list[str] = [self._feedback]
+        if last is not None:
+            if last.plan_rationale:
+                parts.append("Previous plan: " + last.plan_rationale)
+            if last.test_summary:
+                parts.append("Previous test result: " + last.test_summary)
+        return "\n\n".join(parts)
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()

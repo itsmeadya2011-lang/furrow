@@ -120,6 +120,8 @@ The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0
 
 The loop is fail-safe: a planner error, an execution error, a tester error or a state-save error no longer crashes the run. A planner, execution or tester error emits an ERROR event, sets a stopped reason (`planner failed: ...`, `execute failed: ...`, `tester failed: ...`) and ends the loop cleanly with a normal run result; a state-save error emits an ERROR event with the path that could not be written and the run keeps going. Cancellation (`asyncio.CancelledError`) still propagates. An exception raised while handling a worker's result is converted into a task failure that consumes one attempt — it used to be swallowed by `asyncio.gather(..., return_exceptions=True)` — so a task is never left in an inconsistent state.
 
+When a cycle fails tests, the planner is handed more than the failure text: the context block also includes the previous cycle's plan rationale and test summary, so the next plan can build on what was tried instead of re-deriving it from scratch. On the first cycle (no feedback) the context is empty.
+
 ## LLM token accounting
 
 The LLM client records input/output tokens and call counts for every completion, and the orchestrator accumulates them per cycle and per run. Usage is persisted in the run state file and printed by the CLI in the run summary and in `furrow status`. Estimated USD cost is tracked alongside tokens using a built-in price snapshot, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`.
