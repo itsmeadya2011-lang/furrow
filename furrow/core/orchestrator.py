@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
 
 _UNSET = object()
 
@@ -19,9 +21,22 @@ _MAX_TEXT = 120
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None,
-                 settings: Settings | None = None, state_store: StateStore | None = None,
-                 event_bus: EventBus | None = None, resume: bool = False) -> None:
+    """Orchestrates the plan-execute-test loop for autonomous development.
+
+    The orchestrator coordinates the planner, worker agents, and tester to
+    iteratively work towards a goal. It handles task dependencies, parallel
+    execution, retries, state persistence, and progress reporting.
+    """
+
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        state_store: StateStore | None = None,
+        event_bus: EventBus | None = None,
+        resume: bool = False,
+    ) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
@@ -50,6 +65,10 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+
+        # Structured logger for this orchestrator instance
+        self._log = get_logger("furrow.orchestrator").bind(goal=goal)
+
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -79,8 +98,10 @@ class Orchestrator:
                     self._tests_run = int(getattr(st, "tests_run", 0) or 0)
                 except Exception:
                     self._tests_run = 0
+                self._log.info("resumed_run", cycles=self.cycles, tasks=len(self.tasks))
             else:
                 self._resume_state_missing = True
+                self._log.warning("resume_requested_no_state_file")
 
     def _client_usage(self) -> Usage:
         """Cumulative usage of the LLM client (zero when the client does not report it)."""
@@ -149,21 +170,34 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
+        """Execute the plan-execute-test loop until completion or failure.
+
+        Returns:
+            RunResult with the outcome of the run.
+        """
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
             self.event_bus.emit(Event(type=EventType.LOG,
                                       message="no state file found, starting fresh"))
+            self._log.warning("no_state_file_found_starting_fresh")
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
+        self._log.info("run_started", original_goal=self.original_goal, resume=self._resume)
 
         while True:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
+                self._log.info("max_cycles_reached", max_cycles=self.settings.max_cycles)
                 break
+
             self.cycles += 1
+            cycle_start = time.monotonic()
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            self._log.info("cycle_started", cycle=self.cycles, goal=self._clip(self.goal))
+
+            # Plan phase
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
@@ -172,19 +206,27 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
+                self._log.error("planner_failed", error=str(e), cycle=self.cycles)
                 break
+
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
+            self._log.info("plan_created", cycle=self.cycles, tasks=planned, rationale=plan.rationale)
+
             if not plan.tasks:
                 self.event_bus.emit(
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
                 self._stopped_reason = "goal complete"
+                self._log.info("goal_complete_no_tasks", cycle=self.cycles)
                 break
+
             self._merge_plan(plan)
+
+            # Execute phase
             try:
                 await self._execute(plan)
             except asyncio.CancelledError:
@@ -193,8 +235,12 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
+                self._log.error("execution_failed", error=str(e), cycle=self.cycles)
                 break
+
+            # Test phase
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+            self._log.info("test_started", cycle=self.cycles)
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -203,7 +249,9 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
+                self._log.error("tester_failed", error=str(e), cycle=self.cycles)
                 break
+
             self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
             self.event_bus.emit(
@@ -212,19 +260,26 @@ class Orchestrator:
                     data={"passed": test_result.passed, "summary": test_result.summary},
                 )
             )
+
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
                 self._say(f"[green]Tests passed: {summary}[/green]")
+                self._log.info("tests_passed", cycle=self.cycles, summary=summary)
             else:
                 self._say(f"[red]Tests failed: {summary}[/red]")
+                self._log.warning("tests_failed", cycle=self.cycles, summary=summary,
+                                 failures=test_result.failures)
+
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
+
             if skipped:
                 # A skipped run (e.g. no test runner detected) is not a failure:
                 # keep the original goal and drop the stale feedback so the loop
                 # does not chase a test runner that does not exist.
                 self.goal = self.original_goal
                 self._feedback = ""
+                self._log.info("tests_skipped_no_runner", cycle=self.cycles)
             elif not test_result.passed:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:
@@ -236,6 +291,10 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+                self._log.info("goal_updated_with_failures", cycle=self.cycles,
+                              failure_count=len(failures))
+
+            # Update usage tracking
             cumulative = self._client_usage()
             cycle_usage = Usage(
                 input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
@@ -245,6 +304,8 @@ class Orchestrator:
             )
             self._usage.add(cycle_usage)
             self._usage_seen = cumulative
+
+            # Record history
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
@@ -252,7 +313,12 @@ class Orchestrator:
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
             ))
+
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+            cycle_duration = time.monotonic() - cycle_start
+            self._log.info("cycle_finished", cycle=self.cycles, duration_seconds=round(cycle_duration, 2))
+
+            # No-progress guard
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
@@ -266,11 +332,14 @@ class Orchestrator:
                         "no test runner detected" if skipped else "no progress"
                     )
                     guard_tripped = True
+                    self._log.warning("no_progress_guard_tripped", cycle=self.cycles,
+                                     reason=self._stopped_reason, no_progress_count=self._no_progress)
             else:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
                     self._no_progress = 0
                 self._prev_sig = sig
 
+            # Persist state
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
                              usage=self._usage, no_progress=self._no_progress,
@@ -289,9 +358,12 @@ class Orchestrator:
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
                 )
+                self._log.error("state_save_failed", path=str(self.state_store.path), error=str(e))
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
+                self._log.debug("state_saved", path=str(self.state_store.path))
+
             if guard_tripped:
                 break
 
@@ -302,6 +374,8 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
+        self._log.info("run_stopped", cycles=self.cycles, reason=self._stopped_reason,
+                      passed=self._last_test_passed, skipped=self._tests_skipped)
 
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
@@ -312,6 +386,7 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
+
         return RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
@@ -332,6 +407,7 @@ class Orchestrator:
         return ""
 
     def _merge_plan(self, plan: Plan) -> None:
+        """Merge a new plan with existing tasks, preserving terminal states."""
         self._skip_ids = set()
         by_id = {t.id: t for t in self.tasks}
         max_retries = max(0, self.settings.max_task_retries)
@@ -375,6 +451,7 @@ class Orchestrator:
         self._active_ids = {t.id for t in plan.tasks}
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
+        """Compute execution waves based on task dependencies."""
         ids = {t.id for t in tasks}
         waves: list[list[TaskModel]] = []
         done: set[str] = set()
@@ -392,6 +469,7 @@ class Orchestrator:
         return waves
 
     async def _execute(self, plan: Plan) -> None:
+        """Execute all tasks in the plan, respecting dependencies and retries."""
         waves = self._plan_waves(plan.tasks)
         sem = asyncio.Semaphore(self.settings.max_parallel_tasks)
         max_retries = max(0, self.settings.max_task_retries)
@@ -410,11 +488,13 @@ class Orchestrator:
             if task.id in self._skip_ids:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
+                self._log.info("task_skipped_already_completed", task_id=task.id)
                 return
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                self._log.info("task_started", task_id=task.id, attempt=task.attempts + 1)
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -454,9 +534,16 @@ class Orchestrator:
                                  message=f"task {task.id} failed, retrying "
                                          f"(attempt {task.attempts} of {max_retries + 1})")
                         )
+                        self._log.warning("task_failed_retrying", task_id=task.id,
+                                         attempt=task.attempts, max_retries=max_retries,
+                                         error=task.error)
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                        self._log.error("task_failed_terminal", task_id=task.id,
+                                       attempt=task.attempts, max_retries=max_retries,
+                                       error=task.error)
                     return
+
                 try:
                     success = bool(getattr(result, "success", False))
                     task.result = getattr(result, "summary", None)
@@ -486,6 +573,8 @@ class Orchestrator:
                     detail = self._escape(self._one_line(task.error or "unknown error"))
                     if task.status == "completed":
                         self._say(f"[green]Task {task_id} completed[/green]")
+                        self._log.info("task_completed", task_id=task.id,
+                                      files_changed=task.files_changed)
                     elif task.status == "pending":
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(
@@ -493,8 +582,14 @@ class Orchestrator:
                                  message=f"task {task.id} failed, retrying "
                                          f"(attempt {task.attempts} of {max_retries + 1})")
                         )
+                        self._log.warning("task_failed_retrying", task_id=task.id,
+                                         attempt=task.attempts, max_retries=max_retries,
+                                         error=task.error, summary=task.result)
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                        self._log.error("task_failed_terminal", task_id=task.id,
+                                       attempt=task.attempts, max_retries=max_retries,
+                                       error=task.error, summary=task.result)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -529,8 +624,14 @@ class Orchestrator:
                                  message=f"task {task.id} failed, retrying "
                                          f"(attempt {task.attempts} of {max_retries + 1})")
                         )
+                        self._log.warning("task_exception_retrying", task_id=task.id,
+                                         attempt=task.attempts, max_retries=max_retries,
+                                         error=task.error)
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                        self._log.error("task_exception_terminal", task_id=task.id,
+                                       attempt=task.attempts, max_retries=max_retries,
+                                       error=task.error)
 
         async def run_tasks(tasks: list[TaskModel]) -> None:
             """Run tasks concurrently, never swallowing a cancellation.
@@ -576,11 +677,13 @@ class Orchestrator:
                             message=f"task {t.id} already failed - not retrying",
                         )
                     )
+                    self._log.info("task_not_retried_exhausted_budget", task_id=t.id)
                     unavailable.add(t.id)
                     continue
                 if any(d in unavailable for d in t.dependencies):
                     t.status = "blocked"
                     unavailable.add(t.id)
+                    self._log.info("task_blocked", task_id=t.id, blocked_by=list(unavailable))
                     continue
                 runnable.append(t)
             await run_tasks(runnable)

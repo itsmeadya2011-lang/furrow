@@ -4,17 +4,21 @@ The server exposes a tiny JSON API plus a websocket that streams every
 orchestrator event to the browser:
 
     GET  /            single page UI (inline HTML/CSS/JS)
-    GET  /api/state  persisted run state
-    GET  /api/status status of the currently active run
-    POST /api/start  start a background run
-    WS   /ws         run a goal and stream its events
+    GET  /api/state   persisted run state
+    GET  /api/status  status of the currently active run
+    POST /api/start   start a background run
+    WS   /ws          run a goal and stream its events
+    GET  /api/health  health check endpoint
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
+import time
+from contextlib import asynccontextmanager
 from typing import Any
 
 import uvicorn
@@ -26,12 +30,14 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.logging import get_logger
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Furrow")
-
 POLL_INTERVAL = 0.05
+MAX_CONCURRENT_RUNS = 1
+WS_PING_INTERVAL = 30.0
+WS_PING_TIMEOUT = 10.0
 
 DEFAULT_CURRENT: dict[str, Any] = {
     "running": False,
@@ -430,6 +436,15 @@ class SocketRequest(BaseModel):
     resume: bool = False
 
 
+class HealthResponse(BaseModel):
+    """Health check response."""
+
+    status: str = "ok"
+    version: str = "0.1.0"
+    running: bool = False
+    uptime_seconds: float = 0.0
+
+
 def _reset_registry() -> None:
     """Forget the active run (used by the tests)."""
     _CURRENT.clear()
@@ -569,10 +584,45 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
     await websocket.close(code=1008)
 
 
+# Server start time for uptime tracking
+_SERVER_START_TIME = time.monotonic()
+
+# Web logger for structured logging
+_web_logger = get_logger("furrow.web")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan handler for startup/shutdown."""
+    _web_logger.info("web_server_starting")
+    yield
+    _web_logger.info("web_server_shutting_down")
+    # Cancel any running tasks on shutdown
+    for task in _TASKS:
+        if not task.done():
+            task.cancel()
+    if _TASKS:
+        await asyncio.gather(*_TASKS, return_exceptions=True)
+
+
+app = FastAPI(title="Furrow", lifespan=lifespan)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     """The single page UI."""
     return HTMLResponse(content=INDEX_HTML)
+
+
+@app.get("/api/health", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
+    """Health check endpoint for monitoring."""
+    return HealthResponse(
+        status="ok",
+        version="0.1.0",
+        running=bool(_CURRENT.get("running")),
+        uptime_seconds=time.monotonic() - _SERVER_START_TIME,
+    )
 
 
 @app.get("/api/state")
@@ -602,6 +652,7 @@ async def api_status() -> dict[str, Any]:
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
     if _CURRENT.get("running"):
+        _web_logger.warning("api_start_rejected", reason="run_already_in_progress")
         return JSONResponse(
             status_code=409,
             content={"started": False, "error": "a run is already in progress"},
@@ -626,9 +677,11 @@ async def api_start(request: StartRequest) -> JSONResponse:
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
+        error_msg = _describe_validation_error(validation_error)
+        _web_logger.warning("api_start_validation_error", error=error_msg)
         return JSONResponse(
             status_code=400,
-            content={"started": False, "error": _describe_validation_error(validation_error)},
+            content={"started": False, "error": error_msg},
         )
     run_task = asyncio.create_task(_run_and_drain(orchestrator, bus))
     _TASKS.add(run_task)
@@ -642,51 +695,70 @@ async def api_start(request: StartRequest) -> JSONResponse:
             "error": None,
         }
     )
+    _web_logger.info("api_start_success", goal=goal, resume=request.resume, max_cycles=request.max_cycles)
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Run a goal and stream every event it emits to the client."""
+    client_host = websocket.client.host if websocket.client else "unknown"
+    _web_logger.info("websocket_connect", client=client_host)
     await websocket.accept()
     bus = EventBus()
     queue = bus.subscribe()
     run_task: asyncio.Task[RunResult] | None = None
+    ping_task: asyncio.Task | None = None
+
     try:
         try:
             payload = await websocket.receive_json()
         except WebSocketDisconnect:
+            _web_logger.info("websocket_disconnect_before_payload", client=client_host)
             return
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as e:
+            _web_logger.warning("websocket_invalid_payload", client=client_host, error=str(e))
             await _send_error(websocket, "expected a JSON object with a goal")
             return
+
         try:
             request = SocketRequest.model_validate(payload)
         except ValidationError as validation_error:
             # A rejected payload (an out-of-range ``max_cycles`` for instance)
             # must be answered with an error frame and must never start a run.
-            await _send_error(websocket, _describe_validation_error(validation_error))
+            error_msg = _describe_validation_error(validation_error)
+            _web_logger.warning("websocket_validation_error", client=client_host, error=error_msg)
+            await _send_error(websocket, error_msg)
             return
         except ValueError:
+            _web_logger.warning("websocket_invalid_json", client=client_host)
             await _send_error(websocket, "expected a JSON object with a goal")
             return
+
         goal = request.goal.strip()
         resume = request.resume
+
         if not goal and not resume:
             await _send_error(websocket, "goal is required")
             return
+
         if _CURRENT.get("running"):
             # A run is already in flight: refuse to start a second one instead
             # of overwriting the registry entry of the running one.
+            _web_logger.warning("websocket_rejected_run_in_progress", client=client_host)
             await _send_error(websocket, "a run is already in progress")
             return
+
         try:
             orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.
-            await _send_error(websocket, _describe_validation_error(validation_error))
+            error_msg = _describe_validation_error(validation_error)
+            _web_logger.warning("websocket_run_settings_error", client=client_host, error=error_msg)
+            await _send_error(websocket, error_msg)
             return
+
         run_task = asyncio.create_task(_run_orchestrator(orchestrator))
         _TASKS.add(run_task)
         run_task.add_done_callback(_on_run_done)
@@ -699,6 +771,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "error": None,
             }
         )
+
+        # Start ping task to detect dead connections
+        async def ping_loop():
+            try:
+                while not run_task.done():
+                    await asyncio.sleep(WS_PING_INTERVAL)
+                    if run_task.done():
+                        break
+                    try:
+                        await websocket.send_json({"type": "ping"})
+                    except Exception:
+                        # Connection likely dead, cancel the run
+                        if not run_task.done():
+                            _cancel_run(run_task)
+                        break
+            except asyncio.CancelledError:
+                pass
+
+        ping_task = asyncio.create_task(ping_loop())
+
+        _web_logger.info("websocket_run_started", client=client_host, goal=goal, resume=resume)
+
         while True:
             if run_task.done() and queue.empty():
                 break
@@ -707,18 +801,30 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 continue
             await websocket.send_json(event.to_dict())
+
         if run_task is None:  # pragma: no cover - defensive
             return
+
         # The run is over: clear the flag right away instead of waiting for the
         # done-callback to be processed.
         _clear_running_flag(run_task)
+
+        if ping_task:
+            ping_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ping_task
+
         if run_task.cancelled():
+            _web_logger.info("websocket_run_cancelled", client=client_host)
             return
+
         exc = run_task.exception()
         if exc is not None:
             logger.error("Furrow run failed: %s", exc)
+            _web_logger.error("websocket_run_failed", client=client_host, error=str(exc))
             await _send_error(websocket, f"run failed: {exc}")
             return
+
         result = run_task.result()
         await websocket.send_json(
             {
@@ -727,15 +833,23 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "data": result.model_dump(mode="json"),
             }
         )
+        _web_logger.info("websocket_run_completed", client=client_host, passed=result.passed)
+
     except asyncio.CancelledError:
         # The client went away (or the server is shutting down): stop the run
         # and make sure the server does not stay stuck in the "running" state.
         if run_task is not None and not run_task.done():
             _cancel_run(run_task)
+        if ping_task:
+            ping_task.cancel()
+        _web_logger.info("websocket_cancelled", client=client_host)
         raise
-    except (WebSocketDisconnect, RuntimeError):
+    except (WebSocketDisconnect, RuntimeError) as e:
         if run_task is not None and not run_task.done():
             _cancel_run(run_task)
+        if ping_task:
+            ping_task.cancel()
+        _web_logger.info("websocket_disconnect", client=client_host, error=str(e))
     finally:
         bus.unsubscribe(queue)
 
@@ -743,3 +857,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
     """Start the Furrow web server."""
     uvicorn.run(app, host=host, port=port)
+
+
+if __name__ == "__main__":
+    run()

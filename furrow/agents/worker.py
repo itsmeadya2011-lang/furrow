@@ -28,7 +28,7 @@ DENIED_COMMANDS = (
     "dd if=",
     "shutdown",
     "reboot",
-    "chmod -R 777 /",
+    "chmod -r 777 /",
     "> /dev/sda",
 )
 
@@ -53,6 +53,8 @@ MAX_LIST_ENTRIES = 500
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
+# Note: ``|`` is included but ``>|`` and ``>&``/``&>`` are handled specially
+# by checking the whole command text for redirections before segment splitting.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|\||\n|\r)+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
@@ -64,12 +66,16 @@ _HOME_VAR_RE = re.compile(
 )
 
 # The target of a redirection: ">> file", ">| file" (clobber override) or
-# "> file". ``&>`` and ``>&`` are caught because their ``>`` is matched here.
-_REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
+# "> file", ">& file", "&> file", ">>& file". ``&>`` and ``>&`` are caught
+# because their ``>`` is matched here.
+_REDIRECT_RE = re.compile(r"(?:>>?\|?|>&|&>)\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
 _MAX_SUBSTITUTION_DEPTH = 3
+
+# Process substitution patterns: <(...) and >(...)
+_PROCESS_SUB_RE = re.compile(r"[<>]\([^)]*\)")
 
 
 def _normalize_command(command: str) -> str:
@@ -167,6 +173,16 @@ def _extract_command_substitutions(command: str) -> list[str]:
     return substitutions
 
 
+def _extract_process_substitutions(command: str) -> list[str]:
+    """Return the text of every process substitution ``<(...)`` and ``>(...)``."""
+    substitutions: list[str] = []
+    for match in _PROCESS_SUB_RE.finditer(command):
+        text = match.group(0)[2:-1]  # Strip "<(" or ">(" and ")"
+        if text.strip():
+            substitutions.append(text)
+    return substitutions
+
+
 def _expand_home(target: str) -> str:
     """Expand ``~`` and the HOME variable of a redirection target."""
     home = os.path.expanduser("~")
@@ -189,9 +205,14 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
     return True
 
 
-def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
-    """Report whether a segment redirects output outside of the workspace."""
-    for match in _REDIRECT_RE.finditer(segment):
+def _redirects_outside_workspace(text: str, workspace: Path) -> bool:
+    """Report whether a command text redirects output outside of the workspace.
+
+    This checks the full command text (not split into segments) to catch
+    clobber-override redirects (``>|``) and combined redirects (``>&``,
+    ``&>``) that would be broken apart by segment splitting.
+    """
+    for match in _REDIRECT_RE.finditer(text):
         target = match.group(1).strip().strip("\"'")
         if not target:
             continue
@@ -289,12 +310,20 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
+    # A redirection is checked against the whole text: the segment splitter
+    # treats ``|`` as a separator, so a clobber-override redirect ``>|`` (or
+    # ``>&``/``&>``) would otherwise be broken apart and its target lost.
+    if _redirects_outside_workspace(text, workspace):
+        return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
         return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
+            if _text_is_denied(substitution, workspace, depth + 1):
+                return True
+        for substitution in _extract_process_substitutions(text):
             if _text_is_denied(substitution, workspace, depth + 1):
                 return True
     return False
