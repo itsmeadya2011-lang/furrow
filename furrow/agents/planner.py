@@ -4,20 +4,20 @@ from furrow.agents.parsing import parse_plan
 from furrow.agents.prompts import PLANNER_PROMPT, PLANNER_SYSTEM
 from furrow.config import Plan, Settings
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient
+from furrow.llm import LLMClient, create_client
 
 
 class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
-        self.client = client if client is not None else LLMClient(settings=self.settings)
+        self.client = client if client is not None else create_client("planner", self.settings)
 
     async def plan(self, goal: str, context: str = "") -> Plan:
         prompt = PLANNER_PROMPT + "\n\nGoal: " + goal
         if context:
             prompt += "\n\nContext:\n" + context
 
-        model = self.settings.planner_model
+        model = self.client.model  # Uses the role-specific model
         response = await self.client.complete(prompt, system=PLANNER_SYSTEM, model=model)
         try:
             return parse_plan(response)

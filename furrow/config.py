@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -108,17 +109,60 @@ class RunResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
 
 
+class ModelConfig(BaseModel):
+    """Configuration for a specific model role."""
+
+    provider: Provider | None = None
+    model: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    max_tokens: int | None = None
+    request_timeout: float | None = None
+
+    def resolve(self, defaults: "ModelConfig") -> "ModelConfig":
+        """Resolve this config against defaults, returning a new config with all fields filled."""
+        return ModelConfig(
+            provider=self.provider or defaults.provider,
+            model=self.model or defaults.model,
+            api_key=self.api_key or defaults.api_key,
+            base_url=self.base_url or defaults.base_url,
+            max_tokens=self.max_tokens or defaults.max_tokens,
+            request_timeout=self.request_timeout or defaults.request_timeout,
+        )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
+    # Default model configuration (used as fallback for all roles)
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
-    planner_model: str = "claude-3-5-haiku-20241022"
-    worker_model: str = "claude-3-5-sonnet-20241022"
-    tester_model: str = "claude-3-5-sonnet-20241022"
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
+    max_tokens: int = Field(default=4096, ge=1)
+    request_timeout: float = Field(default=120.0, gt=0)
+
+    # Role-specific model configurations (optional, override defaults)
+    planner_model: str = "claude-3-5-haiku-20241022"
+    planner_provider: Provider | None = None
+    planner_api_key: str | None = None
+    planner_max_tokens: int | None = None
+    planner_request_timeout: float | None = None
+
+    worker_model: str = "claude-3-5-sonnet-20241022"
+    worker_provider: Provider | None = None
+    worker_api_key: str | None = None
+    worker_max_tokens: int | None = None
+    worker_request_timeout: float | None = None
+
+    tester_model: str = "claude-3-5-sonnet-20241022"
+    tester_provider: Provider | None = None
+    tester_api_key: str | None = None
+    tester_max_tokens: int | None = None
+    tester_request_timeout: float | None = None
+
+    # Execution settings
     max_parallel_tasks: int = Field(default=5, ge=1)
     max_cycles: int = Field(default=0, ge=0)
     workspace: Path = Field(default_factory=Path.cwd)
@@ -126,10 +170,8 @@ class Settings(BaseSettings):
     max_worker_iterations: int = Field(default=12, ge=1)
     max_retries: int = Field(default=3, ge=0)
     max_task_retries: int = Field(default=1, ge=0)
-    request_timeout: float = Field(default=120.0, gt=0)
     command_timeout: float = Field(default=300.0, gt=0)
     test_timeout: float = Field(default=600.0, gt=0)
-    max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
@@ -141,6 +183,57 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def get_model_config(self, role: str) -> ModelConfig:
+        """Get the resolved model configuration for a specific role."""
+        defaults = ModelConfig(
+            provider=self.provider,
+            model=self.model,
+            api_key=self._get_default_api_key(),
+            base_url=self.ollama_base_url if self.provider == Provider.OLLAMA else None,
+            max_tokens=self.max_tokens,
+            request_timeout=self.request_timeout,
+        )
+
+        role = role.lower()
+        if role == "planner":
+            override = ModelConfig(
+                provider=self.planner_provider,
+                model=self.planner_model,
+                api_key=self.planner_api_key,
+                max_tokens=self.planner_max_tokens,
+                request_timeout=self.planner_request_timeout,
+            )
+        elif role == "worker":
+            override = ModelConfig(
+                provider=self.worker_provider,
+                model=self.worker_model,
+                api_key=self.worker_api_key,
+                max_tokens=self.worker_max_tokens,
+                request_timeout=self.worker_request_timeout,
+            )
+        elif role == "tester":
+            override = ModelConfig(
+                provider=self.tester_provider,
+                model=self.tester_model,
+                api_key=self.tester_api_key,
+                max_tokens=self.tester_max_tokens,
+                request_timeout=self.tester_request_timeout,
+            )
+        else:
+            return defaults
+
+        return override.resolve(defaults)
+
+    def _get_default_api_key(self) -> str | None:
+        """Get the default API key based on the provider."""
+        if self.provider == Provider.ANTHROPIC:
+            return self.anthropic_api_key
+        elif self.provider == Provider.OPENAI:
+            return self.openai_api_key
+        elif self.provider == Provider.OLLAMA:
+            return None  # Ollama doesn't need an API key
+        return None
 
 
 settings = Settings()

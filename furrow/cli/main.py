@@ -1,10 +1,12 @@
 """Command line interface for Furrow.
 
 Commands:
-    furrow start "<goal>"  start (or resume) an agent run against a goal
-    furrow status          show the persisted state of the last run
-    furrow resume          continue the persisted run
-    furrow web             serve the web UI
+    furrow init              initialize a new Furrow project
+    furrow config            show or edit configuration
+    furrow start "<goal>"    start (or resume) an agent run against a goal
+    furrow status            show the persisted state of the last run
+    furrow resume            continue the persisted run
+    furrow web               serve the web UI
 """
 
 from __future__ import annotations
@@ -178,6 +180,144 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         sys.exit(1)
 
 
+def _init_project(workspace: Path, force: bool) -> None:
+    """Initialize a new Furrow project."""
+    furrow_dir = workspace / ".furrow"
+    env_file = workspace / ".env"
+
+    if furrow_dir.exists() and not force:
+        click.secho(f"Furrow project already exists at {workspace}", fg="yellow")
+        return
+
+    furrow_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create default .env file if it doesn't exist
+    if not env_file.exists():
+        env_content = """# Furrow configuration
+# Uncomment and set your API keys
+# FURROW_ANTHROPIC_API_KEY=your-key-here
+# FURROW_OPENAI_API_KEY=your-key-here
+
+# Provider: anthropic, openai, or ollama
+# FURROW_PROVIDER=anthropic
+
+# Model settings
+# FURROW_MODEL=claude-sonnet-4-20250514
+# FURROW_PLANNER_MODEL=claude-3-5-haiku-20241022
+# FURROW_WORKER_MODEL=claude-3-5-sonnet-20241022
+# FURROW_TESTER_MODEL=claude-3-5-sonnet-20241022
+
+# Execution settings
+# FURROW_MAX_PARALLEL_TASKS=5
+# FURROW_MAX_CYCLES=0
+# FURROW_MAX_WORKER_ITERATIONS=12
+# FURROW_MAX_RETRIES=3
+# FURROW_MAX_TASK_RETRIES=1
+# FURROW_REQUEST_TIMEOUT=120.0
+# FURROW_MAX_TOKENS=4096
+"""
+        env_file.write_text(env_content)
+        click.echo(f"Created {env_file}")
+
+    # Create .furrowignore if it doesn't exist
+    ignore_file = furrow_dir / "ignore"
+    if not ignore_file.exists():
+        ignore_content = """# Furrow ignore patterns
+# Files and directories matching these patterns will not be listed by the worker
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+*.so
+*.dylib
+*.dll
+*.class
+*.o
+*.obj
+*.egg-info/
+dist/
+build/
+*.egg
+*.whl
+.env
+.venv/
+venv/
+.env.local
+.env.*.local
+node_modules/
+.target/
+*.log
+*.pot
+*.mo
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+"""
+        ignore_file.write_text(ignore_content)
+        click.echo(f"Created {ignore_file}")
+
+    click.secho(f"Initialized Furrow project at {workspace}", fg="green")
+    click.echo(f"  Edit {env_file} to configure your API keys and settings")
+
+
+def _print_config() -> None:
+    """Print the current configuration."""
+    click.echo("Current Furrow configuration:")
+    click.echo()
+    # Print all settings with their values
+    for field_name, _field_info in settings.model_fields.items():
+        value = getattr(settings, field_name)
+        # Mask API keys
+        if "api_key" in field_name.lower() and value:
+            value = "****"
+        click.echo(f"  {field_name}: {value}")
+
+
+def _edit_config(key: str, value: str) -> None:
+    """Edit a configuration value in the .env file."""
+    env_file = Path.cwd() / ".env"
+    if not env_file.exists():
+        click.secho("No .env file found. Run 'furrow init' first.", fg="red")
+        sys.exit(1)
+
+    # Read existing .env
+    lines = env_file.read_text().splitlines()
+    env_vars = {}
+    for line in lines:
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, v = line.split("=", 1)
+            env_vars[k.strip()] = v.strip()
+
+    # Update the value
+    env_key = f"FURROW_{key.upper()}"
+    env_vars[env_key] = value
+
+    # Write back
+    new_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and "=" in stripped:
+            k = stripped.split("=")[0].strip()
+            if k in env_vars:
+                new_lines.append(f"{k}={env_vars.pop(k)}")
+            else:
+                new_lines.append(line)
+        else:
+            new_lines.append(line)
+
+    # Add any new variables
+    for k, v in env_vars.items():
+        new_lines.append(f"{k}={v}")
+
+    env_file.write_text("\n".join(new_lines) + "\n")
+    click.secho(f"Updated {env_key} in {env_file}", fg="green")
+
+
 @click.group()
 def main() -> None:
     """Furrow - an autonomous coding agent."""
@@ -258,6 +398,44 @@ def web(host: str, port: int) -> None:
         run(host=host, port=port)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--force", is_flag=True, help="Overwrite existing configuration.")
+def init(workspace: Path | None, force: bool) -> None:
+    """Initialize a new Furrow project in the current directory."""
+    ws = workspace or Path.cwd()
+    _init_project(ws, force)
+
+
+@main.command()
+@click.argument("key", required=False)
+@click.argument("value", required=False)
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def config(key: str | None, value: str | None, workspace: Path | None) -> None:
+    """Show or edit Furrow configuration.
+
+    With no arguments, displays the current configuration.
+    With KEY and VALUE, sets the configuration value (writes to .env).
+    """
+    if key is None and value is None:
+        _print_config()
+    elif key is not None and value is not None:
+        _edit_config(key, value)
+    else:
+        click.secho("Both KEY and VALUE are required to set a configuration value.", fg="red")
         sys.exit(1)
 
 

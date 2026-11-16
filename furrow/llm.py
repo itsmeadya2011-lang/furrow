@@ -12,7 +12,7 @@ import aiofiles
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
-from furrow.config import Provider, Settings, Usage
+from furrow.config import ModelConfig, Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
 
@@ -212,41 +212,65 @@ def parse_tool_arguments(raw: Any) -> dict:
 
 
 class LLMClient:
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        role: str = "default",
+    ) -> None:
         self.settings = settings if settings is not None else global_settings
+        self.role = role
+        self._model_config = self.settings.get_model_config(role)
         self._anthropic: AsyncAnthropic | None = None
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
 
     @property
+    def model_config(self) -> ModelConfig:
+        return self._model_config
+
+    @property
+    def provider(self) -> Provider:
+        return self._model_config.provider
+
+    @property
+    def model(self) -> str:
+        return self._model_config.model
+
+    @property
+    def max_tokens(self) -> int:
+        return self._model_config.max_tokens
+
+    @property
+    def request_timeout(self) -> float:
+        return self._model_config.request_timeout
+
+    @property
     def anthropic(self) -> AsyncAnthropic:
         if self._anthropic is None:
-            api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
+            api_key = self._model_config.api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
+            self._anthropic = AsyncAnthropic(api_key=api_key, timeout=self.request_timeout)
         return self._anthropic
 
     @property
     def openai(self) -> AsyncOpenAI:
         if self._openai is None:
-            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+            api_key = self._model_config.api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
+            self._openai = AsyncOpenAI(api_key=api_key, timeout=self.request_timeout)
         return self._openai
 
     @property
     def ollama(self) -> AsyncOpenAI:
         if self._ollama is None:
-            base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
+            base_url = self._model_config.base_url or (
+                self.settings.ollama_base_url.rstrip("/") + "/v1"
+            )
             self._ollama = AsyncOpenAI(
-                api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
+                api_key="ollama", base_url=base_url, timeout=self.request_timeout
             )
         return self._ollama
 
@@ -271,6 +295,7 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -303,8 +328,8 @@ class LLMClient:
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
-        model = model or self.settings.model
-        provider = self.settings.provider
+        model = model or self.model
+        provider = self.provider
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
@@ -326,8 +351,8 @@ class LLMClient:
         system: str = "",
         model: str | None = None,
     ) -> LLMResponse:
-        model = model or self.settings.model
-        provider = self.settings.provider
+        model = model or self.model
+        provider = self.provider
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
@@ -347,7 +372,7 @@ class LLMClient:
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(
             model=model,
-            max_tokens=self.settings.max_tokens,
+            max_tokens=self.max_tokens,
             system=system or "You are a helpful coding assistant.",
             messages=[{"role": "user", "content": prompt}],
         )
@@ -368,7 +393,7 @@ class LLMClient:
     ) -> LLMResponse:
         response = await client.chat.completions.create(
             model=model,
-            max_tokens=self.settings.max_tokens,
+            max_tokens=self.max_tokens,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
@@ -401,7 +426,7 @@ class LLMClient:
         request_messages = to_anthropic_messages(messages)
         kwargs: dict[str, Any] = {
             "model": model,
-            "max_tokens": self.settings.max_tokens,
+            "max_tokens": self.max_tokens,
             "system": system or "You are a helpful coding assistant.",
             "messages": request_messages,
         }
@@ -445,7 +470,7 @@ class LLMClient:
         request_tools = to_openai_tools(tools or [])
         kwargs: dict[str, Any] = {
             "model": model,
-            "max_tokens": self.settings.max_tokens,
+            "max_tokens": self.max_tokens,
             "messages": request_messages,
         }
         if request_tools:
@@ -497,3 +522,8 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+
+def create_client(role: str, settings: Settings | None = None) -> LLMClient:
+    """Create an LLMClient for a specific role."""
+    return LLMClient(settings=settings, role=role)
