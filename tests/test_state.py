@@ -189,3 +189,11 @@ def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Pa
     assert loaded is not None
     assert loaded.tests_run == 0
 
+
+def test_load_returns_none_for_valid_json_of_the_wrong_shape(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    path.write_text("[]", encoding="utf-8")
+    store = StateStore(path)
+
+    assert store.load() is None
+

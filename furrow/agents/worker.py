@@ -51,8 +51,9 @@ DENIED_PROGRAMS = frozenset(
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
-# Shell separators a command is split on.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
+# Shell separators a command is split on. A lone ``&`` backgrounds a command,
+# so the command on each side is checked as its own segment.
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|\||\n|\r)+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
@@ -62,8 +63,9 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
-_REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+# The target of a redirection: ">> file", ">| file" (clobber override) or
+# "> file". ``&>`` and ``>&`` are caught because their ``>`` is matched here.
+_REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -95,7 +97,7 @@ def _normalize_command(command: str) -> str:
 
 def _split_command_segments(command: str) -> list[str]:
     """Split a command into segments on the shell separators ``;``, ``&&``,
-    ``||``, ``|`` and newlines."""
+    ``||``, ``|``, ``&`` (background) and newlines."""
     if not command:
         return []
     segments = _SEGMENT_SPLIT_RE.split(command)
@@ -193,9 +195,17 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
         target = match.group(1).strip().strip("\"'")
         if not target:
             continue
+        # A target that still contains a shell expansion cannot be resolved
+        # statically: the shell expands it before opening the file.
+        if "$" in target or "`" in target:
+            return True
         if not _target_inside_workspace(target, workspace):
             return True
     return False
+
+
+# Programs that write to path arguments rather than via shell redirections.
+_WRITE_PATH_PROGRAMS = frozenset({"tee"})
 
 
 def _is_force_push(segment: str, normalized: str) -> bool:
@@ -205,9 +215,43 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     # Covers --force, --force-with-lease and --force-with-lease=<ref>.
     if "--force" in normalized or "--force-with-lease" in normalized:
         return True
+    tokens = _shell_tokens(segment)
     # A short -f flag only counts as a shell token, so that ordinary
     # commands (e.g. "ls -f") are not mistaken for a force push.
-    return any(token.lower() == "-f" for token in _shell_tokens(segment))
+    if any(token.lower() == "-f" for token in tokens):
+        return True
+    # A "+" refspec forces the update on the remote (e.g. "git push origin
+    # +main" or "git push origin HEAD:+main").
+    return any(token.startswith("+") or ":+" in token for token in tokens)
+
+
+def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
+    """Report whether a segment writes to a path argument outside the workspace.
+
+    This catches programs that write files through arguments rather than shell
+    redirections (e.g. ``tee``). Non-option tokens are treated as path
+    arguments; a path outside the workspace or one that still contains a shell
+    expansion (``$`` or a backtick) is denied. A program with no path argument
+    is allowed.
+    """
+    program = _get_program_basename(segment)
+    if not program or program.lower() not in _WRITE_PATH_PROGRAMS:
+        return False
+    tokens = _shell_tokens(segment.strip())
+    if not tokens:
+        return False
+    # Skip the program name and option tokens (e.g. -a, --append).
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            continue
+        target = token.strip().strip("\"'")
+        if not target:
+            continue
+        if "$" in target or "`" in target:
+            return True
+        if not _target_inside_workspace(target, workspace):
+            return True
+    return False
 
 
 def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
@@ -231,8 +275,10 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if _is_force_push(segment, normalized):
         return True
 
-    # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    # DENY a redirection or a file-writing argument that escapes the workspace
+    if _redirects_outside_workspace(segment, workspace):
+        return True
+    return bool(_writes_outside_workspace(segment, workspace))
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:

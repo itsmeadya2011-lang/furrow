@@ -603,6 +603,21 @@ async def test_merge_plan_does_not_reset_failed_exhausted_task(tmp_path, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_merge_plan_preserves_blocked_status(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.tasks = [TaskModel(id="t1", description="old", status="blocked")]
+    plan = Plan(
+        tasks=[TaskModel(id="t1", description="new", files=[], dependencies=[])],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert orch.tasks[0].status == "blocked"
+
+
+@pytest.mark.asyncio
 async def test_merge_plan_retries_failed_with_attempts_left(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
@@ -1004,6 +1019,29 @@ async def test_dependents_of_a_blocked_task_are_blocked(tmp_path, monkeypatch):
     assert by_id["2"] == "blocked"
     assert by_id["3"] == "blocked"
     assert "3" not in calls
+    assert result.tasks_blocked == 2
+
+
+@pytest.mark.asyncio
+async def test_dependency_cycle_blocks_tasks_instead_of_hanging(tmp_path, monkeypatch):
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    t1 = TaskModel(id="t1", description="one", dependencies=["t2"])
+    t2 = TaskModel(id="t2", description="two", dependencies=["t1"])
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert calls == []
+    assert {t.id: t.status for t in orch.tasks} == {"t1": "blocked", "t2": "blocked"}
     assert result.tasks_blocked == 2
 
 

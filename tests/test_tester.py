@@ -365,6 +365,15 @@ def test_looks_like_failure_ignores_zero_counters():
     assert _looks_like_failure("FAILED tests/test_x.py::test_y - AssertionError") is True
 
 
+def test_looks_like_failure_catches_crash_signals():
+    """Strong crash signals must be detected even when the LLM is unavailable."""
+    assert _looks_like_failure("thread 'main' panicked at src/main.rs:1:1") is True
+    assert _looks_like_failure("Segmentation fault (core dumped)") is True
+    assert _looks_like_failure("fatal error: unable to open database") is True
+    assert _looks_like_failure("0 errors") is False
+    assert _looks_like_failure("5 passed, 0 failed in 0.12s") is False
+
+
 def test_green_summary_line_is_not_reported_as_a_failure(tmp_path, monkeypatch):
     """'5 passed, 0 failed' must not turn into a failure entry."""
     (tmp_path / "pyproject.toml").write_text("[project]\n")

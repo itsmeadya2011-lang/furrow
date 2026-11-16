@@ -570,6 +570,29 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_new_command_guard_bypasses(tmp_path):
+    """Guard-level tests for newly closed command-guard bypasses."""
+    denied_commands = [
+        "echo hi >| /etc/passwd",
+        "echo hi > $(cat /tmp/x)",
+        "echo hi > $OUTSIDE",
+        "echo hi | tee /etc/passwd",
+        "git push origin +main",
+        "git push origin HEAD:+main",
+        "echo hi & fdisk /dev/sda",
+    ]
+    allowed_commands = [
+        "echo hi | tee out.txt",
+        "git push origin main",
+        "echo hi &",
+    ]
+
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 def test_is_command_denied_checks_command_substitutions(tmp_path):
     """The text of a command substitution is checked with the same rules.
 

@@ -553,10 +553,11 @@ def _build_orchestrator(
     goal: str, resume: bool, max_cycles: int | None, bus: EventBus
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
+    run_settings = _run_settings(max_cycles)
     return Orchestrator(
         goal=goal,
-        settings=_run_settings(max_cycles),
-        state_store=StateStore(settings.state_path()),
+        settings=run_settings,
+        state_store=StateStore(run_settings.state_path()),
         event_bus=bus,
         resume=resume,
     )

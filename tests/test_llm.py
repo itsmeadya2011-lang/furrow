@@ -291,9 +291,11 @@ class _FakeOpenAI:
         self.chat = _FakeChat(content)
 
 
-def test_is_retryable_timeout_and_connection_error():
-    assert _is_retryable(asyncio.TimeoutError()) is True
-    assert _is_retryable(ConnectionError()) is True
+def test_is_retryable_httpx_and_oserror():
+    assert _is_retryable(httpx.ConnectTimeout("...")) is True
+    assert _is_retryable(httpx.ReadError("...")) is True
+    assert _is_retryable(httpx.RemoteProtocolError("...")) is True
+    assert _is_retryable(OSError("network down")) is True
 
 
 def test_is_retryable_status_codes():
@@ -339,6 +341,16 @@ def test_ollama_base_url_ends_with_v1():
         settings=Settings(provider=Provider.OLLAMA, ollama_base_url="http://localhost:11434/")
     )
     assert str(client_custom.ollama.base_url).rstrip("/") == "http://localhost:11434/v1"
+
+    client_v1 = LLMClient(
+        settings=Settings(provider=Provider.OLLAMA, ollama_base_url="http://localhost:11434/v1")
+    )
+    assert str(client_v1.ollama.base_url).rstrip("/") == "http://localhost:11434/v1"
+
+    client_v1_slash = LLMClient(
+        settings=Settings(provider=Provider.OLLAMA, ollama_base_url="http://localhost:11434/v1/")
+    )
+    assert str(client_v1_slash.ollama.base_url).rstrip("/") == "http://localhost:11434/v1"
 
 
 def test_usage_total_tokens():

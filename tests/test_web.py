@@ -604,3 +604,44 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     """
     with pytest.raises(ValidationError):
         server._run_settings(-1)
+
+
+def test_build_orchestrator_uses_run_settings_for_the_state_store(
+    fake_orchestrator: type[FakeOrchestrator], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The state store path comes from the run settings, not the module-global settings."""
+    custom_workspace = tmp_path / "custom"
+    run_settings = server.settings.model_copy(update={"workspace": custom_workspace})
+    monkeypatch.setattr(server, "_run_settings", lambda _: run_settings)
+
+    bus = server.EventBus()
+    server._build_orchestrator("g", False, None, bus)
+
+    assert fake_orchestrator.instances, "orchestrator must be instantiated"
+    kwargs = fake_orchestrator.init_kwargs
+    state_store = kwargs["state_store"]
+    assert state_store.path == run_settings.state_path()
+    assert state_store.path != server.settings.state_path()
+
+
+def test_api_start_rejects_a_non_string_goal(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """A non-string goal is rejected with 422 and no orchestrator is created."""
+    response = client.post("/api/start", json={"goal": ["not", "a", "string"]})
+
+    assert response.status_code == 422
+    assert fake_orchestrator.instances == [], "no run may be started"
+
+
+def test_api_start_resume_without_state_returns_400(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator], isolated_server: Path
+) -> None:
+    """Resuming without a saved state returns 400 and no orchestrator is created."""
+    response = client.post("/api/start", json={"goal": "", "resume": True})
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["started"] is False
+    assert body["error"] == "no goal to resume"
+    assert fake_orchestrator.instances == [], "no run may be started"

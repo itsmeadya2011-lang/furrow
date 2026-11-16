@@ -21,7 +21,17 @@ from furrow.llm import LLMClient
 DEFAULT_TEST_TIMEOUT = 600.0
 
 # Keywords that mark a line as reporting a failure.
-_FAILURE_KEYWORDS = ("fail", "error", "traceback", "assertion")
+_FAILURE_KEYWORDS = (
+    "fail",
+    "error",
+    "traceback",
+    "assertion",
+    "panic",
+    "segfault",
+    "segmentation fault",
+    "core dumped",
+    "fatal error",
+)
 
 # Counter phrases that mention a failure keyword but report *zero* failures,
 # e.g. "5 passed, 0 failed", "no failures", "0 errors", "failed: 0",

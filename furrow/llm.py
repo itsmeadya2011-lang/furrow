@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, TypeVar
 
 import aiofiles
+import httpx
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 
@@ -51,6 +52,10 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, asyncio.TimeoutError):
         return True
     if isinstance(exc, ConnectionError):
+        return True
+    if isinstance(exc, OSError):
+        return True
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
         return True
     status_code = None
     response = getattr(exc, "response", None)
@@ -244,7 +249,9 @@ class LLMClient:
     @property
     def ollama(self) -> AsyncOpenAI:
         if self._ollama is None:
-            base_url = self.settings.ollama_base_url.rstrip("/") + "/v1"
+            base_url = self.settings.ollama_base_url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = base_url + "/v1"
             self._ollama = AsyncOpenAI(
                 api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
             )
