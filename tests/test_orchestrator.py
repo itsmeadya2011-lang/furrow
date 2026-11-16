@@ -1079,3 +1079,88 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+def test_fail_task_marks_failed_when_budget_exhausted(tmp_path):
+    """_fail_task should mark a task as failed when attempts exceed max_retries."""
+    settings = Settings(_env_file=None, workspace=tmp_path, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    task = TaskModel(id="t1", description="do t1", attempts=0)
+    exc = RuntimeError("boom")
+    orch._fail_task(task, exc, max_retries=0)
+    assert task.attempts == 1
+    assert task.status == "failed"
+    assert task.error == "RuntimeError: boom"
+    assert task.finished_at is not None
+
+
+def test_fail_task_marks_pending_when_retries_remain(tmp_path):
+    """_fail_task should mark a task as pending when attempts are within budget."""
+    settings = Settings(_env_file=None, workspace=tmp_path, max_task_retries=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    task = TaskModel(id="t1", description="do t1", attempts=0)
+    exc = RuntimeError("boom")
+    orch._fail_task(task, exc, max_retries=2)
+    assert task.attempts == 1
+    assert task.status == "pending"
+    assert task.error == "RuntimeError: boom"
+
+
+def test_fail_task_emits_error_and_task_finished_events(tmp_path):
+    """_fail_task should emit ERROR and TASK_FINISHED events."""
+    settings = Settings(_env_file=None, workspace=tmp_path, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    bus = Orchestrator(goal="g", settings=settings, state_store=store).event_bus
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, event_bus=bus)
+    task = TaskModel(id="t1", description="do t1", attempts=0)
+    q = bus.subscribe()
+    orch._fail_task(task, ValueError("bad"), max_retries=0)
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    types = [e.type for e in events]
+    assert EventType.ERROR in types
+    assert EventType.TASK_FINISHED in types
+    error_events = [e for e in events if e.type == EventType.ERROR]
+    assert any("ValueError: bad" in e.message for e in error_events)
+    finished = [e for e in events if e.type == EventType.TASK_FINISHED]
+    assert finished[0].data["success"] is False
+
+
+def test_fail_task_consumes_attempts_across_calls(tmp_path):
+    """Each call to _fail_task should increment attempts."""
+    settings = Settings(_env_file=None, workspace=tmp_path, max_task_retries=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    task = TaskModel(id="t1", description="do t1", attempts=0)
+    for i in range(3):
+        orch._fail_task(task, RuntimeError("boom"), max_retries=3)
+        assert task.attempts == i + 1
+        assert task.status == "pending"  # 3 attempts <= max_retries(3) -> still pending
+    # 4th attempt exceeds budget (attempts=4 > max_retries=3) -> failed
+    orch._fail_task(task, RuntimeError("boom"), max_retries=3)
+    assert task.attempts == 4
+    assert task.status == "failed"
+
+
+def test_run_settings_applies_new_overrides(tmp_path):
+    """_run_settings should apply max_parallel_tasks, max_worker_iterations,
+    max_retries, max_task_retries overrides."""
+    from furrow.cli.main import _run_settings
+    base = Settings(_env_file=None, workspace=tmp_path)
+    s = _run_settings(
+        max_parallel_tasks=7,
+        max_worker_iterations=21,
+        max_retries=5,
+        max_task_retries=3,
+        workspace=tmp_path,
+    )
+    assert s.max_parallel_tasks == 7
+    assert s.max_worker_iterations == 21
+    assert s.max_retries == 5
+    assert s.max_task_retries == 3
+    # Unspecified settings should keep their defaults
+    assert s.max_cycles == base.max_cycles
+    assert s.model == base.model
