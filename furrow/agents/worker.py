@@ -53,7 +53,13 @@ MAX_LIST_ENTRIES = 500
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|\||\n|\r)+")
+#
+# The negative look-ahead on the single ``|`` keeps the clobber redirection
+# ``>|`` from being split into a bare ``>`` plus a phantom segment: the ``|``
+# there is part of the redirection operator, not a pipe. Splitting it would let
+# ``echo hi >| /etc/passwd`` slip past the redirect-target check because the
+# target would land in a segment that has no redirection at all.
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||(?<!>)\||;|&|\n|\r)+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
@@ -536,6 +542,10 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        # Always surface the exit status so the model can tell a failing command
+        # from a successful one even when the command produced no output. Appended
+        # after truncation so the marker survives even for large outputs.
+        combined = f"{combined}\n[exit code: {proc.returncode}]"
         return combined
 
     @staticmethod

@@ -963,3 +963,39 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+def test_clobber_redirect_outside_workspace_is_denied(tmp_path):
+    """``>| target`` is a redirection, not a pipe, so its target is checked.
+
+    The single ``|`` in ``>|`` must not be treated as a shell pipe; otherwise
+    the redirect target escapes the workspace check.
+    """
+    for cmd in (
+        "echo hi >| /etc/passwd",
+        "echo hi >| ../outside.txt",
+        "echo hi | tee /etc/passwd",
+    ):
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+
+
+def test_clobber_redirect_inside_workspace_is_allowed(tmp_path):
+    """A ``>| target`` whose target is inside the workspace is allowed."""
+    assert is_command_denied("echo hi >| out.txt", tmp_path) is False
+    assert is_command_denied("echo hi >| sub/out.txt", tmp_path) is False
+
+
+@pytest.mark.asyncio
+async def test_run_command_reports_exit_code(tmp_path):
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=make_settings(tmp_path), workspace=tmp_path
+    )
+
+    failing = await agent._run_command("exit 3")
+    assert "[exit code: 3]" in failing
+
+    succeeding = await agent._run_command("true")
+    assert "[exit code: 0]" in succeeding
