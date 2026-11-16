@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -76,7 +75,7 @@ class EventBus:
 
     def unsubscribe(self, queue: asyncio.Queue[Event]) -> None:
         """Remove a previously registered queue. Removing an unknown queue is a no-op."""
-        if queue in self._subscribers:
+        while queue in self._subscribers:
             self._subscribers.remove(queue)
         self._dropped_by_queue.pop(queue, None)
 
@@ -87,31 +86,41 @@ class EventBus:
 
     def _deliver(self, queue: asyncio.Queue[Event], event: Event) -> None:
         """Put ``event`` on ``queue``, dropping the oldest event if it is full."""
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
+        try:
             queue.put_nowait(event)
             return
+        except asyncio.QueueFull:
+            pass
         # The subscriber is not draining: drop the oldest queued event so that
         # the newest event is always delivered.
         try:
             queue.get_nowait()
         except asyncio.QueueEmpty:  # pragma: no cover - raced with a consumer
             pass
-        except Exception:  # pragma: no cover - defensive, one bad subscriber
-            return
         else:
             self._dropped += 1
             self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
-            queue.put_nowait(event)
-
-    async def emit_async(self, event: Event) -> None:
-        """Async variant of :meth:`emit`."""
-        self.emit(event)
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                # The queue is genuinely full and the consumer is not draining:
+                # the event is dropped and counted as one more drop.
+                self._dropped += 1
+                self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
 
     def clear(self) -> None:
         """Drop every subscriber."""
         self._subscribers.clear()
         self._dropped_by_queue.clear()
+
+    async def emit_async(self, event: Event) -> None:
+        """Async entry point for :meth:`emit`.
+
+        Provided so callers that are already inside an event loop can await
+        a single method without scheduling a callback.  ``emit`` is
+        synchronous and never blocks, so this simply delegates to it.
+        """
+        self.emit(event)
 
     @property
     def subscriber_count(self) -> int:

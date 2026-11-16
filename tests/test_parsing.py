@@ -108,3 +108,28 @@ def test_parse_test_result_heuristic_assertion_error():
 def test_parse_test_result_never_raises_on_empty_string():
     r = parsing.parse_test_result("")
     assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_unparseable_response_is_a_failure():
+    """An unparseable tester response must not silently count as a pass.
+
+    Previously the fallback returned passed=True, which meant a test run whose
+    output could not be parsed was reported as success.
+    """
+    r = parsing.parse_test_result("totally unparseable garbage >>>> ???")
+    assert isinstance(r, TestResult)
+    assert r.passed is False
+    assert r.failures, "an unparseable response must carry a failure entry"
+
+
+def test_strip_code_fences_removes_multiple_fence_markers():
+    """When there is no single fenced block, fence markers are stripped."""
+    text = "Some prose\n```python\nnot a complete block\nno closing fence"
+    result = parsing.strip_code_fences(text)
+    assert "```" not in result
+    assert "Some prose" in result
+
+
+def test_strip_code_fences_handles_non_string_input():
+    assert parsing.strip_code_fences(123) == "123"
+    assert parsing.strip_code_fences(None) == "None"

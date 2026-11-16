@@ -132,3 +132,47 @@ async def test_emit_async_delivers_event_to_subscribers() -> None:
     await bus.emit_async(event)
     got = await queue.get()
     assert got is event
+
+
+def test_emit_counts_every_drop_even_when_put_fails_again() -> None:
+    """Every event that cannot be queued is counted as a drop, including the
+    retry after the oldest event was evicted."""
+    import asyncio as _asyncio
+
+    bus = EventBus()
+    queue = _asyncio.Queue(maxsize=1)
+    bus._subscribers.append(queue)
+
+    # Fill the queue so the first put_nowait raises QueueFull.
+    queue.put_nowait(Event(type=EventType.LOG, message="first"))
+    assert queue.full()
+
+    bus.emit(Event(type=EventType.LOG, message="second"))
+    bus.emit(Event(type=EventType.LOG, message="third"))
+
+    # The first emit dropped the oldest ("first") and queued "second".
+    # The second emit dropped "second" and queued "third".
+    assert bus.dropped_count == 2
+    assert bus.dropped_for(queue) == 2
+    assert queue.qsize() == 1
+    drained = queue.get_nowait()
+    assert drained.message == "third"
+
+
+def test_unsubscribe_removes_every_occurrence_of_the_queue() -> None:
+    """A queue registered twice is fully removed by a single unsubscribe."""
+    import asyncio as _asyncio
+
+    bus = EventBus()
+    queue = _asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+    # Register the same queue object twice.
+    bus._subscribers.append(queue)
+    bus._subscribers.append(queue)
+    assert bus.subscriber_count == 2
+
+    bus.unsubscribe(queue)
+    assert bus.subscriber_count == 0
+
+    # A second unsubscribe is still a no-op.
+    bus.unsubscribe(queue)
+    assert bus.subscriber_count == 0

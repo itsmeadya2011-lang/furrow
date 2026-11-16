@@ -6,6 +6,16 @@ from typing import Any
 
 from furrow.config import Plan, TaskModel, TestResult
 
+# Compiled once at import time so parse_test_result does not recompile the
+# same pattern on every call.
+_FAILURE_WORDS_RE = re.compile(
+    r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+    re.IGNORECASE,
+)
+
+# Matches a fenced code block: ```<optional-info>\n<body>```
+_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+
 
 def strip_code_fences(text: str) -> str:
     """Remove ```json ... ``` / ``` ... ``` fences. If the text contains exactly one
@@ -14,14 +24,12 @@ def strip_code_fences(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
 
-    fence_pattern = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
-    matches = fence_pattern.findall(text)
+    matches = _FENCE_RE.findall(text)
     if len(matches) == 1:
         return matches[0]
-    result = re.sub(r"```[^\n]*\n", "", text)
-    result = re.sub(r"\n```[ \t]*$", "", result)
-    result = re.sub(r"^```[^\n]*\n", "", result)
-    result = re.sub(r"```[ \t]*$", "", result)
+    # No single fenced block: strip fence markers wherever they appear.
+    result = re.sub(r"```[^\n]*\n?", "", text)
+    result = re.sub(r"```", "", result)
     return result
 
 
@@ -168,33 +176,27 @@ def parse_test_result(text: str) -> TestResult:
                     r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
                     lower,
                 )
-                if m_success:
-                    passed = True
-                else:
-                    m_fail = re.search(
-                        r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-                        lower,
-                    )
-                    passed = not m_fail
+                # No success signal: the output could not be interpreted, so
+                # treat it as a failure rather than silently reporting a pass.
+                passed = bool(m_success)
 
         summary = s.strip()[:500]
 
-        failure_words = re.compile(
-            r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-            re.IGNORECASE,
-        )
         failures = []
         seen = set()
         for line in s.splitlines():
             line_stripped = line.strip()
             if not line_stripped:
                 continue
-            if failure_words.search(line_stripped):
+            if _FAILURE_WORDS_RE.search(line_stripped):
                 if line_stripped not in seen:
                     seen.add(line_stripped)
                     failures.append(line_stripped)
                 if len(failures) >= 10:
                     break
+
+        if not passed and not failures:
+            failures = ["unparseable test output"]
 
         return TestResult(passed=passed, summary=summary, failures=failures)
     except (ValueError, TypeError):
@@ -202,4 +204,10 @@ def parse_test_result(text: str) -> TestResult:
             s = strip_code_fences(text) if isinstance(text, str) else str(text)
         except (ValueError, TypeError):
             s = str(text) if text is not None else ""
-        return TestResult(passed=True, summary=s[:500], failures=[])
+        # An unparseable tester response carries no signal: report it as a
+        # failure rather than silently treating it as a pass.
+        return TestResult(
+            passed=False,
+            summary=(s[:500] if s else "unparseable tester response"),
+            failures=["unparseable tester response"],
+        )

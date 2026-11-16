@@ -10,6 +10,11 @@ import logging
 import sys
 from typing import Any
 
+# ``logging.basicConfig`` is a one-shot call: only the first invocation's
+# format/level/stream take effect.  When structlog is unavailable the fallback
+# path must therefore run *before* the structlog path, otherwise the richer
+# fallback format is silently dropped.
+
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
     """Configure standard library logging as a fallback."""
@@ -31,16 +36,20 @@ except ImportError:
 def configure_logging(level: str = "INFO") -> None:
     """Configure structlog to wrap stdlib logging."""
     log_level = getattr(logging, level.upper(), logging.INFO)
+
+    if not _STRUCTLOG_AVAILABLE:
+        # Fall back to stdlib logging if structlog is not available.  This is
+        # called first so that ``basicConfig`` accepts the fallback format.
+        _configure_stdlib_fallback(level)
+        return
+
+    # structlog is available: configure stdlib logging with the compact format
+    # and then wrap it.
     logging.basicConfig(
         format="%(message)s",
         level=log_level,
         stream=sys.stdout,
     )
-
-    if not _STRUCTLOG_AVAILABLE:
-        # Fall back to stdlib logging if structlog is not available
-        _configure_stdlib_fallback(level)
-        return
 
     structlog.configure(
         processors=[
