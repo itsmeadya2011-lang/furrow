@@ -27,12 +27,16 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+TEST_TIMEOUT_HELP = "Test suite timeout in seconds."
+DEBUG_HELP = "Enable debug logging and verbose output."
 
 
 def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    test_timeout: float | None = None,
+    debug: bool | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +50,10 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if test_timeout is not None:
+        updates["test_timeout"] = test_timeout
+    if debug is not None:
+        updates["debug"] = debug
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -194,18 +202,33 @@ def main() -> None:
     default=None,
     help=WORKSPACE_HELP,
 )
+@click.option(
+    "--test-timeout",
+    type=click.FloatRange(min=0.1),
+    default=None,
+    help=TEST_TIMEOUT_HELP,
+)
+@click.option("--debug", is_flag=True, help=DEBUG_HELP)
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
+    test_timeout: float | None,
+    debug: bool,
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        max_cycles=max_cycles,
+        workspace=workspace,
+        test_timeout=test_timeout,
+        debug=debug,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +258,23 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option(
+    "--test-timeout",
+    type=click.FloatRange(min=0.1),
+    default=None,
+    help=TEST_TIMEOUT_HELP,
+)
+@click.option("--debug", is_flag=True, help=DEBUG_HELP)
+def resume(
+    workspace: Path | None,
+    max_cycles: int | None,
+    test_timeout: float | None,
+    debug: bool,
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles, workspace=workspace, test_timeout=test_timeout, debug=debug
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

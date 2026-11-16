@@ -385,6 +385,10 @@ class Orchestrator:
                 for t in remaining:
                     t.status = "blocked"
                 break
+            # Sort by priority (lower = higher priority) so higher priority tasks
+            # are started first within the wave. This doesn't change the dependency
+            # semantics but affects execution order when parallelism is limited.
+            wave.sort(key=lambda t: t.priority)
             waves.append(wave)
             for t in wave:
                 done.add(t.id)

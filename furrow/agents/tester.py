@@ -221,6 +221,18 @@ class TesterAgent:
                     if (self.workspace / "yarn.lock").is_file():
                         return ["yarn", "test", "--silent"]
                     return ["npm", "test", "--silent"]
+                # Check if jest or vitest are in dependencies and run via npx
+                deps = {**pkg_data.get("dependencies", {}), **pkg_data.get("devDependencies", {})}
+                if "jest" in deps:
+                    return ["npx", "jest", "--silent"]
+                if "vitest" in deps:
+                    return ["npx", "vitest", "run", "--silent"]
+                if "@playwright/test" in deps:
+                    return ["npx", "playwright", "test", "--reporter=line"]
+                if "mocha" in deps:
+                    return ["npx", "mocha", "--reporter", "spec"]
+                if "jasmine" in deps:
+                    return ["npx", "jasmine"]
             except Exception:
                 pass
             # Fallback: npm test if package.json exists (Python case handled above)

@@ -299,6 +299,7 @@ class WorkerAgent:
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
+        max_context_messages = self.settings.max_worker_context_messages
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -337,6 +338,12 @@ class WorkerAgent:
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
             messages.append({"role": "user", "content": result_blocks})
+
+            # Trim context to keep it within the limit.
+            # Keep the first message (initial prompt) and the most recent messages.
+            if len(messages) > max_context_messages:
+                # Keep first message + last (max_context_messages - 1) messages
+                messages = [messages[0], *messages[-(max_context_messages - 1):]]
 
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as

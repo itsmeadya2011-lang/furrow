@@ -14,11 +14,15 @@ Return JSON only (no markdown, no explanation) with this shape:
       "id": "1",
       "description": "Implement user authentication with JWT",
       "files": ["src/auth.py", "tests/test_auth.py"],
-      "dependencies": []
+      "dependencies": [],
+      "priority": 0
     }
   ],
   "rationale": "Brief explanation of the plan"
 }
+
+Priority is an integer where lower values mean higher priority (0 = highest).
+Tasks with the same priority are executed in parallel within their dependency wave.
 
 If the goal is too large for one cycle, say so in rationale and break it
 into the most critical first slice."""

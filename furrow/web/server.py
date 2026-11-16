@@ -94,10 +94,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
+  .filter-bar {
+    display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: .75rem;
+    align-items: center; font-size: .85rem; color: #8a93a5;
+  }
+  .filter-bar label { display: flex; gap: .25rem; align-items: center; cursor: pointer; }
+  .filter-bar input[type="radio"] { accent-color: #4c8dff; }
+  .filter-bar input[type="search"] {
+    flex: 1 1 15rem; padding: .4rem .6rem; background: #171b23; color: inherit;
+    border: 1px solid #2b3240; border-radius: 4px; font: inherit;
+  }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
   }
+  .panel.hidden { display: none; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
   }
@@ -140,6 +151,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="start">Start</button>
   <button id="resume">Resume</button>
 </div>
+<div class="bar" style="margin-top:.5rem; align-items:center;">
+  <label style="display:flex; gap:.5rem; align-items:center; cursor:pointer; font-size:.9rem;">
+    <input type="checkbox" id="debug-mode" />
+    <span>Debug mode</span>
+  </label>
+  <label style="display:flex; gap:.5rem; align-items:center; cursor:pointer; font-size:.9rem;">
+    <input type="number" id="max-cycles" min="0" step="1" style="width:5rem;"
+      placeholder="Max cycles" />
+    <span>Max cycles (0=unlimited)</span>
+  </label>
+  <label style="display:flex; gap:.5rem; align-items:center; cursor:pointer; font-size:.9rem;">
+    <input type="number" id="test-timeout" min="1" step="1" style="width:5rem;"
+      placeholder="Test timeout" />
+    <span>Test timeout (s)</span>
+  </label>
+</div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
   <div class="meta" id="header-meta">
@@ -150,6 +177,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <pre id="log"></pre>
+<div class="filter-bar" id="filter-bar" style="display:none;">
+  <span>Filter:</span>
+  <label><input type="radio" name="status-filter" value="" checked> All</label>
+  <label><input type="radio" name="status-filter" value="pending"> Pending</label>
+  <label><input type="radio" name="status-filter" value="running"> Running</label>
+  <label><input type="radio" name="status-filter" value="completed"> Completed</label>
+  <label><input type="radio" name="status-filter" value="failed"> Failed</label>
+  <label><input type="radio" name="status-filter" value="blocked"> Blocked</label>
+  <label><input type="radio" name="status-filter" value="skipped"> Skipped</label>
+  <input type="search" id="task-search" placeholder="Search tasks..." />
+</div>
 <div class="panels" id="tasks"></div>
 <script>
   const logEl = document.getElementById('log');
@@ -184,12 +222,35 @@ INDEX_HTML = r"""<!DOCTYPE html>
     unknown: 'unknown'
   };
 
+  // Current filter state
+  let currentStatusFilter = '';
+  let currentSearchQuery = '';
+
+  const filterBarEl = document.getElementById('filter-bar');
+  const statusFilterRadios = document.querySelectorAll('input[name="status-filter"]');
+  const searchInputEl = document.getElementById('task-search');
+
   function statusClass(status) {
     const key = text(status).trim().toLowerCase();
     if (Object.prototype.hasOwnProperty.call(SAFE_STATUSES, key)) {
       return SAFE_STATUSES[key];
     }
     return 'unknown';
+  }
+
+  function matchesFilter(task) {
+    const status = text(task.status) || 'pending';
+    if (currentStatusFilter && status !== currentStatusFilter) {
+      return false;
+    }
+    if (currentSearchQuery) {
+      const desc = text(task.description).toLowerCase();
+      const id = text(task.id).toLowerCase();
+      if (!desc.includes(currentSearchQuery) && !id.includes(currentSearchQuery)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   function renderStatus(status, result, running) {
@@ -221,13 +282,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
       hint.className = 'panel-empty';
       hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
       tasksEl.appendChild(hint);
+      filterBarEl.style.display = 'none';
       return;
     }
+    filterBarEl.style.display = 'flex';
     list.forEach(function (task) {
       const status = text(task.status) || 'pending';
 
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = 'panel' + (matchesFilter(task) ? '' : ' hidden');
       panel.id = 'task-' + text(task.id);
 
       const head = document.createElement('div');
@@ -271,6 +334,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
 
       tasksEl.appendChild(panel);
+    });
+  }
+
+  // Filter event handlers
+  statusFilterRadios.forEach(function (radio) {
+    radio.addEventListener('change', function () {
+      currentStatusFilter = this.value;
+      applyFilter();
+    });
+  });
+
+  searchInputEl.addEventListener('input', function () {
+    currentSearchQuery = this.value.trim().toLowerCase();
+    applyFilter();
+  });
+
+  function applyFilter() {
+    const panels = tasksEl.querySelectorAll('.panel');
+    panels.forEach(function (panel) {
+      const taskId = panel.id.replace('task-', '');
+      const task = (tasks || []).find(function (t) { return text(t.id) === taskId; });
+      if (task && matchesFilter(task)) {
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
+      }
     });
   }
 
@@ -400,10 +489,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+    const maxCycles = document.getElementById('max-cycles').value;
+    const testTimeout = document.getElementById('test-timeout').value;
+    const debug = document.getElementById('debug-mode').checked;
+    connect({
+      goal: goalEl.value,
+      resume: false,
+      max_cycles: maxCycles ? parseInt(maxCycles, 10) : undefined,
+      test_timeout: testTimeout ? parseFloat(testTimeout) : undefined,
+      debug: debug
+    });
   };
   document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+    const maxCycles = document.getElementById('max-cycles').value;
+    const testTimeout = document.getElementById('test-timeout').value;
+    const debug = document.getElementById('debug-mode').checked;
+    connect({
+      goal: goalEl.value,
+      resume: true,
+      max_cycles: maxCycles ? parseInt(maxCycles, 10) : undefined,
+      test_timeout: testTimeout ? parseFloat(testTimeout) : undefined,
+      debug: debug
+    });
   };
 
   loadState();
@@ -419,6 +526,8 @@ class StartRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    test_timeout: float | None = Field(default=None, gt=0)
+    debug: bool = False
     resume: bool = False
 
 
@@ -427,6 +536,8 @@ class SocketRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    test_timeout: float | None = Field(default=None, gt=0)
+    debug: bool = False
     resume: bool = False
 
 
@@ -441,7 +552,11 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
+def _run_settings(
+    max_cycles: int | None,
+    test_timeout: float | None = None,
+    debug: bool | None = None,
+) -> Settings:
     """Settings for a run, with an optional ``max_cycles`` override.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
@@ -449,9 +564,16 @@ def _run_settings(max_cycles: int | None) -> Settings:
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    if max_cycles is None and test_timeout is None and debug is None:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    updates: dict[str, Any] = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if test_timeout is not None:
+        updates["test_timeout"] = test_timeout
+    if debug is not None:
+        updates["debug"] = debug
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -460,6 +582,8 @@ def _describe_validation_error(exc: ValidationError) -> str:
         location = ".".join(str(part) for part in error.get("loc", ()))
         if location == "max_cycles":
             return "max_cycles must be greater than or equal to 0"
+        if location == "test_timeout":
+            return "test_timeout must be greater than 0"
         if location == "goal":
             return "goal must be a string"
     return "invalid request payload"
@@ -550,12 +674,17 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str,
+    resume: bool,
+    max_cycles: int | None,
+    test_timeout: float | None,
+    debug: bool | None,
+    bus: EventBus,
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
     return Orchestrator(
         goal=goal,
-        settings=_run_settings(max_cycles),
+        settings=_run_settings(max_cycles, test_timeout, debug),
         state_store=StateStore(settings.state_path()),
         event_bus=bus,
         resume=resume,
@@ -621,7 +750,9 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(
+            goal, request.resume, request.max_cycles, request.test_timeout, request.debug, bus
+        )
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -680,7 +811,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(
+                goal, resume, request.max_cycles, request.test_timeout, request.debug, bus
+            )
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

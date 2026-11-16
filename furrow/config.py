@@ -36,6 +36,7 @@ class TaskModel(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     files_changed: list[str] = Field(default_factory=list)
+    priority: int = Field(default=0, ge=0)
 
     @field_validator("status")
     @classmethod
@@ -123,7 +124,9 @@ class Settings(BaseSettings):
     max_cycles: int = Field(default=0, ge=0)
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
+    debug: bool = False
     max_worker_iterations: int = Field(default=12, ge=1)
+    max_worker_context_messages: int = Field(default=20, ge=4)
     max_retries: int = Field(default=3, ge=0)
     max_task_retries: int = Field(default=1, ge=0)
     request_timeout: float = Field(default=120.0, gt=0)
