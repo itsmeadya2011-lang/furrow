@@ -313,7 +313,7 @@ class TesterAgent:
                 notes.append("The command exited with status 0, but the LLM reported a failure.")
             else:
                 passed = llm_result.passed
-            if not failures:
+            if not failures and not passed:
                 failures = _extract_failures(combined)
             if llm_result.summary:
                 notes.append(llm_result.summary)

@@ -74,6 +74,7 @@ def _print_summary(result: RunResult) -> None:
     tests_run = getattr(result, "tests_run", 0) or 0
     text, colour = _result_line(result.passed, skipped, tests_run)
     click.secho(f"  Result: {text}", fg=colour)
+    click.echo(f"  Tests run:     {tests_run}")
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(

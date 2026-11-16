@@ -255,6 +255,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       panel.appendChild(desc);
       panel.appendChild(meta);
 
+      const filesChanged = text(task.files_changed);
+      if (filesChanged) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-meta';
+        filesEl.textContent = 'files: ' + filesChanged;
+        panel.appendChild(filesEl);
+      }
+
       const result = text(task.result);
       const error = text(task.error);
       if (result) {
@@ -353,6 +361,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
         color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'state_saved') {
         line = 'state saved';
+      } else if (type === 'cycle_finished') {
+        line = 'cycle ' + text(data.cycle) + ' finished';
       } else if (type === 'log') {
         line = text(msg.message);
       } else if (type === 'error') {
