@@ -220,6 +220,33 @@ async def test_state_persistence(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_history_trimmed_for_persistence(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = Settings(
+        _env_file=None, workspace=tmp_path, max_cycles=15, max_history_entries=10
+    )
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.cycles == 15
+    # In-memory history remains complete
+    assert len(orch.history) == 15
+    assert [h.cycle for h in orch.history] == list(range(1, 16))
+    # Persisted history is trimmed to most recent entries
+    st = store.load()
+    assert st is not None
+    assert len(st.history) == 10
+    assert [h.cycle for h in st.history] == list(range(6, 16))
+
+
+def test_default_max_history_entries():
+    settings = Settings(_env_file=None)
+    assert settings.max_history_entries == 50
+
+
+@pytest.mark.asyncio
 async def test_resume(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

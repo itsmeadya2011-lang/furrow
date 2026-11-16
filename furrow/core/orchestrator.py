@@ -150,151 +150,203 @@ class Orchestrator:
 
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
-            # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
             self.event_bus.emit(Event(type=EventType.LOG,
                                       message="no state file found, starting fresh"))
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
-        while True:
-            if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
-                self._stopped_reason = "max_cycles reached"
-                break
+        while not self._should_stop():
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
-            try:
-                plan = await self.planner.plan(self.goal, context=self._context())
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"planner failed: {e}"
-                self.cycles -= 1
+
+            plan = await self._plan_cycle()
+            if plan is None or not plan.tasks:
                 break
-            self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
-                                    data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
-            planned = len(plan.tasks)
-            unit = "task" if planned == 1 else "tasks"
-            self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
-            if not plan.tasks:
-                self.event_bus.emit(
-                    Event(type=EventType.LOG, message="no tasks planned - goal complete")
-                )
-                self._stopped_reason = "goal complete"
+
+            if not await self._execute_plan(plan):
                 break
-            self._merge_plan(plan)
-            try:
-                await self._execute(plan)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"execute failed: {e}"
-                self.cycles -= 1
+
+            test_result = await self._run_tests()
+            if test_result is None:
                 break
-            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
-            try:
-                test_result = await self.tester.run(self.original_goal, self.tasks)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"tester failed: {e}"
-                self.cycles -= 1
+
+            self._update_progress(test_result, plan)
+            self._persist_state(test_result, plan)
+
+            if self._no_progress >= 2:
                 break
-            self._tests_run += 1
-            skipped = bool(getattr(test_result, "skipped", False))
+
+        return self._build_result()
+
+    def _should_stop(self) -> bool:
+        if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
+            self._stopped_reason = "max_cycles reached"
+            return True
+        return False
+
+    async def _plan_cycle(self) -> Plan | None:
+        try:
+            plan = await self.planner.plan(self.goal, context=self._context())
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+            self._stopped_reason = f"planner failed: {e}"
+            self.cycles -= 1
+            return None
+
+        self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
+                                data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
+        planned = len(plan.tasks)
+        unit = "task" if planned == 1 else "tasks"
+        self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
+
+        if not plan.tasks:
             self.event_bus.emit(
-                Event(
-                    type=EventType.TEST_FINISHED,
-                    data={"passed": test_result.passed, "summary": test_result.summary},
-                )
+                Event(type=EventType.LOG, message="no tasks planned - goal complete")
             )
-            summary = self._escape(self._one_line(test_result.summary))
-            if test_result.passed:
-                self._say(f"[green]Tests passed: {summary}[/green]")
-            else:
-                self._say(f"[red]Tests failed: {summary}[/red]")
-            self._last_test_passed = test_result.passed
-            self._tests_skipped = skipped
-            if skipped:
-                # A skipped run (e.g. no test runner detected) is not a failure:
-                # keep the original goal and drop the stale feedback so the loop
-                # does not chase a test runner that does not exist.
-                self.goal = self.original_goal
-                self._feedback = ""
-            elif not test_result.passed:
-                failures = [f for f in test_result.failures if f and f.strip()]
-                if not failures:
-                    failures = [
-                        test_result.summary
-                        or "the test suite failed without a detailed report"
-                    ]
-                self._feedback = "\n".join(failures)
-                self.goal = (f"{self.original_goal}\n\n"
-                             "The previous cycle left failing tests. Fix them:\n"
-                             f"{self._feedback}")
-            cumulative = self._client_usage()
-            cycle_usage = Usage(
-                input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
-                output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
-                calls=max(0, cumulative.calls - self._usage_seen.calls),
-                cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
+            self._stopped_reason = "goal complete"
+            return None
+
+        self._merge_plan(plan)
+        return plan
+
+    async def _execute_plan(self, plan: Plan) -> bool:
+        try:
+            await self._execute(plan)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+            self._stopped_reason = f"execute failed: {e}"
+            self.cycles -= 1
+            return False
+        return True
+
+    async def _run_tests(self) -> TestResult | None:
+        self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+        try:
+            test_result = await self.tester.run(self.original_goal, self.tasks)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+            self._stopped_reason = f"tester failed: {e}"
+            self.cycles -= 1
+            return None
+
+        self._tests_run += 1
+        skipped = bool(getattr(test_result, "skipped", False))
+        self.event_bus.emit(
+            Event(
+                type=EventType.TEST_FINISHED,
+                data={"passed": test_result.passed, "summary": test_result.summary},
             )
-            self._usage.add(cycle_usage)
-            self._usage_seen = cumulative
-            self.history.append(HistoryEntry(
-                cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
-                task_summaries=[t.id for t in self.tasks],
-                tests_passed=test_result.passed, test_summary=test_result.summary,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                usage=cycle_usage,
-            ))
-            self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
-            # A skipped run (no test runner) reports passed=True but gives the
-            # loop no verification signal, so it must trip the no-progress
-            # guard as well - otherwise the loop never stops.
-            no_signal = (not test_result.passed) or skipped
-            guard_tripped = False
-            if no_signal and sig == self._prev_sig:
-                self._no_progress += 1
-                if self._no_progress >= 2:
-                    self._stopped_reason = (
-                        "no test runner detected" if skipped else "no progress"
-                    )
-                    guard_tripped = True
-            else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
-                    self._no_progress = 0
-                self._prev_sig = sig
+        )
+        summary = self._escape(self._one_line(test_result.summary))
+        if test_result.passed:
+            self._say(f"[green]Tests passed: {summary}[/green]")
+        else:
+            self._say(f"[red]Tests failed: {summary}[/red]")
 
-            state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
-            try:
-                self.state_store.save(state)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # The state was NOT written: report the failure (including the
-                # path that could not be written) and do NOT emit STATE_SAVED,
-                # which would tell consumers the state was saved when it was not.
-                self.event_bus.emit(
-                    Event(type=EventType.ERROR,
-                         message=f"could not save state to {self.state_store.path}: {e}")
+        self._last_test_passed = test_result.passed
+        self._tests_skipped = skipped
+        return test_result
+
+    def _update_progress(self, test_result: TestResult, plan: Plan) -> None:
+        skipped = bool(getattr(test_result, "skipped", False))
+
+        if skipped:
+            self.goal = self.original_goal
+            self._feedback = ""
+        elif not test_result.passed:
+            failures = [f for f in test_result.failures if f and f.strip()]
+            if not failures:
+                failures = [
+                    test_result.summary
+                    or "the test suite failed without a detailed report"
+                ]
+            self._feedback = "\n".join(failures)
+            self.goal = (f"{self.original_goal}\n\n"
+                         "The previous cycle left failing tests. Fix them:\n"
+                         f"{self._feedback}")
+
+        cumulative = self._client_usage()
+        cycle_usage = Usage(
+            input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
+            output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
+            calls=max(0, cumulative.calls - self._usage_seen.calls),
+            cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
+        )
+        self._usage.add(cycle_usage)
+        self._usage_seen = cumulative
+
+        self.history.append(HistoryEntry(
+            cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
+            task_summaries=[t.id for t in self.tasks],
+            tests_passed=test_result.passed, test_summary=test_result.summary,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            usage=cycle_usage,
+        ))
+
+        self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+
+        sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+        no_signal = (not test_result.passed) or skipped
+        guard_tripped = False
+        if no_signal and sig == self._prev_sig:
+            self._no_progress += 1
+            if self._no_progress >= 2:
+                self._stopped_reason = (
+                    "no test runner detected" if skipped else "no progress"
                 )
-            else:
-                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                        data={"path": str(self.state_store.path)}))
-            if guard_tripped:
-                break
+                guard_tripped = True
+        else:
+            if sig != self._prev_sig or (test_result.passed and not skipped):
+                self._no_progress = 0
+            self._prev_sig = sig
 
+    def _build_state_for_persistence(self, test_result: TestResult) -> RunState:
+        """Build state for persistence, trimming history if needed."""
+        max_entries = getattr(self.settings, 'max_history_entries', 50)
+        trimmed_history = self.history
+        if len(self.history) > max_entries:
+            trimmed_history = self.history[-max_entries:]
+
+        return RunState(
+            goal=self.goal,
+            original_goal=self.original_goal,
+            cycles=self.cycles,
+            tasks=self.tasks,
+            history=trimmed_history,
+            usage=self._usage,
+            no_progress=self._no_progress,
+            prev_sig=self._prev_sig,
+            tests_run=self._tests_run,
+            last_passed=test_result.passed,
+            last_skipped=bool(getattr(test_result, 'skipped', False)),
+            last_summary=test_result.summary
+        )
+
+    def _persist_state(self, test_result: TestResult, plan: Plan) -> None:
+        skipped = bool(getattr(test_result, "skipped", False))
+        state = self._build_state_for_persistence(test_result)
+        try:
+            self.state_store.save(state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.event_bus.emit(
+                Event(type=EventType.ERROR,
+                     message=f"could not save state to {self.state_store.path}: {e}")
+            )
+        else:
+            self.event_bus.emit(Event(type=EventType.STATE_SAVED,
+                                    data={"path": str(self.state_store.path)}))
+
+    def _build_result(self) -> RunResult:
         if not self._stopped_reason:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"

@@ -581,6 +581,40 @@ def test_is_command_denied_checks_command_substitutions(tmp_path):
     assert is_command_denied("echo `fdisk /dev/sda`", tmp_path) is True
 
 
+def test_is_command_denied_deeply_nested_substitutions(tmp_path):
+    """Deeply nested command substitutions are caught regardless of depth."""
+    # Beyond the old _MAX_SUBSTITUTION_DEPTH limit of 3
+    assert is_command_denied("echo $(echo $(echo $(rm -rf /)))", tmp_path) is True
+    assert is_command_denied("echo $(echo $(echo $(echo $(rm -rf /))))", tmp_path) is True
+    # Backticks too
+    assert is_command_denied("echo `echo `echo `rm -rf /```", tmp_path) is True
+    # Mixed substitution styles
+    assert is_command_denied("echo $(echo `echo $(rm -rf /)`)", tmp_path) is True
+
+
+def test_is_command_denied_mixed_separators_in_substitutions(tmp_path):
+    """Separators inside command substitutions create segments that are checked."""
+    # Semicolon inside substitution
+    assert is_command_denied("echo $(echo test; rm -rf /)", tmp_path) is True
+    # && inside substitution
+    assert is_command_denied("echo $(echo test && rm -rf /)", tmp_path) is True
+    # || inside substitution
+    assert is_command_denied("echo $(echo test || rm -rf /)", tmp_path) is True
+    # Pipe inside substitution
+    assert is_command_denied("echo $(echo test | rm -rf /)", tmp_path) is True
+    # Newline inside substitution
+    assert is_command_denied("echo $(\necho test\nrm -rf /\n)", tmp_path) is True
+
+
+def test_is_command_denied_allows_normal_substitutions(tmp_path):
+    """Normal command substitutions without dangerous content are allowed."""
+    assert is_command_denied("echo $(echo test)", tmp_path) is False
+    assert is_command_denied("echo `echo test`", tmp_path) is False
+    assert is_command_denied("echo $(echo $(echo hello))", tmp_path) is False
+    assert is_command_denied("ls $(find . -name '*.py')", tmp_path) is False
+    assert is_command_denied("echo $(date)", tmp_path) is False
+
+
 def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     """A redirect whose target stays inside the workspace is allowed."""
     assert is_command_denied("echo hi > out.txt", tmp_path) is False

@@ -15,6 +15,7 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -24,6 +25,8 @@ except ImportError:  # pragma: no cover - tenacity is a declared dependency
     _TENACITY_AVAILABLE = False
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+logger = get_logger(__name__)
 
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
@@ -271,15 +274,23 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
-    async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
+    async def _retry(
+        self,
+        call: Callable[[], Awaitable[T]],
+        cancellation_token: asyncio.Event | None = None,
+    ) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
         The call is retried up to ``settings.max_retries`` attempts. Errors that
         are not retryable (see :func:`_is_retryable`) are raised immediately.
+
+        A ``cancellation_token`` can be provided to abort between retry attempts.
+        If the token is set before an attempt, :class:`asyncio.CancelledError` is raised.
         """
         max_attempts = max(1, int(self.settings.max_retries))
 
         if _TENACITY_AVAILABLE:
+            # Use tenacity but with cancellation check
             async for attempt_manager in AsyncRetrying(
                 stop=stop_after_attempt(max_attempts),
                 wait=wait_exponential(multiplier=1, min=1, max=20),
@@ -287,17 +298,30 @@ class LLMClient:
                 reraise=True,
             ):
                 with attempt_manager:
+                    if cancellation_token and cancellation_token.is_set():
+                        raise asyncio.CancelledError()
                     return await call()
 
+        # Fallback implementation with cancellation
         last_exc: Exception | None = None
         for attempt_index in range(max_attempts):
+            if cancellation_token and cancellation_token.is_set():
+                raise asyncio.CancelledError()
             try:
                 return await call()
             except Exception as exc:
                 last_exc = exc
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
+                # Log retry attempt
+                logger.debug(
+                    "llm_retry",
+                    attempt=attempt_index + 2,
+                    max_attempts=max_attempts,
+                    error=str(exc),
+                )
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
+
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")

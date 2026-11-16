@@ -232,7 +232,15 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
         return True
 
     # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    if _redirects_outside_workspace(segment, workspace):
+        return True
+
+    # ALSO check inside every command substitution recursively (unlimited depth)
+    for substitution in _extract_command_substitutions(segment):
+        if _text_is_denied(substitution, workspace, depth=0):
+            return True
+
+    return False
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
