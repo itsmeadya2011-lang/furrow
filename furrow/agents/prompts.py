@@ -88,4 +88,49 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "git_status",
+        "description": "show the working tree status (modified, staged, untracked files).",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+    {
+        "name": "git_diff",
+        "description": "show changes between commits, commit and working tree, etc.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "staged": {"type": "boolean", "description": "show staged changes instead of unstaged"},
+                "path": {"type": "string", "description": "limit diff to a specific file or directory"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "git_commit",
+        "description": "commit staged changes with a message.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "commit message"},
+                "add_all": {"type": "boolean", "description": "stage all modified and deleted files before commit"},
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "git_log",
+        "description": "show recent commit history.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "maximum number of commits to show", "default": 10},
+                "oneline": {"type": "boolean", "description": "show compact one-line format", "default": true},
+            },
+            "required": [],
+        },
+    },
 ]

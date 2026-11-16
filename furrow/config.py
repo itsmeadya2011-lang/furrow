@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -132,6 +133,12 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    # Command security settings
+    allowed_commands: list[str] = Field(default_factory=list)
+    allowed_programs: list[str] = Field(default_factory=lambda: ["git"])
+    deny_force_push: bool = True
+    deny_workspace_escape: bool = True
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

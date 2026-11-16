@@ -3,6 +3,7 @@
 Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
+    furrow costs           show the LLM cost breakdown for the last run
     furrow resume          continue the persisted run
     furrow web             serve the web UI
 """
@@ -152,7 +153,7 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
-def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
+def _execute(goal: str, run_settings: Settings, resume: bool, verbose: bool = False) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
     orchestrator = Orchestrator(
@@ -161,14 +162,25 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         state_store=store,
         resume=resume,
     )
+    if verbose:
+        click.echo(f"Starting Furrow run: {goal}")
+        click.echo(f"Workspace: {run_settings.workspace}")
+        click.echo(f"Model: {run_settings.model}")
+        click.echo(f"Max cycles: {run_settings.max_cycles or 'unlimited'}")
+        click.echo("─" * 50)
     try:
         result = asyncio.run(_run_and_release(orchestrator))
     except KeyboardInterrupt:
-        click.echo("Furrow stopped by user.")
+        click.echo("\nFurrow stopped by user.")
         sys.exit(0)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
+        if verbose:
+            import traceback
+            traceback.print_exc()
         sys.exit(1)
+    if verbose:
+        click.echo("─" * 50)
     _print_summary(result)
     skipped = bool(getattr(result, "skipped", False))
     tests_run = getattr(result, "tests_run", 0) or 0
@@ -195,18 +207,22 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option("-v", "--verbose", is_flag=True, help="Show detailed progress during the run.")
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    verbose: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
-    _execute(goal=goal, run_settings=run_settings, resume=resume)
+    if verbose:
+        run_settings.log_level = "DEBUG"
+    _execute(goal=goal, run_settings=run_settings, resume=resume, verbose=verbose)
 
 
 @main.command()
@@ -234,17 +250,58 @@ def status(workspace: Path | None) -> None:
     default=None,
     help=WORKSPACE_HELP,
 )
+def costs(workspace: Path | None) -> None:
+    """Show the LLM cost breakdown for the persisted run."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+
+    usage = getattr(state, "usage", None)
+    if usage is None or usage.calls == 0:
+        click.echo("No cost data available.")
+        return
+
+    click.echo("Furrow cost summary")
+    click.echo(f"  Total cost:      ${usage.cost_usd:.6f}")
+    click.echo(f"  Total calls:     {usage.calls}")
+    click.echo(f"  Total tokens:    {usage.total_tokens} (in {usage.input_tokens} / out {usage.output_tokens})")
+
+    history = getattr(state, "history", None)
+    if history:
+        click.echo("\nPer-cycle breakdown:")
+        for entry in history:
+            u = entry.usage
+            if u.calls > 0:
+                click.echo(
+                    f"  Cycle {entry.cycle:3d}: ${u.cost_usd:.6f} "
+                    f"({u.calls} calls, {u.total_tokens} tokens)"
+                )
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("-v", "--verbose", is_flag=True, help="Show detailed progress during the run.")
+def resume(workspace: Path | None, max_cycles: int | None, verbose: bool) -> None:
     """Resume the persisted Furrow run."""
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    if verbose:
+        run_settings.log_level = "DEBUG"
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
         click.secho("No furrow run state found to resume.", fg="red")
         sys.exit(1)
     goal = state.original_goal or state.goal
-    _execute(goal=goal, run_settings=run_settings, resume=True)
+    _execute(goal=goal, run_settings=run_settings, resume=True, verbose=verbose)
 
 
 @main.command()

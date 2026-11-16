@@ -74,10 +74,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.5;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -97,7 +99,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color 0.2s;
   }
+  .panel:hover { border-color: #4c8dff; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
   }
@@ -114,6 +118,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    display: flex; gap: .4rem; flex-wrap: wrap; margin: .4rem 0;
+    font-size: .8rem;
+  }
+  .panel-file {
+    background: #1d2430; padding: .15rem .4rem; border-radius: 3px;
+    color: #4c8dff; font-family: inherit;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -124,13 +136,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { color: #8a93a5; background: #1d2430; }
+  .status-running { color: #4c8dff; background: #1d2430; }
+  .status-completed { color: #57d38c; background: #1d2430; }
+  .status-failed { color: #e0685f; background: #1d2430; }
+  .status-blocked { color: #f0b367; background: #1d2430; }
+  .status-skipped { color: #8a93a5; background: #1d2430; }
+  .status-unknown { color: #8a93a5; background: #1d2430; }
+  .log-line { margin: .1rem 0; }
+  .log-time { color: #8a93a5; margin-right: .5rem; }
+  .log-clear { float: right; font-size: .75rem; padding: .2rem .5rem; }
 </style>
 </head>
 <body>
@@ -139,6 +154,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="clear-log" class="log-clear">Clear Log</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -163,9 +179,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
   let socket = null;
   let lastSummary = null;
 
-  function append(line) {
-    logEl.textContent += line + '\n';
+  function append(line, color = '#8a93a5') {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    const time = new Date().toLocaleTimeString();
+    div.innerHTML = '<span class="log-time">[' + time + ']</span> ' + line;
+    div.style.color = color;
+    logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function clearLog() {
+    logEl.textContent = '';
   }
 
   function text(value) {
@@ -251,6 +276,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
 
+      // Files changed
+      const files = task.files_changed || [];
+      if (files.length > 0) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'panel-files';
+        files.forEach(function (file) {
+          const fileEl = document.createElement('span');
+          fileEl.className = 'panel-file';
+          fileEl.textContent = file;
+          fileEl.title = file;
+          filesDiv.appendChild(fileEl);
+        });
+        panel.appendChild(filesDiv);
+      }
+
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
@@ -280,7 +320,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const body = await res.json();
       if (body.state && body.state.tasks) { renderTasks(body.state.tasks); }
     } catch (err) {
-      append('! could not load state');
+      append('! could not load state', '#e0685f');
     }
   }
 
@@ -296,12 +336,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       if (body.result) {
         const summary = text(body.result.summary);
         if (summary && summary !== lastSummary) {
-          append('-- ' + summary);
+          append('-- ' + summary, '#57d38c');
           lastSummary = summary;
         }
       }
     } catch (err) {
-      append('! could not load status');
+      append('! could not load status', '#e0685f');
     }
   }
 
@@ -310,7 +350,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
-      append('> connected');
+      append('> connected', '#57d38c');
       // A new run starts: forget the previous summary so this run always
       // contributes its own summary line to the log.
       lastSummary = null;
@@ -324,7 +364,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     function eventTime(msg) {
       const ts = msg && msg.timestamp;
       if (!ts) { return '--:--:--'; }
-      const m = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
+      const m = String(ts).match(/T(\\d{2}:\\d{2}:\\d{2})/);
       return m ? m[1] : '--:--:--';
     }
 
@@ -336,10 +376,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       let color = '#8a93a5';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
+        color = '#4c8dff';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        color = '#f0b367';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+        color = '#4c8dff';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
         line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
@@ -347,6 +390,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'test_started') {
         line = 'running tests...';
+        color = '#f0b367';
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
@@ -367,8 +411,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const span = document.createElement('span');
       span.style.color = color;
       span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
+      const div = document.createElement('div');
+      div.className = 'log-line';
+      div.appendChild(span);
+      logEl.appendChild(div);
       logEl.scrollTop = logEl.scrollHeight;
       return line;
     }
@@ -390,12 +436,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
     };
     socket.onclose = function () {
-      append('-- closed');
+      append('-- closed', '#8a93a5');
       socket = null;
       loadStatus();
     };
     socket.onerror = function () {
-      append('!! websocket error');
+      append('!! websocket error', '#e0685f');
     };
   }
 
@@ -405,6 +451,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('clear-log').onclick = function () {
+    clearLog();
+  };
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function (e) {
+    if (e.target === goalEl) return; // Don't trigger shortcuts when typing in goal
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      connect({ goal: goalEl.value, resume: false });
+    }
+    if (e.key === 'l' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      clearLog();
+    }
+  });
 
   loadState();
   loadStatus();
@@ -595,6 +656,57 @@ async def api_status() -> dict[str, Any]:
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
     }
+
+
+@app.get("/api/costs")
+async def api_costs() -> dict[str, Any]:
+    """Cost history for the current or last run."""
+    orchestrator = _CURRENT.get("orchestrator")
+    result = _CURRENT.get("result")
+    state_store = _state_store()
+    state = state_store.load()
+
+    costs = {
+        "total": {"cost_usd": 0.0, "calls": 0, "input_tokens": 0, "output_tokens": 0},
+        "by_cycle": [],
+        "by_model": {},
+    }
+
+    # Get costs from current run status
+    if orchestrator is not None:
+        status = orchestrator.status()
+        usage = status.get("usage", {})
+        costs["total"] = {
+            "cost_usd": usage.get("cost_usd", 0.0),
+            "calls": usage.get("calls", 0),
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+        }
+
+    # Get costs from result
+    if result is not None:
+        usage = result.usage
+        costs["total"] = {
+            "cost_usd": usage.cost_usd,
+            "calls": usage.calls,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+        }
+
+    # Get costs from persisted state (includes history)
+    if state is not None and state.history:
+        for entry in state.history:
+            usage = entry.usage
+            costs["by_cycle"].append({
+                "cycle": entry.cycle,
+                "cost_usd": usage.cost_usd,
+                "calls": usage.calls,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "timestamp": entry.timestamp,
+            })
+
+    return costs
 
 
 @app.post("/api/start")

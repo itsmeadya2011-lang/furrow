@@ -210,55 +210,75 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     return any(token.lower() == "-f" for token in _shell_tokens(segment))
 
 
-def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
+def _is_dangerous_segment(segment: str, workspace: Path, settings: Settings) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
     if not normalized:
         return False
 
-    # DENY by PROGRAM NAME
+    # Check allowed programs first - if explicitly allowed, skip denial
     program = _get_program_basename(segment)
+    if program:
+        program = program.lower()
+        if program in [p.lower() for p in settings.allowed_programs]:
+            return False
+
+    # DENY by PROGRAM NAME
     if program:
         program = program.lower()
         if program in DENIED_PROGRAMS or program.startswith("mkfs."):
             return True
 
+    # Check allowed commands/patterns - if explicitly allowed, skip denial
+    for allowed in settings.allowed_commands:
+        if allowed.lower() in normalized:
+            return False
+
     # DENY by PATTERN
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
 
-    # DENY a force push
-    if _is_force_push(segment, normalized):
+    # DENY a force push (if enabled)
+    if settings.deny_force_push and _is_force_push(segment, normalized):
         return True
 
-    # DENY a redirection that escapes the workspace
-    return bool(_redirects_outside_workspace(segment, workspace))
+    # DENY a redirection that escapes the workspace (if enabled)
+    if settings.deny_workspace_escape:
+        return bool(_redirects_outside_workspace(segment, workspace))
+    return False
 
 
-def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
+def _text_is_denied(text: str, workspace: Path, settings: Settings, depth: int) -> bool:
     """Check a command - or the text of a command substitution - against the policy."""
     normalized = _normalize_command(text)
     # The whole text is checked against the pattern list as well, so that a
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+        # Check if any allowed command pattern matches
+        for allowed in settings.allowed_commands:
+            if allowed.lower() in normalized:
+                return False
         return True
     # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
+    if any(_is_dangerous_segment(segment, workspace, settings) for segment in _split_command_segments(text)):
         return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
-            if _text_is_denied(substitution, workspace, depth + 1):
+            if _text_is_denied(substitution, workspace, settings, depth + 1):
                 return True
     return False
 
 
-def is_command_denied(command: str, workspace: Path) -> bool:
+def is_command_denied(command: str, workspace: Path, settings: Settings | None = None) -> bool:
     """Check if command is denied by security policy."""
     if not command or not command.strip():
         return False
-    return _text_is_denied(command, workspace, depth=0)
+    if settings is None:
+        from furrow.config import settings as global_settings
+        settings = global_settings
+    return _text_is_denied(command, workspace, settings, depth=0)
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -373,6 +393,23 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "git_status":
+            return await self._git_status()
+        if name == "git_diff":
+            return await self._git_diff(
+                staged=bool(args.get("staged", False)),
+                path=str(args.get("path", "")) if args.get("path") else None,
+            )
+        if name == "git_commit":
+            return await self._git_commit(
+                message=str(args.get("message", "")),
+                add_all=bool(args.get("add_all", False)),
+            )
+        if name == "git_log":
+            return await self._git_log(
+                limit=int(args.get("limit", 10)),
+                oneline=bool(args.get("oneline", True)),
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -444,7 +481,7 @@ class WorkerAgent:
         # the command, checks every segment against DENIED_COMMANDS and
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
-        if is_command_denied(command, self.workspace):
+        if is_command_denied(command, self.workspace, self.settings):
             return "error: command denied"
         try:
             shlex.split(command)
@@ -491,6 +528,47 @@ class WorkerAgent:
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         return combined
+
+    async def _git_status(self) -> str:
+        """Show the working tree status."""
+        return await self._run_command("git status")
+
+    async def _git_diff(self, staged: bool = False, path: str | None = None) -> str:
+        """Show changes between commits, commit and working tree, etc."""
+        cmd = "git diff"
+        if staged:
+            cmd += " --cached"
+        if path:
+            # Validate path doesn't escape workspace
+            resolved = resolve_in_workspace(self.workspace, path)
+            if resolved is None:
+                return "error: path escapes workspace"
+            cmd += f" -- {shlex.quote(path)}"
+        return await self._run_command(cmd)
+
+    async def _git_commit(self, message: str, add_all: bool = False) -> str:
+        """Commit staged changes with a message."""
+        if not message.strip():
+            return "error: commit message cannot be empty"
+        if add_all:
+            result = await self._run_command("git add -A")
+            if result.startswith("error:"):
+                return result
+        # Check if there's anything to commit
+        status = await self._run_command("git status --porcelain")
+        if not status.strip() and not add_all:
+            return "nothing to commit, working tree clean"
+        # Commit with the message
+        quoted_message = shlex.quote(message)
+        return await self._run_command(f"git commit -m {quoted_message}")
+
+    async def _git_log(self, limit: int = 10, oneline: bool = True) -> str:
+        """Show recent commit history."""
+        cmd = "git log"
+        if oneline:
+            cmd += " --oneline"
+        cmd += f" -n {max(1, min(limit, 100))}"
+        return await self._run_command(cmd)
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
