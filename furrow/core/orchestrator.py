@@ -12,6 +12,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.plugins import registry, run_hook
 
 _UNSET = object()
 
@@ -163,7 +164,15 @@ class Orchestrator:
                 break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
+            try:
+                run_hook("before_cycle", cycle=self.cycles, goal=self.goal)
+            except Exception:
+                pass
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            try:
+                run_hook("before_plan", goal=self.goal, context=self._context())
+            except Exception:
+                pass
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
@@ -175,6 +184,10 @@ class Orchestrator:
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
+            try:
+                run_hook("after_plan", goal=self.goal, plan=plan)
+            except Exception:
+                pass
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
@@ -186,7 +199,15 @@ class Orchestrator:
                 break
             self._merge_plan(plan)
             try:
+                run_hook("before_execute", plan=plan, tasks=self.tasks)
+            except Exception:
+                pass
+            try:
                 await self._execute(plan)
+                try:
+                    run_hook("after_execute", plan=plan, tasks=self.tasks)
+                except Exception:
+                    pass
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -195,6 +216,10 @@ class Orchestrator:
                 self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+            try:
+                run_hook("before_test", goal=self.original_goal, tasks=self.tasks)
+            except Exception:
+                pass
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -212,6 +237,11 @@ class Orchestrator:
                     data={"passed": test_result.passed, "summary": test_result.summary},
                 )
             )
+            try:
+                run_hook("after_test", goal=self.original_goal, tasks=self.tasks,
+                         test_result=test_result)
+            except Exception:
+                pass
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
                 self._say(f"[green]Tests passed: {summary}[/green]")
@@ -253,6 +283,10 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+            try:
+                run_hook("after_cycle", cycle=self.cycles, goal=self.goal, result=test_result)
+            except Exception:
+                pass
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress

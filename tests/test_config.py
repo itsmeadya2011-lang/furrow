@@ -259,3 +259,75 @@ def test_pricing_overrides_returns_a_copy():
     overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
     assert s.model_pricing["my-model"].input_per_million == 1.0
 
+
+def test_model_provider_map_defaults_to_empty():
+    s = Settings()
+    assert s.model_provider_map == {}
+
+
+def test_model_provider_map_accepts_valid_providers():
+    s = Settings(
+        model_provider_map={"claude-": "anthropic", "gpt-": "openai", "ollama-": "ollama"}
+    )
+    assert s.model_provider_map == {
+        "claude-": "anthropic",
+        "gpt-": "openai",
+        "ollama-": "ollama",
+    }
+
+
+def test_model_provider_map_rejects_invalid_provider():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(model_provider_map={"claude-": "not-a-provider"})
+
+
+def test_provider_for_model_falls_back_to_global_provider():
+    s = Settings(provider=Provider.OPENAI)
+    assert s.provider_for_model("some-unknown-model") == Provider.OPENAI
+
+
+def test_provider_for_model_uses_model_provider_map_longest_prefix():
+    s = Settings(
+        provider=Provider.ANTHROPIC,
+        model_provider_map={"claude-": "anthropic", "claude-sonnet": "openai"},
+    )
+    # "claude-sonnet-4" matches both "claude-" and "claude-sonnet"; longest wins.
+    assert s.provider_for_model("claude-sonnet-4") == Provider.OPENAI
+    # "claude-haiku" matches only "claude-".
+    assert s.provider_for_model("claude-haiku-3") == Provider.ANTHROPIC
+
+
+def test_provider_for_model_uses_provider_prefix():
+    s = Settings(provider=Provider.ANTHROPIC)
+    assert s.provider_for_model("openai/gpt-4o") == Provider.OPENAI
+    assert s.provider_for_model("anthropic/claude-sonnet-4") == Provider.ANTHROPIC
+    assert s.provider_for_model("ollama/llama3") == Provider.OLLAMA
+
+
+def test_provider_for_model_map_wins_over_prefix():
+    s = Settings(
+        provider=Provider.ANTHROPIC,
+        model_provider_map={"openai/": "ollama"},
+    )
+    # The map says "openai/" -> ollama, so even though the model starts with
+    # "openai/", the map takes priority.
+    assert s.provider_for_model("openai/gpt-4o") == Provider.OLLAMA
+
+
+def test_provider_for_model_never_raises_for_unknown():
+    s = Settings(provider=Provider.ANTHROPIC)
+    assert s.provider_for_model("") == Provider.ANTHROPIC
+    assert s.provider_for_model("completely/unknown/model-xyz") == Provider.ANTHROPIC
+
+
+def test_model_provider_map_from_environment(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv(
+        "FURROW_MODEL_PROVIDER_MAP", '{"claude-":"anthropic","gpt-":"openai"}'
+    )
+    s = Settings(_env_file=None)
+    assert s.provider_for_model("claude-sonnet-4") == Provider.ANTHROPIC
+    assert s.provider_for_model("gpt-4o-mini") == Provider.OPENAI
+
+

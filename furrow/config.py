@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
+    model_provider_map: dict[str, str] = Field(default_factory=dict)
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
@@ -141,6 +142,59 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    @field_validator("model_provider_map")
+    @classmethod
+    def _validate_model_provider_map(cls, v: dict[str, str]) -> dict[str, str]:
+        for key, value in v.items():
+            try:
+                Provider(str(value).lower())
+            except ValueError as exc:
+                raise ValueError(
+                    f"invalid provider {value!r} for model prefix {key!r}"
+                ) from exc
+        return v
+
+    def provider_for_model(self, model: str) -> Provider:
+        """Resolve the provider for a model id.
+
+        Priority: longest-prefix match in ``model_provider_map``, then a leading
+        ``<provider>/`` prefix on the model id, then the global ``provider``.
+        Never raises for unknown models.
+        """
+        best_key = ""
+        best_provider: Provider | None = None
+        for key, value in self.model_provider_map.items():
+            if not model.startswith(key):
+                continue
+            if len(key) <= len(best_key):
+                continue
+            try:
+                candidate = Provider(str(value).lower())
+            except ValueError:
+                continue
+            best_key = key
+            best_provider = candidate
+        if best_provider is not None:
+            return best_provider
+
+        from furrow.costs import _PROVIDER_PREFIXES
+
+        model_lower = model.lower()
+        matched_prefix = ""
+        for prefix in _PROVIDER_PREFIXES:
+            if (
+                model_lower.startswith(prefix + "/")
+                and len(prefix) > len(matched_prefix)
+            ):
+                matched_prefix = prefix
+        if matched_prefix:
+            try:
+                return Provider(matched_prefix.lower())
+            except ValueError:
+                pass
+
+        return self.provider
 
 
 settings = Settings()
