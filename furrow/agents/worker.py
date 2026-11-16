@@ -62,8 +62,9 @@ _HOME_VAR_RE = re.compile(
     re.IGNORECASE,
 )
 
-# The target of a redirection: "> file" or ">> file".
-_REDIRECT_RE = re.compile(r">>?\s*([^\s;|&<>]+)")
+# The target of a redirection: "> file", ">> file", "2> file", "2>> file".
+# The optional leading digit covers file-descriptor redirects such as 2> (stderr).
+_REDIRECT_RE = re.compile(r"(?:\d)?>>?\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.

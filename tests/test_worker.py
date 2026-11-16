@@ -554,6 +554,11 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "echo hi > ~/x",
         "echo hi > $HOME/x",
         "echo hi > ${HOME}/x",
+        # stderr redirections escaping the workspace (2> and 2>>)
+        "echo hacked 2> /etc/passwd",
+        "echo hacked 2>> /etc/passwd",
+        "cmd 2> ../../etc/passwd",
+        "cmd 2>> ~/x",
     ]
     allowed_commands = [
         "pytest -q",
@@ -561,6 +566,8 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "ls -f",
         "rm -rf build",
         "echo hi > out.txt",
+        "echo hi 2> err.txt",
+        "echo hi 2>> err.txt",
         "cd sub && ls",
     ]
 
@@ -584,6 +591,16 @@ def test_is_command_denied_checks_command_substitutions(tmp_path):
 def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     """A redirect whose target stays inside the workspace is allowed."""
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
+    assert is_command_denied("echo hi 2> err.txt", tmp_path) is False
+    assert is_command_denied("echo hi 2>> err.txt", tmp_path) is False
+
+
+def test_is_command_denied_denies_stderr_redirect_outside_workspace(tmp_path):
+    """A stderr redirect (2> / 2>>) whose target escapes the workspace is denied."""
+    assert is_command_denied("echo hi 2> /etc/passwd", tmp_path) is True
+    assert is_command_denied("echo hi 2>> /etc/passwd", tmp_path) is True
+    assert is_command_denied("cmd 2> ../../etc/passwd", tmp_path) is True
+    assert is_command_denied("cmd 2>> ~/x", tmp_path) is True
 
 
 @pytest.mark.asyncio
