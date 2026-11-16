@@ -446,7 +446,55 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert res.failures
     assert any("RuntimeError" in f for f in res.failures)
 
-    """Old head-only behaviour is gone - beginning of output is not kept."""
+def test_pytest_exit_5_is_skipped_not_failed(tmp_path, monkeypatch):
+    """pytest exit code 5 (no tests collected) is treated as skipped/passed."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=5, stdout=b"no tests ran in 0.01s")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "ok"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.skipped is True
+    assert res.passed is True
+    assert res.failures == []
+    assert "no tests were collected" in res.summary.lower() or "skipped" in res.summary.lower()
+
+
+def test_pytest_exit_5_is_skipped_when_llm_unavailable(tmp_path, monkeypatch):
+    """pytest exit 5 is skipped even when the LLM is unavailable."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=5, stdout=b"no tests ran in 0.01s")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(raises=RuntimeError("llm down"))
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.skipped is True
+    assert res.passed is True
+    assert res.failures == []
+    assert "no tests were collected" in res.summary.lower() or "skipped" in res.summary.lower()
+
+
+
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
     head_start = "UNIQUE_HEAD_MARKER_111"

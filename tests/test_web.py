@@ -569,7 +569,39 @@ def test_start_request_rejects_negative_max_cycles(client: TestClient) -> None:
     assert response.status_code == 422
 
 
-def test_api_start_rejects_a_negative_max_cycles_without_starting_a_run(
+def test_api_status_exposes_dropped_events(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dropped_events"] == 0
+
+    client.post("/api/start", json={"goal": "build it"})
+    assert _wait_until(lambda: client.get("/api/status").json()["running"] is False)
+    body = client.get("/api/status").json()
+    assert body["dropped_events"] == 0
+
+
+def test_websocket_done_reports_dropped_events(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    messages: list[dict[str, Any]] = []
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "g"})
+        for _ in range(20):
+            try:
+                message = ws.receive_json()
+            except WebSocketDisconnect:
+                break
+            messages.append(message)
+            if message.get("type") == "done":
+                break
+
+    done = next(m for m in messages if m.get("type") == "done")
+    assert done["data"]["dropped_events"] == 0
     client: TestClient, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
     """An out-of-range ``max_cycles`` never reaches the orchestrator."""

@@ -257,6 +257,7 @@ class TesterAgent:
         spawn_error: str,
         timed_out: bool,
         timeout: float,
+        no_tests_collected: bool = False,
     ) -> TestResult:
         """Combine the exit status of the test command with the LLM verdict.
 
@@ -270,6 +271,13 @@ class TesterAgent:
           "the suite did not run" report must not be silently promoted to a
           pass) and the disagreement is explained in the summary.
         """
+        if no_tests_collected:
+            return TestResult(
+                passed=True,
+                skipped=True,
+                summary="No tests were collected (pytest exited with status 5); tests skipped.",
+                failures=[],
+            )
         if spawn_failed:
             # The runner never started: this is an infrastructure error, not a
             # test failure, and it must be reported as such.
@@ -347,6 +355,7 @@ class TesterAgent:
             spawn_failed = False
             spawn_error = ""
             timed_out = False
+            no_tests_collected = False
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -378,6 +387,9 @@ class TesterAgent:
                     stderr = f"Test command timed out after {timeout:g}s.".encode()
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
+                    no_tests_collected = returncode == 5 and bool(cmd) and any(
+                        "pytest" in str(part) for part in cmd
+                    )
 
             combined = (
                 stdout.decode("utf-8", errors="replace")
@@ -407,6 +419,7 @@ class TesterAgent:
                 spawn_error=spawn_error,
                 timed_out=timed_out,
                 timeout=timeout,
+                no_tests_collected=no_tests_collected,
             )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"

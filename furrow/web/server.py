@@ -39,6 +39,7 @@ DEFAULT_CURRENT: dict[str, Any] = {
     "result": None,
     "task": None,
     "error": None,
+    "bus": None,
 }
 
 # Registry of the run that is currently active (or of the last one that ran).
@@ -360,6 +361,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         color = '#e0685f';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
+        if (data.dropped_events > 0) {
+          line += ' (' + text(data.dropped_events) + ' events dropped)';
+        }
         color = '#57d38c';
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
@@ -590,10 +594,12 @@ async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""
     orchestrator = _CURRENT.get("orchestrator")
     result = _CURRENT.get("result")
+    bus = _CURRENT.get("bus")
     return {
         "running": bool(_CURRENT.get("running")),
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
+        "dropped_events": bus.dropped_count if bus is not None else 0,
     }
 
 
@@ -639,6 +645,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
             "result": None,
             "task": run_task,
             "error": None,
+            "bus": bus,
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
@@ -696,9 +703,21 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 "result": None,
                 "task": run_task,
                 "error": None,
+                "bus": bus,
             }
         )
+        last_drops = 0
         while True:
+            drops = bus.dropped_for(queue)
+            if drops > last_drops:
+                await websocket.send_json(
+                    {
+                        "type": "log",
+                        "message": f"warning: {drops - last_drops} event(s) dropped by the slow client",
+                        "data": {"dropped": drops},
+                    }
+                )
+                last_drops = drops
             if run_task.done() and queue.empty():
                 break
             try:
@@ -719,11 +738,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, f"run failed: {exc}")
             return
         result = run_task.result()
+        payload = result.model_dump(mode="json")
+        payload["dropped_events"] = bus.dropped_for(queue)
         await websocket.send_json(
             {
                 "type": "done",
                 "message": result.summary,
-                "data": result.model_dump(mode="json"),
+                "data": payload,
             }
         )
     except asyncio.CancelledError:

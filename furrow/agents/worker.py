@@ -486,7 +486,10 @@ class WorkerAgent:
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
+        returncode = proc.returncode if proc.returncode is not None else 0
         combined = out + "\n[stderr]\n" + err if err.strip() else out
+        if returncode != 0:
+            combined = f"[exit code {returncode}]\n" + combined
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]

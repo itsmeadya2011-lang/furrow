@@ -775,6 +775,20 @@ async def test_failing_command_does_not_raise(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_command_reports_nonzero_exit_code(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    failed = await agent._run_command("exit 3")
+    assert "[exit code 3]" in failed
+    ok = await agent._run_command("echo ok")
+    assert "[exit code" not in ok
+    assert "ok" in ok
+
+
+@pytest.mark.asyncio
 async def test_command_timeout_from_command_timeout_not_request_timeout(tmp_path):
     from furrow.config import TaskModel
 
