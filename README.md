@@ -6,13 +6,14 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 
 - Plans tasks with dependency tracking and parallel execution
 - Worker actually implements code using file and command tools
-- Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go)
-- Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header, and per-task panels)
+- Project-aware test detection (pytest, npm/pnpm/yarn/bun/deno, cargo, go; recognizes `pyproject.toml`, `uv.lock`, `poetry.lock`, `Pipfile`, `hatch.toml`, `pdm.lock`, `pytest.ini`, `setup.cfg`, `tox.ini`, `requirements.txt`, standalone `tests/` directories, `package.json`, `bun.lockb`, and `deno.json`)
+- Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header showing estimated USD cost, per-task panels showing changed files and execution duration)
 - Finished work is not redone: a task that already completed is skipped when the next plan describes the same work
-- Bounded event queues: a subscriber that stops draining loses its oldest events, never the newest ones
-- Atomic state persistence with resume support
-- Fail-safe cycle loop: a planner, execution, tester or state-save failure is reported as an ERROR event instead of crashing the run
-- Hardened provider calls: transient HTTP errors are retried when the status is exposed on the response, and a malformed provider response raises a clear error
+- Bounded event queues and bounded cycle history (`MAX_HISTORY_ENTRIES = 100`): subscribers that stop draining lose their oldest events (never the newest ones), and persisted run state keeps only the 100 most recent history entries
+- Atomic state persistence with resume support and accurate test execution accounting (`skipped` test runs do not increment `tests_run`)
+- Fail-safe cycle loop: a planner, execution, tester, state-save failure, or task dependency cycle is reported as an ERROR event instead of crashing the run
+- Hardened provider calls: transient HTTP errors are retried when the status is exposed on the response, OpenAI reasoning models (`o1`/`o3`/`o4`/newer models) automatically use `max_completion_tokens` with automatic parameter fallback, model `refusal` responses are surfaced clearly, and a malformed provider response raises a clear error
+- Worker command execution surfaces non-zero exit codes (`[exit code N]`, preserved even when output is truncated) and treats token-limit response truncation (`stop_reason == "length"`) as a failure rather than a false success
 - Offline test suite with no API keys required
 - Estimated USD cost per LLM call/cycle/run tracked, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`
 
@@ -128,7 +129,7 @@ The provider clients (Anthropic, OpenAI, Ollama) are created lazily and released
 
 ## State & resume
 
-State is persisted atomically at the end of every completed cycle to `<workspace>/.furrow/state.json`; a cycle that ends early (a planner error, or a plan with no tasks) is not persisted, so the saved cycle count can lag the reported one by one. Each completed cycle writes the state exactly once, after the no-progress guard has been evaluated, so the saved `no_progress` counter and plan signature are the current ones. A `STATE_SAVED` event is emitted only when the state file was actually written; a failed write is reported as an ERROR event with the path that could not be written instead. The state file also carries the number of test-suite executions (`tests_run`); it is restored on resume, so `RunResult.tests_run` counts the whole run and not only the cycles since the resume. Use `furrow resume` or `furrow start --resume` to continue a previous run. Corrupt state files are ignored and the run starts fresh. On resume, the persisted state file is loaded exactly once, so restored values cannot be overwritten by a second read.
+State is persisted atomically at the end of every completed cycle to `<workspace>/.furrow/state.json`; a cycle that ends early (a planner error, or a plan with no tasks) is not persisted, so the saved cycle count can lag the reported one by one. Each completed cycle writes the state exactly once, after the no-progress guard has been evaluated, so the saved `no_progress` counter and plan signature are the current ones. A `STATE_SAVED` event is emitted only when the state file was actually written; a failed write is reported as an ERROR event with the path that could not be written instead. The state file also carries the number of test-suite executions (`tests_run`, which counts cycles where tests actually executed and excludes `skipped` cycles); it is restored on resume, so `RunResult.tests_run` counts the whole run and not only the cycles since the resume. Cycle history is bounded to the most recent `MAX_HISTORY_ENTRIES = 100` entries in memory and on disk so long-running loops do not grow `state.json` without bound. Use `furrow resume` or `furrow start --resume` to continue a previous run. Corrupt state files are ignored and the run starts fresh. On resume, the persisted state file is loaded exactly once, so restored values cannot be overwritten by a second read.
 
 ## Development
 

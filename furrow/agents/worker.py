@@ -51,6 +51,28 @@ DENIED_PROGRAMS = frozenset(
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
+# Default command timeout in seconds (5 minutes).
+DEFAULT_COMMAND_TIMEOUT = 300.0
+
+
+def resolve_command_timeout(settings: Settings) -> float:
+    """Return the timeout (in seconds) allowed for a command.
+
+    The command timeout is separate from the LLM request timeout: ``request_timeout``
+    bounds a single API call, while a command may legitimately run for many minutes.
+    ``Settings.command_timeout`` is read defensively (``getattr``) so the worker also
+    works with settings objects that do not define the setting yet.
+    """
+    raw = getattr(settings, "command_timeout", None)
+    try:
+        timeout = float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        timeout = DEFAULT_COMMAND_TIMEOUT
+    if timeout <= 0:
+        timeout = DEFAULT_COMMAND_TIMEOUT
+    return timeout
+
+
 # Shell separators a command is split on.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|\||\n|\r)+")
 
@@ -312,6 +334,14 @@ class WorkerAgent:
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
             if not response.tool_calls:
+                if response.stop_reason == "length":
+                    return WorkerResult(
+                        summary="response truncated by token limit",
+                        success=False,
+                        files_changed=sorted(self.files_changed),
+                        iterations=iterations,
+                        error="response truncated by token limit",
+                    )
                 summary = response.text.strip() if response.text.strip() else "Task completed."
                 return WorkerResult(
                     summary=summary,
@@ -431,8 +461,14 @@ class WorkerAgent:
         rels = []
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
+            p = Path(e) if Path(e).is_absolute() else (base / e)
             try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
+                resolved = p.resolve()
+                resolved.relative_to(base)
+            except (OSError, ValueError):
+                continue
+            try:
+                rels.append(str(resolved.relative_to(base)))
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
@@ -450,7 +486,7 @@ class WorkerAgent:
             shlex.split(command)
         except ValueError:
             return "error: could not parse command"
-        timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+        timeout = resolve_command_timeout(self.settings)
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
         # instead of leaking orphans. On other platforms we fall back to
@@ -484,12 +520,22 @@ class WorkerAgent:
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
+        rc = proc.returncode if proc.returncode is not None else 0
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
-        if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
+        # Prefix with exit code if non-zero, before truncation so it's never lost
+        exit_prefix = f"[exit code {rc}]\n" if rc != 0 else ""
+        if len(exit_prefix + combined) > cap:
+            # Keep the exit prefix and truncate the rest, preserving the tail
+            available = cap - len(exit_prefix)
+            if available > 0:
+                combined = exit_prefix + "[... output truncated ...]\n" + combined[-available:]
+            else:
+                combined = exit_prefix + "(output truncated)"
+        else:
+            combined = exit_prefix + combined
         return combined
 
     @staticmethod

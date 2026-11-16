@@ -1079,3 +1079,57 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_skipped_tests_do_not_increment_tests_run(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=True)
+    result = await orch.run()
+    assert result.skipped is True
+    assert result.tests_run == 0
+    st = store.load()
+    assert st is not None and st.tests_run == 0
+
+
+@pytest.mark.asyncio
+async def test_dependency_cycle_emits_error_and_blocks_tasks(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    t1 = TaskModel(id="1", description="one", dependencies=["2"])
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    events = drain(q)
+    assert any(
+        e.type == EventType.ERROR and "dependency cycle detected" in e.message for e in events
+    )
+    by_id = {t.id: t.status for t in orch.tasks}
+    assert by_id["1"] == "blocked"
+    assert by_id["2"] == "blocked"
+
+
+@pytest.mark.asyncio
+async def test_history_is_bounded_across_cycles(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    from furrow.core.state import HistoryEntry
+
+    orch.history = [HistoryEntry(cycle=i, goal="g") for i in range(150)]
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    assert len(orch.history) == 100
+    assert orch.history[-1].cycle == 1
+    st = store.load()
+    assert st is not None and len(st.history) == 100

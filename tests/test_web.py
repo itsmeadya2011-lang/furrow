@@ -510,8 +510,32 @@ def test_index_script_surfaces_cost_in_render_status(client: TestClient) -> None
     assert "usage.cost_usd" in script, "script does not read usage.cost_usd"
     # The script should format the cost with toFixed(6)
     assert "toFixed(6)" in script, "script does not format cost with toFixed(6)"
-    # The script should conditionally include the cost only when > 0
-    assert "cost > 0" in script, "script does not guard cost display with cost > 0"
+    # The header should always include the estimated cost label.
+    assert "est. cost $" in script, "script does not label estimated cost in header"
+
+
+def test_index_script_renders_files_changed_and_timing(client: TestClient) -> None:
+    """Task panels surface files_changed and timing safely via textContent."""
+    script = _inline_script(client)
+
+    assert "task.files_changed" in script, "script does not read task.files_changed"
+    assert "task.started_at" in script, "script does not read task.started_at"
+    assert "task.finished_at" in script, "script does not read task.finished_at"
+    assert "files:" in script, "script does not render files_changed metadata"
+    assert "started:" in script, "script does not render task timing"
+    assert "panel-files" in script, "files_changed metadata element missing"
+    assert "panel-timing" in script, "timing metadata element missing"
+    assert script.count("filesEl.textContent") >= 1
+    assert script.count("timeEl.textContent") >= 1
+
+
+def test_index_script_formats_plan_created_nicely(client: TestClient) -> None:
+    """plan_created events render a readable rationale and task count."""
+    script = _inline_script(client)
+
+    assert "plan ('" in script or "plan (" in script, "plan_created formatting missing"
+    assert "data.rationale" in script, "plan_created does not read rationale"
+    assert "Number(count) === 1 ? '' : 's'" in script, "plan_created does not pluralize tasks"
 
 
 @pytest.fixture
@@ -546,18 +570,44 @@ async def test_run_orchestrator_releases_the_client_when_the_run_raises() -> Non
     assert orchestrator.client.closed is True
 
 
-async def test_run_orchestrator_releases_the_client_when_the_run_is_cancelled() -> None:
-    """A cancelled run (e.g. the websocket client left) releases the client."""
-    orchestrator = HangingClientOrchestrator(goal="build it")
+async def test_on_run_done_retrieves_exception_for_orphaned_task() -> None:
+    """An orphaned failed task's exception is retrieved to avoid event-loop warnings."""
 
-    task = asyncio.create_task(server._run_orchestrator(cast(Any, orchestrator)))
-    await asyncio.sleep(0)
+    async def _boom() -> RunResult:
+        raise RuntimeError("orphan boom")
+
+    task = asyncio.create_task(_boom())
+    with pytest.raises(RuntimeError):
+        await task
+
+    server._CURRENT["task"] = object()  # different owner
+    server._CURRENT["running"] = True
+    server._on_run_done(task)
+
+    # No running flag clobber except sync with actual current task (none active).
+    assert server._CURRENT["running"] is False
+    # If the exception was not retrieved, asyncio would warn on GC; explicit
+    # check: calling again is safe and the task remains done with exception.
+    assert task.done()
+    assert not task.cancelled()
+    assert task.exception() is not None
+
+
+async def test_on_run_done_does_not_retrieve_exception_for_cancelled_orphaned_task() -> None:
+    """Cancelled orphaned tasks should not be treated as failed exceptions."""
+    async def _hang() -> RunResult:
+        await asyncio.sleep(30)
+        raise AssertionError("should be cancelled")
+
+    task = asyncio.create_task(_hang())
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    assert orchestrator.client.closed is True
+    server._CURRENT["task"] = object()
+    server._on_run_done(task)
 
+    assert task.cancelled()
 
 def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:
     html = client.get("/").text

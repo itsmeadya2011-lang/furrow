@@ -25,6 +25,21 @@ except ImportError:  # pragma: no cover - tenacity is a declared dependency
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 
+
+def _openai_token_param(model: str, max_tokens: int) -> dict[str, Any]:
+    """Return the correct token limit parameter for the given OpenAI model.
+
+    Reasoning models (o1*, o3*, o4*, gpt-5*, gpt-6*) require ``max_completion_tokens``.
+    Other models (gpt-4o*, gpt-3.5*, etc.) use ``max_tokens``.
+    """
+    # Strip any "openai/" prefix
+    if model.startswith("openai/"):
+        model = model[len("openai/") :]
+    # Reasoning models use max_completion_tokens
+    if model.startswith(("o1", "o3", "o4", "gpt-5", "gpt-6")):
+        return {"max_completion_tokens": max_tokens}
+    return {"max_tokens": max_tokens}
+
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
@@ -184,11 +199,24 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
                 if block.get("type") == "text":
                     user_text.append(block.get("text", ""))
                 elif block.get("type") == "tool_result":
+                    # tool_result content can be a list of blocks (e.g. text blocks);
+                    # OpenAI expects a string for tool messages, so join text blocks
+                    tool_content = block.get("content", "")
+                    if isinstance(tool_content, list):
+                        text_parts = []
+                        for item in tool_content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                text_parts.append(item.get("text", ""))
+                            elif isinstance(item, str):
+                                text_parts.append(item)
+                        tool_content = "\n".join(text_parts)
+                    elif not isinstance(tool_content, str):
+                        tool_content = str(tool_content)
                     converted.append(
                         {
                             "role": "tool",
                             "tool_call_id": block["tool_use_id"],
-                            "content": block.get("content", ""),
+                            "content": tool_content,
                         }
                     )
             if user_text:
@@ -366,9 +394,10 @@ class LLMClient:
     async def _complete_openai(
         self, client: AsyncOpenAI, prompt: str, system: str, model: str
     ) -> LLMResponse:
+        token_param = _openai_token_param(model, self.settings.max_tokens)
         response = await client.chat.completions.create(
             model=model,
-            max_tokens=self.settings.max_tokens,
+            **token_param,
             messages=[
                 {"role": "system", "content": system or "You are a helpful coding assistant."},
                 {"role": "user", "content": prompt},
@@ -381,14 +410,23 @@ class LLMClient:
         message = getattr(choice, "message", None)
         if message is None:
             raise ValueError("provider response choice has no message")
-        text = message.content or ""
+
+        # Handle refusal
+        refusal = getattr(message, "refusal", None)
+        if refusal and not (message.content or "").strip():
+            text = f"[refused] {refusal}"
+            stop_reason = "refusal"
+        else:
+            text = message.content or ""
+            stop_reason = choice.finish_reason
+
         usage = _extract_openai_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
-        return LLMResponse(text=text, raw=response, usage=usage)
+        return LLMResponse(text=text, raw=response, usage=usage, stop_reason=stop_reason)
 
     async def _chat_anthropic(
         self,
@@ -443,44 +481,78 @@ class LLMClient:
         if system:
             request_messages.insert(0, {"role": "system", "content": system})
         request_tools = to_openai_tools(tools or [])
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "max_tokens": self.settings.max_tokens,
-            "messages": request_messages,
-        }
-        if request_tools:
-            kwargs["tools"] = request_tools
-        response = await client.chat.completions.create(**kwargs)
-        choices = getattr(response, "choices", None) or []
-        if not choices:
-            raise ValueError("provider response contained no choices")
-        choice = choices[0]
-        message = getattr(choice, "message", None)
-        if message is None:
-            raise ValueError("provider response choice has no message")
-        text = message.content or ""
-        tool_calls: list[ToolCall] = []
-        for tc in message.tool_calls or []:
-            tool_calls.append(
-                ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=parse_tool_arguments(tc.function.arguments),
+
+        # Try with the primary token parameter first, then fall back on 400 error
+        async def _try_call(token_param: dict[str, Any]) -> LLMResponse:
+            kwargs: dict[str, Any] = {
+                "model": model,
+                **token_param,
+                "messages": request_messages,
+            }
+            if request_tools:
+                kwargs["tools"] = request_tools
+            response = await client.chat.completions.create(**kwargs)
+            choices = getattr(response, "choices", None) or []
+            if not choices:
+                raise ValueError("provider response contained no choices")
+            choice = choices[0]
+            message = getattr(choice, "message", None)
+            if message is None:
+                raise ValueError("provider response choice has no message")
+
+            # Handle refusal
+            refusal = getattr(message, "refusal", None)
+            if refusal and not (message.content or "").strip():
+                text = f"[refused] {refusal}"
+                stop_reason = "refusal"
+            else:
+                text = message.content or ""
+                stop_reason = choice.finish_reason
+
+            tool_calls: list[ToolCall] = []
+            for tc in message.tool_calls or []:
+                tool_calls.append(
+                    ToolCall(
+                        id=tc.id,
+                        name=tc.function.name,
+                        arguments=parse_tool_arguments(tc.function.arguments),
+                    )
                 )
+            usage = _extract_openai_usage(response)
+            try:
+                usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
+            except Exception:
+                usage.cost_usd = 0.0
+            self.total_usage.add(usage)
+            return LLMResponse(
+                text=text,
+                tool_calls=tool_calls,
+                stop_reason=stop_reason,
+                raw=response,
+                usage=usage,
             )
-        usage = _extract_openai_usage(response)
+
+        primary_param = _openai_token_param(model, self.settings.max_tokens)
         try:
-            usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
-        except Exception:
-            usage.cost_usd = 0.0
-        self.total_usage.add(usage)
-        return LLMResponse(
-            text=text,
-            tool_calls=tool_calls,
-            stop_reason=choice.finish_reason,
-            raw=response,
-            usage=usage,
-        )
+            return await _try_call(primary_param)
+        except Exception as exc:
+            # Check if this is a 400 error about max_completion_tokens vs max_tokens
+            status_code = getattr(exc, "status_code", None)
+            if status_code is None:
+                response = getattr(exc, "response", None)
+                if response is not None:
+                    status_code = getattr(response, "status_code", None)
+            if status_code == 400:
+                error_msg = str(exc).lower()
+                if "max_completion_tokens" in error_msg or "max_tokens" in error_msg:
+                    # Try with the other parameter
+                    fallback_param = (
+                        {"max_tokens": self.settings.max_tokens}
+                        if "max_completion_tokens" in primary_param
+                        else {"max_completion_tokens": self.settings.max_tokens}
+                    )
+                    return await _try_call(fallback_param)
+            raise
 
     async def read_file(self, path: str | Path) -> str:
         async with aiofiles.open(path) as f:

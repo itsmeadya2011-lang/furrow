@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 
 from furrow.agents.prompts import WORKER_TOOLS
-from furrow.agents.worker import WorkerAgent, is_command_denied, resolve_in_workspace
+from furrow.agents.worker import (
+    WorkerAgent,
+    is_command_denied,
+    resolve_command_timeout,
+    resolve_in_workspace,
+)
 from furrow.config import Settings
 from furrow.llm import LLMResponse, ToolCall
 
@@ -821,7 +826,6 @@ async def test_read_file_truncation_marker(tmp_path):
     assert "[... output truncated ...]" in out
 
 
- 
 @pytest.mark.asyncio
 async def test_run_command_stderr_newline_format(tmp_path):
     from furrow.config import TaskModel
@@ -890,6 +894,7 @@ async def test_run_command_stderr_newline_format(tmp_path):
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
 
+
 @pytest.mark.skipif(os.name != "posix", reason="symlinks require POSIX")
 def test_resolve_in_workspace_rejects_symlink_escape(tmp_path):
     ws = tmp_path / "ws"
@@ -940,3 +945,92 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+def test_resolve_command_timeout_defaults_and_bounds():
+    s = make_settings(Path("."))
+    assert resolve_command_timeout(s) == 300.0
+    s2 = s.model_copy(update={"command_timeout": 0})
+    assert resolve_command_timeout(s2) == 300.0
+    s3 = s.model_copy(update={"command_timeout": 45.5})
+    assert resolve_command_timeout(s3) == 45.5
+
+
+@pytest.mark.asyncio
+async def test_run_command_includes_non_zero_exit_code(tmp_path):
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(id="t1", name="run_command", arguments={"command": "exit 7"})
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "[exit code 7]" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_truncation_preserves_exit_code(tmp_path):
+    large_out = "X" * 25000
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": f"printf '{large_out}' && exit 3"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert b["content"].startswith("[exit code 3]\n")
+                    assert "[... output truncated ...]" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_worker_response_truncated_by_length_is_not_success(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(text="partial text", tool_calls=[], stop_reason="length"),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="trunc")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    res = await agent.run()
+    assert res.success is False
+    assert "truncated" in (res.error or "").lower()

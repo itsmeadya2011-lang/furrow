@@ -193,15 +193,28 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_python_lock = any(
+            (self.workspace / m).is_file()
+            for m in ("uv.lock", "poetry.lock", "Pipfile", "Pipfile.lock", "hatch.toml", "pdm.lock")
+        )
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
+        # Python projects with tests/ dir (or any Python marker) use pytest
+        if has_tests_dir and not has_package:
+            return [sys.executable, "-m", "pytest", "-q"]
+        if (
+            has_pyproject
+            or has_pytest_ini
+            or has_setup_cfg
+            or has_tox_ini
+            or has_requirements
+            or has_python_lock
         ):
             return [sys.executable, "-m", "pytest", "-q"]
 
-        # Check for Node.js test runners
-        if has_package:
+        # Check for Node.js / Deno / Bun test runners
+        if has_package or (self.workspace / "bun.lockb").is_file():
+            if (self.workspace / "bun.lockb").is_file():
+                return ["bun", "test"]
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
@@ -230,15 +243,8 @@ class TesterAgent:
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
-        python_markers = [
-            "pyproject.toml",
-            "pytest.ini",
-            "setup.cfg",
-            "tox.ini",
-            "requirements.txt",
-        ]
-        if any((self.workspace / m).is_file() for m in python_markers):
-            return [sys.executable, "-m", "pytest", "-q"]
+        if (self.workspace / "deno.json").is_file() or (self.workspace / "deno.jsonc").is_file():
+            return ["deno", "test", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]

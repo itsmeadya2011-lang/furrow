@@ -425,7 +425,6 @@ def test_truncation_keeps_tail_with_summary_marker(tmp_path, monkeypatch):
     assert head_start not in prompt
 
 
- 
 def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
@@ -457,27 +456,60 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     )
     stdout = (head_start + filler + tail).encode()
 
-    async def fake_create_subprocess_exec(*args, **kwargs):
+    async def fake_create_subprocess_exec2(*args, **kwargs):
         return fake_proc(returncode=1, stdout=stdout)
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec2)
 
     client = FakeLLMClient(raises=RuntimeError("llm down"))
-    agent = TesterAgent(
+    agent2 = TesterAgent(
         client=client,
         settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
         workspace=tmp_path,
     )
 
-    res = run(agent.run("goal", []))
-    assert res.passed is False
-    assert "[... output truncated ...]" in res.summary
-    assert "2 failed" in " ".join(res.failures)
-    assert head_start not in res.summary
-    assert head_start not in " ".join(res.failures)
+    res2 = run(agent2.run("goal", []))
+    assert res2.passed is False
+    assert "[... output truncated ...]" in res2.summary
+    assert "2 failed" in " ".join(res2.failures)
+    assert head_start not in res2.summary
+    assert head_start not in " ".join(res2.failures)
     assert client.prompts
-    prompt = client.prompts[0]
-    assert "[... output truncated ...]" in prompt
-    assert "2 failed" in prompt
-    assert "UNIQUE_TAIL_MARKER_777" in prompt
-    assert head_start not in prompt
+    prompt2 = client.prompts[0]
+    assert "[... output truncated ...]" in prompt2
+    assert "2 failed" in prompt2
+    assert "UNIQUE_TAIL_MARKER_777" in prompt2
+    assert head_start not in prompt2
+
+
+def test_detect_tests_dir_without_pyproject(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_a.py").write_text("def test_a(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_modern_python_lockfiles(tmp_path):
+    for marker in ("uv.lock", "poetry.lock", "Pipfile", "hatch.toml", "pdm.lock"):
+        ws = tmp_path / marker.replace(".", "_")
+        ws.mkdir()
+        (ws / marker).write_text("")
+        agent = TesterAgent(settings=Settings(_env_file=None, workspace=ws), workspace=ws)
+        cmd = run(agent.detect_command())
+        assert cmd is not None and "pytest" in cmd, f"failed for {marker}"
+
+
+def test_detect_bun_lockb(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bun.lockb").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["bun", "test"]
+
+
+def test_detect_deno_json(tmp_path):
+    (tmp_path / "deno.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["deno", "test", "-q"]

@@ -12,6 +12,7 @@ from furrow.llm import (
     LLMClient,
     ToolCall,
     _is_retryable,
+    _openai_token_param,
     parse_tool_arguments,
     to_anthropic_messages,
     to_anthropic_tools,
@@ -868,3 +869,148 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+def test_openai_token_param_selects_max_completion_tokens_for_reasoning_models():
+    assert _openai_token_param("o1", 100) == {"max_completion_tokens": 100}
+    assert _openai_token_param("o1-mini", 100) == {"max_completion_tokens": 100}
+    assert _openai_token_param("o3-mini", 200) == {"max_completion_tokens": 200}
+    assert _openai_token_param("o4-mini", 200) == {"max_completion_tokens": 200}
+    assert _openai_token_param("openai/o3-mini", 200) == {"max_completion_tokens": 200}
+    assert _openai_token_param("gpt-5", 200) == {"max_completion_tokens": 200}
+    assert _openai_token_param("gpt-4o", 200) == {"max_tokens": 200}
+    assert _openai_token_param("gpt-4o-mini", 200) == {"max_tokens": 200}
+    assert _openai_token_param("gpt-3.5-turbo", 200) == {"max_tokens": 200}
+
+
+async def test_complete_openai_uses_max_completion_tokens_for_reasoning_models():
+    fake = _FakeOpenAI("reasoned")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="o3-mini"))
+    client._openai = fake
+
+    await client.complete("hi")
+    assert fake.chat.completions.last_kwargs.get("max_completion_tokens") == 4096
+    assert "max_tokens" not in fake.chat.completions.last_kwargs
+
+
+async def test_chat_openai_falls_back_on_400_token_param_mismatch():
+    class _MismatchError(Exception):
+        status_code = 400
+
+    calls: list[dict[str, Any]] = []
+
+    class _Completions:
+        usage = None
+
+        async def create(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            if "max_completion_tokens" in kwargs:
+                raise _MismatchError(
+                    "Unrecognized request argument supplied: max_completion_tokens"
+                )
+            return _FakeResponse("ok")
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="o3-mini"))
+    client._openai = _Client()
+
+    res = await client.chat([{"role": "user", "content": "hi"}])
+    assert res.text == "ok"
+    assert len(calls) == 2
+    assert "max_completion_tokens" in calls[0]
+    assert "max_tokens" in calls[1]
+
+
+async def test_complete_openai_handles_refusal():
+    class _RefusalMessage:
+        content = None
+        refusal = "Cannot assist with that request."
+
+    class _RefusalChoice:
+        message = _RefusalMessage()
+        finish_reason = "stop"
+
+    class _RefusalResponse:
+        choices = [_RefusalChoice()]
+        usage = None
+
+    class _RefusalCompletions:
+        async def create(self, **kwargs: Any) -> Any:
+            return _RefusalResponse()
+
+    class _RefusalChat:
+        completions = _RefusalCompletions()
+
+    class _RefusalClient:
+        chat = _RefusalChat()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
+    client._openai = _RefusalClient()
+
+    res = await client.complete("hi")
+    assert "[refused]" in res.text
+    assert "Cannot assist with that request." in res.text
+    assert res.stop_reason == "refusal"
+
+
+async def test_chat_openai_handles_refusal():
+    class _RefusalMessage:
+        content = ""
+        refusal = "Policy violation"
+        tool_calls = None
+
+    class _RefusalChoice:
+        message = _RefusalMessage()
+        finish_reason = "stop"
+
+    class _RefusalResponse:
+        choices = [_RefusalChoice()]
+        usage = None
+
+    class _RefusalCompletions:
+        async def create(self, **kwargs: Any) -> Any:
+            return _RefusalResponse()
+
+    class _RefusalChat:
+        completions = _RefusalCompletions()
+
+    class _RefusalClient:
+        chat = _RefusalChat()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="gpt-4o"))
+    client._openai = _RefusalClient()
+
+    res = await client.chat([{"role": "user", "content": "hi"}])
+    assert res.text == "[refused] Policy violation"
+    assert res.stop_reason == "refusal"
+
+
+def test_to_openai_messages_coerces_list_tool_result_content_to_string():
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "t1",
+                    "content": [
+                        {"type": "text", "text": "line 1"},
+                        {"type": "text", "text": "line 2"},
+                    ],
+                }
+            ],
+        }
+    ]
+    converted = to_openai_messages(messages)
+    assert converted == [
+        {
+            "role": "tool",
+            "tool_call_id": "t1",
+            "content": "line 1\nline 2",
+        }
+    ]

@@ -189,3 +189,15 @@ def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Pa
     assert loaded is not None
     assert loaded.tests_run == 0
 
+
+def test_history_is_capped_on_save_and_load(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "s.json")
+    history = [HistoryEntry(cycle=i, goal=f"g{i}") for i in range(150)]
+    state = RunState(goal="g", history=history)
+    store.save(state)
+    loaded = store.load()
+    assert loaded is not None
+    assert len(loaded.history) == 100
+    assert loaded.history[0].cycle == 50
+    assert loaded.history[-1].cycle == 149
+

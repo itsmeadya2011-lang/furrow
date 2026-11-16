@@ -16,6 +16,7 @@ from furrow.llm import LLMClient
 _UNSET = object()
 
 _MAX_TEXT = 120
+MAX_HISTORY_ENTRIES = 100
 
 
 class Orchestrator:
@@ -204,8 +205,9 @@ class Orchestrator:
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 break
-            self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
+            if not skipped:
+                self._tests_run += 1
             self.event_bus.emit(
                 Event(
                     type=EventType.TEST_FINISHED,
@@ -252,6 +254,8 @@ class Orchestrator:
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
             ))
+            if len(self.history) > MAX_HISTORY_ENTRIES:
+                self.history = self.history[-MAX_HISTORY_ENTRIES:]
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
@@ -382,6 +386,13 @@ class Orchestrator:
         while remaining:
             wave = [t for t in remaining if all(d in done or d not in ids for d in t.dependencies)]
             if not wave:
+                cycle_ids = ", ".join(t.id for t in remaining)
+                self.event_bus.emit(
+                    Event(
+                        type=EventType.ERROR,
+                        message=f"dependency cycle detected among tasks: {cycle_ids}",
+                    )
+                )
                 for t in remaining:
                     t.status = "blocked"
                 break

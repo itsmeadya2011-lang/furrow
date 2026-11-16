@@ -207,8 +207,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
-      (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens, est. cost $' +
+      cost.toFixed(6);
   }
 
   function renderTasks(tasks) {
@@ -250,6 +250,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      const files = task.files_changed;
+      if (Array.isArray(files) && files.length > 0) {
+        const filesEl = document.createElement('span');
+        filesEl.className = 'panel-files';
+        filesEl.textContent = 'files: ' + files.length + ' [' + files.map(text).join(', ') + ']';
+        meta.appendChild(filesEl);
+      }
+
+      const started = text(task.started_at);
+      const finished = text(task.finished_at);
+      if (started || finished) {
+        let timing = 'started: ' + (started || '\u2014');
+        if (finished) {
+          timing += ', finished: ' + finished;
+          const startMs = Date.parse(started);
+          const endMs = Date.parse(finished);
+          if (!isNaN(startMs) && !isNaN(endMs) && endMs >= startMs) {
+            timing += ' (' + ((endMs - startMs) / 1000).toFixed(2) + 's)';
+          }
+        }
+        const timeEl = document.createElement('span');
+        timeEl.className = 'panel-timing';
+        timeEl.textContent = timing;
+        meta.appendChild(timeEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -337,7 +363,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
       } else if (type === 'plan_created') {
-        line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        const rationale = truncate(text(data.rationale), 200);
+        const count = text(data.tasks);
+        line = 'plan (' + count + ' task' + (Number(count) === 1 ? '' : 's') + ')';
+        if (rationale) {
+          line += ': ' + rationale;
+        }
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
       } else if (type === 'task_finished') {
@@ -473,6 +504,10 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
         # "running" flag in sync with the run that is actually in flight.
         current = _CURRENT.get("task")
         _CURRENT["running"] = bool(current is not None and not current.done())
+        # Retrieve exceptions from orphaned background tasks so the event loop
+        # never logs "Task exception was never retrieved".
+        if task.done() and not task.cancelled():
+            task.exception()
         return
     _CURRENT["running"] = False
     if task.cancelled():

@@ -31,6 +31,8 @@ STATE_VERSION = 1
 
 DEFAULT_STATE_RELATIVE_PATH = Path(".furrow/state.json")
 
+MAX_HISTORY_ENTRIES = 100
+
 
 def utcnow() -> str:
     """ISO-8601 UTC timestamp string, e.g. 2026-10-20T12:30:04.395123+00:00"""
@@ -100,7 +102,10 @@ class StateStore:
             logger.warning("Could not read state file %s: %s", self.path, exc)
             return None
         try:
-            return RunState.model_validate_json(raw)
+            state = RunState.model_validate_json(raw)
+            if len(state.history) > MAX_HISTORY_ENTRIES:
+                state.history = state.history[-MAX_HISTORY_ENTRIES:]
+            return state
         except (ValidationError, ValueError) as exc:
             logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
             return None
@@ -113,6 +118,8 @@ class StateStore:
         fails the temporary file is removed and the error is re-raised.
         """
         state.updated_at = utcnow()
+        if len(state.history) > MAX_HISTORY_ENTRIES:
+            state.history = state.history[-MAX_HISTORY_ENTRIES:]
         payload = json.dumps(state.model_dump(mode="json"), indent=2)
 
         parent = self.path.parent
