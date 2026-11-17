@@ -131,6 +131,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .history-panel {
+    border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
+    background: #171b23; margin-top: 1rem;
+  }
+  .history-cycle {
+    border-bottom: 1px solid #2b3240; padding: .5rem 0;
+  }
+  .history-cycle:last-child { border-bottom: none; }
+  .history-cycle-head {
+    display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
+  }
+  .history-cycle-num { font-size: .85rem; color: #8a93a5; font-weight: 700; }
+  .history-cycle-tests { font-size: .8rem; font-weight: 700; text-transform: uppercase;
+    padding: .05rem .4rem; border-radius: 3px; }
+  .history-cycle-goal { margin: 0 0 .3rem; font-size: .9rem; color: #d7dae0;
+    word-break: break-word; }
+  .history-cycle-plan { margin: 0 0 .3rem; font-size: .85rem; color: #8a93a5;
+    word-break: break-word; }
+  .history-cycle-tasks { margin: 0 0 .3rem; font-size: .85rem; color: #8a93a5; }
+  .history-cycle-meta { display: flex; gap: .8rem; font-size: .8rem; color: #8a93a5;
+    flex-wrap: wrap; }
+  .history-tests-passed { color: #57d38c; }
+  .history-tests-failed { color: #e0685f; }
+  .history-tests-na { color: #8a93a5; }
 </style>
 </head>
 <body>
@@ -151,6 +175,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="history-panel" id="history">
+  <div class="panel-head">
+    <span class="panel-id">History</span>
+  </div>
+  <div id="history-content"></div>
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -305,6 +335,96 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   }
 
+  async function loadHistory() {
+    try {
+      const res = await fetch('/api/history');
+      const body = await res.json();
+      renderHistory(body.history);
+    } catch (err) {
+      // History is optional; don't log error if it fails
+    }
+  }
+
+  function renderHistory(history) {
+    const historyContentEl = document.getElementById('history-content');
+    while (historyContentEl.firstChild) {
+      historyContentEl.removeChild(historyContentEl.firstChild);
+    }
+    if (!history || history.length === 0) {
+      const hint = document.createElement('p');
+      hint.style.color = '#8a93a5';
+      hint.style.fontSize = '.95rem';
+      hint.style.textAlign = 'center';
+      hint.textContent = 'No history yet \u2014 run a goal to see cycle details.';
+      historyContentEl.appendChild(hint);
+      return;
+    }
+    history.forEach(function (entry) {
+      const cycleEl = document.createElement('div');
+      cycleEl.className = 'history-cycle';
+
+      const head = document.createElement('div');
+      head.className = 'history-cycle-head';
+      const numEl = document.createElement('span');
+      numEl.className = 'history-cycle-num';
+      numEl.textContent = 'Cycle ' + text(entry.cycle);
+      head.appendChild(numEl);
+
+      const testsEl = document.createElement('span');
+      testsEl.className = 'history-cycle-tests';
+      const passed = entry.tests_passed;
+      if (passed === true) {
+        testsEl.className += ' history-tests-passed';
+        testsEl.textContent = 'PASSED';
+      } else if (passed === false) {
+        testsEl.className += ' history-tests-failed';
+        testsEl.textContent = 'FAILED';
+      } else {
+        testsEl.className += ' history-tests-na';
+        testsEl.textContent = 'N/A';
+      }
+      head.appendChild(testsEl);
+      cycleEl.appendChild(head);
+
+      const goalEl = document.createElement('div');
+      goalEl.className = 'history-cycle-goal';
+      goalEl.textContent = text(entry.goal);
+      cycleEl.appendChild(goalEl);
+
+      const planEl = document.createElement('div');
+      planEl.className = 'history-cycle-plan';
+      planEl.textContent = 'Plan: ' + text(entry.plan_rationale);
+      cycleEl.appendChild(planEl);
+
+      const tasksEl = document.createElement('div');
+      tasksEl.className = 'history-cycle-tasks';
+      const tasks = entry.task_summaries || [];
+      tasksEl.textContent = 'Tasks: ' + (tasks.length ? tasks.join(', ') : '(none)');
+      cycleEl.appendChild(tasksEl);
+
+      const metaEl = document.createElement('div');
+      metaEl.className = 'history-cycle-meta';
+      const timeEl = document.createElement('span');
+      timeEl.textContent = text(entry.timestamp);
+      metaEl.appendChild(timeEl);
+      if (entry.usage && entry.usage.calls > 0) {
+        const usageEl = document.createElement('span');
+        const inputTokens = Number(entry.usage.input_tokens) || 0;
+        const outputTokens = Number(entry.usage.output_tokens) || 0;
+        const total = inputTokens + outputTokens;
+        usageEl.textContent = entry.usage.calls + ' calls, ' + total + ' tokens';
+        const cost = Number(entry.usage.cost_usd) || 0;
+        if (cost > 0) {
+          usageEl.textContent += ', $' + cost.toFixed(6);
+        }
+        metaEl.appendChild(usageEl);
+      }
+      cycleEl.appendChild(metaEl);
+
+      historyContentEl.appendChild(cycleEl);
+    });
+  }
+
   function connect(payload) {
     if (socket) { socket.close(); }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -408,6 +528,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   loadState();
   loadStatus();
+  loadHistory();
 </script>
 </body>
 </html>
@@ -596,6 +717,17 @@ async def api_status() -> dict[str, Any]:
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
     }
+
+
+@app.get("/api/history")
+async def api_history() -> dict[str, Any]:
+    """The run history (per-cycle details) from the persisted state."""
+    store = _state_store()
+    state = store.load()
+    if state is None:
+        return {"history": None, "exists": False}
+    history = [entry.model_dump(mode="json") for entry in state.history]
+    return {"history": history, "exists": True}
 
 
 @app.post("/api/start")

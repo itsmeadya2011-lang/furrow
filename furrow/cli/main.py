@@ -4,6 +4,7 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow history         show the run history (per-cycle details)
     furrow web             serve the web UI
 """
 
@@ -119,6 +120,39 @@ def _print_state(state: RunState) -> None:
             click.echo(line)
     else:
         click.echo("Tasks:  (none)")
+
+
+def _print_history(state: RunState) -> None:
+    """Print the run history (per-cycle details)."""
+    if not state.history:
+        click.echo("No history available.")
+        return
+    click.echo("Run history")
+    for entry in state.history:
+        click.echo(f"  Cycle {entry.cycle}:")
+        click.echo(f"    Goal:          {entry.goal}")
+        click.echo(f"    Plan:          {entry.plan_rationale}")
+        tasks = ', '.join(entry.task_summaries) if entry.task_summaries else '(none)'
+        click.echo(f"    Tasks:         {tasks}")
+        tests_passed = entry.tests_passed
+        if tests_passed is None:
+            tests_text = "N/A"
+        elif tests_passed:
+            tests_text = "PASSED"
+        else:
+            tests_text = "FAILED"
+        click.echo(f"    Tests:         {tests_text} - {entry.test_summary}")
+        click.echo(f"    Time:          {entry.timestamp}")
+        usage = entry.usage
+        if usage.calls > 0:
+            click.echo(
+                f"    LLM usage:     {usage.calls} calls, {usage.total_tokens} tokens "
+                f"(in {usage.input_tokens} / out {usage.output_tokens})"
+            )
+            cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+            if cost > 0:
+                click.echo(f"    LLM cost:      ${cost:.6f}")
+        click.echo()
 
 
 async def _release_client(client: Any) -> None:
@@ -259,6 +293,24 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def history(workspace: Path | None) -> None:
+    """Show the run history (per-cycle details) of the persisted Furrow run."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+    _print_history(state)
 
 
 if __name__ == "__main__":
