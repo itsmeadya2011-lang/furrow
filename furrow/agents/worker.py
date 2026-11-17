@@ -53,7 +53,7 @@ MAX_LIST_ENTRIES = 500
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|\||\n|\r)+")
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|\n|\r|(?<!>)\|)+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
