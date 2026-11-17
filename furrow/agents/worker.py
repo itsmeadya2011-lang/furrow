@@ -48,12 +48,16 @@ DENIED_PROGRAMS = frozenset(
     }
 )
 
+# Stop reasons that indicate the model response was truncated, so a worker
+# turn with no tool calls is a failure rather than a completed task.
+TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "length"})
+
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|\||\n|\r)+")
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|(?<!>)\||\n|\r)+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
@@ -359,6 +363,14 @@ class WorkerAgent:
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
+                if response.stop_reason in TRUNCATED_STOP_REASONS:
+                    return WorkerResult(
+                        summary=summary,
+                        success=False,
+                        files_changed=sorted(self.files_changed),
+                        iterations=iterations,
+                        error=f"worker response truncated (stop_reason={response.stop_reason})",
+                    )
                 return WorkerResult(
                     summary=summary,
                     success=True,
@@ -412,7 +424,12 @@ class WorkerAgent:
         if name == "read_file":
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
-            return await self._write_file(str(args.get("path", "")), str(args.get("content", "")))
+            if "content" not in args:
+                return "error: missing content"
+            content = args["content"]
+            if not isinstance(content, str):
+                return "error: invalid content (expected a string)"
+            return await self._write_file(str(args.get("path", "")), content)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -508,6 +525,7 @@ class WorkerAgent:
                 proc = await asyncio.create_subprocess_exec(
                     "/bin/sh", "-c", command,
                     cwd=str(self.workspace),
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
@@ -519,6 +537,7 @@ class WorkerAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *parts,
                     cwd=str(self.workspace),
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
@@ -536,6 +555,8 @@ class WorkerAgent:
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+        if proc.returncode is not None and proc.returncode != 0:
+            combined += f"\n[exit status {proc.returncode}]"
         return combined
 
     @staticmethod

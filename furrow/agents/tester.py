@@ -321,6 +321,12 @@ class TesterAgent:
                 # silently reported as a pass.
                 passed = False
                 notes.append("The command exited with status 0, but the LLM reported a failure.")
+            elif llm_result.passed and returncode == 0 and llm_result.failures:
+                passed = False
+                notes.append(
+                    "The LLM reported a pass but listed failing tests; "
+                    "the run is treated as failed."
+                )
             else:
                 passed = llm_result.passed
             if not failures:
@@ -361,6 +367,7 @@ class TesterAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
                     cwd=str(self.workspace),
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,

@@ -490,3 +490,69 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert "2 failed" in prompt
     assert "UNIQUE_TAIL_MARKER_777" in prompt
     assert head_start not in prompt
+
+
+def test_green_command_contradictory_verdict_is_failed(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"5 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "all good", "failures": ["boom"]}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is False
+    assert "boom" in res.failures
+    assert "pass" in res.summary.lower()
+    assert "fail" in res.summary.lower()
+
+
+def test_green_command_green_verdict_regression(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"5 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "all green"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is True
+
+
+def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    captured = {}
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured.update(kwargs)
+        return fake_proc(returncode=0, stdout=b"5 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "all green"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    run(agent.run("goal", []))
+
+    assert captured.get("stdin") is asyncio.subprocess.DEVNULL

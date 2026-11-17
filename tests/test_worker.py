@@ -585,6 +585,12 @@ def test_new_command_guard_bypasses(tmp_path):
         "echo hi | tee out.txt",
         "git push origin main",
         "echo hi &",
+        # noclobber redirect inside workspace is allowed
+        "echo hi >| out.txt",
+        # || operator still splits and is harmless
+        "echo a || echo b",
+        # ordinary pipe still allowed
+        "echo hi | cat",
     ]
 
     for cmd in denied_commands:
@@ -795,6 +801,138 @@ async def test_failing_command_does_not_raise(tmp_path):
                     assert b["content"] is not None
                     found = True
     assert found
+
+
+@pytest.mark.asyncio
+async def test_write_file_missing_content(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    target = tmp_path / "keep.py"
+    tc = ToolCall(id="t1", name="write_file", arguments={"path": str(target)})
+    out = await agent._execute_tool(tc)
+    assert out == "error: missing content"
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_write_file_invalid_content(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    target = tmp_path / "keep.py"
+    for content in (None, 123, ["a"]):
+        tc = ToolCall(
+            id="t1",
+            name="write_file",
+            arguments={"path": str(target), "content": content},
+        )
+        out = await agent._execute_tool(tc)
+        assert out.startswith("error: ")
+        assert "content" in out
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+async def test_write_file_valid_content_writes_file(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    target = tmp_path / "keep.py"
+    tc = ToolCall(
+        id="t1",
+        name="write_file",
+        arguments={"path": str(target), "content": "print('hi')"},
+    )
+    out = await agent._execute_tool(tc)
+    assert out.startswith("wrote ")
+    assert target.read_text() == "print('hi')"
+
+
+@pytest.mark.asyncio
+async def test_run_command_exit_status_marker(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("exit 3")
+    assert "[exit status 3]" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_exit_status_zero_no_marker(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("echo hi")
+    assert "[exit status" not in out
+    assert "hi" in out
+
+
+@pytest.mark.asyncio
+async def test_truncated_response_is_failure(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [LLMResponse(text="partial", tool_calls=[], stop_reason="max_tokens")]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is False
+    assert "truncated" in (result.error or "")
+    assert "max_tokens" in (result.error or "")
+
+
+@pytest.mark.asyncio
+async def test_end_turn_response_still_success(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [LLMResponse(text="done", tool_calls=[], stop_reason="end_turn")]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.summary == "done"
+
+
+@pytest.mark.asyncio
+async def test_create_subprocess_exec_passes_stdin_devnull(tmp_path, monkeypatch):
+    from furrow.config import TaskModel
+
+    captured = {}
+
+    class FakeProc:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.returncode = 0
+
+        async def communicate(self):
+            return (b"", b"")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        proc = FakeProc(**kwargs)
+        return proc
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("echo hi")
+    assert captured["stdin"] is asyncio.subprocess.DEVNULL
+    assert out == ""
 
 
 @pytest.mark.asyncio

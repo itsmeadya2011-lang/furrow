@@ -1,8 +1,9 @@
 """Persistent run state for Furrow.
 
-The orchestrator keeps its goal, tasks and cycle history in RAM only, so a
-crash or a restart loses every bit of progress. This module provides a small,
-dependency-free persistence layer that stores the run state as JSON on disk.
+The orchestrator keeps its goal, tasks and cycle history in RAM, but that state
+is lost on a crash or restart. This module provides a small, dependency-free
+persistence layer that stores the run state as JSON on disk so progress survives
+restarts.
 
 Design notes:
   * Writes are atomic: the payload is written to a temporary file in the same
@@ -96,7 +97,7 @@ class StateStore:
             return None
         try:
             raw = self.path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeError) as exc:
             logger.warning("Could not read state file %s: %s", self.path, exc)
             return None
         try:

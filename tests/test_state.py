@@ -103,6 +103,14 @@ def test_load_returns_none_for_corrupt_file(tmp_path: Path) -> None:
     assert store.load() is None
 
 
+def test_load_returns_none_for_non_utf8_file(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    path.write_bytes(b"\xff\xfe\x00")
+    store = StateStore(path)
+
+    assert store.load() is None
+
+
 def test_clear_removes_file_and_is_idempotent(tmp_path: Path) -> None:
     store = StateStore(tmp_path / "s.json")
     store.save(RunState(goal="g"))

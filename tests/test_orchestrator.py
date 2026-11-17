@@ -1117,3 +1117,49 @@ async def test_test_started_is_emitted_before_the_tester_runs(tmp_path, monkeypa
     orch.tester = AssertTester(passed=True)
     await orch.run()
     assert bus.types.index(EventType.TEST_STARTED) < bus.types.index(EventType.TEST_FINISHED)
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_passed_verdict_when_no_cycle_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    st = store.load()
+    assert st is not None
+    assert st.last_passed is True
+    assert st.last_skipped is False
+
+    # The persisted cycle count already reached max_cycles, so the loop body
+    # never runs again: the verdict must come from the restored state.
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2.cycles >= settings.max_cycles
+    result = await orch2.run()
+    assert result.passed is True
+    assert result.skipped is False
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_skipped_verdict_when_no_cycle_runs(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    # Simulate a persisted run whose last test was skipped and had no verdict.
+    st = store.load()
+    assert st is not None
+    st.last_passed = None
+    st.last_skipped = True
+    store.save(st)
+
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2.cycles >= settings.max_cycles
+    result = await orch2.run()
+    assert result.skipped is True
