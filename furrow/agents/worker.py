@@ -13,6 +13,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
+from furrow.core.events import Event, EventBus, EventType
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
@@ -333,6 +334,7 @@ class WorkerAgent:
         settings: Settings | None = None,
         workspace: Path | None = None,
         goal: str = "",
+        event_bus: EventBus | None = None,
     ) -> None:
         self.task = task
         self.settings = settings if settings is not None else global_settings
@@ -340,6 +342,18 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._event_bus = event_bus
+
+    def _emit_progress(self, message: str, data: dict | None = None) -> None:
+        """Emit a task progress event if an event bus is available."""
+        if self._event_bus is not None:
+            self._event_bus.emit(
+                Event(
+                    type=EventType.TASK_PROGRESS,
+                    message=message,
+                    data=data or {"task": self.task.id},
+                )
+            )
 
     async def run(self) -> WorkerResult:
         try:
@@ -421,21 +435,33 @@ class WorkerAgent:
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
             return "error: invalid tool arguments"
+
+        # Emit progress before tool execution
         if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
+            path = args.get("path", "")
+            self._emit_progress(f"Reading file: {path}", {"tool": name, "path": path})
+            return await self._read_file(str(path))
         if name == "write_file":
             if "content" not in args:
                 return "error: missing content"
             content = args["content"]
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
-            return await self._write_file(str(args.get("path", "")), content)
+            path = args.get("path", "")
+            self._emit_progress(f"Writing file: {path}", {"tool": name, "path": path})
+            return await self._write_file(str(path), content)
         if name == "list_files":
+            path = args.get("path", ".")
+            self._emit_progress(f"Listing files: {path}", {"tool": name, "path": path})
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
         if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
+            cmd = str(args.get("command", ""))
+            # Truncate long commands for display
+            display_cmd = cmd[:100] + "…" if len(cmd) > 100 else cmd
+            self._emit_progress(f"Running command: {display_cmd}", {"tool": name, "command": cmd})
+            return await self._run_command(cmd)
         return f"unknown tool: {name}"
 
     @staticmethod

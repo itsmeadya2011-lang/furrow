@@ -5,6 +5,7 @@ Commands:
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
     furrow web             serve the web UI
+    furrow clean           remove the persisted run state
 """
 
 from __future__ import annotations
@@ -259,6 +260,24 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def clean(workspace: Path | None) -> None:
+    """Remove the persisted Furrow run state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if store.exists():
+        store.clear()
+        click.echo(f"Removed {store.path}")
+    else:
+        click.echo("No furrow run state found.")
 
 
 if __name__ == "__main__":

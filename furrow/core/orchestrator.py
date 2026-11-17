@@ -50,6 +50,8 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._cancelled_tasks: set[str] = set()
+        self._running_tasks: dict[str, asyncio.Task] = {}
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -403,12 +405,30 @@ class Orchestrator:
             """Return the worker for *task*, creating it once so retries reuse it."""
             worker = workers.get(task.id)
             if worker is None:
-                worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
-                                     workspace=self.settings.workspace, goal=self.original_goal)
+                kwargs: dict[str, Any] = dict(
+                    task=task,
+                    client=self.client,
+                    settings=self.settings,
+                    workspace=self.settings.workspace,
+                    goal=self.original_goal,
+                )
+                try:
+                    worker = WorkerAgent(event_bus=self.event_bus, **kwargs)
+                except TypeError:
+                    worker = WorkerAgent(**kwargs)
                 workers[task.id] = worker
             return worker
 
         async def run_one(task: TaskModel) -> None:
+            # Check if task was cancelled before starting
+            if task.id in self._cancelled_tasks:
+                task.status = "failed"
+                task.error = "Task cancelled by user"
+                task.finished_at = datetime.now(timezone.utc).isoformat()
+                self.event_bus.emit(Event(type=EventType.TASK_FINISHED, data={
+                    "task": task.id, "success": False, "summary": "cancelled"
+                }))
+                return
             if task.id in self._skip_ids:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
@@ -458,6 +478,15 @@ class Orchestrator:
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    return
+                # Check if task was cancelled during execution
+                if task.id in self._cancelled_tasks:
+                    task.status = "failed"
+                    task.error = "Task cancelled by user"
+                    task.finished_at = datetime.now(timezone.utc).isoformat()
+                    self.event_bus.emit(Event(type=EventType.TASK_FINISHED, data={
+                        "task": task.id, "success": False, "summary": "cancelled"
+                    }))
                     return
                 try:
                     success = bool(getattr(result, "success", False))
@@ -590,3 +619,17 @@ class Orchestrator:
             for t in wave:
                 if t.status in {"failed", "blocked"}:
                     unavailable.add(t.id)
+
+    def cancel_task(self, task_id: str) -> bool:
+        """Mark a task for cancellation.
+        
+        Returns True if the task was found and marked for cancellation,
+        False if the task was not found or already completed/failed.
+        """
+        for task in self.tasks:
+            if task.id == task_id:
+                if task.status in {"pending", "running"}:
+                    self._cancelled_tasks.add(task_id)
+                    return True
+                return False
+        return False

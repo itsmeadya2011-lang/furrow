@@ -124,6 +124,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
+  .panel:hover { cursor: pointer; border-color: #4c8dff; }
+  .panel-files {
+    margin-top: .4rem; font-size: .85rem; color: #8a93a5;
+    display: flex; flex-wrap: wrap; gap: .3rem;
+  }
+  .panel-file {
+    background: #1d2430; padding: .1rem .4rem; border-radius: 3px;
+    font-family: inherit;
+  }
   .status-pending { color: #8a93a5; }
   .status-running { color: #4c8dff; }
   .status-completed { color: #57d38c; }
@@ -131,6 +140,82 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  /* Modal styles */
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.7); display: none; align-items: center; justify-content: center;
+    z-index: 1000; padding: 1rem;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: #171b23; border: 1px solid #2b3240; border-radius: 8px;
+    padding: 1.5rem; max-width: 60rem; width: 100%; max-height: 80vh;
+    overflow: auto; color: #d7dae0;
+  }
+  .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 1rem;
+  }
+  .modal-title {
+    font-size: 1.1rem;
+    font-weight: 700;
+  }
+  .modal-close {
+    background: none;
+    border: none;
+    color: #8a93a5;
+    font-size: 1.5rem;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0;
+  }
+  .modal-close:hover {
+    color: #f0f2f5;
+  }
+  .modal-section {
+    margin-bottom: 1rem;
+  }
+  .modal-section-title {
+    font-size: .85rem;
+    text-transform: uppercase;
+    color: #8a93a5;
+    margin-bottom: .4rem;
+    letter-spacing: .05em;
+  }
+  .modal-content {
+    background: #0b0e13;
+    border: 1px solid #2b3240;
+    border-radius: 6px;
+    padding: .75rem;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: inherit;
+    font-size: .9rem;
+  }
+  .modal-files {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .3rem;
+  }
+  .modal-file {
+    background: #1d2430;
+    padding: .2rem .5rem;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: .85rem;
+  }
+  .modal-meta {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    font-size: .9rem;
+    color: #8a93a5;
+  }
+  .modal-meta span {
+    color: #d7dae0;
+  }
 </style>
 </head>
 <body>
@@ -151,6 +236,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<!-- Task Detail Modal -->
+<div
+  class="modal-overlay"
+  id="task-modal"
+  role="dialog"
+  aria-modal="true"
+  aria-labelledby="modal-title"
+>
+  <div class="modal">
+    <div class="modal-header">
+      <h2 class="modal-title" id="modal-title">Task Details</h2>
+      <button class="modal-close" id="modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div class="modal-body" id="modal-body"></div>
+  </div>
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -274,6 +375,177 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
   }
 
+  // Modal elements
+  const modalOverlay = document.getElementById('task-modal');
+  const modalBody = document.getElementById('modal-body');
+  const modalCloseBtn = document.getElementById('modal-close');
+
+  function makeElement(tag, className, text) {
+    const el = document.createElement(tag);
+    if (className) el.className = className;
+    if (text !== undefined) el.textContent = text;
+    return el;
+  }
+
+  function openModal(task) {
+    const status = text(task.status) || 'pending';
+    const files = task.files_changed || [];
+    const dependencies = task.dependencies || [];
+
+    // Clear previous content
+    while (modalBody.firstChild) {
+      modalBody.removeChild(modalBody.firstChild);
+    }
+
+    // Description section
+    const descSection = makeElement('div', 'modal-section');
+    descSection.appendChild(makeElement('div', 'modal-section-title', 'Description'));
+    descSection.appendChild(makeElement('div', 'modal-content', text(task.description)));
+    modalBody.appendChild(descSection);
+
+    // Status section
+    const statusSection = makeElement('div', 'modal-section');
+    statusSection.appendChild(makeElement('div', 'modal-section-title', 'Status'));
+    const statusMeta = makeElement('div', 'modal-meta');
+    const statusEl = makeElement('span');
+    const statusLabel = makeElement('b', 'status-' + statusClass(status), 'Status: ');
+    const statusValue = makeElement('b', '', status);
+    statusEl.appendChild(statusLabel);
+    statusEl.appendChild(statusValue);
+    statusMeta.appendChild(statusEl);
+
+    const attemptsEl = makeElement('span');
+    attemptsEl.appendChild(makeElement('b', '', 'Attempts: '));
+    attemptsEl.appendChild(makeElement('b', '', String(Number(task.attempts) || 0)));
+    statusMeta.appendChild(attemptsEl);
+
+    const idEl = makeElement('span');
+    idEl.appendChild(makeElement('b', '', 'ID: '));
+    idEl.appendChild(makeElement('b', '', text(task.id)));
+    statusMeta.appendChild(idEl);
+
+    if (task.started_at) {
+      const startedEl = makeElement('span');
+      startedEl.appendChild(makeElement('b', '', 'Started: '));
+      startedEl.appendChild(makeElement('b', '', text(task.started_at)));
+      statusMeta.appendChild(startedEl);
+    }
+    if (task.finished_at) {
+      const finishedEl = makeElement('span');
+      finishedEl.appendChild(makeElement('b', '', 'Finished: '));
+      finishedEl.appendChild(makeElement('b', '', text(task.finished_at)));
+      statusMeta.appendChild(finishedEl);
+    }
+    statusSection.appendChild(statusMeta);
+    modalBody.appendChild(statusSection);
+
+    // Cancel button for running/pending tasks
+    if (status === 'running' || status === 'pending') {
+      const cancelSection = makeElement('div', 'modal-section');
+      const cancelBtn = makeElement('button', '', 'Cancel Task');
+      cancelBtn.style.background = '#e0685f';
+      cancelBtn.style.border = 'none';
+      cancelBtn.style.color = '#fff';
+      cancelBtn.style.padding = '.5rem 1rem';
+      cancelBtn.style.borderRadius = '4px';
+      cancelBtn.style.cursor = 'pointer';
+      cancelBtn.onclick = async function () {
+        const res = await fetch('/api/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ task_id: task.id })
+        });
+        const data = await res.json();
+        if (data.cancelled) {
+          append('-- Task ' + task.id + ' cancelled by user');
+          closeModal();
+          loadStatus();
+        } else {
+          append('!! Failed to cancel task: ' + (data.error || 'unknown error'));
+        }
+      };
+      cancelSection.appendChild(cancelBtn);
+      modalBody.appendChild(cancelSection);
+    }
+
+    // Dependencies section
+    if (dependencies.length > 0) {
+      const depSection = makeElement('div', 'modal-section');
+      depSection.appendChild(makeElement('div', 'modal-section-title', 'Dependencies'));
+      depSection.appendChild(
+        makeElement('div', 'modal-content', dependencies.map(d => text(d)).join(', '))
+      );
+      modalBody.appendChild(depSection);
+    }
+
+    // Files changed section
+    if (files.length > 0) {
+      const filesSection = makeElement('div', 'modal-section');
+      filesSection.appendChild(
+        makeElement('div', 'modal-section-title', 'Files Changed (' + files.length + ')')
+      );
+      const filesContainer = makeElement('div', 'modal-files');
+      files.forEach(function (f) {
+        filesContainer.appendChild(makeElement('span', 'modal-file', text(f)));
+      });
+      filesSection.appendChild(filesContainer);
+      modalBody.appendChild(filesSection);
+    }
+
+    // Result section
+    if (text(task.result)) {
+      const resultSection = makeElement('div', 'modal-section');
+      resultSection.appendChild(makeElement('div', 'modal-section-title', 'Result'));
+      resultSection.appendChild(makeElement('div', 'modal-content', text(task.result)));
+      modalBody.appendChild(resultSection);
+    }
+
+    // Error section
+    if (text(task.error)) {
+      const errorSection = makeElement('div', 'modal-section');
+      errorSection.appendChild(makeElement('div', 'modal-section-title', 'Error'));
+      const errorContent = makeElement('div', 'modal-content', text(task.error));
+      errorContent.style.color = '#e0685f';
+      errorSection.appendChild(errorContent);
+      modalBody.appendChild(errorSection);
+    }
+
+    modalOverlay.classList.add('open');
+  }
+
+  function closeModal() {
+    modalOverlay.classList.remove('open');
+  }
+
+  modalCloseBtn.addEventListener('click', closeModal);
+  modalOverlay.addEventListener('click', function (e) {
+    if (e.target === modalOverlay) { closeModal(); }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { closeModal(); }
+  });
+
+  // Click handler for task panels
+  tasksEl.addEventListener('click', function (e) {
+    const panel = e.target.closest('.panel');
+    if (!panel) return;
+    const taskId = panel.id.replace('task-', '');
+    // Find the task in the current status
+    fetch('/api/status')
+      .then(res => res.json())
+      .then(body => {
+        const tasks =
+          (body.status && body.status.tasks) ||
+          (body.result && body.result.tasks) ||
+          [];
+        const task = tasks.find(t => t.id === taskId);
+        if (task) {
+          openModal(task);
+        }
+      })
+      .catch(() => {});
+  });
+
   async function loadState() {
     try {
       const res = await fetch('/api/state');
@@ -340,6 +612,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+      } else if (type === 'task_progress') {
+        line = 'task ' + text(data.task) + ' progress: ' + truncate(data.message, 200);
+        color = '#4c8dff';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
         line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
@@ -382,10 +657,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
         return;
       }
       renderEvent(msg);
-      if (msg.type === 'task_started' || msg.type === 'task_finished') {
+      const isTaskEvent =
+        msg.type === "task_started" ||
+        msg.type === "task_finished" ||
+        msg.type === "task_progress";
+      if (isTaskEvent) {
         loadStatus();
       }
-      if (msg.type === 'done') {
+      if (msg.type === "done") {
         loadStatus();
       }
     };
@@ -643,6 +922,30 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+class CancelRequest(BaseModel):
+    """Body of the ``POST /api/cancel`` endpoint."""
+
+    task_id: str
+
+
+@app.post("/api/cancel")
+async def api_cancel(request: CancelRequest) -> JSONResponse:
+    """Cancel a running task."""
+    orchestrator = _CURRENT.get("orchestrator")
+    if orchestrator is None:
+        return JSONResponse(
+            status_code=400,
+            content={"cancelled": False, "error": "no active run"},
+        )
+    success = orchestrator.cancel_task(request.task_id)
+    if success:
+        return JSONResponse(content={"cancelled": True, "task_id": request.task_id})
+    return JSONResponse(
+        status_code=400,
+        content={"cancelled": False, "error": "task not found or not cancellable"},
+    )
 
 
 @app.websocket("/ws")
