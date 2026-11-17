@@ -30,6 +30,8 @@ class EventType(str, Enum):
     STATE_SAVED = "state_saved"
     LOG = "log"
     ERROR = "error"
+    AGENT_STARTED = "agent_started"
+    AGENT_FINISHED = "agent_finished"
 
 
 @dataclass

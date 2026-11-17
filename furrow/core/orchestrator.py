@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,10 +19,59 @@ _UNSET = object()
 _MAX_TEXT = 120
 
 
+class HookRegistry:
+    """No-op lifecycle hooks.
+
+    Subclass this (or pass a custom object to ``Orchestrator(hooks=...)``) to
+    observe a run. Every method is a no-op by default and is invoked through
+    :meth:`Orchestrator._hook`, which swallows exceptions so a hook can never
+    break a run.
+    """
+
+    def on_cycle_start(self, cycle_number: int) -> None:
+        ...
+
+    def on_plan_created(self, plan: Any) -> None:
+        ...
+
+    def on_task_start(self, task_id: str) -> None:
+        ...
+
+    def on_task_finish(self, task_id: str, success: bool, summary: str) -> None:
+        ...
+
+    def on_test_start(self) -> None:
+        ...
+
+    def on_test_finish(self, passed: bool, summary: str) -> None:
+        ...
+
+    def on_state_saved(self, path: str) -> None:
+        ...
+
+    def on_error(self, message: str) -> None:
+        ...
+
+    def on_run_finished(self, result: Any) -> None:
+        ...
+
+
+# Singleton of no-op hooks; the default when no ``hooks`` argument is given.
+NullHooks = HookRegistry()
+
+
 class Orchestrator:
+    """Drive a plan-execute-test loop, persisting state and emitting events.
+
+    Lifecycle hooks (a :class:`HookRegistry` instance) can be injected via the
+    ``hooks`` constructor argument. Hooks are called at key points in
+    :meth:`run` and :meth:`_execute` and never raise.
+    """
+
     def __init__(self, goal: str, client: LLMClient | None = None,
                  settings: Settings | None = None, state_store: StateStore | None = None,
-                 event_bus: EventBus | None = None, resume: bool = False) -> None:
+                 event_bus: EventBus | None = None, hooks: Any | None = None,
+                 resume: bool = False) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
@@ -29,6 +79,7 @@ class Orchestrator:
         self.cycles = 0
         self.tasks: list[TaskModel] = []
         self.event_bus = event_bus if event_bus is not None else EventBus()
+        self.hooks = hooks or HookRegistry()
         self.state_store = (
             state_store if state_store is not None else StateStore(self.settings.state_path())
         )
@@ -38,6 +89,8 @@ class Orchestrator:
         self.history: list[HistoryEntry] = []
         self._feedback = ""
         self._active_ids: set[str] = set()
+        self._active_agent: str = ""
+        self._agent_started_at: str | None = None
         self._prev_sig: str = ""
         self._no_progress = 0
         self._stopped_reason = ""
@@ -103,6 +156,7 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "active_agent": self._active_agent,
         }
 
     def _console(self) -> Any:
@@ -148,6 +202,11 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    def _hook(self, name: str, *args: Any, **kwargs: Any) -> None:
+        """Invoke lifecycle hook *name*; a broken hook must never break a run."""
+        with contextlib.suppress(Exception):  # pragma: no cover
+            getattr(self.hooks, name)(*args, **kwargs)
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
@@ -164,17 +223,32 @@ class Orchestrator:
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            self._hook("on_cycle_start", self.cycles)
             try:
+                self._active_agent = "planner"
+                self._agent_started_at = datetime.now(timezone.utc).isoformat()
+                with contextlib.suppress(Exception):
+                    emit = self.event_bus.emit
+                    emit(Event(type=EventType.AGENT_STARTED,
+                               data={"agent": "planner"}))
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                self._hook("on_error", str(e))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
                 break
+            with contextlib.suppress(Exception):
+                    emit = self.event_bus.emit
+                    emit(Event(type=EventType.AGENT_FINISHED,
+                               data={"agent": "planner"}))
+            self._active_agent = ""
+            self._agent_started_at = None
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
+            self._hook("on_plan_created", plan)
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
@@ -185,25 +259,52 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
                 break
             self._merge_plan(plan)
+            self._active_agent = "worker"
+            self._agent_started_at = datetime.now(timezone.utc).isoformat()
+            with contextlib.suppress(Exception):
+                    emit = self.event_bus.emit
+                    emit(Event(type=EventType.AGENT_STARTED,
+                               data={"agent": "worker"}))
             try:
                 await self._execute(plan)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                self._hook("on_error", str(e))
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 break
+            with contextlib.suppress(Exception):
+                    emit = self.event_bus.emit
+                    emit(Event(type=EventType.AGENT_FINISHED,
+                               data={"agent": "worker"}))
+            self._active_agent = ""
+            self._agent_started_at = None
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+            self._hook("on_test_start")
+            self._active_agent = "tester"
+            self._agent_started_at = datetime.now(timezone.utc).isoformat()
+            with contextlib.suppress(Exception):
+                    emit = self.event_bus.emit
+                    emit(Event(type=EventType.AGENT_STARTED,
+                               data={"agent": "tester"}))
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                self._hook("on_error", str(e))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 break
+            with contextlib.suppress(Exception):
+                    emit = self.event_bus.emit
+                    emit(Event(type=EventType.AGENT_FINISHED,
+                               data={"agent": "tester"}))
+            self._active_agent = ""
+            self._agent_started_at = None
             self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
             self.event_bus.emit(
@@ -212,6 +313,7 @@ class Orchestrator:
                     data={"passed": test_result.passed, "summary": test_result.summary},
                 )
             )
+            self._hook("on_test_finish", test_result.passed, test_result.summary)
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
                 self._say(f"[green]Tests passed: {summary}[/green]")
@@ -289,9 +391,11 @@ class Orchestrator:
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
                 )
+                self._hook("on_error", f"could not save state to {self.state_store.path}: {e}")
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
+                self._hook("on_state_saved", str(self.state_store.path))
             if guard_tripped:
                 break
 
@@ -312,7 +416,7 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
-        return RunResult(
+        result = RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
             tasks_completed=completed,
@@ -325,6 +429,8 @@ class Orchestrator:
             usage=self._usage,
             files_changed=files_changed,
         )
+        self._hook("on_run_finished", result)
+        return result
 
     def _context(self) -> str:
         if self._feedback:
@@ -414,6 +520,7 @@ class Orchestrator:
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
+                self._hook("on_task_start", task.id)
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
                 try:
                     result = await worker_for(task).run()
@@ -435,6 +542,7 @@ class Orchestrator:
                                   "attempts": task.attempts},
                         )
                     )
+                    self._hook("on_error", f"task {task.id} raised: {task.error}")
                     self.event_bus.emit(
                         Event(
                             type=EventType.TASK_FINISHED,
@@ -445,6 +553,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._hook("on_task_finish", task.id, False, str(task.error or ""))
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":
@@ -482,6 +591,8 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._hook("on_task_finish", task.id, task.status == "completed",
+                               str(task.result or ""))
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error or "unknown error"))
                     if task.status == "completed":
@@ -510,6 +621,7 @@ class Orchestrator:
                                   "attempts": task.attempts},
                         )
                     )
+                    self._hook("on_error", f"task {task.id} raised: {task.error}")
                     self.event_bus.emit(
                         Event(
                             type=EventType.TASK_FINISHED,
@@ -520,6 +632,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._hook("on_task_finish", task.id, False, str(task.error or ""))
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":

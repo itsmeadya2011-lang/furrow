@@ -147,10 +147,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>agent <b id="active-agent">\u2014</b></span>
   </div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="panels" id="agents"></div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -160,6 +162,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const activeAgentEl = document.getElementById('active-agent');
+  const agentsEl = document.getElementById('agents');
   let socket = null;
   let lastSummary = null;
 
@@ -207,9 +211,35 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
-      (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    let usageText = calls + ' calls, ' + total + ' tokens';
+    if (cost > 0) {
+      usageText += ', $' + cost.toFixed(6);
+    }
+    usageEl.textContent = usageText;
+    activeAgentEl.textContent = text(status && status.active_agent) || '\u2014';
   }
+
+  const agentStates = { planner: 'idle', worker: 'idle', tester: 'idle' };
+  function renderAgents() {
+    while (agentsEl.firstChild) { agentsEl.removeChild(agentsEl.firstChild); }
+    ['planner','worker','tester'].forEach(function (name) {
+      const panel = document.createElement('div');
+      panel.className = 'panel';
+      const head = document.createElement('div');
+      head.className = 'panel-head';
+      const idEl = document.createElement('span');
+      idEl.className = 'panel-id';
+      idEl.textContent = name;
+      const statusEl = document.createElement('span');
+      statusEl.className = 'panel-status status-' + statusClass(agentStates[name]);
+      statusEl.textContent = agentStates[name];
+      head.appendChild(idEl);
+      head.appendChild(statusEl);
+      panel.appendChild(head);
+      agentsEl.appendChild(panel);
+    });
+  }
+  renderAgents();
 
   function renderTasks(tasks) {
     while (tasksEl.firstChild) {
@@ -351,6 +381,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+      } else if (type === 'agent_started') {
+        agentStates[text(data.agent)] = 'running';
+        renderAgents();
+        line = text(data.agent) + ' started';
+      } else if (type === 'agent_finished') {
+        agentStates[text(data.agent)] = 'done';
+        renderAgents();
+        line = text(data.agent) + ' finished';
       } else if (type === 'state_saved') {
         line = 'state saved';
       } else if (type === 'log') {
