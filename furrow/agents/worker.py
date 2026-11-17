@@ -30,6 +30,57 @@ DENIED_COMMANDS = (
     "reboot",
     "chmod -R 777 /",
     "> /dev/sda",
+    # Additional destructive patterns
+    "wipefs",
+    "badblocks",
+    "shred",
+    "dd of=",
+    "dd bs=",
+    "mkfs.",
+    "mkswap",
+    "swapon",
+    "swapoff",
+    "losetup",
+    "mount ",
+    "umount ",
+    "cryptsetup",
+    "lvm",
+    "vgcreate",
+    "lvcreate",
+    "pvcreate",
+    "mdadm",
+    "fdisk",
+    "parted",
+    "sfdisk",
+    "cfdisk",
+    "gdisk",
+    "sgdisk",
+    "blockdev",
+    "hdparm",
+    "smartctl",
+    "nvme",
+    "iostat",
+    "vmstat",
+    "pidstat",
+    "mpstat",
+    "sar",
+    "dmesg",
+    "journalctl",
+    "systemctl",
+    "service ",
+    "init ",
+    "telinit",
+    "runlevel",
+    "halt",
+    "poweroff",
+    "reboot",
+    "shutdown",
+    "kexec",
+    "kdump",
+    "crash",
+    "sysrq",
+    "magic-sysrq",
+    "proc-sysrq",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -45,15 +96,71 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        # Additional dangerous programs
+        "wipefs",
+        "badblocks",
+        "shred",
+        "mkswap",
+        "swapon",
+        "swapoff",
+        "losetup",
+        "mount",
+        "umount",
+        "cryptsetup",
+        "lvm",
+        "vgcreate",
+        "lvcreate",
+        "pvcreate",
+        "vgremove",
+        "lvremove",
+        "pvremove",
+        "mdadm",
+        "sfdisk",
+        "cfdisk",
+        "gdisk",
+        "sgdisk",
+        "blockdev",
+        "hdparm",
+        "smartctl",
+        "nvme",
+        "kexec",
+        "kdump",
+        "crash",
+        "systemctl",
+        "service",
+        "telinit",
+        "runlevel",
+        "sysrq",
+        "mkfs.ext2",
+        "mkfs.ext3",
+        "mkfs.ext4",
+        "mkfs.xfs",
+        "mkfs.btrfs",
+        "mkfs.f2fs",
+        "mkfs.vfat",
+        "mkfs.ntfs",
+        "mkfs.fat",
+        "mke2fs",
+        "tune2fs",
+        "debugfs",
+        "dumpe2fs",
+        "e2fsck",
+        "fsck",
+        "fsck.ext2",
+        "fsck.ext3",
+        "fsck.ext4",
+        "fsck.xfs",
+        "fsck.btrfs",
+        "fsck.f2fs",
+        "fsck.vfat",
+        "fsck.fat",
+        "fsck.ntfs",
     }
 )
 
 # Stop reasons that indicate the model response was truncated, so a worker
 # turn with no tool calls is a failure rather than a completed task.
 TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "length"})
-
-# Maximum number of entries returned by the ``list_files`` tool.
-MAX_LIST_ENTRIES = 500
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
@@ -490,10 +597,11 @@ class WorkerAgent:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
+        # Cap the listing at max_list_entries so huge trees cannot flood the context.
+        max_entries = getattr(self.settings, "max_list_entries", 500)
         rels = []
         base = self.workspace.resolve()
-        for e in entries[:MAX_LIST_ENTRIES]:
+        for e in entries[:max_entries]:
             try:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:

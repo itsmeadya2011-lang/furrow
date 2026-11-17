@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.metrics import RunMetrics
 
 _UNSET = object()
 
@@ -28,7 +30,11 @@ class Orchestrator:
         self.original_goal = goal
         self.cycles = 0
         self.tasks: list[TaskModel] = []
-        self.event_bus = event_bus if event_bus is not None else EventBus()
+        self.event_bus = (
+            event_bus
+            if event_bus is not None
+            else EventBus(max_queue_size=self.settings.event_queue_size)
+        )
         self.state_store = (
             state_store if state_store is not None else StateStore(self.settings.state_path())
         )
@@ -50,6 +56,9 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        # Metrics
+        self._run_id = str(uuid.uuid4())[:8]
+        self._metrics = RunMetrics(self._run_id)
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -106,6 +115,10 @@ class Orchestrator:
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
         }
+
+    def metrics(self) -> dict[str, Any]:
+        """Return the current run metrics."""
+        return self._metrics.get_summary()
 
     def _console(self) -> Any:
         """Return a rich Console, or None when rich is unavailable."""
@@ -164,6 +177,7 @@ class Orchestrator:
                 self._stopped_reason = "max_cycles reached"
                 break
             self.cycles += 1
+            self._metrics.record_cycle_start(self.cycles)
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
@@ -171,6 +185,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._metrics.record_error("planner")
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
@@ -192,6 +207,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._metrics.record_error("execute")
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
@@ -202,6 +218,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                self._metrics.record_error("tester")
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
@@ -247,6 +264,10 @@ class Orchestrator:
             )
             self._usage.add(cycle_usage)
             self._usage_seen = cumulative
+            # Record LLM usage metrics
+            self._metrics.record_llm_usage(
+                cycle_usage.calls, cycle_usage.total_tokens, cycle_usage.cost_usd
+            )
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
@@ -281,12 +302,15 @@ class Orchestrator:
                              last_summary=test_result.summary)
             try:
                 self.state_store.save(state)
+                self._metrics.record_state_save(True)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 # The state was NOT written: report the failure (including the
                 # path that could not be written) and do NOT emit STATE_SAVED,
                 # which would tell consumers the state was saved when it was not.
+                self._metrics.record_state_save(False)
+                self._metrics.record_error("state_save")
                 self.event_bus.emit(
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
@@ -294,6 +318,7 @@ class Orchestrator:
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
+            self._metrics.record_cycle_end(self.cycles)
             if guard_tripped:
                 break
 
@@ -412,7 +437,9 @@ class Orchestrator:
             if task.id in self._skip_ids:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
+                self._metrics.record_task_end("skipped")
                 return
+            self._metrics.record_task_start()
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
@@ -458,6 +485,7 @@ class Orchestrator:
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    self._metrics.record_task_end(task.status)
                     return
                 try:
                     success = bool(getattr(result, "success", False))
@@ -497,6 +525,7 @@ class Orchestrator:
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    self._metrics.record_task_end(task.status)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -533,6 +562,7 @@ class Orchestrator:
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
+                    self._metrics.record_task_end(task.status)
 
         async def run_tasks(tasks: list[TaskModel]) -> None:
             """Run tasks concurrently, never swallowing a cancellation.

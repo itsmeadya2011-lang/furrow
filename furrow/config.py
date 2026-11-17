@@ -132,6 +132,18 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    # Metrics and observability
+    metrics_enabled: bool = True
+    metrics_report_interval: float = Field(default=60.0, gt=0)
+    # Event bus
+    event_queue_size: int = Field(default=1000, ge=100)
+    # Web server
+    web_host: str = "127.0.0.1"
+    web_port: int = Field(default=8000, ge=1, le=65535)
+    # Worker
+    max_list_entries: int = Field(default=500, ge=10)
+    # Planner
+    planner_max_tasks: int = Field(default=5, ge=1, le=20)
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

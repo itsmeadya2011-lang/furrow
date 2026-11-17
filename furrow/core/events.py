@@ -4,16 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from threading import Lock
 from typing import Any
 
-#: Maximum number of events buffered for a single subscriber. A subscriber that
-#: stops draining loses its *oldest* events rather than growing without bound,
-#: so the queue always holds the most recent events. The value is far larger
-#: than the number of events a normal run emits, so healthy subscribers never
-#: lose anything.
 MAX_QUEUE_SIZE = 1000
 
 
@@ -55,22 +53,39 @@ class Event:
         }
 
 
+@dataclass
+class EventBusStats:
+    """Statistics for the event bus."""
+    total_emitted: int = 0
+    total_dropped: int = 0
+    by_type: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    dropped_by_type: dict[str, int] = field(default_factory=lambda: defaultdict(int))
+    subscriber_count: int = 0
+    avg_queue_depth: float = 0.0
+
+
 class EventBus:
     """Fan-out bus: subscribers each get their own bounded queue.
 
-    Every subscriber queue holds at most :data:`MAX_QUEUE_SIZE` events. When a
+    Every subscriber queue holds at most ``max_queue_size`` events. When a
     subscriber stops draining, the oldest queued event is dropped to make room
     for the newest one, so a slow consumer still sees the most recent events.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, max_queue_size: int = 1000) -> None:
+        self._max_queue_size = max_queue_size
         self._subscribers: list[asyncio.Queue[Event]] = []
         self._dropped = 0
         self._dropped_by_queue: dict[asyncio.Queue[Event], int] = {}
+        self._stats_lock = Lock()
+        self._total_emitted = 0
+        self._by_type: dict[str, int] = defaultdict(int)
+        self._dropped_by_type: dict[str, int] = defaultdict(int)
+        self._emit_latencies: list[float] = []
 
     def subscribe(self) -> asyncio.Queue[Event]:
         """Register and return a new bounded queue that receives every emitted event."""
-        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
+        queue: asyncio.Queue[Event] = asyncio.Queue(maxsize=self._max_queue_size)
         self._subscribers.append(queue)
         return queue
 
@@ -82,11 +97,22 @@ class EventBus:
 
     def emit(self, event: Event) -> None:
         """Publish an event to every subscriber. Never blocks and never raises."""
+        start = time.monotonic()
+        event_type = event.type.value if isinstance(event.type, EventType) else str(event.type)
+        with self._stats_lock:
+            self._total_emitted += 1
+            self._by_type[event_type] += 1
         for queue in list(self._subscribers):
             self._deliver(queue, event)
+        latency = time.monotonic() - start
+        with self._stats_lock:
+            self._emit_latencies.append(latency)
+            if len(self._emit_latencies) > 1000:
+                self._emit_latencies = self._emit_latencies[-1000:]
 
     def _deliver(self, queue: asyncio.Queue[Event], event: Event) -> None:
         """Put ``event`` on ``queue``, dropping the oldest event if it is full."""
+        event_type = event.type.value if isinstance(event.type, EventType) else str(event.type)
         with contextlib.suppress(Exception):  # pragma: no cover - defensive
             queue.put_nowait(event)
             return
@@ -99,8 +125,10 @@ class EventBus:
         except Exception:  # pragma: no cover - defensive, one bad subscriber
             return
         else:
-            self._dropped += 1
-            self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
+            with self._stats_lock:
+                self._dropped += 1
+                self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
+                self._dropped_by_type[event_type] += 1
         with contextlib.suppress(Exception):  # pragma: no cover - defensive
             queue.put_nowait(event)
 
@@ -130,3 +158,29 @@ class EventBus:
     def dropped_for(self, queue: asyncio.Queue[Event]) -> int:
         """Number of events dropped for a single subscriber queue."""
         return self._dropped_by_queue.get(queue, 0)
+
+    def get_stats(self) -> EventBusStats:
+        """Get current event bus statistics."""
+        with self._stats_lock:
+            total_queue_depth = sum(q.qsize() for q in self._subscribers)
+            avg_queue_depth = (
+                total_queue_depth / len(self._subscribers) if self._subscribers else 0.0
+            )
+            return EventBusStats(
+                total_emitted=self._total_emitted,
+                total_dropped=self._dropped,
+                by_type=dict(self._by_type),
+                dropped_by_type=dict(self._dropped_by_type),
+                subscriber_count=len(self._subscribers),
+                avg_queue_depth=avg_queue_depth,
+            )
+
+    def reset_stats(self) -> None:
+        """Reset event bus statistics."""
+        with self._stats_lock:
+            self._total_emitted = 0
+            self._by_type.clear()
+            self._dropped = 0
+            self._dropped_by_type.clear()
+            self._dropped_by_queue.clear()
+            self._emit_latencies.clear()

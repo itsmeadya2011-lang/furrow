@@ -598,6 +598,24 @@ async def api_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/metrics")
+async def api_metrics() -> dict[str, Any]:
+    """Metrics for the run that is currently active."""
+    orchestrator = _CURRENT.get("orchestrator")
+    return {
+        "metrics": orchestrator.metrics() if orchestrator is not None else None,
+    }
+
+
+@app.get("/api/events/stats")
+async def api_event_bus_stats() -> dict[str, Any]:
+    """Event bus statistics for the run that is currently active."""
+    orchestrator = _CURRENT.get("orchestrator")
+    if orchestrator is not None:
+        return {"stats": orchestrator.event_bus.get_stats().__dict__}
+    return {"stats": None}
+
+
 @app.post("/api/start")
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
