@@ -5,6 +5,7 @@ from typing import Any
 
 import anthropic
 import httpx
+import openai
 import pytest
 
 from furrow.config import Provider, Settings
@@ -302,6 +303,7 @@ def test_is_retryable_status_codes():
     assert _is_retryable(_FakeStatusError(429)) is True
     assert _is_retryable(_FakeStatusError(409)) is True
     assert _is_retryable(_FakeStatusError(503)) is True
+    assert _is_retryable(_FakeStatusError(529)) is True
     assert _is_retryable(_FakeStatusError(400)) is False
     assert _is_retryable(_FakeStatusError(401)) is False
     assert _is_retryable(_FakeStatusError(404)) is False
@@ -320,6 +322,26 @@ def test_is_retryable_real_anthropic_api_status_error():
     response_400 = httpx.Response(400, request=request)
     exc_400 = anthropic.APIStatusError("bad request", response=response_400, body={})
     assert _is_retryable(exc_400) is False
+
+
+def test_is_retryable_real_provider_connection_errors():
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    try:
+        connection = anthropic.APIConnectionError(request=request)
+        timeout = anthropic.APITimeoutError(request)
+    except Exception:  # pragma: no cover - sdk shape dependent
+        pytest.skip("cannot construct anthropic connection errors in this sdk version")
+    assert _is_retryable(connection) is True
+    assert _is_retryable(timeout) is True
+
+    openai_request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    try:
+        openai_connection = openai.APIConnectionError(request=openai_request)
+        openai_timeout = openai.APITimeoutError(openai_request)
+    except Exception:  # pragma: no cover - sdk shape dependent
+        pytest.skip("cannot construct openai connection errors in this sdk version")
+    assert _is_retryable(openai_connection) is True
+    assert _is_retryable(openai_timeout) is True
 
 
 async def test_complete_ollama_does_not_raise_unsupported_provider():
@@ -738,6 +760,41 @@ async def test_complete_retries_a_transient_provider_error(monkeypatch, fast_sle
             self.calls += 1
             if self.calls == 1:
                 raise _FakeStatusError(503)
+            return _FakeResponse("ok")
+
+    class _FlakyChat:
+        def __init__(self) -> None:
+            self.completions = _FlakyCompletions()
+
+    class _FlakyOpenAI:
+        def __init__(self) -> None:
+            self.chat = _FlakyChat()
+
+    fake = _FlakyOpenAI()
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
+    client._openai = fake
+
+    result = await client.complete("hi")
+
+    assert result == "ok"
+    assert fake.chat.completions.calls == 2
+
+
+async def test_complete_retries_a_provider_connection_error(fast_sleep):
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    try:
+        connection_error = openai.APIConnectionError(request=request)
+    except Exception:  # pragma: no cover - sdk shape dependent
+        pytest.skip("cannot construct openai.APIConnectionError in this sdk version")
+
+    class _FlakyCompletions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def create(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise connection_error
             return _FakeResponse("ok")
 
     class _FlakyChat:

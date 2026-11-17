@@ -10,7 +10,9 @@ from typing import Any, TypeVar
 
 import aiofiles
 import httpx
+from anthropic import APIConnectionError as AnthropicAPIConnectionError
 from anthropic import AsyncAnthropic
+from openai import APIConnectionError as OpenAIAPIConnectionError
 from openai import AsyncOpenAI
 
 from furrow.config import Provider, Settings, Usage
@@ -24,7 +26,7 @@ try:
 except ImportError:  # pragma: no cover - tenacity is a declared dependency
     _TENACITY_AVAILABLE = False
 
-RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
@@ -56,6 +58,10 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, OSError):
         return True
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return True
+    # Provider SDKs wrap transport failures in their own APIConnectionError
+    # (APITimeoutError subclasses it), which carries no status code.
+    if isinstance(exc, (AnthropicAPIConnectionError, OpenAIAPIConnectionError)):
         return True
     status_code = None
     response = getattr(exc, "response", None)

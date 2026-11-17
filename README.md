@@ -12,7 +12,7 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Bounded event queues: a subscriber that stops draining loses its oldest events, never the newest ones
 - Atomic state persistence with resume support
 - Fail-safe cycle loop: a planner, execution, tester or state-save failure is reported as an ERROR event instead of crashing the run
-- Hardened provider calls: transient HTTP errors are retried when the status is exposed on the response, and a malformed provider response raises a clear error
+- Hardened provider calls: transient HTTP errors (status codes on the response) and provider connection/timeout errors are retried, and a malformed provider response raises a clear error
 - Offline test suite with no API keys required
 - Estimated USD cost per LLM call/cycle/run tracked, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`
 
