@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,11 +38,9 @@ class TaskModel(BaseModel):
     finished_at: str | None = None
     files_changed: list[str] = Field(default_factory=list)
 
-    @field_validator("status")
+    @field_validator("status", mode="before")
     @classmethod
-    def _normalize_status(cls, v: str) -> str:
-        if v is None:
-            return "pending"
+    def _normalize_status(cls, v: Any) -> str:
         if not isinstance(v, str):
             return "pending"
         known = {"pending", "running", "completed", "failed", "blocked", "skipped"}

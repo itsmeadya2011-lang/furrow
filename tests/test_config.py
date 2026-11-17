@@ -144,6 +144,26 @@ def test_unknown_status_normalized_and_plan_parsing_succeeds():
     assert plan.tasks[0].status == "pending"
 
 
+def test_null_status_becomes_pending():
+    t = TaskModel(id="1", description="d", status=None)
+    assert t.status == "pending"
+
+
+def test_non_string_status_becomes_pending():
+    t = TaskModel(id="1", description="d", status=123)
+    assert t.status == "pending"
+
+
+def test_null_status_in_plan_becomes_pending():
+    import json
+
+    from furrow.agents.parsing import parse_plan
+
+    data = {"rationale": "r", "tasks": [{"id": "t1", "description": "d", "status": None}]}
+    plan = parse_plan(json.dumps(data))
+    assert plan.tasks[0].status == "pending"
+
+
 def test_numeric_settings_reject_invalid_values():
     from pydantic import ValidationError
 
