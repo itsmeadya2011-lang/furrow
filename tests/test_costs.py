@@ -58,6 +58,28 @@ def test_price_for_model_uses_the_longest_matching_prefix() -> None:
     assert price.input_per_million == 0.15
 
 
+def test_price_for_model_does_not_confuse_gpt_4_1_with_gpt_4_turbo() -> None:
+    # "gpt-4.1" normalizes to "gpt-4-1", a string prefix of the dated GPT-4
+    # snapshot "gpt-4-1106-preview"; the prefix match needs a boundary.
+    price = price_for_model("gpt-4-1106-preview")
+    assert price is not None
+    assert price == price_for_model("gpt-4")
+    assert price.input_per_million == 30.0
+    assert price.output_per_million == 60.0
+
+
+def test_price_for_model_matches_dated_gpt_4_1() -> None:
+    price = price_for_model("gpt-4.1-2025-04-14")
+    assert price is not None
+    assert price == price_for_model("gpt-4.1")
+
+
+def test_price_for_model_matches_dated_gpt_4_1_mini() -> None:
+    price = price_for_model("gpt-4.1-mini-2025-04-14")
+    assert price is not None
+    assert price == price_for_model("gpt-4.1-mini")
+
+
 def test_price_for_model_strips_a_provider_prefix() -> None:
     anthropic_price = price_for_model("anthropic/claude-3-5-haiku-20241022")
     assert anthropic_price is not None

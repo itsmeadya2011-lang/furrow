@@ -104,6 +104,23 @@ def _normalize(name: str) -> str:
     return name.strip().lower().replace(".", "-").replace("_", "-")
 
 
+#: Characters that may follow a model-family key when it is used as a prefix.
+_PREFIX_SEPARATORS = "-:/@"
+
+
+def _has_prefix_boundary(candidate: str, key: str) -> bool:
+    """True when *key* is a whole leading token of *candidate*.
+
+    A longer key must not match merely because it is a string prefix: the
+    character after the key must be a separator (or the strings must be
+    equal). This keeps ``gpt-4.1`` (normalized ``gpt-4-1``) from matching
+    the dated GPT-4 snapshot ``gpt-4-1106-preview``.
+    """
+    if candidate == key:
+        return True
+    return len(candidate) > len(key) and candidate[len(key)] in _PREFIX_SEPARATORS
+
+
 def _strip_provider_prefix(model: str) -> str:
     """Drop a leading provider prefix such as ``anthropic/`` from a model id."""
     head, sep, tail = model.partition("/")
@@ -165,7 +182,11 @@ def price_for_model(
         for candidate in reversed(normalized_candidates):
             best_key: str | None = None
             for key in normalized:
-                if candidate.startswith(key) and (best_key is None or len(key) > len(best_key)):
+                if (
+                    candidate.startswith(key)
+                    and _has_prefix_boundary(candidate, key)
+                    and (best_key is None or len(key) > len(best_key))
+                ):
                     best_key = key
             if best_key is not None:
                 return normalized[best_key]
