@@ -7,9 +7,11 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Plans tasks with dependency tracking and parallel execution
 - Worker actually implements code using file and command tools
 - Project-aware test detection (pytest, npm/pnpm/yarn, cargo, go)
-- Event-driven progress with a console UI and FastAPI web interface (readable event log with timestamps, status header, and per-task panels)
+- Event-driven progress with a console UI and FastAPI web interface
+  (readable event log with timestamps, status header, and per-task panels)
 - Finished work is not redone: a task that already completed is skipped when the next plan describes the same work
-- Bounded event queues: a subscriber that stops draining loses its oldest events, never the newest ones
+- Bounded event queues: a subscriber that stops draining loses its oldest
+  events, never the newest ones
 - Atomic state persistence with resume support
 - Fail-safe cycle loop: a planner, execution, tester or state-save failure is reported as an ERROR event instead of crashing the run
 - Hardened provider calls: transient HTTP errors (status codes on the response) and provider connection/timeout errors are retried, and a malformed provider response raises a clear error
