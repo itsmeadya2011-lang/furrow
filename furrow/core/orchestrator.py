@@ -11,7 +11,19 @@ from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.exceptions import (
+    ConfigurationError,
+    ExecutionError,
+    FurrowError,
+    LLMError,
+    PlanningError,
+    TestingError,
+    wrap_error,
+)
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 _UNSET = object()
 
@@ -154,23 +166,29 @@ class Orchestrator:
             self._resume_state_missing = False
             self.event_bus.emit(Event(type=EventType.LOG,
                                       message="no state file found, starting fresh"))
+            logger.warning("no state file found, starting fresh")
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
+        logger.info("starting run", goal=self.original_goal, max_cycles=self.settings.max_cycles)
 
         while True:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
+                logger.info("max cycles reached", cycles=self.cycles)
                 break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            logger.info("cycle started", cycle=self.cycles)
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"planner failed: {e}"
+                error = wrap_error(e, "planner failed")
+                self.event_bus.emit(Event(type=EventType.ERROR, message=str(error)))
+                logger.error("planner failed", cycle=self.cycles, error=str(error), exc_info=True)
+                self._stopped_reason = f"planner failed: {error}"
                 self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
@@ -178,11 +196,13 @@ class Orchestrator:
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
+            logger.info("plan created", cycle=self.cycles, tasks=planned, rationale=plan.rationale)
             if not plan.tasks:
                 self.event_bus.emit(
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
                 self._stopped_reason = "goal complete"
+                logger.info("goal complete - no tasks planned", cycle=self.cycles)
                 break
             self._merge_plan(plan)
             try:
@@ -190,18 +210,23 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"execute failed: {e}"
+                error = wrap_error(e, "execute failed")
+                self.event_bus.emit(Event(type=EventType.ERROR, message=str(error)))
+                logger.error("execute failed", cycle=self.cycles, error=str(error), exc_info=True)
+                self._stopped_reason = f"execute failed: {error}"
                 self.cycles -= 1
                 break
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+            logger.info("test started", cycle=self.cycles)
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"tester failed: {e}"
+                error = wrap_error(e, "tester failed")
+                self.event_bus.emit(Event(type=EventType.ERROR, message=str(error)))
+                logger.error("tester failed", cycle=self.cycles, error=str(error), exc_info=True)
+                self._stopped_reason = f"tester failed: {error}"
                 self.cycles -= 1
                 break
             self._tests_run += 1
@@ -215,8 +240,10 @@ class Orchestrator:
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
                 self._say(f"[green]Tests passed: {summary}[/green]")
+                logger.info("tests passed", cycle=self.cycles, summary=summary)
             else:
                 self._say(f"[red]Tests failed: {summary}[/red]")
+                logger.warning("tests failed", cycle=self.cycles, summary=summary, failures=test_result.failures)
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
             if skipped:
@@ -225,6 +252,7 @@ class Orchestrator:
                 # does not chase a test runner that does not exist.
                 self.goal = self.original_goal
                 self._feedback = ""
+                logger.info("tests skipped - no test runner detected", cycle=self.cycles)
             elif not test_result.passed:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:
@@ -236,6 +264,7 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+                logger.info("tests failed - updating goal with failures", cycle=self.cycles, failures=failures)
             cumulative = self._client_usage()
             cycle_usage = Usage(
                 input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),

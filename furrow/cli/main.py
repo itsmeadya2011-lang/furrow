@@ -10,7 +10,6 @@ Commands:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import sys
 from pathlib import Path
@@ -20,34 +19,19 @@ import click
 
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
-from furrow.core.state import RunState, StateStore
+from furrow.core.runner import (
+    build_run_settings,
+    create_orchestrator,
+    create_state_store,
+    run_orchestrator,
+)
+from furrow.core.state import RunState
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
-
-
-def _run_settings(
-    model: str | None = None,
-    max_cycles: int | None = None,
-    workspace: Path | None = None,
-) -> Settings:
-    """Return a validated copy of the global settings with the given overrides applied.
-
-    The module level ``settings`` object is never mutated: a fresh validated
-    instance is constructed for this run only.
-    """
-    updates: dict[str, Any] = {}
-    if model is not None:
-        updates["model"] = model
-    if max_cycles is not None:
-        updates["max_cycles"] = max_cycles
-    if workspace is not None:
-        updates["workspace"] = Path(workspace)
-    merged = {**settings.model_dump(), **updates}
-    return Settings.model_validate(merged)
 
 
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
@@ -121,48 +105,17 @@ def _print_state(state: RunState) -> None:
         click.echo("Tasks:  (none)")
 
 
-async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
-
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
-
-
-async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
-    """Run an orchestrator and release its LLM client afterwards.
-
-    The client is closed in a ``finally`` block, so its HTTP connections are
-    released even when the run raises.
-    """
-    try:
-        return await orchestrator.run()
-    finally:
-        await _release_client(getattr(orchestrator, "client", None))
-
-
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
-    store = StateStore(run_settings.state_path())
-    orchestrator = Orchestrator(
+    store = create_state_store(run_settings)
+    orchestrator = create_orchestrator(
         goal=goal,
         settings=run_settings,
         state_store=store,
         resume=resume,
     )
     try:
-        result = asyncio.run(_run_and_release(orchestrator))
+        result = asyncio.run(run_orchestrator(orchestrator))
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)

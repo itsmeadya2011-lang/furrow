@@ -13,7 +13,6 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 from typing import Any
 
@@ -25,6 +24,11 @@ from pydantic import BaseModel, Field, ValidationError
 from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
+from furrow.core.runner import (
+    create_orchestrator,
+    create_state_store,
+    run_orchestrator,
+)
 from furrow.core.state import StateStore
 
 logger = logging.getLogger(__name__)
@@ -64,20 +68,29 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
     margin: 0 0 1rem; color: #f0f2f5;
   }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+  .input-group { display: flex; gap: .5rem; flex: 1; min-width: 20rem; }
   input {
-    flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
+    flex: 1; padding: .55rem .7rem; background: #171b23; color: inherit;
     border: 1px solid #2b3240; border-radius: 6px; font: inherit;
   }
+  input:focus { outline: none; border-color: #4c8dff; }
   button {
     padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    white-space: nowrap;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary { background: #1e3a5f; border-color: #4c8dff; }
+  button.primary:hover { background: #2a4d7a; }
+  button.danger { background: #5f1e1e; border-color: #e0685f; }
+  button.danger:hover { background: #7a2a2a; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.5;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -93,52 +106,95 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .connection-status {
+    display: inline-flex; align-items: center; gap: .3rem;
+    font-size: .8rem; padding: .2rem .5rem; border-radius: 4px;
+  }
+  .connection-status.connected { background: #1a3a2a; color: #57d38c; }
+  .connection-status.disconnected { background: #3a1a1a; color: #e0685f; }
+  .connection-status.connecting { background: #3a3a1a; color: #f0b367; }
+  .connection-status .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: currentColor;
+  }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
-    background: #171b23;
+    background: #171b23; transition: border-color .2s;
   }
+  .panel:hover { border-color: #4c8dff; }
+  .panel.running { border-left: 3px solid #4c8dff; }
+  .panel.completed { border-left: 3px solid #57d38c; }
+  .panel.failed { border-left: 3px solid #e0685f; }
+  .panel.blocked { border-left: 3px solid #f0b367; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
   }
   .panel-id { font-size: .85rem; color: #8a93a5; }
   .panel-status {
-    font-size: .8rem; font-weight: 700; text-transform: uppercase;
-    padding: .05rem .4rem; border-radius: 3px;
+    font-size: .75rem; font-weight: 700; text-transform: uppercase;
+    padding: .1rem .4rem; border-radius: 3px;
   }
   .panel-desc {
-    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
+    margin: 0 0 .4rem; font-size: .95rem; color: #d7dae0;
     word-break: break-word;
   }
   .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    display: flex; gap: .8rem; font-size: .8rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    display: flex; gap: .4rem; flex-wrap: wrap; margin-top: .4rem;
+    font-size: .75rem; color: #8a93a5;
+  }
+  .panel-file {
+    background: #10131a; padding: .1rem .4rem; border-radius: 3px;
+    font-family: inherit;
+  }
   .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
-    white-space: pre-wrap;
+    margin: 0 0 .3rem; font-size: .85rem; color: #57d38c;
+    white-space: pre-wrap; max-height: 10rem; overflow: auto;
   }
   .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+    margin: 0; font-size: .85rem; color: #e0685f;
+    white-space: pre-wrap; max-height: 10rem; overflow: auto;
   }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { color: #8a93a5; background: #1a1a2e; }
+  .status-running { color: #4c8dff; background: #1a2a3e; }
+  .status-completed { color: #57d38c; background: #1a3e2a; }
+  .status-failed { color: #e0685f; background: #3e1a1a; }
+  .status-blocked { color: #f0b367; background: #3e3a1a; }
+  .status-skipped { color: #8a93a5; background: #1a1a2e; }
+  .status-unknown { color: #8a93a5; background: #1a1a2e; }
+  .toast {
+    position: fixed; bottom: 1rem; right: 1rem; padding: .75rem 1rem;
+    background: #1d2430; border: 1px solid #2b3240; border-radius: 6px;
+    color: #d7dae0; font-size: .85rem; z-index: 1000;
+    animation: slideIn .3s ease-out;
+  }
+  .toast.error { border-color: #e0685f; background: #3e1a1a; }
+  .toast.success { border-color: #57d38c; background: #1a3e2a; }
+  @keyframes slideIn { from { opacity: 0; transform: translateY(1rem); } to { opacity: 1; transform: translateY(0); } }
+  .help-text { font-size: .75rem; color: #6a7385; margin-top: .5rem; }
+  kbd {
+    background: #171b23; border: 1px solid #2b3240; border-radius: 3px;
+    padding: .1rem .3rem; font-family: inherit; font-size: .75rem;
+  }
 </style>
 </head>
 <body>
 <h1>Furrow</h1>
 <div class="bar">
-  <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
-  <button id="resume">Resume</button>
+  <div class="input-group">
+    <input id="goal" placeholder="What should Furrow build?" autofocus />
+    <button id="start" class="primary" title="Start new run (Enter)">Start</button>
+    <button id="resume" title="Resume previous run">Resume</button>
+  </div>
+  <span id="connection-status" class="connection-status disconnected">
+    <span class="dot"></span> Disconnected
+  </span>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -151,6 +207,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="help-text">
+  <kbd>Enter</kbd> to start &nbsp;|&nbsp; <kbd>Ctrl+Enter</kbd> to resume &nbsp;|&nbsp; Click task panel to expand
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -160,8 +219,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const connectionStatusEl = document.getElementById('connection-status');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
   let socket = null;
   let lastSummary = null;
+  let reconnectAttempts = 0;
+  const maxReconnectAttempts = 5;
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -170,6 +234,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
+  }
+
+  function showToast(message, isError = false) {
+    const toast = document.createElement('div');
+    toast.className = 'toast' + (isError ? ' error' : ' success');
+    toast.textContent = message;
+    document.body.appendChild(toast);
+    setTimeout(() => { toast.remove(); }, 4000);
+  }
+
+  function setConnectionStatus(status) {
+    const statuses = {
+      connected: 'Connected',
+      disconnected: 'Disconnected',
+      connecting: 'Connecting...'
+    };
+    connectionStatusEl.className = 'connection-status ' + status;
+    connectionStatusEl.innerHTML = '<span class="dot"></span> ' + statuses[status];
   }
 
   // The task status is planned by the LLM, so it is untrusted input: it is
@@ -225,10 +307,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
     list.forEach(function (task) {
       const status = text(task.status) || 'pending';
+      const statusKey = statusClass(status);
 
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = 'panel ' + statusKey;
       panel.id = 'task-' + text(task.id);
+      panel.style.cursor = 'pointer';
+      panel.title = 'Click to toggle details';
 
       const head = document.createElement('div');
       head.className = 'panel-head';
@@ -236,7 +321,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       idEl.className = 'panel-id';
       idEl.textContent = '#' + text(task.id);
       const statusEl = document.createElement('span');
-      statusEl.className = 'panel-status status-' + statusClass(status);
+      statusEl.className = 'panel-status status-' + statusKey;
       statusEl.textContent = status;
       head.appendChild(idEl);
       head.appendChild(statusEl);
@@ -250,10 +335,39 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      if (task.started_at) {
+        const started = document.createElement('span');
+        started.textContent = 'started: ' + new Date(task.started_at).toLocaleTimeString();
+        meta.appendChild(started);
+      }
+      if (task.finished_at) {
+        const finished = document.createElement('span');
+        finished.textContent = 'finished: ' + new Date(task.finished_at).toLocaleTimeString();
+        meta.appendChild(finished);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
+
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'panel-files';
+        filesChanged.forEach(function (file) {
+          const fileEl = document.createElement('span');
+          fileEl.className = 'panel-file';
+          fileEl.textContent = file;
+          fileEl.title = 'Click to copy path';
+          fileEl.onclick = function (e) {
+            e.stopPropagation();
+            navigator.clipboard.writeText(file);
+            showToast('Copied: ' + file);
+          };
+          filesDiv.appendChild(fileEl);
+        });
+        panel.appendChild(filesDiv);
+      }
 
       const result = text(task.result);
       const error = text(task.error);
@@ -269,6 +383,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
         errorEl.textContent = error;
         panel.appendChild(errorEl);
       }
+
+      // Toggle details on click
+      panel.onclick = function () {
+        panel.classList.toggle('expanded');
+        const details = panel.querySelector('.panel-result, .panel-error, .panel-files');
+        if (details) {
+          details.style.display = details.style.display === 'none' ? 'block' : 'none';
+        }
+      };
 
       tasksEl.appendChild(panel);
     });
@@ -309,10 +432,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     if (socket) { socket.close(); }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
+    setConnectionStatus('connecting');
+    startBtn.disabled = true;
+    resumeBtn.disabled = true;
+
     socket.onopen = function () {
+      setConnectionStatus('connected');
+      reconnectAttempts = 0;
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
       socket.send(JSON.stringify(payload));
     };
@@ -387,12 +514,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
       if (msg.type === 'done') {
         loadStatus();
+        startBtn.disabled = false;
+        resumeBtn.disabled = false;
       }
     };
     socket.onclose = function () {
+      setConnectionStatus('disconnected');
       append('-- closed');
       socket = null;
       loadStatus();
+      startBtn.disabled = false;
+      resumeBtn.disabled = false;
+      // Auto-reconnect for resume
+      if (reconnectAttempts < maxReconnectAttempts && payload.resume) {
+        reconnectAttempts++;
+        append('-- reconnecting... (attempt ' + reconnectAttempts + ')');
+        setTimeout(function () { connect(payload); }, 1000 * reconnectAttempts);
+      }
     };
     socket.onerror = function () {
       append('!! websocket error');
@@ -400,11 +538,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+    const goal = goalEl.value.trim();
+    if (!goal) {
+      showToast('Please enter a goal', true);
+      goalEl.focus();
+      return;
+    }
+    connect({ goal: goal, resume: false });
   };
   document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+    connect({ goal: goalEl.value.trim(), resume: true });
   };
+
+  // Keyboard shortcuts
+  goalEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      e.preventDefault();
+      document.getElementById('start').click();
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      document.getElementById('resume').click();
+    }
+  });
 
   loadState();
   loadStatus();
@@ -438,7 +593,7 @@ def _reset_registry() -> None:
 
 def _state_store() -> StateStore:
     """Store for the persisted run state of the current settings."""
-    return StateStore(settings.state_path())
+    return create_state_store(settings)
 
 
 def _run_settings(max_cycles: int | None) -> Settings:
@@ -506,60 +661,17 @@ async def _drain(queue: asyncio.Queue[Event]) -> None:
         await queue.get()
 
 
-async def _release_client(client: Any) -> None:
-    """Release the HTTP resources of an LLM client, when it supports closing.
-
-    ``LLMClient.aclose()`` may not exist yet and may be a plain or an async
-    method, so it is looked up defensively and only awaited when the result
-    is awaitable.  A failing close is logged and ignored: closing must never
-    turn a successful run into a failed one.
-    """
-    closer = getattr(client, "aclose", None)
-    if closer is None:
-        return
-    try:
-        outcome = closer()
-        if inspect.isawaitable(outcome):
-            await outcome
-    except Exception as exc:
-        logger.warning("Could not close the LLM client: %s", exc)
-
-
-async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
-    """Run an orchestrator and release its LLM client afterwards.
-
-    The client is closed in a ``finally`` block, so its HTTP connections are
-    released when the run finishes, when it fails and when it is cancelled
-    (e.g. because the websocket client went away).
-    """
-    try:
-        return await orchestrator.run()
-    finally:
-        await _release_client(getattr(orchestrator, "client", None))
-
-
-async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
-    """Run an orchestrator in the background and discard the emitted events."""
-    queue = bus.subscribe()
-    drain = asyncio.create_task(_drain(queue))
-    try:
-        return await _run_orchestrator(orchestrator)
-    finally:
-        drain.cancel()
-        bus.unsubscribe(queue)
-
-
 def _build_orchestrator(
     goal: str, resume: bool, max_cycles: int | None, bus: EventBus
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
     run_settings = _run_settings(max_cycles)
-    return Orchestrator(
+    return create_orchestrator(
         goal=goal,
         settings=run_settings,
+        resume=resume,
         state_store=StateStore(run_settings.state_path()),
         event_bus=bus,
-        resume=resume,
     )
 
 
@@ -630,7 +742,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
             status_code=400,
             content={"started": False, "error": _describe_validation_error(validation_error)},
         )
-    run_task = asyncio.create_task(_run_and_drain(orchestrator, bus))
+    run_task = asyncio.create_task(_run_orchestrator_with_drain(orchestrator, bus))
     _TASKS.add(run_task)
     run_task.add_done_callback(_on_run_done)
     _CURRENT.update(
@@ -643,6 +755,17 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+async def _run_orchestrator_with_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
+    """Run an orchestrator in the background and discard the emitted events."""
+    queue = bus.subscribe()
+    drain = asyncio.create_task(_drain(queue))
+    try:
+        return await run_orchestrator(orchestrator)
+    finally:
+        drain.cancel()
+        bus.unsubscribe(queue)
 
 
 @app.websocket("/ws")
@@ -687,7 +810,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # override can never reach the orchestrator.
             await _send_error(websocket, _describe_validation_error(validation_error))
             return
-        run_task = asyncio.create_task(_run_orchestrator(orchestrator))
+        run_task = asyncio.create_task(run_orchestrator(orchestrator))
         _TASKS.add(run_task)
         run_task.add_done_callback(_on_run_done)
         _CURRENT.update(

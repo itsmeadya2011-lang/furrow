@@ -17,12 +17,20 @@ circular.  Token counts are therefore read by duck typing instead.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a circular import
     from furrow.config import Usage
+
+
+class HasTokenCounts(Protocol):
+    """Protocol for objects that have token count attributes."""
+    input_tokens: int | float
+    output_tokens: int | float
+    calls: int | float
+    cost_usd: float
 
 
 class ModelPricing(BaseModel):
@@ -174,7 +182,7 @@ def price_for_model(
         return None
 
 
-def _token_count(usage: Any, field: str) -> float:
+def _token_count(usage: HasTokenCounts, field: str) -> float:
     """Read a token count from *usage* by duck typing (never negative)."""
     try:
         value = getattr(usage, field, 0) or 0

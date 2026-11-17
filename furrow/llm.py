@@ -6,7 +6,7 @@ import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar
 
 import aiofiles
 import httpx
@@ -29,6 +29,60 @@ RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
+
+
+class HasUsage(Protocol):
+    """Protocol for objects that have a usage attribute."""
+    usage: Any | None
+
+
+class AnthropicUsage(Protocol):
+    """Protocol for Anthropic usage object."""
+    input_tokens: int
+    output_tokens: int
+
+
+class OpenAIUsage(Protocol):
+    """Protocol for OpenAI usage object."""
+    prompt_tokens: int
+    completion_tokens: int
+
+
+class AnthropicResponse(Protocol):
+    """Protocol for Anthropic messages response."""
+    content: list[Any] | None
+    usage: AnthropicUsage | None
+    stop_reason: str | None
+
+
+class OpenAIResponse(Protocol):
+    """Protocol for OpenAI chat completions response."""
+    choices: list[Any]
+    usage: OpenAIUsage | None
+
+
+class OpenAIChoice(Protocol):
+    """Protocol for OpenAI choice object."""
+    message: Any | None
+    finish_reason: str | None
+
+
+class OpenAIMessage(Protocol):
+    """Protocol for OpenAI message object."""
+    content: str | None
+    tool_calls: list[Any] | None
+
+
+class OpenAIToolCall(Protocol):
+    """Protocol for OpenAI tool call object."""
+    id: str
+    function: Any
+
+
+class OpenAIFunction(Protocol):
+    """Protocol for OpenAI function object."""
+    name: str
+    arguments: str
 
 
 @dataclass(slots=True)
@@ -66,7 +120,7 @@ def _is_retryable(exc: BaseException) -> bool:
     return status_code in RETRYABLE_STATUS_CODES
 
 
-def _extract_anthropic_usage(response: Any) -> Usage:
+def _extract_anthropic_usage(response: AnthropicResponse) -> Usage:
     """Pull token usage out of an Anthropic messages response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -76,7 +130,7 @@ def _extract_anthropic_usage(response: Any) -> Usage:
     return Usage(input_tokens=input_tokens, output_tokens=output_tokens, calls=1)
 
 
-def _extract_openai_usage(response: Any) -> Usage:
+def _extract_openai_usage(response: OpenAIResponse) -> Usage:
     """Pull token usage out of an OpenAI-compatible response (graceful if absent)."""
     usage = getattr(response, "usage", None)
     if usage is None:
@@ -203,7 +257,7 @@ def to_openai_messages(messages: list[dict]) -> list[dict]:
     return converted
 
 
-def parse_tool_arguments(raw: Any) -> dict:
+def parse_tool_arguments(raw: dict[str, Any] | str | None) -> dict[str, Any]:
     """Parse tool call arguments from a dict or JSON string ({} on failure)."""
     if isinstance(raw, dict):
         return raw
