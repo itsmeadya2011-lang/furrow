@@ -1,8 +1,9 @@
 """Persistent run state for Furrow.
 
-The orchestrator keeps its goal, tasks and cycle history in RAM only, so a
-crash or a restart loses every bit of progress. This module provides a small,
-dependency-free persistence layer that stores the run state as JSON on disk.
+The orchestrator keeps its goal, tasks and cycle history in memory during a
+run and persists them to disk so progress can survive a crash or restart. This
+module provides a small, dependency-free persistence layer that stores the run
+state as JSON.
 
 Design notes:
   * Writes are atomic: the payload is written to a temporary file in the same

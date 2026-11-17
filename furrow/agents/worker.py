@@ -508,6 +508,7 @@ class WorkerAgent:
                 proc = await asyncio.create_subprocess_exec(
                     "/bin/sh", "-c", command,
                     cwd=str(self.workspace),
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
@@ -519,6 +520,7 @@ class WorkerAgent:
                 proc = await asyncio.create_subprocess_exec(
                     *parts,
                     cwd=str(self.workspace),
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     **spawn_kwargs,
