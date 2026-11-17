@@ -880,3 +880,61 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+def test_list_files_skips_filtered_directories(tmp_path):
+    skip_dirs = [
+        ".git",
+        "__pycache__",
+        "node_modules",
+        ".venv",
+        "dist",
+        "build",
+        ".pytest_cache",
+    ]
+    for name in skip_dirs:
+        d = tmp_path / name
+        d.mkdir()
+        (d / "ignored.txt").write_text("ignored")
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print('hi')")
+    (tmp_path / "README.md").write_text("# readme")
+
+    client = LLMClient()
+    result = client.list_files(tmp_path)
+
+    assert set(result) == {"src/main.py", "README.md"}
+    assert not any(part in set(skip_dirs) for path in result for part in path.split("/"))
+
+
+def test_list_files_returns_files_directly_inside_directory(tmp_path):
+    (tmp_path / "top_level.txt").write_text("ok")
+    (tmp_path / "nested").mkdir()
+    (tmp_path / "nested" / "inner.txt").write_text("ok")
+
+    client = LLMClient()
+    result = client.list_files(tmp_path)
+
+    assert "top_level.txt" in result
+    assert "nested/inner.txt" in result
+
+
+def test_list_files_missing_directory_returns_empty(tmp_path):
+    client = LLMClient()
+    missing = tmp_path / "does_not_exist"
+
+    assert client.list_files(missing) == []
+
+
+def test_list_files_returns_relative_paths(tmp_path):
+    (tmp_path / "pkg").mkdir()
+    file_path = tmp_path / "pkg" / "mod.py"
+    file_path.write_text("x = 1")
+
+    client = LLMClient()
+    result = client.list_files(tmp_path)
+
+    assert result == ["pkg/mod.py"]
+    assert all(not p.startswith(str(tmp_path)) for p in result)
+    assert all(not p.startswith("/") for p in result)

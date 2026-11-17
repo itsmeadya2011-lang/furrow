@@ -216,6 +216,35 @@ def parse_tool_arguments(raw: Any) -> dict:
     return {}
 
 
+# Directories that are never useful for an agent exploring a codebase.
+_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".furrow",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+        ".tox",
+        ".venv",
+        "venv",
+        "env",
+        ".idea",
+        ".vscode",
+        ".cache",
+        ".next",
+        ".nuxt",
+        "dist",
+        "build",
+        "target",
+        ".DS_Store",
+    }
+)
+
+
 class LLMClient:
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings if settings is not None else global_settings
@@ -503,4 +532,17 @@ class LLMClient:
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        base = p.resolve()
+        results: list[str] = []
+        for f in p.rglob("*"):
+            if not f.is_file():
+                continue
+            # Skip anything inside a VCS/cache/dependency directory.
+            try:
+                rel = f.relative_to(base)
+            except ValueError:
+                continue
+            if any(part in _SKIP_DIRS for part in rel.parts[:-1]):
+                continue
+            results.append(str(rel))
+        return results
