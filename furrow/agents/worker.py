@@ -476,11 +476,18 @@ class WorkerAgent:
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
         base = self.workspace.resolve()
+        try:
+            prefix = str(resolved.relative_to(base))
+        except ValueError:
+            prefix = ""
         for e in entries[:MAX_LIST_ENTRIES]:
-            try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
-            except ValueError:
-                rels.append(str(e))
+            if Path(e).is_absolute():
+                try:
+                    rels.append(str(Path(e).relative_to(base)))
+                except ValueError:
+                    rels.append(str(e))
+            else:
+                rels.append(str(Path(prefix) / e) if prefix else e)
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:

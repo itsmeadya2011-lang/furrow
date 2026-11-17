@@ -327,6 +327,55 @@ async def test_list_files_caps_at_500_entries(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_files_subdirectory_returns_workspace_relative_paths(tmp_path):
+    """Regression: listing a subdirectory returns paths prefixed with that subdirectory."""
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    (subdir / "a.py").write_text("x")
+    nested = subdir / "nested"
+    nested.mkdir()
+    (nested / "b.py").write_text("y")
+    # Also create a file at workspace root to ensure we only get subdir contents
+    (tmp_path / "root.txt").write_text("z")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files("sub")
+    lines = set(out.splitlines())
+    assert "sub/a.py" in lines
+    assert "sub/nested/b.py" in lines
+    assert "root.txt" not in lines
+    # Ensure no absolute paths leak
+    for line in lines:
+        assert not Path(line).is_absolute()
+
+
+@pytest.mark.asyncio
+async def test_list_files_root_returns_relative_paths(tmp_path):
+    """Listing the workspace root returns paths relative to workspace."""
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "b.py").write_text("y")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    out = await agent._list_files(".")
+    lines = set(out.splitlines())
+    assert "a.py" in lines
+    assert "sub/b.py" in lines
+    for line in lines:
+        assert not Path(line).is_absolute()
+
+
+@pytest.mark.asyncio
 async def test_client_exception(tmp_path):
     client = FakeLLMClient([RuntimeError("boom")])
     settings = make_settings(tmp_path)
