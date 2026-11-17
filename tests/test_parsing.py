@@ -108,3 +108,44 @@ def test_parse_test_result_heuristic_assertion_error():
 def test_parse_test_result_never_raises_on_empty_string():
     r = parsing.parse_test_result("")
     assert isinstance(r, TestResult)
+
+
+def test_extract_json_returns_the_first_balanced_candidate():
+    assert parsing.extract_json("prefix [draft] suffix") == "[draft]"
+
+
+def test_parse_json_skips_a_non_json_bracket_before_the_object():
+    plan = parsing.parse_plan(
+        'Here is [draft] the plan: {"tasks": [{"id": "t1", "description": "x"}], "rationale": "r"}'
+    )
+    assert plan.tasks[0].id == "t1"
+
+
+def test_parse_json_skips_a_non_json_brace_before_the_object():
+    plan = parsing.parse_plan('I considered {a} and chose {"tasks": [], "rationale": "ok"}')
+    assert plan.rationale == "ok"
+
+
+def test_parse_plan_skips_a_leading_json_array_before_the_object():
+    plan = parsing.parse_plan('[1, 2, 3] then {"tasks": [], "rationale": "ok"}')
+    assert plan.rationale == "ok"
+
+
+def test_parse_json_returns_the_first_valid_candidate():
+    assert parsing.parse_json('noise [x] then {"a": 1}') == {"a": 1}
+
+
+def test_parse_json_raises_when_no_candidate_is_valid_json():
+    with pytest.raises(ValueError):
+        parsing.parse_json("[draft] {a}")
+
+
+def test_parse_plan_finds_a_valid_object_nested_in_an_invalid_one():
+    plan = parsing.parse_plan('{not json {"tasks": [], "rationale": "ok"}}')
+    assert plan.rationale == "ok"
+
+
+def test_parse_test_result_uses_a_json_object_after_stray_brackets():
+    tr = parsing.parse_test_result('noise [x] {"passed": false, "summary": "s", "failures": ["a"]}')
+    assert tr.passed is False
+    assert tr.failures == ["a"]
