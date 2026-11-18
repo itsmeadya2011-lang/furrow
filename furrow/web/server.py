@@ -13,6 +13,7 @@ orchestrator event to the browser:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 from typing import Any
@@ -546,6 +547,8 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
         return await _run_orchestrator(orchestrator)
     finally:
         drain.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await drain
         bus.unsubscribe(queue)
 
 

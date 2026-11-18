@@ -992,3 +992,22 @@ async def test_pricing_overrides_are_used_for_the_cost():
 
     expected = 1000 / 1e6 * 1.0 + 1000 / 1e6 * 2.0
     assert client.total_usage.cost_usd == pytest.approx(expected)
+
+
+async def test_write_then_read_roundtrip_utf8(tmp_path):
+    client = LLMClient()
+    path = tmp_path / "f.txt"
+    content = "héllo → 世界\n"
+
+    await client.write_file(path, content)
+
+    assert await client.read_file(path) == content
+
+
+async def test_write_file_creates_parent_dirs(tmp_path):
+    client = LLMClient()
+    path = tmp_path / "a" / "b" / "f.txt"
+
+    await client.write_file(path, "data")
+
+    assert await client.read_file(path) == "data"

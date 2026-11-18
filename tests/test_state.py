@@ -205,3 +205,13 @@ def test_load_returns_none_for_valid_json_of_the_wrong_shape(tmp_path: Path) -> 
 
     assert store.load() is None
 
+
+def test_load_deeply_nested_json_returns_none(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    # Create a deeply nested JSON array that triggers RecursionError
+    deep_json = "[" * 5000 + "]" * 5000
+    path.write_text(deep_json, encoding="utf-8")
+    store = StateStore(path)
+
+    assert store.load() is None
+

@@ -149,3 +149,27 @@ def test_parse_test_result_uses_a_json_object_after_stray_brackets():
     tr = parsing.parse_test_result('noise [x] {"passed": false, "summary": "s", "failures": ["a"]}')
     assert tr.passed is False
     assert tr.failures == ["a"]
+
+
+def _raise_recursionerror(_text: str):
+    raise RecursionError("maximum recursion depth exceeded")
+
+
+def test_parse_json_converts_recursionerror_to_valueerror(monkeypatch):
+    # A deeply nested payload makes ``json.loads`` raise RecursionError; the
+    # parser must surface it as the documented ValueError instead.
+    monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
+    with pytest.raises(ValueError):
+        parsing.parse_json("[[1]]")
+
+
+def test_parse_plan_converts_recursionerror_to_valueerror(monkeypatch):
+    monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
+    with pytest.raises(ValueError):
+        parsing.parse_plan("[[1]]")
+
+
+def test_parse_test_result_falls_back_on_recursionerror(monkeypatch):
+    monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
+    r = parsing.parse_test_result("[[1]]")
+    assert isinstance(r, TestResult)

@@ -134,7 +134,7 @@ def parse_json(text: str) -> Any:
     for candidate in _iter_json_candidates(text):
         try:
             return json.loads(candidate)
-        except json.JSONDecodeError as exc:
+        except (json.JSONDecodeError, RecursionError) as exc:
             if first_error is None:
                 first_error = str(exc)
     if first_error is not None:
@@ -156,7 +156,7 @@ def _first_json_mapping(text: str) -> dict[str, Any]:
     for candidate in _iter_json_candidates(text):
         try:
             data = json.loads(candidate)
-        except ValueError:
+        except (ValueError, RecursionError):
             continue
         parsed_any = True
         if isinstance(data, dict):

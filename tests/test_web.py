@@ -21,7 +21,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketDisconnect
 
 from furrow.config import RunResult, settings
-from furrow.core.events import Event, EventType
+from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import RunState, StateStore
 from furrow.web import server
 
@@ -557,6 +557,56 @@ async def test_run_orchestrator_releases_the_client_when_the_run_is_cancelled() 
         await task
 
     assert orchestrator.client.closed is True
+
+
+class _SentinelOrchestrator:
+    """Minimal orchestrator stub: returns a sentinel result, has no client."""
+
+    client = None
+
+    def __init__(self, result: RunResult) -> None:
+        self._result = result
+
+    async def run(self) -> RunResult:
+        return self._result
+
+
+class _BoomOrchestrator:
+    """Minimal orchestrator stub whose run always fails."""
+
+    client = None
+
+    async def run(self) -> RunResult:
+        raise RuntimeError("boom")
+
+
+async def test_run_and_drain_returns_result() -> None:
+    """``_run_and_drain`` returns the orchestrator result and unsubscribes."""
+    sentinel = RunResult(
+        passed=True,
+        cycles=1,
+        tasks_completed=1,
+        summary="sentinel",
+        stopped_reason="goal complete",
+    )
+    stub = _SentinelOrchestrator(sentinel)
+    bus = EventBus()
+
+    result = await server._run_and_drain(cast(Any, stub), bus)
+
+    assert result is sentinel
+    assert bus.subscriber_count == 0
+
+
+async def test_run_and_drain_propagates_exception() -> None:
+    """A failing run propagates and still leaves no subscriber behind."""
+    stub = _BoomOrchestrator()
+    bus = EventBus()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await server._run_and_drain(cast(Any, stub), bus)
+
+    assert bus.subscriber_count == 0
 
 
 def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:

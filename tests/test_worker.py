@@ -1040,6 +1040,31 @@ async def test_execute_tool_invalid_args_do_not_raise(tmp_path):
         assert isinstance(out, str)
         assert out.startswith("error: ")
 
+def test_coerce_tool_args_deeply_nested_returns_none(monkeypatch):
+    """Deeply nested JSON raises RecursionError inside json.loads; the worker
+
+    must not let that propagate out of the turn - it must return None."""
+
+    def _raise(_text):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr("furrow.agents.worker.json.loads", _raise)
+    assert WorkerAgent._coerce_tool_args("[[1]]") is None
+
+
+def test_coerce_tool_args_basic_behavior():
+    """Normal dict / JSON-string / invalid-string behavior is preserved."""
+    assert WorkerAgent._coerce_tool_args(None) == {}
+    assert WorkerAgent._coerce_tool_args({}) == {}
+    assert WorkerAgent._coerce_tool_args({"a": 1}) == {"a": 1}
+    assert WorkerAgent._coerce_tool_args('{"a": 1}') == {"a": 1}
+    assert WorkerAgent._coerce_tool_args("") == {}
+    assert WorkerAgent._coerce_tool_args("   ") == {}
+    assert WorkerAgent._coerce_tool_args("not json") is None
+    assert WorkerAgent._coerce_tool_args("[1, 2]") is None
+    assert WorkerAgent._coerce_tool_args(123) is None
+    assert WorkerAgent._coerce_tool_args([1, 2]) is None
+
 
 @pytest.mark.asyncio
 async def test_read_file_truncation_marker(tmp_path):

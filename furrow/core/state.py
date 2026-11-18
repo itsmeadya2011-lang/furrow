@@ -102,7 +102,7 @@ class StateStore:
             return None
         try:
             return RunState.model_validate_json(raw)
-        except (ValidationError, ValueError) as exc:
+        except (ValidationError, ValueError, RecursionError) as exc:
             logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
             return None
 

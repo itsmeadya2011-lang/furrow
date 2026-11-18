@@ -59,6 +59,28 @@ def test_detect_packagejson(tmp_path):
     assert cmd is not None and "npm" in cmd
 
 
+def test_detect_command_unreadable_package_json_falls_back(tmp_path):
+    """An unreadable / non-UTF-8 package.json must not crash detection.
+
+    Invalid UTF-8 bytes should be logged and the npm/pnpm/yarn fallback
+    (based on lockfiles) should still be returned.
+    """
+    (tmp_path / "package.json").write_bytes(b"\xff\xfe\x00")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert cmd == ["npm", "test", "--silent"]
+
+
+def test_detect_command_valid_package_json_with_test_script(tmp_path):
+    """A valid package.json with a test script returns the npm fallback."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert cmd == ["npm", "test", "--silent"]
+
+
 def test_detect_cargo(tmp_path):
     (tmp_path / "Cargo.toml").write_text("[package]\n")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)

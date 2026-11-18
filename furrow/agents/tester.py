@@ -15,6 +15,9 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
 # available (the setting is read defensively, see ``resolve_test_timeout``).
@@ -222,7 +225,7 @@ class TesterAgent:
                     return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
-                with open(self.workspace / "package.json") as fh:
+                with open(self.workspace / "package.json", encoding="utf-8") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
@@ -231,8 +234,8 @@ class TesterAgent:
                     if (self.workspace / "yarn.lock").is_file():
                         return ["yarn", "test", "--silent"]
                     return ["npm", "test", "--silent"]
-            except Exception:
-                pass
+            except (OSError, UnicodeError, ValueError) as exc:
+                logger.warning("Could not read package.json: %s", exc)
             # Fallback: npm test if package.json exists (Python case handled above)
             if (self.workspace / "pnpm-lock.yaml").is_file():
                 return ["pnpm", "test", "--silent"]

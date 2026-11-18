@@ -15,6 +15,7 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Hardened provider calls: transient HTTP errors (status codes on the response) and provider connection/timeout errors are retried, and a malformed provider response raises a clear error
 - Offline test suite with no API keys required
 - Estimated USD cost per LLM call/cycle/run tracked, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`
+- Robust against malformed model output and pathological inputs: deeply nested JSON is reported as a normal parse error instead of crashing, file I/O is explicitly UTF-8, and the web server reaps its background drain task
 
 ## Security
 

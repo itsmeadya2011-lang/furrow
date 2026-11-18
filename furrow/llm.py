@@ -367,7 +367,7 @@ class LLMClient:
         text = ""
         for block in response.content or []:
             if block.type == "text":
-                text += block.text
+                text += block.text or ""
         usage = _extract_anthropic_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
@@ -425,7 +425,7 @@ class LLMClient:
         tool_calls: list[ToolCall] = []
         for block in response.content or []:
             if block.type == "text":
-                text += block.text
+                text += block.text or ""
             elif block.type == "tool_use":
                 tool_calls.append(
                     ToolCall(id=block.id, name=block.name, arguments=block.input or {})
@@ -499,13 +499,13 @@ class LLMClient:
         )
 
     async def read_file(self, path: str | Path) -> str:
-        async with aiofiles.open(path) as f:
+        async with aiofiles.open(path, encoding="utf-8") as f:
             return await f.read()
 
     async def write_file(self, path: str | Path, content: str) -> None:
         p = Path(path)
         p.parent.mkdir(parents=True, exist_ok=True)
-        async with aiofiles.open(p, "w") as f:
+        async with aiofiles.open(p, "w", encoding="utf-8") as f:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:

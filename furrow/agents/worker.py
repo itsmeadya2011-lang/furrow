@@ -593,7 +593,7 @@ class WorkerAgent:
                 return {}
             try:
                 parsed = json.loads(text)
-            except (json.JSONDecodeError, ValueError):
+            except (ValueError, RecursionError):
                 return None
             if isinstance(parsed, dict):
                 return parsed
