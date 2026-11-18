@@ -180,14 +180,12 @@ def _short_cluster_has(token: str, letters: str) -> bool:
 
 
 def _is_dangerous_rm(args: list[str], workspace: Path) -> bool:
-    """Report whether an ``rm`` invocation recursively forces outside the workspace.
+    """Report whether an ``rm`` invocation targets outside the workspace.
 
-    Only a command that is both recursive and forced is dangerous. Each target
-    is denied if it contains a shell expansion (``$`` or a backtick) or resolves
-    outside of the workspace.
+    Every target is denied when it contains a shell expansion (``$`` or a
+    backtick) or resolves outside of the workspace, regardless of the
+    ``-r``/``-f`` flags. Flag parsing (including ``--``) is still honoured.
     """
-    recursive = False
-    force = False
     targets: list[str] = []
     options_done = False
     for token in args:
@@ -197,27 +195,16 @@ def _is_dangerous_rm(args: list[str], workspace: Path) -> bool:
         if token == "--":
             options_done = True
             continue
-        if token == "--recursive":
-            recursive = True
-            continue
-        if token == "--force":
-            force = True
-            continue
         if token.startswith("--"):
             continue
         if token.startswith("-"):
-            if _short_cluster_has(token, "rR"):
-                recursive = True
-            if _short_cluster_has(token, "f"):
-                force = True
             continue
         targets.append(token)
-    if recursive and force:
-        for target in targets:
-            if "$" in target or "`" in target:
-                return True
-            if not _target_inside_workspace(target, workspace):
-                return True
+    for target in targets:
+        if "$" in target or "`" in target:
+            return True
+        if not _target_inside_workspace(target, workspace):
+            return True
     return False
 
 
@@ -337,7 +324,13 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
 
 
 # Programs that write to path arguments rather than via shell redirections.
-_WRITE_PATH_PROGRAMS = frozenset({"tee"})
+# ``cp``/``mv``/``install``/``ln``/``rsync`` write to their last non-option
+# operand (or to the ``-t``/``--target-directory`` directory); the others
+# treat every non-option operand as a write target.
+_WRITE_PATH_PROGRAMS = frozenset(
+    {"tee", "cp", "mv", "install", "ln", "rsync", "truncate", "touch", "mkdir", "rmdir"}
+)
+_LAST_DEST_PROGRAMS = frozenset({"cp", "mv", "install", "ln", "rsync"})
 
 
 def _is_force_push(segment: str, normalized: str) -> bool:
@@ -361,22 +354,73 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
     """Report whether a segment writes to a path argument outside the workspace.
 
     This catches programs that write files through arguments rather than shell
-    redirections (e.g. ``tee``). Non-option tokens are treated as path
-    arguments; a path outside the workspace or one that still contains a shell
-    expansion (``$`` or a backtick) is denied. A program with no path argument
-    is allowed.
+    redirections (e.g. ``tee``, ``cp``, ``mv``, ...). Option tokens (and their
+    values for ``-t``/``--target-directory``) are skipped; ``--`` terminates
+    option parsing. For ``cp``/``mv``/``install``/``ln``/``rsync`` only the
+    destination (last operand, or the target directory) is checked; for the
+    others every non-option operand is a write target. A path outside the
+    workspace or one that still contains a shell expansion (``$`` or a
+    backtick) is denied. A program with no path argument is allowed.
     """
-    program = _get_program_basename(segment)
-    if not program or program.lower() not in _WRITE_PATH_PROGRAMS:
+    parsed = _program_and_args(segment)
+    if parsed is None:
         return False
-    tokens = _shell_tokens(segment.strip())
-    if not tokens:
+    name, args = parsed
+    if name not in _WRITE_PATH_PROGRAMS:
         return False
-    # Skip the program name and option tokens (e.g. -a, --append).
-    for token in tokens[1:]:
-        if token.startswith("-"):
+    options_done = False
+    operands: list[str] = []
+    target_dir: str | None = None
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if options_done:
+            operands.append(token)
+            i += 1
             continue
-        target = token.strip().strip("\"'")
+        if token == "--":
+            options_done = True
+            i += 1
+            continue
+        if token.startswith("--target-directory="):
+            target_dir = token.split("=", 1)[1]
+            i += 1
+            continue
+        if token == "--target-directory":
+            if i + 1 < len(args):
+                target_dir = args[i + 1]
+                i += 2
+                continue
+            i += 1
+            continue
+        if token == "-t":
+            if i + 1 < len(args):
+                target_dir = args[i + 1]
+                i += 2
+                continue
+            i += 1
+            continue
+        if token.startswith("-t") and len(token) > 2:
+            target_dir = token[2:]
+            i += 1
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        operands.append(token)
+        i += 1
+
+    targets: list[str] = []
+    if target_dir is not None:
+        targets.append(target_dir)
+    if name in _LAST_DEST_PROGRAMS:
+        if operands:
+            targets.append(operands[-1])
+    else:
+        targets.extend(operands)
+
+    for target in targets:
+        target = target.strip().strip("\"'")
         if not target:
             continue
         if target in _SPECIAL_WRITE_TARGETS:
@@ -430,6 +474,10 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     """Check a command - or the text of a command substitution - against the policy."""
+    # POSIX shells drop backslash-newline continuations before tokenizing, so
+    # join them first so both the whole-text and per-segment checks see the
+    # resulting command.
+    text = re.sub(r"\\\r?\n", "", text)
     normalized = _normalize_command(text)
     # The whole text is checked against the pattern list as well, so that a
     # denied pattern cannot hide in an unusual position (inside quotes, in

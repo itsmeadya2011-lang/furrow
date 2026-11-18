@@ -75,6 +75,32 @@ def test_parse_plan_raises_on_tasks_not_a_list():
         parsing.parse_plan('{"tasks": "not-a-list"}')
 
 
+def test_parse_plan_deduplicates_task_ids():
+    text = (
+        '{"tasks": ['
+        '{"id": "1", "description": "first"}, '
+        '{"id": "1", "description": "second"}, '
+        '{"id": "2", "description": "other"}'
+        "]}"
+    )
+    plan = parsing.parse_plan(text)
+    assert len(plan.tasks) == 2
+    assert plan.tasks[0].description == "first"
+    assert [t.id for t in plan.tasks] == ["1", "2"]
+
+
+def test_parse_plan_drops_self_and_duplicate_dependencies():
+    text = (
+        '{"tasks": ['
+        '{"id": "t1", "description": "a", "dependencies": ["t1", "t1", "t2", 3, null]}, '
+        '{"id": "t2", "description": "b"}'
+        "]}"
+    )
+    plan = parsing.parse_plan(text)
+    assert plan.tasks[0].id == "t1"
+    assert plan.tasks[0].dependencies == ["t2"]
+
+
 def test_parse_test_result_json():
     r = parsing.parse_test_result('{"passed": false, "summary": "x", "failures": ["a"]}')
     assert isinstance(r, TestResult)

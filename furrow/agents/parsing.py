@@ -166,12 +166,41 @@ def _first_json_mapping(text: str) -> dict[str, Any]:
     raise ValueError("No JSON object or array found in output")
 
 
+def _string_dependencies(raw: Any) -> Any:
+    """Drop non-string entries (numbers, ``None``, objects, ...) from a raw
+    ``dependencies`` list so :class:`TaskModel` validation cannot fail on them.
+
+    Non-list values are returned untouched so the usual validation error still
+    surfaces for genuinely malformed shapes.
+    """
+    if isinstance(raw, list):
+        return [d for d in raw if isinstance(d, str)]
+    return raw
+
+
+def _normalise_task(task: TaskModel) -> TaskModel:
+    """Return *task* with self-dependencies and duplicate dependencies removed."""
+    dependencies: list[str] = []
+    for dep in task.dependencies:
+        if dep == task.id or dep in dependencies:
+            continue
+        dependencies.append(dep)
+    if dependencies == task.dependencies:
+        return task
+    return task.model_copy(update={"dependencies": dependencies})
+
+
 def parse_plan(text: str) -> Plan:
     """Parse a planner response into Plan.
     - parse the JSON
     - if it is not a mapping raise ValueError
     - accept missing 'rationale' (default '') and missing 'tasks' (default [])
     - validate tasks via TaskModel
+    - duplicate task ids are collapsed: the first task with a given id is kept
+      and later tasks with the same id are dropped (order is preserved)
+    - each kept task's dependencies are normalised: a dependency equal to the
+      task's own id is dropped, duplicates are removed (first occurrence kept),
+      and non-string entries are skipped instead of raising
     - on any failure raise ValueError whose message includes the underlying reason
       and a short excerpt (first 300 chars) of the original text"""
     try:
@@ -186,12 +215,25 @@ def parse_plan(text: str) -> Plan:
         if isinstance(tasks_data, list):
             for t in tasks_data:
                 if isinstance(t, dict):
-                    tasks.append(TaskModel(**t))
+                    task_data = dict(t)
+                    if "dependencies" in task_data:
+                        task_data["dependencies"] = _string_dependencies(
+                            task_data["dependencies"]
+                        )
+                    tasks.append(TaskModel(**task_data))
                 else:
                     raise ValueError("Each task must be an object")
         else:
             raise ValueError("tasks must be a list")
-        return Plan(tasks=tasks, rationale=rationale)
+
+        normalised: list[TaskModel] = []
+        seen_ids: set[str] = set()
+        for task in tasks:
+            if task.id in seen_ids:
+                continue
+            seen_ids.add(task.id)
+            normalised.append(_normalise_task(task))
+        return Plan(tasks=normalised, rationale=rationale)
     except (ValueError, TypeError) as e:
         excerpt = text[:300] if isinstance(text, str) else str(text)[:300]
         raise ValueError(f"{e}\nExcerpt: {excerpt}") from e

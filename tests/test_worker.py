@@ -1199,3 +1199,65 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+def test_is_command_denied_line_continuations(tmp_path):
+    assert is_command_denied("rm -rf \\\n/", tmp_path) is True
+    assert is_command_denied("r\\\nm -rf /", tmp_path) is True
+    assert is_command_denied("echo hi \\\n> /etc/passwd", tmp_path) is True
+    assert is_command_denied("echo hel\\\nlo", tmp_path) is False
+
+
+def test_is_command_denied_rm_scope(tmp_path):
+    denied_commands = [
+        "rm /etc/passwd",
+        "rm ../outside",
+        "sudo rm /etc/hosts",
+    ]
+    allowed_commands = [
+        "rm -rf build",
+        "rm build",
+        "rm -rf --",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_write_programs_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    denied_commands = [
+        "cp x /etc/passwd",
+        "cp -t /etc x",
+        "cp --target-directory=/etc x",
+        "mv x ../outside",
+        "ln -s x /etc/passwd",
+        "install -m 644 src /usr/bin/x",
+        "rsync -a src/ /etc/x/",
+        "truncate -s 0 /etc/passwd",
+        "touch /etc/x",
+        "mkdir /tmp/evil",
+        "mkdir -p ../../evil",
+        "cp x $HOME/y",
+    ]
+    allowed_commands = [
+        "cp a b",
+        "cp -r src dst",
+        "cp a b c",
+        "cp -t sub a",
+        "mv a b",
+        "ln -s a b",
+        "install -m 644 a b",
+        "rsync -a a/ b/",
+        "truncate -s 0 out",
+        "touch -c out",
+        "mkdir -p sub",
+        "mkdir sub",
+        "rmdir sub",
+        "echo hi | tee out.txt",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"

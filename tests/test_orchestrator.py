@@ -205,6 +205,32 @@ async def test_no_progress_guard(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_no_progress_guard_treats_changed_files_as_new_work(tmp_path, monkeypatch):
+    """A planner that keeps id/description but changes `files` describes new
+    work, so the no-progress guard must not trip (merge re-runs the task)."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=4)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.tester = FakeTester(passed=False)
+    flip = {"a": True}
+
+    class AlternatingPlanner:
+        async def plan(self, goal, context=""):
+            flip["a"] = not flip["a"]
+            files = ["a.py"] if flip["a"] else ["b.py"]
+            return Plan(
+                tasks=[TaskModel(id="t1", description="do t1", files=files)],
+                rationale="r",
+            )
+
+    orch.planner = AlternatingPlanner()
+    result = await orch.run()
+    assert result.cycles == 4
+    assert result.stopped_reason == "max_cycles reached"
+
+
+@pytest.mark.asyncio
 async def test_state_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
