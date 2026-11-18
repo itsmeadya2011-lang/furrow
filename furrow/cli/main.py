@@ -120,6 +120,21 @@ def _print_state(state: RunState) -> None:
     else:
         click.echo("Tasks:  (none)")
 
+    if state.history:
+        click.echo("History:")
+        for entry in state.history:
+            if entry.tests_passed is True:
+                verdict = "tests passed"
+            elif entry.tests_passed is False:
+                verdict = "tests failed"
+            else:
+                verdict = "no tests run"
+            usage = entry.usage
+            parts = [f"cycle {entry.cycle}", verdict]
+            if usage.calls > 0:
+                parts.append(f"{usage.calls} calls")
+            click.echo(f"  {', '.join(parts)}: {entry.plan_rationale}")
+
 
 async def _release_client(client: Any) -> None:
     """Release the HTTP resources of an LLM client, when it supports closing.

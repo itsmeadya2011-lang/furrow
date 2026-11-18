@@ -617,6 +617,80 @@ def test_status_omits_cost_when_persisted_cost_usd_is_zero(
     assert "LLM cost:" not in result.output
 
 
+def test_status_prints_per_cycle_history(runner: CliRunner, tmp_path: Path) -> None:
+    """The status command prints a per-cycle history section when history is present."""
+    from furrow.core.state import HistoryEntry, Usage
+
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+        history=[
+            HistoryEntry(
+                cycle=1,
+                goal="ship it",
+                plan_rationale="implement the thing",
+                task_summaries=["t1 completed"],
+                tests_passed=True,
+                test_summary="5 passed",
+                timestamp="2026-01-01T00:00:00+00:00",
+                usage=Usage(input_tokens=1000, output_tokens=500, calls=3),
+            ),
+            HistoryEntry(
+                cycle=2,
+                goal="ship it",
+                plan_rationale="fix the thing",
+                task_summaries=["t1 retried"],
+                tests_passed=False,
+                test_summary="1 failed",
+                timestamp="2026-01-01T00:01:00+00:00",
+                usage=Usage(input_tokens=2000, output_tokens=1000, calls=6),
+            ),
+            HistoryEntry(
+                cycle=3,
+                goal="ship it",
+                plan_rationale="no runner",
+                task_summaries=["t1 skipped"],
+                tests_passed=None,
+                test_summary="",
+                timestamp="2026-01-01T00:02:00+00:00",
+                usage=Usage(),
+            ),
+        ],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "History:" in result.output
+    assert "cycle 1, tests passed, 3 calls" in result.output
+    assert "implement the thing" in result.output
+    assert "cycle 2, tests failed, 6 calls" in result.output
+    assert "fix the thing" in result.output
+    assert "cycle 3, no tests run" in result.output
+    assert "no runner" in result.output
+
+
+def test_status_without_history_omits_history_section(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command does not print a History section when history is empty."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=1,
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "History:" not in result.output
+
+
 class RecordingClient:
     """Fake LLM client that records whether it was closed."""
 
