@@ -633,6 +633,61 @@ async def test_chat_openai_choice_no_message_raises_valueerror():
         await client.chat([{"role": "user", "content": "hi"}])
 
 
+async def test_chat_openai_skips_malformed_tool_call_with_none_function():
+    """A tool call with function=None should be skipped, not raise AttributeError."""
+    from furrow.config import Provider
+
+    # Build a fake response with a malformed tool call (function=None)
+    class _FakeMalformedToolCall:
+        def __init__(self) -> None:
+            self.id = "t1"
+            self.function = None
+
+    class _FakeMessageMalformed:
+        def __init__(self) -> None:
+            self.content = "ok"
+            self.tool_calls = [_FakeMalformedToolCall()]
+
+    class _FakeChoiceMalformed:
+        def __init__(self) -> None:
+            self.message = _FakeMessageMalformed()
+            self.finish_reason = "tool_calls"
+
+    class _FakeResponseMalformed:
+        def __init__(self) -> None:
+            self.choices = [_FakeChoiceMalformed()]
+            self.usage = None
+
+    class _FakeCompletionsMalformed:
+        def __init__(self) -> None:
+            self.last_kwargs: dict = {}
+
+        async def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return _FakeResponseMalformed()
+
+    class _FakeChatMalformed:
+        def __init__(self) -> None:
+            self.completions = _FakeCompletionsMalformed()
+
+    class _FakeOpenAIMalformed:
+        def __init__(self) -> None:
+            self.chat = _FakeChatMalformed()
+
+    fake = _FakeOpenAIMalformed()
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+
+    result = await client.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"name": "dummy", "description": "", "parameters": {}}],
+    )
+
+    assert result.text == "ok"
+    assert result.tool_calls == []
+    assert result.stop_reason == "tool_calls"
+
+
 async def test_complete_anthropic_none_content_yields_empty():
     class _Resp:
         content = None

@@ -615,6 +615,79 @@ def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
 
 
+def test_is_command_denied_rm_token_aware(tmp_path):
+    """Dangerous ``rm`` is caught token-aware regardless of flag order."""
+    denied_commands = [
+        "rm -r -f /",
+        "rm --recursive --force /",
+        "rm -Rf /",
+        "rm -rf -- /",
+        "sudo rm -rf /",
+    ]
+    allowed_commands = [
+        "rm -rf build",
+        f"rm -rf {tmp_path}/build",
+        # no targets at all: nothing to recursively force-delete
+        "rm -rf --",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_chmod_token_aware(tmp_path):
+    """Recursive ``chmod`` outside the workspace is caught token-aware."""
+    denied_commands = [
+        "chmod 777 -R /",
+        "chmod -R 777 /*",
+        "sudo chmod -R 777 /",
+    ]
+    allowed_commands = [
+        "chmod -R 777 ./sub",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_allows_special_write_targets(tmp_path):
+    """Redirections and tee to /dev/null and friends are allowed."""
+    allowed_commands = [
+        "echo hi > /dev/null",
+        "ls 2>/dev/null",
+        "echo hi | tee /dev/null",
+    ]
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_wrapper_bypass(tmp_path):
+    """Guard-level tests for wrapper program bypasses (sudo, command, env, nohup)."""
+    denied_commands = [
+        "sudo fdisk /dev/sda",
+        "command mkfs.ext4 /dev/sda",
+        "env FOO=1 shutdown -h now",
+        "nohup parted /dev/sda",
+        "doas fdisk /dev/sda",
+        "exec fdisk /dev/sda",
+        "sudo rm -rf /",
+        "env chmod -R 777 /",
+    ]
+    allowed_commands = [
+        "echo rm",
+        "echo chmod",
+        "git status",
+        "ls -f",
+    ]
+
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel

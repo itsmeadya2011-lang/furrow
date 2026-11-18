@@ -474,11 +474,14 @@ class LLMClient:
         text = message.content or ""
         tool_calls: list[ToolCall] = []
         for tc in message.tool_calls or []:
+            fn = getattr(tc, "function", None)
+            if fn is None:
+                continue
             tool_calls.append(
                 ToolCall(
-                    id=tc.id,
-                    name=tc.function.name,
-                    arguments=parse_tool_arguments(tc.function.arguments),
+                    id=getattr(tc, "id", None) or "",
+                    name=getattr(fn, "name", "") or "",
+                    arguments=parse_tool_arguments(getattr(fn, "arguments", None)),
                 )
             )
         usage = _extract_openai_usage(response)

@@ -1163,3 +1163,36 @@ async def test_resume_restores_skipped_verdict_when_no_cycle_runs(tmp_path, monk
     assert orch2.cycles >= settings.max_cycles
     result = await orch2.run()
     assert result.skipped is True
+
+
+@pytest.mark.asyncio
+async def test_skipped_run_does_not_count(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=True)
+    result = await orch.run()
+    assert result.skipped is True
+    assert result.tests_run == 0
+
+
+@pytest.mark.asyncio
+async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
+    from furrow.config import Usage
+
+    class FakeClient:
+        def __init__(self):
+            self.total_usage = Usage(input_tokens=10, output_tokens=20, calls=1, cost_usd=0.5)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", client=FakeClient(), settings=settings, state_store=store)
+    orch.planner = FakePlanner(raise_valueerror=True)
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.usage.calls == 1
+    assert result.usage.input_tokens == 10
+    assert result.usage.output_tokens == 20

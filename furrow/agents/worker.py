@@ -18,17 +18,11 @@ from furrow.llm import LLMClient, LLMResponse, ToolCall
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
 DENIED_COMMANDS = (
-    "rm -rf /",
-    "rm -fr /",
-    "rm -rf /*",
-    "rm -rf ~",
-    "rm -rf $home",
     ":(){:|:&};:",
     "mkfs",
     "dd if=",
     "shutdown",
     "reboot",
-    "chmod -R 777 /",
     "> /dev/sda",
 )
 
@@ -74,6 +68,16 @@ _REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
 _MAX_SUBSTITUTION_DEPTH = 3
+
+# Leading program names that are only wrappers: they run the command that
+# follows them, so a dangerous ``rm``/``chmod`` hides behind them.
+_WRAPPER_PROGRAMS = frozenset({"sudo", "doas", "command", "env", "nohup", "exec"})
+
+# Regex for a leading variable assignment such as ``FOO=1`` or ``PATH=/bin``.
+_ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# Targets that discard output rather than write a real file.
+_SPECIAL_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
 
 
 def _normalize_command(command: str) -> str:
@@ -126,6 +130,126 @@ def _get_program_basename(segment: str) -> str | None:
     if not tokens:
         return None
     return os.path.basename(tokens[0])
+
+
+def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
+    """Split a segment into the effective program and its argument tokens.
+
+    Leading variable assignments (``FOO=1``) and wrapper program names
+    (``sudo``, ``env``, ``nohup``, ...) are skipped so that the real program
+    that runs is reported, together with the remaining argument tokens.
+    """
+    tokens = _shell_tokens(segment.strip())
+    if not tokens:
+        return None
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        if _ASSIGNMENT_RE.match(token):
+            i += 1
+            continue
+        base = os.path.basename(token).lower()
+        if base in _WRAPPER_PROGRAMS:
+            i += 1
+            # ``env`` can take a variable assignment right after it.
+            if base == "env" and i < len(tokens) and _ASSIGNMENT_RE.match(tokens[i]):
+                i += 1
+            continue
+        break
+    if i >= len(tokens):
+        return None
+    return os.path.basename(tokens[i]).lower(), tokens[i + 1 :]
+
+
+def _is_short_flag_cluster(token: str) -> bool:
+    """Report whether a token is a short-flag cluster such as ``-rf``.
+
+    A cluster starts with a single ``-`` (not ``--``) and is followed by at
+    least one letter.
+    """
+    if len(token) < 2 or not token.startswith("-") or token.startswith("--"):
+        return False
+    return any(ch.isalpha() for ch in token[1:])
+
+
+def _short_cluster_has(token: str, letters: str) -> bool:
+    """Report whether a short-flag cluster contains any of the given letters."""
+    if not _is_short_flag_cluster(token):
+        return False
+    return any(ch in letters for ch in token[1:])
+
+
+def _is_dangerous_rm(args: list[str], workspace: Path) -> bool:
+    """Report whether an ``rm`` invocation recursively forces outside the workspace.
+
+    Only a command that is both recursive and forced is dangerous. Each target
+    is denied if it contains a shell expansion (``$`` or a backtick) or resolves
+    outside of the workspace.
+    """
+    recursive = False
+    force = False
+    targets: list[str] = []
+    options_done = False
+    for token in args:
+        if options_done:
+            targets.append(token)
+            continue
+        if token == "--":
+            options_done = True
+            continue
+        if token == "--recursive":
+            recursive = True
+            continue
+        if token == "--force":
+            force = True
+            continue
+        if token.startswith("--"):
+            continue
+        if token.startswith("-"):
+            if _short_cluster_has(token, "rR"):
+                recursive = True
+            if _short_cluster_has(token, "f"):
+                force = True
+            continue
+        targets.append(token)
+    if recursive and force:
+        for target in targets:
+            if "$" in target or "`" in target:
+                return True
+            if not _target_inside_workspace(target, workspace):
+                return True
+    return False
+
+
+def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
+    """Report whether a recursive ``chmod`` targets outside the workspace."""
+    recursive = False
+    targets: list[str] = []
+    options_done = False
+    for token in args:
+        if options_done:
+            targets.append(token)
+            continue
+        if token == "--":
+            options_done = True
+            continue
+        if token == "--recursive":
+            recursive = True
+            continue
+        if token.startswith("--"):
+            continue
+        if token.startswith("-"):
+            if _short_cluster_has(token, "rR"):
+                recursive = True
+            continue
+        targets.append(token)
+    if recursive:
+        for target in targets:
+            if "$" in target or "`" in target:
+                return True
+            if not _target_inside_workspace(target, workspace):
+                return True
+    return False
 
 
 def _extract_command_substitutions(command: str) -> list[str]:
@@ -199,6 +323,10 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
         target = match.group(1).strip().strip("\"'")
         if not target:
             continue
+        # /dev/null, /dev/stdout and /dev/stderr discard output rather than
+        # write a real file, so they are never a policy violation.
+        if target in _SPECIAL_WRITE_TARGETS:
+            continue
         # A target that still contains a shell expansion cannot be resolved
         # statically: the shell expands it before opening the file.
         if "$" in target or "`" in target:
@@ -251,6 +379,8 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
         target = token.strip().strip("\"'")
         if not target:
             continue
+        if target in _SPECIAL_WRITE_TARGETS:
+            continue
         if "$" in target or "`" in target:
             return True
         if not _target_inside_workspace(target, workspace):
@@ -264,7 +394,7 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if not normalized:
         return False
 
-    # DENY by PROGRAM NAME
+    # DENY by PROGRAM NAME (first token)
     program = _get_program_basename(segment)
     if program:
         program = program.lower()
@@ -274,6 +404,19 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     # DENY by PATTERN
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
+
+    # DENY dangerous rm/chmod (token-aware, not substring-based). Works even
+    # behind wrapper programs such as sudo/env and inside substitutions.
+    # Also check the resolved program name against DENIED_PROGRAMS and mkfs.*
+    parsed = _program_and_args(segment)
+    if parsed is not None:
+        name, args = parsed
+        if name in DENIED_PROGRAMS or name.startswith("mkfs."):
+            return True
+        if name == "rm" and _is_dangerous_rm(args, workspace):
+            return True
+        if name == "chmod" and _is_dangerous_chmod(args, workspace):
+            return True
 
     # DENY a force push
     if _is_force_push(segment, normalized):

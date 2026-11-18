@@ -96,6 +96,18 @@ class Orchestrator:
             cost_usd=float(getattr(raw, "cost_usd", 0.0) or 0.0),
         )
 
+    def _accumulate_usage(self) -> Usage:
+        cumulative = self._client_usage()
+        cycle_usage = Usage(
+            input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
+            output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
+            calls=max(0, cumulative.calls - self._usage_seen.calls),
+            cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
+        )
+        self._usage.add(cycle_usage)
+        self._usage_seen = cumulative
+        return cycle_usage
+
     def status(self) -> dict[str, Any]:
         """Return a snapshot of the current run."""
         return {
@@ -174,6 +186,7 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
+                self._accumulate_usage()
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
@@ -195,6 +208,7 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
+                self._accumulate_usage()
                 break
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             try:
@@ -205,9 +219,11 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
+                self._accumulate_usage()
                 break
-            self._tests_run += 1
             skipped = bool(getattr(test_result, "skipped", False))
+            if not skipped:
+                self._tests_run += 1
             self.event_bus.emit(
                 Event(
                     type=EventType.TEST_FINISHED,
@@ -238,15 +254,7 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
-            cumulative = self._client_usage()
-            cycle_usage = Usage(
-                input_tokens=max(0, cumulative.input_tokens - self._usage_seen.input_tokens),
-                output_tokens=max(0, cumulative.output_tokens - self._usage_seen.output_tokens),
-                calls=max(0, cumulative.calls - self._usage_seen.calls),
-                cost_usd=max(0.0, cumulative.cost_usd - self._usage_seen.cost_usd),
-            )
-            self._usage.add(cycle_usage)
-            self._usage_seen = cumulative
+            cycle_usage = self._accumulate_usage()
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
