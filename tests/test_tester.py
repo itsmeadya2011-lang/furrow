@@ -578,3 +578,327 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+# --- Tests for uncovered lines in tester.py ---
+
+def test_resolve_test_timeout_invalid_values(tmp_path):
+    """Test resolve_test_timeout with various invalid values."""
+    settings = Settings(_env_file=None, workspace=tmp_path, request_timeout=30)
+
+    # Default
+    assert resolve_test_timeout(settings) == 600.0
+
+    # Invalid type (None)
+    settings = settings.model_copy(update={"test_timeout": None})
+    assert resolve_test_timeout(settings) == 600.0
+
+    # Invalid type (string)
+    settings = settings.model_copy(update={"test_timeout": "invalid"})
+    assert resolve_test_timeout(settings) == 600.0
+
+    # Negative value
+    settings = settings.model_copy(update={"test_timeout": -1})
+    assert resolve_test_timeout(settings) == 600.0
+
+    # Zero value
+    settings = settings.model_copy(update={"test_timeout": 0})
+    assert resolve_test_timeout(settings) == 600.0
+
+    # Valid positive value
+    settings = settings.model_copy(update={"test_timeout": 120.0})
+    assert resolve_test_timeout(settings) == 120.0
+
+
+def test_detect_command_cargo(tmp_path, monkeypatch):
+    """Test detect_command for Cargo projects."""
+    (tmp_path / "Cargo.toml").write_text("[package]\nname = 'test'\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert "cargo" in cmd
+    assert "test" in cmd
+
+
+def test_detect_command_go(tmp_path, monkeypatch):
+    """Test detect_command for Go projects."""
+    (tmp_path / "go.mod").write_text("module test\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert "go" in cmd
+    assert "test" in cmd
+
+
+def test_detect_command_python_markers(tmp_path):
+    """Test detect_command falls back to pytest for Python markers."""
+    for marker in ["pyproject.toml", "pytest.ini", "setup.cfg", "tox.ini", "requirements.txt"]:
+        (tmp_path / marker).write_text("")
+        agent = TesterAgent(
+            settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path
+        )
+        cmd = run(agent.detect_command())
+        assert cmd is not None
+        assert "pytest" in cmd
+        (tmp_path / marker).unlink()
+
+
+def test_parse_test_output_file_line_col(tmp_path):
+    """Test parse_test_output with file:line:col pattern."""
+    from furrow.agents.tester import parse_test_output
+
+    output = "test_file.py:10:5: error message"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    assert failures[0]["file"] == "test_file.py"
+    assert failures[0]["line"] == 10
+    assert failures[0]["test"] is None
+    assert failures[0]["error"] == ""
+
+
+def test_parse_test_output_file_line(tmp_path):
+    """Test parse_test_output with file:line pattern."""
+    from furrow.agents.tester import parse_test_output
+
+    output = "test_file.py:10"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    assert failures[0]["file"] == "test_file.py"
+    assert failures[0]["line"] == 10
+
+
+def test_parse_test_output_exception_no_failures(tmp_path):
+    """Test parse_test_output extracts exceptions when no other failures."""
+    from furrow.agents.tester import parse_test_output
+
+    output = "ValueError: invalid value\nTypeError: bad type"
+    failures = parse_test_output(output)
+    assert len(failures) == 2
+    assert failures[0]["error"] == "ValueError: invalid value"
+    assert failures[1]["error"] == "TypeError: bad type"
+
+
+def test_parse_test_output_exception_with_failures(tmp_path):
+    """Test parse_test_output adds exception to existing failures."""
+    from furrow.agents.tester import parse_test_output
+
+    output = "FAILED test_file.py::test_func - AssertionError: failed\nValueError: invalid value"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    assert failures[0]["test"] == "test_func"
+    assert failures[0]["error"] == "ValueError: invalid value"
+
+
+def test_finalize_llm_none_fallback(tmp_path):
+    """Test _finalize when llm_result is None."""
+    from furrow.agents.tester import TesterAgent
+
+    agent = TesterAgent(
+        settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path
+    )
+    result = run(agent._finalize(
+        llm_result=None,
+        returncode=1,
+        combined="FAILED test_x - AssertionError",
+        spawn_failed=False,
+        spawn_error="",
+        timed_out=False,
+        timeout=60.0,
+    ))
+    assert result.passed is False
+    assert "FAILED" in result.summary
+    assert result.failures
+
+
+def test_finalize_spawn_failed(tmp_path):
+    """Test _finalize when spawn_failed is True."""
+    from furrow.agents.tester import TesterAgent
+    from furrow.config import TestResult
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    result = run(agent._finalize(
+        llm_result=TestResult(passed=True, summary="all good", failures=[]),
+        returncode=1,
+        combined="",
+        spawn_failed=True,
+        spawn_error="FileNotFoundError: pytest",
+        timed_out=False,
+        timeout=60.0,
+    ))
+    assert result.passed is False
+    assert "could not be started" in result.summary
+    assert "did not run" in result.summary
+
+
+def test_finalize_timed_out(tmp_path):
+    """Test _finalize when timed_out is True."""
+    from furrow.agents.tester import TesterAgent
+    from furrow.config import TestResult
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    result = run(agent._finalize(
+        llm_result=TestResult(passed=True, summary="all good", failures=[]),
+        returncode=1,
+        combined="",
+        spawn_failed=False,
+        spawn_error="",
+        timed_out=True,
+        timeout=60.0,
+    ))
+    assert result.passed is False
+    assert "timed out" in result.summary.lower()
+
+
+def test_finalize_llm_pass_returncode_nonzero(tmp_path):
+    """Test _finalize when LLM says pass but returncode is non-zero."""
+    from furrow.agents.tester import TesterAgent
+    from furrow.config import TestResult
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    result = run(agent._finalize(
+        llm_result=TestResult(passed=True, summary="all good", failures=[]),
+        returncode=1,
+        combined="FAILED test_x",
+        spawn_failed=False,
+        spawn_error="",
+        timed_out=False,
+        timeout=60.0,
+    ))
+    assert result.passed is False
+    assert "authoritative" in result.summary
+
+
+def test_finalize_llm_fail_returncode_zero(tmp_path):
+    """Test _finalize when LLM says fail but returncode is zero."""
+    from furrow.agents.tester import TesterAgent
+    from furrow.config import TestResult
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    result = run(agent._finalize(
+        llm_result=TestResult(passed=False, summary="suite did not run", failures=["x"]),
+        returncode=0,
+        combined="",
+        spawn_failed=False,
+        spawn_error="",
+        timed_out=False,
+        timeout=60.0,
+    ))
+    assert result.passed is False
+    assert "LLM reported a failure" in result.summary
+
+
+def test_finalize_llm_pass_with_failures_returncode_zero(tmp_path):
+    """Test _finalize when LLM says pass but lists failures and returncode is zero."""
+    from furrow.agents.tester import TesterAgent
+    from furrow.config import TestResult
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    result = run(agent._finalize(
+        llm_result=TestResult(passed=True, summary="all good", failures=["test_x failed"]),
+        returncode=0,
+        combined="",
+        spawn_failed=False,
+        spawn_error="",
+        timed_out=False,
+        timeout=60.0,
+    ))
+    assert result.passed is False
+    assert "listed failing tests" in result.summary
+
+
+def test_extract_failures_complex(tmp_path):
+    """Test _extract_failures with complex output."""
+    from furrow.agents.tester import _extract_failures
+
+    output = """
+    FAILED tests/test_a.py::test_one - AssertionError: expected 1
+    FAILED tests/test_b.py::test_two - ValueError: invalid
+    tests/test_c.py:42:56
+    tests/test_d.py:100
+    RuntimeError: something broke
+    5 passed, 2 failed in 0.12s
+    """
+    failures = _extract_failures(output)
+    assert len(failures) >= 3
+    assert any("test_one" in f for f in failures)
+    assert any("test_two" in f for f in failures)
+    assert any("RuntimeError" in f for f in failures)
+
+
+def test_has_failure_keywords(tmp_path):
+    """Test _has_failure_keywords."""
+    from furrow.agents.tester import _has_failure_keywords
+
+    assert _has_failure_keywords("FAILED test_x") is True
+    assert _has_failure_keywords("Error: something") is True
+    assert _has_failure_keywords("5 passed, 0 failed") is False
+    assert _has_failure_keywords("no failures") is False
+    assert _has_failure_keywords("") is False
+
+
+def test_looks_like_failure_edge_cases(tmp_path):
+    """Test _looks_like_failure edge cases."""
+    from furrow.agents.tester import _looks_like_failure
+
+    # Various failure keywords
+    assert _looks_like_failure("panic: something") is True
+    assert _looks_like_failure("segfault") is True
+    assert _looks_like_failure("segmentation fault") is True
+    assert _looks_like_failure("core dumped") is True
+    assert _looks_like_failure("fatal error") is True
+    assert _looks_like_failure("assertion") is True
+    assert _looks_like_failure("traceback") is True
+
+    # Zero counters
+    assert _looks_like_failure("0 failed") is False
+    assert _looks_like_failure("failed: 0") is False
+    assert _looks_like_failure("FAILED (errors=0)") is False
+    assert _looks_like_failure("5 passed, 0 failed") is False
+
+    # Real failures
+    assert _looks_like_failure("1 failed, 4 passed") is True
+    assert _looks_like_failure("FAILED tests/test_x.py::test_y") is True
+
+
+def test_tester_run_exception_handling(tmp_path, monkeypatch):
+    """Test tester run handles exceptions in the outer try block."""
+    from furrow.agents.tester import TesterAgent
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        raise RuntimeError("unexpected error")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    agent = TesterAgent(
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    # This should not raise, but return a TestResult with passed=False
+    res = run(agent.run("goal", []))
+    assert isinstance(res, TestResult)
+    assert res.passed is False
+    assert "RuntimeError" in res.summary
+    assert "boom" in " ".join(res.failures) or "RuntimeError" in " ".join(res.failures)
+
+
+def test_parse_test_result_invalid_json(tmp_path):
+    """Test parse_test_result with invalid JSON falls back to heuristic."""
+    from furrow.agents.tester import parse_test_result
+    from furrow.config import TestResult
+
+    # Invalid JSON but contains failure keywords
+    result = parse_test_result("not json at all FAILED test_x")
+    assert isinstance(result, TestResult)
+    assert result.passed is False
+    assert "FAILED" in result.summary
+
+    # Valid JSON with passed true
+    result = parse_test_result('{"passed": true, "summary": "all good", "failures": []}')
+    assert result.passed is True
+
+    # Valid JSON with passed false
+    result = parse_test_result('{"passed": false, "summary": "failed", "failures": ["x"]}')
+    assert result.passed is False
+    assert result.failures == ["x"]

@@ -31,6 +31,7 @@ class FakeOrchestrator:
 
     init_kwargs: ClassVar[dict[str, Any]] = {}
     instances: ClassVar[list[FakeOrchestrator]] = []
+    client: Any = None
 
     def __init__(
         self,

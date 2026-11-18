@@ -477,10 +477,13 @@ class LLMClient:
             fn = getattr(tc, "function", None)
             if fn is None:
                 continue
+            name = getattr(fn, "name", "") or ""
+            if not name:
+                continue
             tool_calls.append(
                 ToolCall(
                     id=getattr(tc, "id", None) or "",
-                    name=getattr(fn, "name", "") or "",
+                    name=name,
                     arguments=parse_tool_arguments(getattr(fn, "arguments", None)),
                 )
             )

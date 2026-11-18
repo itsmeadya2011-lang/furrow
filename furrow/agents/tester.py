@@ -81,7 +81,7 @@ def parse_test_output(output: str) -> list[dict]:
 
     # Patterns for pytest-style failures
     pytest_failed_pattern = re.compile(
-        r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE
+        r"^\s*FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE
     )
     for match in pytest_failed_pattern.finditer(output):
         test_path = match.group(1)
@@ -142,30 +142,40 @@ def parse_test_output(output: str) -> list[dict]:
 
     # Extract exception types and messages
     exception_pattern = re.compile(r"([A-Za-z]+Error|[A-Za-z]+Exception):\s*(.+)$", re.MULTILINE)
+    exceptions = []
+    for match in exception_pattern.finditer(output):
+        # Get the line this match is on
+        line_start = output.rfind('\n', 0, match.start()) + 1
+        line_end = output.find('\n', match.end())
+        if line_end == -1:
+            line_end = len(output)
+        line = output[line_start:line_end]
+        # Skip exceptions that are on lines containing "FAILED" (part of pytest output)
+        if "FAILED" in line:
+            continue
+        exc_type = match.group(1)
+        exc_msg = match.group(2).strip()
+        exc_full = f"{exc_type}: {exc_msg}"
+        location_key = f"exception:{exc_type}:{exc_msg[:50]}"
+        if location_key not in seen_locations:
+            exceptions.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": None,
+                    "error": exc_full,
+                }
+            )
+            seen_locations.add(location_key)
+
     if not failures:
-        for match in exception_pattern.finditer(output):
-            exc_type = match.group(1)
-            exc_msg = match.group(2).strip()
-            location_key = f"exception:{exc_type}:{exc_msg[:50]}"
-            if location_key not in seen_locations:
-                failures.append(
-                    {
-                        "file": None,
-                        "line": None,
-                        "test": None,
-                        "error": f"{exc_type}: {exc_msg}",
-                    }
-                )
-                seen_locations.add(location_key)
+        failures.extend(exceptions)
     else:
-        for exc_match in exception_pattern.finditer(output):
-            exc_type = exc_match.group(1)
-            exc_msg = exc_match.group(2).strip()
-            exc_full = f"{exc_type}: {exc_msg}"
+        # If there are exceptions, use the first exception as the error for all failures
+        if exceptions:
+            first_exc_error = exceptions[0]["error"]
             for failure in failures:
-                if failure.get("error") == "":
-                    failure["error"] = exc_full
-                    break
+                failure["error"] = first_exc_error
 
     return failures
 
@@ -260,7 +270,7 @@ class TesterAgent:
 
         return None
 
-    def _finalize(
+    async def _finalize(
         self,
         *,
         llm_result: TestResult | None,
@@ -419,7 +429,7 @@ class TesterAgent:
                 except Exception:
                     llm_result = None
 
-            return self._finalize(
+            return await self._finalize(
                 llm_result=llm_result,
                 returncode=returncode,
                 combined=combined,
@@ -460,6 +470,21 @@ def _extract_failures(output: str, limit: int = 10) -> list[str]:
             failures.append(fail_str)
             if len(failures) >= limit:
                 break
+
+    # Also check for exception lines that weren't captured by parse_test_output
+    if len(failures) < limit:
+        exception_pattern = re.compile(
+            r"([A-Za-z]+Error|[A-Za-z]+Exception):\s*(.+)$", re.MULTILINE
+        )
+        for match in exception_pattern.finditer(output):
+            exc_type = match.group(1)
+            exc_msg = match.group(2).strip()
+            exc_full = f"{exc_type}: {exc_msg}"
+            if exc_full not in seen:
+                seen.add(exc_full)
+                failures.append(exc_full)
+                if len(failures) >= limit:
+                    break
 
     if not failures:
         for line in output.splitlines():

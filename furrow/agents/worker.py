@@ -67,7 +67,7 @@ _REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
-_MAX_SUBSTITUTION_DEPTH = 3
+_MAX_SUBSTITUTION_DEPTH = 5
 
 # Leading program names that are only wrappers: they run the command that
 # follows them, so a dangerous ``rm``/``chmod`` hides behind them.
@@ -95,6 +95,9 @@ def _normalize_command(command: str) -> str:
     # Strip surrounding quotes (single/double) of whole command
     while len(cmd) >= 2 and ((cmd[0] == cmd[-1]) and cmd[0] in ('"', "'")):
         cmd = cmd[1:-1].strip()
+    # Strip an unbalanced leading quote
+    if len(cmd) >= 1 and cmd[0] in ('"', "'"):
+        cmd = cmd[1:].strip()
     cmd = cmd.lower()
     # Canonicalize every spelling of the HOME variable to "$home".
     cmd = _HOME_VAR_RE.sub("$home", cmd)
@@ -109,7 +112,7 @@ def _split_command_segments(command: str) -> list[str]:
     if not command:
         return []
     segments = _SEGMENT_SPLIT_RE.split(command)
-    return [s for s in segments if s.strip()]  # Remove empty segments
+    return [s.strip() for s in segments if s.strip()]  # Remove empty segments
 
 
 def _shell_tokens(segment: str) -> list[str]:
@@ -225,6 +228,7 @@ def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
     """Report whether a recursive ``chmod`` targets outside the workspace."""
     recursive = False
     targets: list[str] = []
+    has_mode = False
     options_done = False
     for token in args:
         if options_done:
@@ -242,8 +246,12 @@ def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
             if _short_cluster_has(token, "rR"):
                 recursive = True
             continue
+        if token.isdigit():
+            has_mode = True
         targets.append(token)
     if recursive:
+        if not has_mode:
+            return True
         for target in targets:
             if "$" in target or "`" in target:
                 return True
@@ -264,12 +272,13 @@ def _extract_command_substitutions(command: str) -> list[str]:
     while index < length:
         char = command[index]
         if char == "`":
-            end = command.find("`", index + 1)
-            if end == -1:
-                break
+            end = command.rfind("`")
+            if end <= index:
+                break  # no closing backtick after this one
             text = command[index + 1 : end]
             if text.strip():
                 substitutions.append(text)
+                substitutions.extend(_extract_command_substitutions(text))
             index = end + 1
             continue
         if char == "$" and command[index + 1 : index + 2] == "(":
@@ -289,6 +298,7 @@ def _extract_command_substitutions(command: str) -> list[str]:
             text = command[index + 2 : cursor]
             if text.strip():
                 substitutions.append(text)
+                substitutions.extend(_extract_command_substitutions(text))
             index = cursor + 1
             continue
         index += 1
@@ -342,18 +352,17 @@ _WRITE_PATH_PROGRAMS = frozenset({"tee"})
 
 def _is_force_push(segment: str, normalized: str) -> bool:
     """Report whether a segment is a git force push."""
-    if "git" not in normalized or "push" not in normalized:
+    # Only ``git push`` can be a force push, and git must be the program.
+    if _get_program_basename(segment) != "git":
         return False
-    # Covers --force, --force-with-lease and --force-with-lease=<ref>.
+    if "push" not in normalized:
+        return False
+    # Covers --force, --force-with-lease and --force-with-lease=.
     if "--force" in normalized or "--force-with-lease" in normalized:
         return True
     tokens = _shell_tokens(segment)
-    # A short -f flag only counts as a shell token, so that ordinary
-    # commands (e.g. "ls -f") are not mistaken for a force push.
     if any(token.lower() == "-f" for token in tokens):
         return True
-    # A "+" refspec forces the update on the remote (e.g. "git push origin
-    # +main" or "git push origin HEAD:+main").
     return any(token.startswith("+") or ":+" in token for token in tokens)
 
 
@@ -457,7 +466,7 @@ def is_command_denied(command: str, workspace: Path) -> bool:
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
     base = Path(workspace).resolve()
-    if not path:
+    if not path or not path.strip():
         return None
     p = Path(path)
     candidate = (p if p.is_absolute() else base / p).resolve()

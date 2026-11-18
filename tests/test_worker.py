@@ -1199,3 +1199,504 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+# --- Tests for uncovered utility functions in worker.py ---
+
+def test_normalize_command_edge_cases():
+    """Test _normalize_command with various edge cases."""
+    from furrow.agents.worker import _normalize_command
+
+    # Empty command
+    assert _normalize_command("") == ""
+    assert _normalize_command("   ") == ""
+    assert _normalize_command("\t\n") == ""
+
+    # Surrounding quotes
+    assert _normalize_command('"echo hello"') == "echo hello"
+    assert _normalize_command("'echo hello'") == "echo hello"
+    assert _normalize_command('"echo hello') == "echo hello"  # unbalanced
+    assert _normalize_command('" "') == ""
+
+    # HOME variable canonicalization
+    assert _normalize_command('echo "$HOME"') == 'echo $home'
+    assert _normalize_command("echo ${HOME}") == "echo $home"
+    assert _normalize_command("echo $HOME") == "echo $home"
+    assert _normalize_command("echo $home") == "echo $home"
+    assert _normalize_command("echo ${home}") == "echo $home"
+    assert _normalize_command('echo "$home"') == 'echo $home'
+    assert _normalize_command("echo '$HOME'") == "echo $home"
+
+    # Whitespace collapsing
+    assert _normalize_command("echo    hello") == "echo hello"
+    assert _normalize_command("  echo  hello  ") == "echo hello"
+    assert _normalize_command("\techo\thello\n") == "echo hello"
+
+    # Lowercasing
+    assert _normalize_command("ECHO HELLO") == "echo hello"
+    assert _normalize_command('Echo "$HOME"') == 'echo $home'
+
+
+def test_split_command_segments_edge_cases():
+    """Test _split_command_segments with various edge cases."""
+    from furrow.agents.worker import _split_command_segments
+
+    # Empty command
+    assert _split_command_segments("") == []
+    assert _split_command_segments("   ") == []
+    assert _split_command_segments("\n\n") == []
+
+    # Basic separators
+    assert _split_command_segments("echo a; echo b") == ["echo a", "echo b"]
+    assert _split_command_segments("echo a && echo b") == ["echo a", "echo b"]
+    assert _split_command_segments("echo a || echo b") == ["echo a", "echo b"]
+    assert _split_command_segments("echo a | echo b") == ["echo a", "echo b"]
+    assert _split_command_segments("echo a & echo b") == ["echo a", "echo b"]
+    assert _split_command_segments("echo a\necho b") == ["echo a", "echo b"]
+
+    # Multiple separators
+    assert _split_command_segments("a; b; c") == ["a", "b", "c"]
+    assert _split_command_segments("a&&b||c") == ["a", "b", "c"]
+
+    # Edge case: trailing separator
+    assert _split_command_segments("echo a;") == ["echo a"]
+
+
+def test_shell_tokens_edge_cases():
+    """Test _shell_tokens with various edge cases."""
+    from furrow.agents.worker import _shell_tokens
+
+    # Normal cases
+    assert _shell_tokens("echo hello world") == ["echo", "hello", "world"]
+    assert _shell_tokens('echo "hello world"') == ["echo", "hello world"]
+    assert _shell_tokens("echo 'hello world'") == ["echo", "hello world"]
+
+    # Unbalanced quotes falls back to whitespace split
+    assert _shell_tokens('echo "hello') == ['echo', '"hello']
+    assert _shell_tokens("echo 'hello") == ["echo", "'hello"]
+
+    # Empty
+    assert _shell_tokens("") == []
+    assert _shell_tokens("   ") == []
+
+
+def test_get_program_basename_edge_cases():
+    """Test _get_program_basename with various edge cases."""
+    from furrow.agents.worker import _get_program_basename
+
+    assert _get_program_basename("echo hello") == "echo"
+    assert _get_program_basename("/usr/bin/echo hello") == "echo"
+    assert _get_program_basename("./script.sh") == "script.sh"
+    assert _get_program_basename("  echo  ") == "echo"
+    assert _get_program_basename("") is None
+    assert _get_program_basename("   ") is None
+    assert _get_program_basename('"echo" hello') == "echo"  # quoted program name
+
+
+def test_program_and_args_edge_cases():
+    """Test _program_and_args with various edge cases."""
+    from furrow.agents.worker import _program_and_args
+
+    # Normal cases
+    assert _program_and_args("echo hello") == ("echo", ["hello"])
+    assert _program_and_args("sudo echo hello") == ("echo", ["hello"])
+    assert _program_and_args("env FOO=bar echo hello") == ("echo", ["hello"])
+    assert _program_and_args("nohup echo hello") == ("echo", ["hello"])
+    assert _program_and_args("command echo hello") == ("echo", ["hello"])
+    assert _program_and_args("exec echo hello") == ("echo", ["hello"])
+    assert _program_and_args("doas echo hello") == ("echo", ["hello"])
+
+    # Variable assignments
+    assert _program_and_args("FOO=bar echo hello") == ("echo", ["hello"])
+    assert _program_and_args("FOO=bar BAZ=qux echo hello") == ("echo", ["hello"])
+
+    # Mixed
+    assert _program_and_args("sudo FOO=bar echo hello") == ("echo", ["hello"])
+    assert _program_and_args("env FOO=bar sudo echo hello") == ("echo", ["hello"])
+
+    # Edge cases
+    assert _program_and_args("") is None
+    assert _program_and_args("   ") is None
+    assert _program_and_args("FOO=bar") is None  # only assignment
+    assert _program_and_args("sudo") is None  # only wrapper
+    assert _program_and_args("sudo env") is None  # only wrappers
+
+
+def test_is_short_flag_cluster_edge_cases():
+    """Test _is_short_flag_cluster with various edge cases."""
+    from furrow.agents.worker import _is_short_flag_cluster
+
+    # Valid clusters
+    assert _is_short_flag_cluster("-rf") is True
+    assert _is_short_flag_cluster("-r") is True
+    assert _is_short_flag_cluster("-abc") is True
+    assert _is_short_flag_cluster("-rR") is True
+
+    # Invalid clusters
+    assert _is_short_flag_cluster("--force") is False  # long flag
+    assert _is_short_flag_cluster("-") is False  # just dash
+    assert _is_short_flag_cluster("--") is False  # double dash
+    assert _is_short_flag_cluster("") is False
+    assert _is_short_flag_cluster("echo") is False
+    assert _is_short_flag_cluster("-1") is False  # no letters
+    assert _is_short_flag_cluster("-=") is False  # no letters
+
+
+def test_short_cluster_has_edge_cases():
+    """Test _short_cluster_has with various edge cases."""
+    from furrow.agents.worker import _short_cluster_has
+
+    assert _short_cluster_has("-rf", "rf") is True
+    assert _short_cluster_has("-rf", "r") is True
+    assert _short_cluster_has("-rf", "f") is True
+    assert _short_cluster_has("-rf", "x") is False
+    assert _short_cluster_has("-rfR", "r") is True
+    assert _short_cluster_has("--force", "f") is False  # not a cluster
+    assert _short_cluster_has("-", "f") is False
+    assert _short_cluster_has("", "f") is False
+
+
+def test_is_dangerous_rm_edge_cases():
+    """Test _is_dangerous_rm with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import _is_dangerous_rm
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Not recursive + force
+    assert _is_dangerous_rm(["-r", "/tmp/ws/file"], ws) is False
+    assert _is_dangerous_rm(["-f", "/tmp/ws/file"], ws) is False
+    assert _is_dangerous_rm(["--recursive", "/tmp/ws/file"], ws) is False
+    assert _is_dangerous_rm(["--force", "/tmp/ws/file"], ws) is False
+
+    # Recursive + force inside workspace
+    assert _is_dangerous_rm(["-rf", "/tmp/ws/file"], ws) is False
+    assert _is_dangerous_rm(["-rf", "file"], ws) is False
+    assert _is_dangerous_rm(["--recursive", "--force", "file"], ws) is False
+
+    # Recursive + force outside workspace
+    assert _is_dangerous_rm(["-rf", "/etc/passwd"], ws) is True
+    assert _is_dangerous_rm(["-rf", "../../etc/passwd"], ws) is True
+    assert _is_dangerous_rm(["-rf", "$HOME/file"], ws) is True
+    assert _is_dangerous_rm(["-rf", "`rm -rf /`"], ws) is True
+
+    # With -- separator
+    assert _is_dangerous_rm(["-rf", "--", "/etc/passwd"], ws) is True
+    assert _is_dangerous_rm(["-rf", "--", "file"], ws) is False
+
+
+def test_is_dangerous_chmod_edge_cases():
+    """Test _is_dangerous_chmod with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import _is_dangerous_chmod
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Not recursive
+    assert _is_dangerous_chmod(["777", "/tmp/ws/file"], ws) is False
+    assert _is_dangerous_chmod(
+        ["-R", "/tmp/ws/file"], ws
+    ) is True  # recursive but no force needed for chmod
+
+    # Recursive inside workspace
+    assert _is_dangerous_chmod(["-R", "777", "/tmp/ws/file"], ws) is False
+    assert _is_dangerous_chmod(["--recursive", "777", "file"], ws) is False
+
+    # Recursive outside workspace
+    assert _is_dangerous_chmod(["-R", "777", "/etc/passwd"], ws) is True
+    assert _is_dangerous_chmod(["-R", "777", "../../etc/passwd"], ws) is True
+    assert _is_dangerous_chmod(["-R", "777", "$HOME/file"], ws) is True
+    assert _is_dangerous_chmod(["-R", "777", "`echo hi`"], ws) is True
+
+    # With -- separator
+    assert _is_dangerous_chmod(["-R", "777", "--", "/etc/passwd"], ws) is True
+    assert _is_dangerous_chmod(["-R", "777", "--", "file"], ws) is False
+
+
+def test_extract_command_substitutions_edge_cases():
+    """Test _extract_command_substitutions with various edge cases."""
+    from furrow.agents.worker import _extract_command_substitutions
+
+    # No substitutions
+    assert _extract_command_substitutions("echo hello") == []
+    assert _extract_command_substitutions("") == []
+
+    # $() substitutions
+    assert _extract_command_substitutions("echo $(date)") == ["date"]
+    assert _extract_command_substitutions("echo $(echo $(date))") == ["echo $(date)", "date"]
+    assert _extract_command_substitutions("echo $(foo) $(bar)") == ["foo", "bar"]
+
+    # Backtick substitutions
+    assert _extract_command_substitutions("echo `date`") == ["date"]
+    assert _extract_command_substitutions("echo `echo `date``") == ["echo `date`", "date"]
+
+    # Mixed
+    assert _extract_command_substitutions("echo $(foo) `bar`") == ["foo", "bar"]
+
+    # Unbalanced
+    assert _extract_command_substitutions("echo $(foo") == []
+    assert _extract_command_substitutions("echo `foo") == []
+
+    # Empty substitutions
+    assert _extract_command_substitutions("echo $()") == []
+    assert _extract_command_substitutions("echo ``") == []
+
+
+def test_expand_home_edge_cases():
+    """Test _expand_home with various edge cases."""
+    from furrow.agents.worker import _expand_home
+
+    # These depend on the actual home directory, so just test they don't crash
+    result = _expand_home("~/file")
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+    result = _expand_home("$HOME/file")
+    assert isinstance(result, str)
+
+    result = _expand_home("${HOME}/file")
+    assert isinstance(result, str)
+
+    result = _expand_home("/absolute/path")
+    assert result == "/absolute/path"
+
+    result = _expand_home("relative/path")
+    assert result == "relative/path"
+
+
+def test_target_inside_workspace_edge_cases():
+    """Test _target_inside_workspace with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import _target_inside_workspace
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Inside workspace
+    assert _target_inside_workspace("file.txt", ws) is True
+    assert _target_inside_workspace("subdir/file.txt", ws) is True
+    assert _target_inside_workspace("/tmp/ws/file.txt", ws) is True
+    assert _target_inside_workspace("./file.txt", ws) is True
+
+    # Outside workspace
+    assert _target_inside_workspace("/etc/passwd", ws) is False
+    assert _target_inside_workspace("../../etc/passwd", ws) is False
+    assert _target_inside_workspace("~/file", ws) is False  # home is outside
+    assert _target_inside_workspace("$HOME/file", ws) is False
+
+    # Special targets
+    assert _target_inside_workspace("/dev/null", ws) is False  # not inside workspace
+    assert _target_inside_workspace("/dev/stdout", ws) is False
+    assert _target_inside_workspace("/dev/stderr", ws) is False
+
+
+def test_redirects_outside_workspace_edge_cases():
+    """Test _redirects_outside_workspace with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import _redirects_outside_workspace
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Inside workspace
+    assert _redirects_outside_workspace("echo hi > file.txt", ws) is False
+    assert _redirects_outside_workspace("echo hi >> file.txt", ws) is False
+    assert _redirects_outside_workspace("echo hi >| file.txt", ws) is False
+    assert _redirects_outside_workspace("echo hi > subdir/file.txt", ws) is False
+
+    # Outside workspace
+    assert _redirects_outside_workspace("echo hi > /etc/passwd", ws) is True
+    assert _redirects_outside_workspace("echo hi > ../../etc/passwd", ws) is True
+    assert _redirects_outside_workspace("echo hi > ~/file", ws) is True
+    assert _redirects_outside_workspace("echo hi > $HOME/file", ws) is True
+    assert _redirects_outside_workspace("echo hi > `echo /etc/passwd`", ws) is True
+
+    # Special targets (allowed)
+    assert _redirects_outside_workspace("echo hi > /dev/null", ws) is False
+    assert _redirects_outside_workspace("echo hi > /dev/stdout", ws) is False
+    assert _redirects_outside_workspace("echo hi > /dev/stderr", ws) is False
+
+    # Multiple redirections
+    assert _redirects_outside_workspace("echo hi > file1.txt > file2.txt", ws) is False
+    assert _redirects_outside_workspace("echo hi > file.txt > /etc/passwd", ws) is True
+
+
+def test_writes_outside_workspace_edge_cases():
+    """Test _writes_outside_workspace with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import _writes_outside_workspace
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Not a write-path program
+    assert _writes_outside_workspace("echo hi", ws) is False
+    assert _writes_outside_workspace("cat file.txt", ws) is False
+
+    # tee with path inside workspace
+    assert _writes_outside_workspace("tee file.txt", ws) is False
+    assert _writes_outside_workspace("tee -a file.txt", ws) is False
+    assert _writes_outside_workspace("tee subdir/file.txt", ws) is False
+
+    # tee with path outside workspace
+    assert _writes_outside_workspace("tee /etc/passwd", ws) is True
+    assert _writes_outside_workspace("tee ../../etc/passwd", ws) is True
+    assert _writes_outside_workspace("tee ~/file", ws) is True
+    assert _writes_outside_workspace("tee $HOME/file", ws) is True
+    assert _writes_outside_workspace("tee `echo /etc/passwd`", ws) is True
+
+    # Special targets (allowed)
+    assert _writes_outside_workspace("tee /dev/null", ws) is False
+    assert _writes_outside_workspace("tee /dev/stdout", ws) is False
+    assert _writes_outside_workspace("tee /dev/stderr", ws) is False
+
+    # Multiple path arguments (only first non-option counts)
+    assert _writes_outside_workspace("tee file1.txt file2.txt", ws) is False
+    assert _writes_outside_workspace("tee file.txt /etc/passwd", ws) is True
+
+
+def test_is_force_push_edge_cases():
+    """Test _is_force_push with various edge cases."""
+    from furrow.agents.worker import _is_force_push
+
+    # Force push variants
+    assert _is_force_push("git push --force", "git push --force") is True
+    assert _is_force_push("git push --force-with-lease", "git push --force-with-lease") is True
+    assert _is_force_push(
+        "git push --force-with-lease=origin/main",
+        "git push --force-with-lease=origin/main",
+    ) is True
+    assert _is_force_push("git push -f origin main", "git push -f origin main") is True
+    assert _is_force_push("git push origin +main", "git push origin +main") is True
+    assert _is_force_push("git push origin HEAD:+main", "git push origin head:+main") is True
+
+    # Not force push
+    assert _is_force_push("git push origin main", "git push origin main") is False
+    assert _is_force_push("git push -u origin main", "git push -u origin main") is False
+    assert _is_force_push("ls -f", "ls -f") is False  # short -f not for git
+    assert _is_force_push("git commit -f", "git commit -f") is False  # not push
+    assert _is_force_push(
+        "echo git push --force", "echo git push --force"
+    ) is False  # not git command
+
+
+def test_is_dangerous_segment_edge_cases():
+    """Test _is_dangerous_segment with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import _is_dangerous_segment
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Denied programs
+    assert _is_dangerous_segment("dd if=/dev/zero", ws) is True
+    assert _is_dangerous_segment("mkfs.ext4 /dev/sda", ws) is True
+    assert _is_dangerous_segment("fdisk /dev/sda", ws) is True
+    assert _is_dangerous_segment("parted /dev/sda", ws) is True
+    assert _is_dangerous_segment("shutdown -h now", ws) is True
+    assert _is_dangerous_segment("reboot", ws) is True
+    assert _is_dangerous_segment("poweroff", ws) is True
+    assert _is_dangerous_segment("halt", ws) is True
+    assert _is_dangerous_segment("init 0", ws) is True
+
+    # Denied patterns
+    assert _is_dangerous_segment(":(){:|:&};:", ws) is True
+    assert _is_dangerous_segment("rm -rf /", ws) is True
+    assert _is_dangerous_segment("chmod -R 777 /", ws) is True
+    assert _is_dangerous_segment("echo hi > /dev/sda", ws) is True
+
+    # Behind wrappers
+    assert _is_dangerous_segment("sudo rm -rf /", ws) is True
+    assert _is_dangerous_segment("env rm -rf /", ws) is True
+    assert _is_dangerous_segment("sudo chmod -R 777 /", ws) is True
+
+    # Force push
+    assert _is_dangerous_segment("git push --force", ws) is True
+    assert _is_dangerous_segment("git push -f", ws) is True
+
+    # Allowed commands
+    assert _is_dangerous_segment("echo hello", ws) is False
+    assert _is_dangerous_segment("ls -la", ws) is False
+    assert _is_dangerous_segment("pytest tests/", ws) is False
+    assert _is_dangerous_segment("git push origin main", ws) is False
+    assert _is_dangerous_segment("rm file.txt", ws) is False
+    assert _is_dangerous_segment("chmod 755 script.sh", ws) is False
+
+
+def test_text_is_denied_edge_cases():
+    """Test _text_is_denied with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import _text_is_denied
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Direct denied patterns
+    assert _text_is_denied("rm -rf /", ws, 0) is True
+    assert _text_is_denied(":(){:|:&};:", ws, 0) is True
+
+    # In substitutions
+    assert _text_is_denied("echo $(rm -rf /)", ws, 0) is True
+    assert _text_is_denied("echo `rm -rf /`", ws, 0) is True
+    assert _text_is_denied("echo $(echo $(rm -rf /))", ws, 0) is True
+
+    # Depth limit
+    assert _text_is_denied("echo $(echo $(echo $(echo $(rm -rf /))))", ws, 0) is True  # depth 3
+    assert _text_is_denied(
+        "echo $(echo $(echo $(echo $(echo $(rm -rf /)))))", ws, 0
+    ) is True  # depth 4 (exceeds max depth of 3)
+
+    # Allowed
+    assert _text_is_denied("echo hello", ws, 0) is False
+    assert _text_is_denied("", ws, 0) is False
+    assert _text_is_denied("   ", ws, 0) is False
+
+
+def test_is_command_denied_edge_cases():
+    """Test is_command_denied with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import is_command_denied
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Empty
+    assert is_command_denied("", ws) is False
+    assert is_command_denied("   ", ws) is False
+    assert is_command_denied("\n", ws) is False
+
+    # Denied
+    assert is_command_denied("rm -rf /", ws) is True
+    assert is_command_denied("sudo rm -rf /", ws) is True
+    assert is_command_denied("echo $(rm -rf /)", ws) is True
+
+    # Allowed
+    assert is_command_denied("echo hello", ws) is False
+    assert is_command_denied("ls -la", ws) is False
+    assert is_command_denied("pytest", ws) is False
+
+
+def test_resolve_in_workspace_edge_cases():
+    """Test resolve_in_workspace with various edge cases."""
+    from pathlib import Path
+
+    from furrow.agents.worker import resolve_in_workspace
+
+    ws = Path("/tmp/ws").resolve()
+
+    # Inside
+    assert resolve_in_workspace(ws, "file.txt") == ws / "file.txt"
+    assert resolve_in_workspace(ws, "subdir/file.txt") == ws / "subdir" / "file.txt"
+    assert resolve_in_workspace(ws, "./file.txt") == ws / "file.txt"
+    assert resolve_in_workspace(ws, str(ws / "file.txt")) == ws / "file.txt"
+
+    # Outside
+    assert resolve_in_workspace(ws, "../file.txt") is None
+    assert resolve_in_workspace(ws, "/etc/passwd") is None
+    assert resolve_in_workspace(ws, "../../etc/passwd") is None
+
+    # Empty
+    assert resolve_in_workspace(ws, "") is None
+    assert resolve_in_workspace(ws, "   ") is None

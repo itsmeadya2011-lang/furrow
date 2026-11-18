@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import cast
+
 from furrow.config import Usage
 from furrow.costs import (
     DEFAULT_PRICING,
@@ -96,7 +99,9 @@ def test_price_for_model_unknown_model_returns_none() -> None:
 
 
 def test_price_for_model_never_raises() -> None:
-    assert price_for_model("gpt-4o", {"broken": "not-a-price"}) is not None
+    assert price_for_model(
+        "gpt-4o", cast(Mapping[str, ModelPricing], {"broken": "not-a-price"})
+    ) is not None
     assert price_for_model(None) is None  # type: ignore[arg-type]
 
 
@@ -158,5 +163,5 @@ def test_estimate_cost_never_raises() -> None:
         input_tokens = None
         output_tokens = "not-a-number"
 
-    assert estimate_cost("gpt-4o", _Weird()) == 0.0
+    assert estimate_cost("gpt-4o", cast(Usage, _Weird())) == 0.0
     assert estimate_cost("gpt-4o", None) == 0.0  # type: ignore[arg-type]

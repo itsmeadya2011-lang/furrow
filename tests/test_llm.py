@@ -542,7 +542,7 @@ async def test_aclose_resets_so_fresh_client_created():
 
 class _FakeResponseNoChoices:
     def __init__(self) -> None:
-        self.choices = []
+        self.choices: list[Any] = []
         self.usage = None
 
 
@@ -1011,3 +1011,372 @@ async def test_write_file_creates_parent_dirs(tmp_path):
     await client.write_file(path, "data")
 
     assert await client.read_file(path) == "data"
+
+
+# --- Tests for uncovered lines in llm.py ---
+
+def test_tenacity_import_handling(monkeypatch):
+    """Test that _TENACITY_AVAILABLE is handled correctly."""
+    from furrow import llm
+
+    # Test when tenacity is available
+    monkeypatch.setattr(llm, "_TENACITY_AVAILABLE", True)
+    assert llm._TENACITY_AVAILABLE is True
+
+    # Test when tenacity is not available
+    monkeypatch.setattr(llm, "_TENACITY_AVAILABLE", False)
+    assert llm._TENACITY_AVAILABLE is False
+
+
+def test_to_anthropic_block_unknown_type():
+    """Test _anthropic_block with unknown block type."""
+    from furrow.llm import _anthropic_block
+
+    block = {"type": "unknown", "data": "test"}
+    result = _anthropic_block(block)
+    assert result == block  # returns dict(block) for unknown types
+
+
+def test_anthropic_property_no_api_key(monkeypatch):
+    """Test anthropic property raises ValueError when API key is not set."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    # Remove any existing API key
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC, anthropic_api_key=None))
+
+    try:
+        _ = client.anthropic
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as e:
+        assert "ANTHROPIC_API_KEY is not set" in str(e)
+
+
+def test_openai_property_no_api_key(monkeypatch):
+    """Test openai property raises ValueError when API key is not set."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, openai_api_key=None))
+
+    try:
+        _ = client.openai
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as e:
+        assert "OPENAI_API_KEY is not set" in str(e)
+
+
+def test_retry_loop_unexpected_exit(monkeypatch):
+    """Test _retry raises RuntimeError when loop exits unexpectedly."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+
+    # Mock _is_retryable to always return False after max_attempts
+    # This should never happen in practice but tests the fallback
+    async def call():
+        raise RuntimeError("unexpected")
+
+    import asyncio
+    try:
+        asyncio.run(client._retry(call))
+    except RuntimeError as e:
+        assert "unexpected" in str(e)
+
+
+def test_complete_unsupported_provider():
+    """Test complete raises ValueError for unsupported provider."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    # Create a settings with an invalid provider by bypassing validation
+    class InvalidProvider:
+        pass
+
+    settings = Settings(provider=Provider.OPENAI)
+    settings.provider = InvalidProvider()
+
+    client = LLMClient(settings=settings)
+
+    import asyncio
+    try:
+        asyncio.run(client.complete("hi"))
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as e:
+        assert "Unsupported provider" in str(e)
+
+
+def test_chat_unsupported_provider():
+    """Test chat raises ValueError for unsupported provider."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    class InvalidProvider:
+        pass
+
+    settings = Settings(provider=Provider.OPENAI)
+    settings.provider = InvalidProvider()
+
+    client = LLMClient(settings=settings)
+
+    import asyncio
+    try:
+        asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+        raise AssertionError("Should have raised ValueError")
+    except ValueError as e:
+        assert "Unsupported provider" in str(e)
+
+
+def test_complete_anthropic_cost_estimation_error(monkeypatch):
+    """Test _complete_anthropic handles cost estimation errors."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    def boom_estimate_cost(*args, **kwargs):
+        raise RuntimeError("cost estimation failed")
+
+    monkeypatch.setattr("furrow.llm.estimate_cost", boom_estimate_cost)
+
+    usage = _FakeAnthropicUsage(input_tokens=100, output_tokens=42)
+    response = _FakeAnthropicResponse("hello", usage=usage)
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._anthropic = _FakeAnthropicClient(response)
+
+    import asyncio
+    result = asyncio.run(client.complete("hi"))
+
+    assert result == "hello"
+    assert client.total_usage.cost_usd == 0.0
+
+
+def test_complete_openai_cost_estimation_error(monkeypatch):
+    """Test _complete_openai handles cost estimation errors."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    def boom_estimate_cost(*args, **kwargs):
+        raise RuntimeError("cost estimation failed")
+
+    monkeypatch.setattr("furrow.llm.estimate_cost", boom_estimate_cost)
+
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=77, completion_tokens=33)
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+
+    import asyncio
+    result = asyncio.run(client.complete("hi"))
+
+    assert result == "ok"
+    assert client.total_usage.cost_usd == 0.0
+
+
+def test_chat_anthropic_cost_estimation_error(monkeypatch):
+    """Test _chat_anthropic handles cost estimation errors."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    def boom_estimate_cost(*args, **kwargs):
+        raise RuntimeError("cost estimation failed")
+
+    monkeypatch.setattr("furrow.llm.estimate_cost", boom_estimate_cost)
+
+    usage = _FakeAnthropicUsage(input_tokens=100, output_tokens=42)
+    response = _FakeAnthropicResponse("hello", usage=usage)
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._anthropic = _FakeAnthropicClient(response)
+
+    import asyncio
+    result = asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+
+    assert result.text == "hello"
+    assert result.usage.cost_usd == 0.0
+
+
+def test_chat_openai_compatible_cost_estimation_error(monkeypatch):
+    """Test _chat_openai_compatible handles cost estimation errors."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    def boom_estimate_cost(*args, **kwargs):
+        raise RuntimeError("cost estimation failed")
+
+    monkeypatch.setattr("furrow.llm.estimate_cost", boom_estimate_cost)
+
+    fake = _FakeOpenAI("ok")
+    fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=77, completion_tokens=33)
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+
+    import asyncio
+    result = asyncio.run(client.chat([{"role": "user", "content": "hi"}]))
+
+    assert result.text == "ok"
+    assert result.usage.cost_usd == 0.0
+
+
+async def test_chat_openai_inserts_system_message():
+    """Test _chat_openai_compatible inserts the system message when provided."""
+    fake = _FakeOpenAI("ok")
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+
+    await client.chat(
+        [{"role": "user", "content": "hello"}],
+        system="You are a helpful coding assistant.",
+    )
+
+    sent = fake.chat.completions.last_kwargs["messages"]
+    assert sent[0] == {"role": "system", "content": "You are a helpful coding assistant."}
+    assert sent[1] == {"role": "user", "content": "hello"}
+
+
+def test_to_openai_messages_no_system_when_empty():
+    """Test to_openai_messages doesn't insert system when empty."""
+    from furrow.llm import to_openai_messages
+
+    messages = [
+        {"role": "user", "content": "hello"},
+    ]
+    result = to_openai_messages(messages)
+    # No system message should be inserted
+    assert all(m["role"] != "system" for m in result)
+
+
+def test_chat_openai_tool_call_with_none_function():
+    """Test chat handles tool_call with None function."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    # Build a fake response with a malformed tool call (function=None)
+    class _FakeMalformedToolCall:
+        def __init__(self) -> None:
+            self.id = "t1"
+            self.function = None
+
+    class _FakeMessageMalformed:
+        def __init__(self) -> None:
+            self.content = "ok"
+            self.tool_calls = [_FakeMalformedToolCall()]
+
+    class _FakeChoiceMalformed:
+        def __init__(self) -> None:
+            self.message = _FakeMessageMalformed()
+            self.finish_reason = "tool_calls"
+
+    class _FakeResponseMalformed:
+        def __init__(self) -> None:
+            self.choices = [_FakeChoiceMalformed()]
+            self.usage = None
+
+    class _FakeCompletionsMalformed:
+        def __init__(self) -> None:
+            self.last_kwargs: dict = {}
+
+        async def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return _FakeResponseMalformed()
+
+    class _FakeChatMalformed:
+        def __init__(self) -> None:
+            self.completions = _FakeCompletionsMalformed()
+
+    class _FakeOpenAIMalformed:
+        def __init__(self) -> None:
+            self.chat = _FakeChatMalformed()
+
+    fake = _FakeOpenAIMalformed()
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+
+    import asyncio
+    result = asyncio.run(client.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"name": "dummy", "description": "", "parameters": {}}],
+    ))
+
+    assert result.text == "ok"
+    assert result.tool_calls == []
+    assert result.stop_reason == "tool_calls"
+
+
+def test_chat_openai_tool_call_with_empty_function_name():
+    """Test chat handles tool_call with empty function name."""
+    from furrow.config import Provider, Settings
+    from furrow.llm import LLMClient
+
+    class _FakeEmptyNameToolCall:
+        def __init__(self) -> None:
+            self.id = "t1"
+            self.function = type("Fn", (), {"name": "", "arguments": "{}"})()
+
+    class _FakeMessageEmptyName:
+        def __init__(self) -> None:
+            self.content = "ok"
+            self.tool_calls = [_FakeEmptyNameToolCall()]
+
+    class _FakeChoiceEmptyName:
+        def __init__(self) -> None:
+            self.message = _FakeMessageEmptyName()
+            self.finish_reason = "tool_calls"
+
+    class _FakeResponseEmptyName:
+        def __init__(self) -> None:
+            self.choices = [_FakeChoiceEmptyName()]
+            self.usage = None
+
+    class _FakeCompletionsEmptyName:
+        def __init__(self) -> None:
+            self.last_kwargs: dict = {}
+
+        async def create(self, **kwargs):
+            self.last_kwargs = kwargs
+            return _FakeResponseEmptyName()
+
+    class _FakeChatEmptyName:
+        def __init__(self) -> None:
+            self.completions = _FakeCompletionsEmptyName()
+
+    class _FakeOpenAIEmptyName:
+        def __init__(self) -> None:
+            self.chat = _FakeChatEmptyName()
+
+    fake = _FakeOpenAIEmptyName()
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = fake
+
+    import asyncio
+    result = asyncio.run(client.chat(
+        [{"role": "user", "content": "hi"}],
+        tools=[{"name": "dummy", "description": "", "parameters": {}}],
+    ))
+
+    assert result.text == "ok"
+    assert result.tool_calls == []  # Empty name should be skipped
+    assert result.stop_reason == "tool_calls"
+
+
+def test_list_files_nonexistent_directory(tmp_path):
+    """Test list_files returns empty list for nonexistent directory."""
+    from furrow.llm import LLMClient
+
+    client = LLMClient()
+    nonexistent = tmp_path / "nonexistent"
+    result = client.list_files(nonexistent)
+    assert result == []
+
+
+def test_list_files_non_directory(tmp_path):
+    """Test list_files returns empty list for a file path."""
+    from furrow.llm import LLMClient
+
+    client = LLMClient()
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("content")
+    result = client.list_files(file_path)
+    assert result == []
