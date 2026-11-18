@@ -49,6 +49,48 @@ _CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
 # while they are still pending.
 _TASKS: set[asyncio.Task[RunResult]] = set()
 
+# Bounded ring buffer of recent orchestrator events. Background runs started
+# through ``POST /api/start`` (which return immediately and have no websocket
+# client) would otherwise lose every event they emit: the drain task used to
+# discard them.  Events are now stored here so the status endpoint can surface
+# recent progress to anyone polling the API.
+_RECENT_EVENTS: RecentEvents | None = None
+
+
+class RecentEvents:
+    """A bounded ring buffer of the most recent orchestrator events.
+
+    Events are stored as JSON-serialisable dicts (via :meth:`Event.to_dict`).
+    When the buffer is full, the oldest events are dropped so the newest are
+    always retained.  Never raises.
+    """
+
+    def __init__(self, max_size: int = 500) -> None:
+        self._events: list[dict[str, Any]] = []
+        self._max_size = max_size
+
+    def add(self, event: Event) -> None:
+        """Append *event* to the buffer, dropping the oldest if full."""
+        self._events.append(event.to_dict())
+        if len(self._events) > self._max_size:
+            self._events = self._events[-self._max_size :]
+
+    def all(self) -> list[dict[str, Any]]:
+        """Return a copy of every event currently in the buffer."""
+        return list(self._events)
+
+    def clear(self) -> None:
+        """Remove every event from the buffer."""
+        self._events.clear()
+
+
+def _recent_events() -> RecentEvents:
+    """Return the module-level recent-events buffer, creating it on first use."""
+    global _RECENT_EVENTS
+    if _RECENT_EVENTS is None:
+        _RECENT_EVENTS = RecentEvents()
+    return _RECENT_EVENTS
+
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -163,6 +205,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const usageEl = document.getElementById('usage');
   let socket = null;
   let lastSummary = null;
+  let shownEventCount = 0;
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -304,6 +347,74 @@ INDEX_HTML = r"""<!DOCTYPE html>
     } catch (err) {
       append('! could not load status');
     }
+    // Surface recent events from background runs (e.g. started via POST
+    // /api/start) that have no websocket client to stream to. Only show events
+    // we haven't rendered yet.
+    const events = body.events || [];
+    const newEvents = events.slice(shownEventCount);
+    shownEventCount = events.length;
+    for (const ev of newEvents) {
+      renderEvent(ev);
+    }
+  }
+
+  function truncate(value, max) {
+    const s = text(value);
+    return s.length > max ? s.slice(0, max) + '\u2026' : s;
+  }
+
+  function eventTime(msg) {
+    const ts = msg && msg.timestamp;
+    if (!ts) { return '--:--:--'; }
+    const m = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
+    return m ? m[1] : '--:--:--';
+  }
+
+  function renderEvent(msg) {
+    const type = msg && msg.type;
+    const data = (msg && msg.data) || {};
+    const time = eventTime(msg);
+    let line = '';
+    let color = '#8a93a5';
+    if (type === 'cycle_started') {
+      line = 'cycle ' + text(data.cycle) + ' started';
+    } else if (type === 'cycle_finished') {
+      line = 'cycle ' + text(data.cycle) + ' finished';
+    } else if (type === 'plan_created') {
+      line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+    } else if (type === 'task_started') {
+      line = 'task ' + text(data.task) + ' started';
+    } else if (type === 'task_finished') {
+      const ok = data.success === true;
+      line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
+        truncate(data.summary, 200);
+      color = ok ? '#57d38c' : '#e0685f';
+    } else if (type === 'test_started') {
+      line = 'running tests...';
+    } else if (type === 'test_finished') {
+      const ok = data.passed === true;
+      line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
+      color = ok ? '#57d38c' : '#e0685f';
+    } else if (type === 'state_saved') {
+      line = 'state saved';
+    } else if (type === 'log') {
+      line = text(msg.message);
+    } else if (type === 'error') {
+      line = 'ERROR: ' + text(msg.message);
+      color = '#e0685f';
+    } else if (type === 'done') {
+      line = 'finished: ' + text(msg.message);
+      color = '#57d38c';
+    } else {
+      try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
+    }
+    const span = document.createElement('span');
+    span.style.color = color;
+    span.textContent = time + ' ' + line;
+    logEl.appendChild(span);
+    logEl.appendChild(document.createTextNode('\n'));
+    logEl.scrollTop = logEl.scrollHeight;
+    return line;
   }
 
   function connect(payload) {
@@ -317,62 +428,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
       lastSummary = null;
       socket.send(JSON.stringify(payload));
     };
-    function truncate(value, max) {
-      const s = text(value);
-      return s.length > max ? s.slice(0, max) + '\u2026' : s;
-    }
-
-    function eventTime(msg) {
-      const ts = msg && msg.timestamp;
-      if (!ts) { return '--:--:--'; }
-      const m = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
-      return m ? m[1] : '--:--:--';
-    }
-
-    function renderEvent(msg) {
-      const type = msg && msg.type;
-      const data = (msg && msg.data) || {};
-      const time = eventTime(msg);
-      let line = '';
-      let color = '#8a93a5';
-      if (type === 'cycle_started') {
-        line = 'cycle ' + text(data.cycle) + ' started';
-      } else if (type === 'plan_created') {
-        line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
-      } else if (type === 'task_started') {
-        line = 'task ' + text(data.task) + ' started';
-      } else if (type === 'task_finished') {
-        const ok = data.success === true;
-        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
-          truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
-      } else if (type === 'test_started') {
-        line = 'running tests...';
-      } else if (type === 'test_finished') {
-        const ok = data.passed === true;
-        line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
-      } else if (type === 'state_saved') {
-        line = 'state saved';
-      } else if (type === 'log') {
-        line = text(msg.message);
-      } else if (type === 'error') {
-        line = 'ERROR: ' + text(msg.message);
-        color = '#e0685f';
-      } else if (type === 'done') {
-        line = 'finished: ' + text(msg.message);
-        color = '#57d38c';
-      } else {
-        try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
-      }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
-      logEl.scrollTop = logEl.scrollHeight;
-      return line;
-    }
 
     socket.onmessage = function (ev) {
       let msg;
@@ -502,9 +557,16 @@ def _cancel_run(task: asyncio.Task[RunResult]) -> None:
 
 
 async def _drain(queue: asyncio.Queue[Event]) -> None:
-    """Consume events so a background run does not fill its queue forever."""
+    """Consume events and store them in the recent-events buffer.
+
+    A background run started through ``POST /api/start`` has no websocket
+    client to stream events to, so the drain task preserves them in the
+    ring buffer instead of discarding them.  The buffer is bounded so a long
+    run cannot grow memory without bound.
+    """
     while True:
-        await queue.get()
+        event = await queue.get()
+        _recent_events().add(event)
 
 
 async def _release_client(client: Any) -> None:
@@ -598,6 +660,7 @@ async def api_status() -> dict[str, Any]:
         "running": bool(_CURRENT.get("running")),
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
+        "events": _recent_events().all(),
     }
 
 
