@@ -13,11 +13,7 @@ from typing import Any
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
     """Configure standard library logging as a fallback."""
-    logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        level=getattr(logging, level.upper(), logging.INFO),
-        stream=sys.stdout,
-    )
+    pass
 
 
 try:

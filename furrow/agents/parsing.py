@@ -255,7 +255,7 @@ def parse_test_result(text: str) -> TestResult:
                     break
 
         return TestResult(passed=passed, summary=summary, failures=failures)
-    except (ValueError, TypeError):
+    except Exception:
         try:
             s = strip_code_fences(text) if isinstance(text, str) else str(text)
         except (ValueError, TypeError):
