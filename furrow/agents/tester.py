@@ -243,6 +243,11 @@ class TesterAgent:
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
+        # A tests/ directory on its own is a strong Python signal: a project with
+        # tests but no pytest config still runs pytest.
+        if has_tests_dir:
+            return [sys.executable, "-m", "pytest", "-q"]
+
         python_markers = [
             "pyproject.toml",
             "pytest.ini",

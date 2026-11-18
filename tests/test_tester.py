@@ -94,6 +94,23 @@ def test_detect_empty(tmp_path):
     assert cmd is None
 
 
+def test_detect_tests_dir_without_config(tmp_path):
+    """A tests/ directory alone (no pyproject/pytest.ini/etc.) still signals pytest."""
+    (tmp_path / "tests").mkdir()
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_beats_node_fallback(tmp_path):
+    """A tests/ dir does not override an existing package.json for Node projects."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "tests").mkdir()
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
 def test_run_no_runner_is_reported_as_skipped(tmp_path):
     """No detected test runner means a skipped run, not a passed one."""
     agent = TesterAgent(
