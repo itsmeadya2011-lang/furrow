@@ -130,6 +130,22 @@ class Orchestrator:
                 self._console_obj = None
         return self._console_obj
 
+    def _emit_progress(
+        self,
+        message: str,
+        completed: int | None = None,
+        total: int | None = None,
+        **data: Any,
+    ) -> None:
+        """Emit a PROGRESS event so consumers can render a progress bar."""
+        payload: dict[str, Any] = {"message": message}
+        if completed is not None:
+            payload["completed"] = completed
+        if total is not None:
+            payload["total"] = total
+        payload.update(data)
+        self.event_bus.emit(Event(type=EventType.PROGRESS, message=message, data=payload))
+
     def _say(self, message: str) -> None:
         """Print a progress message; a broken console must never break the run."""
         console = self._console()

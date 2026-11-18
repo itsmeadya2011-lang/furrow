@@ -10,11 +10,18 @@ import logging
 import sys
 from typing import Any
 
+LOG_FORMAT_TEXT = "text"
+LOG_FORMAT_JSON = "json"
 
-def _configure_stdlib_fallback(level: str = "INFO") -> None:
+
+def _configure_stdlib_fallback(level: str = "INFO", log_format: str = LOG_FORMAT_TEXT) -> None:
     """Configure standard library logging as a fallback."""
+    if log_format == LOG_FORMAT_JSON:
+        fmt = "%(message)s"
+    else:
+        fmt = "%(asctime)s %(levelname)s %(name)s %(message)s"
     logging.basicConfig(
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        format=fmt,
         level=getattr(logging, level.upper(), logging.INFO),
         stream=sys.stdout,
     )
@@ -28,8 +35,12 @@ except ImportError:
     _STRUCTLOG_AVAILABLE = False
 
 
-def configure_logging(level: str = "INFO") -> None:
-    """Configure structlog to wrap stdlib logging."""
+def configure_logging(level: str = "INFO", log_format: str = LOG_FORMAT_TEXT) -> None:
+    """Configure structlog to wrap stdlib logging.
+
+    *log_format* selects between a plain text renderer (:data:`LOG_FORMAT_TEXT`,
+    the default) and a structured JSON renderer (:data:`LOG_FORMAT_JSON`).
+    """
     log_level = getattr(logging, level.upper(), logging.INFO)
     logging.basicConfig(
         format="%(message)s",
@@ -39,8 +50,13 @@ def configure_logging(level: str = "INFO") -> None:
 
     if not _STRUCTLOG_AVAILABLE:
         # Fall back to stdlib logging if structlog is not available
-        _configure_stdlib_fallback(level)
+        _configure_stdlib_fallback(level, log_format)
         return
+
+    if log_format == LOG_FORMAT_JSON:
+        renderer = structlog.processors.JSONRenderer()
+    else:
+        renderer = structlog.dev.ConsoleRenderer()
 
     structlog.configure(
         processors=[
@@ -50,7 +66,7 @@ def configure_logging(level: str = "INFO") -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
+            renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import subprocess
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -128,9 +129,7 @@ def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
 
 
 @pytest.fixture(autouse=True)
-def isolated_server(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Iterator[Path]:
+def isolated_server(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
     """Point the server at a temporary workspace and reset the run registry."""
     run_settings = settings.model_copy(update={"workspace": tmp_path})
     monkeypatch.setattr(server, "settings", run_settings)
@@ -190,6 +189,60 @@ def test_index_contains_ui_hooks(client: TestClient) -> None:
     assert 'id="tasks"' in html
 
 
+def test_index_contains_cancel_and_diff_hooks(client: TestClient) -> None:
+    """The served page exposes the cancel and diff UI hooks."""
+    html = client.get("/").text
+
+    for hook in (
+        'id="cancel"',
+        'id="view-diff"',
+        'id="diff-panel"',
+        'id="diff-output"',
+        'id="close-diff"',
+    ):
+        assert hook in html, f"missing hook {hook}"
+
+    # The diff panel is hidden until the user asks for it.
+    assert 'style="display: none;"' in html
+
+
+def test_index_script_binds_cancel_and_diff_elements(client: TestClient) -> None:
+    """The script binds to every cancel/diff element present in the page."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    for element_id in ("cancel", "view-diff", "diff-panel", "diff-output", "close-diff"):
+        assert f"getElementById('{element_id}')" in script, f"script does not bind to #{element_id}"
+
+
+def test_index_script_posts_to_cancel_endpoint(client: TestClient) -> None:
+    """The cancel handler posts to /api/cancel and refreshes the status."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    assert "fetch('/api/cancel', { method: 'POST' })" in script
+    assert "loadStatus();" in script
+
+
+def test_index_script_fetches_diff_endpoint(client: TestClient) -> None:
+    """The view-diff handler fetches /api/diff and shows the diff panel."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    assert "fetch('/api/diff')" in script
+    assert "diffOutputEl.textContent" in script
+    assert "diffPanelEl.style.display" in script
+
+
+def test_index_script_renders_per_task_cost(client: TestClient) -> None:
+    """The task panel renderer shows per-task cost when it is available."""
+    html = client.get("/").text
+    script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+
+    assert "task.cost_usd" in script
+    assert "toFixed(6)" in script
+
+
 def test_index_uses_text_content_for_untrusted_text(client: TestClient) -> None:
     """Task text is assigned via textContent, never innerHTML interpolation."""
     html = client.get("/").text
@@ -222,9 +275,7 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
     script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
 
     for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage"):
-        assert f"getElementById('{element_id}')" in script, (
-            f"script does not bind to #{element_id}"
-        )
+        assert f"getElementById('{element_id}')" in script, f"script does not bind to #{element_id}"
 
 
 def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> None:
@@ -307,6 +358,141 @@ def test_api_status(client: TestClient, fake_orchestrator: type[FakeOrchestrator
     assert "running" in body
     assert "status" in body
     assert "result" in body
+
+
+def _run_git(repo: Path, *args: str) -> None:
+    """Run a git command inside *repo*, raising on failure."""
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    if completed.returncode != 0:
+        raise AssertionError(completed.stderr)
+
+
+def test_api_cancel_without_active_run_returns_400(client: TestClient) -> None:
+    """Cancelling when nothing is running returns 400."""
+    response = client.post("/api/cancel")
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["cancelled"] is False
+    assert body["error"] == "no run is active"
+
+
+def test_api_cancel_cancels_active_run(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Cancelling an active run returns 200 and cancels the background task."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+
+    client.post("/api/start", json={"goal": "build it"})
+    assert _wait_until(lambda: server._CURRENT.get("running") is True), "the run never started"
+
+    response = client.post("/api/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelled"] is True
+
+    run_task = server._CURRENT.get("task")
+    assert run_task is not None
+    assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"
+
+
+def test_api_diff_not_a_git_repo(client: TestClient, isolated_server: Path) -> None:
+    """A workspace that is not a git repository yields an empty diff and an error."""
+    response = client.get("/api/diff")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["diff"] == ""
+    assert body["error"] is not None
+
+
+def test_api_diff_returns_workspace_changes(client: TestClient, isolated_server: Path) -> None:
+    """Uncommitted workspace changes are returned as a diff."""
+    (isolated_server / "file.txt").write_text("original\n")
+    _run_git(isolated_server, "init", "-b", "main")
+    _run_git(isolated_server, "config", "user.email", "t@t")
+    _run_git(isolated_server, "config", "user.name", "t")
+    _run_git(isolated_server, "add", "file.txt")
+    _run_git(isolated_server, "commit", "-m", "init")
+    (isolated_server / "file.txt").write_text("modified\n")
+
+    response = client.get("/api/diff")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["error"] is None
+    assert "file.txt" in body["diff"]
+    assert "modified" in body["diff"]
+
+
+def test_api_diff_when_git_is_missing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A missing git binary yields an empty diff and an error instead of raising."""
+
+    def boom(*args: object, **kwargs: object) -> None:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(server.subprocess, "run", boom)
+
+    response = client.get("/api/diff")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["diff"] == ""
+    assert body["error"] == "git is not available"
+
+
+class _CostOrchestrator:
+    """Orchestrator stub whose status carries per-task cost."""
+
+    client = None
+
+    def __init__(self, **kwargs: object) -> None:
+        self._status = {
+            "goal": "build it",
+            "original_goal": "build it",
+            "cycles": 1,
+            "stopped_reason": "",
+            "tasks": [
+                {
+                    "id": "1",
+                    "description": "do it",
+                    "status": "completed",
+                    "attempts": 1,
+                    "cost_usd": 2.5,
+                }
+            ],
+        }
+
+    def status(self) -> dict[str, object]:
+        return self._status
+
+    async def run(self) -> RunResult:
+        return RunResult(
+            passed=True,
+            cycles=1,
+            tasks_completed=1,
+            summary="done",
+            stopped_reason="goal complete",
+        )
+
+
+def test_api_status_includes_per_task_cost(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Per-task cost is available in the status payload."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", _CostOrchestrator)
+
+    client.post("/api/start", json={"goal": "build it"})
+
+    body = client.get("/api/status").json()
+    tasks = body["status"]["tasks"]
+
+    assert len(tasks) == 1
+    assert tasks[0]["cost_usd"] == 2.5
 
 
 def test_websocket_streams_events(

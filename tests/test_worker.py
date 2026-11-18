@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from furrow.agents.command_guard import is_command_denied
 from furrow.agents.prompts import WORKER_TOOLS
-from furrow.agents.worker import WorkerAgent, is_command_denied, resolve_in_workspace
+from furrow.agents.worker import WorkerAgent, resolve_in_workspace
 from furrow.config import Settings
 from furrow.llm import LLMResponse, ToolCall
 

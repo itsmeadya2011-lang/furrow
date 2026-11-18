@@ -16,6 +16,8 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import subprocess
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -125,6 +127,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
+  .diff-output {
+    white-space: pre-wrap; word-break: break-word; font-size: .85rem; color: #d7dae0;
+  }
   .status-pending { color: #8a93a5; }
   .status-running { color: #4c8dff; }
   .status-completed { color: #57d38c; }
@@ -140,6 +145,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="cancel">Cancel</button>
+  <button id="view-diff">View Diff</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -151,6 +158,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <pre id="log"></pre>
+<div class="panel" id="diff-panel" style="display: none;">
+  <div class="panel-head">
+    <span class="panel-id">diff</span>
+    <span class="panel-status status-unknown">workspace changes</span>
+  </div>
+  <pre id="diff-output" class="diff-output"></pre>
+  <button id="close-diff" style="margin-top: .4rem;">Close</button>
+</div>
 <div class="panels" id="tasks"></div>
 <script>
   const logEl = document.getElementById('log');
@@ -163,6 +178,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const usageEl = document.getElementById('usage');
   let socket = null;
   let lastSummary = null;
+  const cancelEl = document.getElementById('cancel');
+  const viewDiffEl = document.getElementById('view-diff');
+  const diffPanelEl = document.getElementById('diff-panel');
+  const diffOutputEl = document.getElementById('diff-output');
+  const closeDiffEl = document.getElementById('close-diff');
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -251,6 +271,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      const cost = Number(task.cost_usd) || 0;
+      if (cost > 0) {
+        const costEl = document.createElement('span');
+        costEl.textContent = 'cost: $' + cost.toFixed(6);
+        meta.appendChild(costEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -406,6 +432,42 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+
+  async function cancelRun() {
+    try {
+      const res = await fetch('/api/cancel', { method: 'POST' });
+      const body = await res.json();
+      if (res.ok) {
+        append('! run cancelled');
+      } else {
+        append('! ' + text(body.error) || 'could not cancel the run');
+      }
+    } catch (err) {
+      append('! could not cancel the run');
+    }
+    loadStatus();
+  }
+
+  async function viewDiff() {
+    try {
+      const res = await fetch('/api/diff');
+      const body = await res.json();
+      const diff = text(body.diff);
+      const error = text(body.error);
+      diffOutputEl.textContent = error ? '! ' + error : (diff || '(no workspace changes)');
+      diffPanelEl.style.display = '';
+    } catch (err) {
+      append('! could not load diff');
+    }
+  }
+
+  function closeDiff() {
+    diffPanelEl.style.display = 'none';
+  }
+
+  cancelEl.onclick = cancelRun;
+  viewDiffEl.onclick = viewDiff;
+  closeDiffEl.onclick = closeDiff;
 
   loadState();
   loadStatus();
@@ -566,6 +628,44 @@ def _build_orchestrator(
     )
 
 
+def _git_diff(workspace: Path) -> tuple[str, str | None]:
+    """Return ``(diff, error)`` for the uncommitted changes in *workspace*.
+
+    ``error`` is ``None`` when the diff was collected.  A missing git binary or
+    a workspace that is not a git repository yields an empty diff and an error
+    message instead of raising.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(workspace), "diff", "HEAD", "--", "."],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return "", "git is not available"
+    if completed.returncode == 0:
+        return completed.stdout, None
+    # No initial commit yet: fall back to the diff against the index so that
+    # staged and unstaged changes are still reported.
+    staged = subprocess.run(
+        ["git", "-C", str(workspace), "diff", "--cached", "--", "."],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    unstaged = subprocess.run(
+        ["git", "-C", str(workspace), "diff", "--", "."],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    diff = (staged.stdout or "") + (unstaged.stdout or "")
+    if not diff:
+        return "", completed.stderr.strip() or "not a git repository"
+    return diff, None
+
+
 async def _send_error(websocket: WebSocket, message: str) -> None:
     """Send an error frame to the client and close the connection."""
     await websocket.send_json({"type": "error", "message": message, "data": {}})
@@ -646,6 +746,36 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the run that is currently active.
+
+    Returns 200 when a run was cancelled and 400 when no run is active.
+    """
+    task = _CURRENT.get("task")
+    if task is None or task.done():
+        return JSONResponse(
+            status_code=400,
+            content={"cancelled": False, "error": "no run is active"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
+
+
+@app.get("/api/diff")
+async def api_diff() -> JSONResponse:
+    """Git diff of the uncommitted workspace changes.
+
+    Returns the diff output, or an empty diff with an ``error`` message when git
+    is unavailable or the workspace is not a git repository.
+    """
+    diff, error = _git_diff(settings.workspace)
+    return JSONResponse(
+        status_code=200,
+        content={"diff": diff, "error": error},
+    )
 
 
 @app.websocket("/ws")
