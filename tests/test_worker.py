@@ -1261,3 +1261,52 @@ def test_is_command_denied_write_programs_scope(tmp_path, monkeypatch):
         assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
     for cmd in allowed_commands:
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_in_place_find_and_xargs(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    denied_commands = [
+        "sed -i 's/a/b/' /etc/passwd",
+        "sed -i.bak 's/a/b/' /etc/passwd",
+        "sed -ni 's/a/b/' ../outside",
+        "sed --in-place 's/a/b/' /etc/passwd",
+        "sed -i -e's/a/b/' /etc/passwd",
+        "sed -i -fscript.sed /etc/passwd",
+        "perl -pi -e 's/a/b/' /etc/passwd",
+        "perl -pi -e's/a/b/' /etc/passwd",
+        "perl -Mstrict -pi -e 's/a/b/' /etc/passwd",
+        "find /etc -name '*.conf' -delete",
+        "find / -type f -exec rm {} +",
+        "find -L /etc -delete",
+        "find -- /etc -delete",
+        "xargs rm",
+        "printf 'a' | xargs -0 rm",
+        "xargs -n 1 mv a",
+        "find . -print0 | xargs rm",
+        "xargs sed -i 's/a/b/'",
+    ]
+    allowed_commands = [
+        "sed -i 's/a/b/' file.txt",
+        "sed -e 's/a/b/' file.txt",
+        "sed -n '1,5p' file.txt",
+        "sed 's/a/b/' file.txt",
+        "perl -pi -e 's/a/b/' file.txt",
+        "perl script.pl file.txt",
+        "perl -Mstrict -e 'print 1' file.txt",
+        "perl -Mstrict script.pl file.txt",
+        "sed -i 's/a/b/'",
+        "sed -i -e's/a/b/' file.txt",
+        "perl -pi -e's/a/b/' file.txt",
+        "xargs sed -e's/x/i/' file.txt",
+        "find . -name '*.py' -delete",
+        "find -L . -name '*.py' -delete",
+        "find -- . -type f -exec rm {} +",
+        "find sub -type f -exec rm {} +",
+        "find /etc -name passwd",
+        "xargs grep foo",
+        "echo hi | xargs -n 1 echo",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"

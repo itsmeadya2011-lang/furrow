@@ -432,6 +432,254 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
     return False
 
 
+# Destructive ``find`` actions that run a command or remove matches.
+_FIND_ACTION_TOKENS = frozenset({"-delete", "-exec", "-execdir", "-ok", "-okdir"})
+
+# Global ``find`` options that may precede the roots (``find -L /etc ...``).
+_FIND_GLOBAL_FLAGS = frozenset({"-H", "-L", "-P"})
+
+# ``perl`` options that consume the rest of the token as their value, so an
+# ``e`` inside that value is not a ``-e`` script option.
+_PERL_VALUE_REST_OPTIONS = frozenset({"M", "m", "I", "d", "D", "0"})
+
+# ``xargs`` options that consume a separate value and options that do not.
+_XARGS_VALUE_OPTIONS = frozenset({"-n", "-L", "-I", "-P", "-s", "-E", "-d", "-a"})
+_XARGS_FLAG_OPTIONS = frozenset(
+    {"-0", "-r", "-t", "-p", "--null", "--no-run-if-empty"}
+)
+
+# Programs that are dangerous when launched by ``xargs`` but are not denied
+# on their own.
+_XARGS_DENIED_PROGRAMS = frozenset(
+    {
+        "rm",
+        "chmod",
+        "chown",
+        "shred",
+        "unlink",
+        "sh",
+        "bash",
+        "zsh",
+        "dash",
+        "env",
+        "sudo",
+        "xargs",
+    }
+)
+
+
+def _is_in_place_token(token: str) -> bool:
+    """Report whether an option token selects in-place editing (``-i``)."""
+    if token == "--in-place" or token.startswith("--in-place="):
+        return True
+    if token.startswith("-i"):
+        return True
+    if not _is_short_flag_cluster(token):
+        return False
+    for char in token[1:]:
+        if char in _PERL_VALUE_REST_OPTIONS or char in "eE" or char.isdigit():
+            return False
+        if char == "i":
+            return True
+    return False
+
+
+def _perl_option_script(token: str) -> str | None:
+    """Locate a ``perl`` script option inside a short-option token.
+
+    Returns ``"attached"`` when the script follows ``-e``/``-E`` in the same
+    token (``-e'...'``, ``-pie'...'``), ``"separate"`` when the script is the
+    next argument (``-e``, ``-pie``), and ``None`` when the token carries no
+    script option. Options that take the rest of the token as their value
+    (``-Mstrict``, ``-Ilib``) end the scan.
+    """
+    if not token.startswith("-") or token.startswith("--") or len(token) < 2:
+        return None
+    body = token[1:]
+    for pos, char in enumerate(body):
+        if char in _PERL_VALUE_REST_OPTIONS:
+            return None
+        if char in "eE":
+            return "attached" if pos + 1 < len(body) else "separate"
+    return None
+
+
+def _in_place_edit_outside_workspace(segment: str, workspace: Path) -> bool:
+    """Report whether an in-place ``sed``/``perl`` edit targets outside the workspace.
+
+    Only invocations that actually use in-place mode are checked. Script
+    options (``-e``/``-f``/``--expression``/``--file`` for ``sed`` and
+    ``-e``/``-E`` for ``perl``) consume their value; without one the first
+    operand is the script. Every remaining file operand must stay inside the
+    workspace and must not contain a shell expansion.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if name not in {"sed", "perl"}:
+        return False
+
+    in_place = False
+    script_seen = False
+    operands: list[str] = []
+    options_done = False
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if options_done:
+            operands.append(token)
+            i += 1
+            continue
+        if token == "--":
+            options_done = True
+            i += 1
+            continue
+        if name == "sed" and len(token) > 2 and token.startswith(("-e", "-f")):
+            # The script is attached to the option (``-e's/a/b/'',
+            # ``-fscript.sed``): it is a script option, not an in-place flag,
+            # so letters inside the script name must not be scanned as flags.
+            script_seen = True
+            i += 1
+            continue
+        if _is_in_place_token(token):
+            in_place = True
+            i += 1
+            continue
+        if name == "sed" and token in {"-e", "-f", "--expression", "--file"}:
+            script_seen = True
+            i += 2
+            continue
+        if name == "sed" and (
+            token.startswith("--expression=") or token.startswith("--file=")
+        ):
+            script_seen = True
+            i += 1
+            continue
+        if name == "perl":
+            script = _perl_option_script(token)
+            if script is not None:
+                script_seen = True
+                i += 1 if script == "attached" else 2
+                continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        operands.append(token)
+        i += 1
+
+    if not in_place:
+        return False
+    if not script_seen and operands:
+        operands = operands[1:]
+    for operand in operands:
+        target = operand.strip().strip("\"'")
+        if not target:
+            continue
+        if "$" in target or "`" in target:
+            return True
+        if not _target_inside_workspace(target, workspace):
+            return True
+    return False
+
+
+def _find_action_outside_workspace(segment: str, workspace: Path) -> bool:
+    """Report whether ``find`` runs a destructive action with an outside root."""
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if name != "find":
+        return False
+    if not any(token in _FIND_ACTION_TOKENS for token in args):
+        return False
+
+    roots: list[str] = []
+    index = 0
+    # Leading global options may precede the roots (``find -L /etc ...``), so
+    # they are skipped; ``-D`` consumes a separate value. ``--`` ends option
+    # parsing.
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            index += 1
+            break
+        if token in _FIND_GLOBAL_FLAGS:
+            index += 1
+            continue
+        if token == "-D":
+            index += 2
+            continue
+        if token.startswith(("-D", "-O")):
+            index += 1
+            continue
+        break
+    while index < len(args):
+        token = args[index]
+        if token.startswith("-") or token in {"(", "!", ","}:
+            break
+        roots.append(token)
+        index += 1
+    if not roots:
+        roots = ["."]
+
+    for root in roots:
+        target = root.strip().strip("\"'")
+        if not target:
+            continue
+        if "$" in target or "`" in target:
+            return True
+        if not _target_inside_workspace(target, workspace):
+            return True
+    return False
+
+
+def _xargs_with_write_program(segment: str, workspace: Path) -> bool:
+    """Report whether ``xargs`` launches a denied or file-writing program.
+
+    ``xargs`` options are skipped, then the first remaining token is the
+    launched program. A write-path program, a denied program or an in-place
+    ``sed``/``perl`` invocation is denied.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if name != "xargs":
+        return False
+
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "--":
+            i += 1
+            break
+        if token in _XARGS_VALUE_OPTIONS:
+            i += 2
+            continue
+        if token in _XARGS_FLAG_OPTIONS:
+            i += 1
+            continue
+        if token.startswith("-") and len(token) > 1:
+            i += 1
+            continue
+        break
+
+    if i >= len(args):
+        return False
+    program = os.path.basename(args[i]).lower()
+    if (
+        program in DENIED_PROGRAMS
+        or program in _WRITE_PATH_PROGRAMS
+        or program in _XARGS_DENIED_PROGRAMS
+    ):
+        return True
+    return bool(
+        program in {"sed", "perl"}
+        and any(_is_in_place_token(token) for token in args[i + 1 :])
+    )
+
+
 def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
@@ -469,7 +717,15 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     # DENY a redirection or a file-writing argument that escapes the workspace
     if _redirects_outside_workspace(segment, workspace):
         return True
-    return bool(_writes_outside_workspace(segment, workspace))
+    if _writes_outside_workspace(segment, workspace):
+        return True
+
+    # DENY in-place edits, destructive find actions and xargs write programs
+    if _in_place_edit_outside_workspace(segment, workspace):
+        return True
+    if _find_action_outside_workspace(segment, workspace):
+        return True
+    return bool(_xargs_with_write_program(segment, workspace))
 
 
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
