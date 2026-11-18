@@ -68,6 +68,10 @@ class RunState(BaseModel):
     last_passed: bool | None = None
     last_skipped: bool = False
     last_summary: str = ""
+    # Ids of the tasks that made up the most recent plan. The final report only
+    # counts these, so a resumed run that never enters a cycle still reports the
+    # work of the last plan instead of every task ever seen.
+    active_ids: list[str] = Field(default_factory=list)
 
 
 def state_path_for(

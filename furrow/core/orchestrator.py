@@ -81,6 +81,14 @@ class Orchestrator:
                     self._tests_run = 0
                 self._last_test_passed = getattr(st, "last_passed", None)
                 self._tests_skipped = bool(getattr(st, "last_skipped", False))
+                # Restore the task set of the last plan so a resumed run that
+                # never enters a cycle still reports only the work of that plan.
+                try:
+                    self._active_ids = {
+                        str(i) for i in (getattr(st, "active_ids", None) or [])
+                    }
+                except Exception:
+                    self._active_ids = set()
             else:
                 self._resume_state_missing = True
 
@@ -285,8 +293,9 @@ class Orchestrator:
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
                              usage=self._usage, no_progress=self._no_progress,
                              prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
+                              last_passed=test_result.passed, last_skipped=skipped,
+                              last_summary=test_result.summary,
+                              active_ids=sorted(self._active_ids))
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:
@@ -350,6 +359,12 @@ class Orchestrator:
             if old is not None:
                 old_desc = old.description
                 old_files = list(old.files)
+                # A re-planned task with a different description or file list is
+                # new work: the changes recorded for the superseded scope no
+                # longer describe it. Clear them so a task whose re-run then
+                # raises does not report the previous scope's files.
+                if old_desc != pt.description or old_files != pt.files:
+                    old.files_changed = []
                 # Preserve terminal states; only retry-eligible failed tasks may
                 # be reset to pending. Blocked tasks must remain blocked so that
                 # retry budgets and dependency outcomes are not lost across cycles.

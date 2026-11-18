@@ -1196,3 +1196,87 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+class _PerCyclePlanner:
+    """Planner that returns a different task set on each cycle."""
+
+    def __init__(self, per_cycle):
+        self._per_cycle = per_cycle
+        self.calls = 0
+
+    async def plan(self, goal, context=""):
+        index = min(self.calls, len(self._per_cycle) - 1)
+        self.calls += 1
+        return Plan(
+            tasks=[
+                TaskModel(id=tid, description=desc, files=list(files))
+                for (tid, desc, files) in self._per_cycle[index]
+            ],
+            rationale="r",
+        )
+
+
+@pytest.mark.asyncio
+async def test_replanned_task_does_not_report_previous_scope_files(tmp_path, monkeypatch):
+    """A task re-planned with a new file list must not keep the old files_changed.
+
+    The task succeeded in cycle 1 (recording ``a.py``), then the planner
+    re-planned it against ``b.py`` and the re-run raised. The previous scope's
+    file must not be reported as changed by this run.
+    """
+
+    class FlipWorker:
+        def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+            self.task = task
+
+        async def run(self):
+            if "b.py" in self.task.files:
+                raise RuntimeError("worker exploded")
+            return WorkerResult(summary="ok", success=True, files_changed=["a.py"])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FlipWorker)
+    settings = make_settings(tmp_path, max_cycles=2, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = _PerCyclePlanner([
+        [("t1", "first", ["a.py"])],
+        [("t1", "second", ["b.py"])],
+    ])
+    orch.tester = FakeTester(passed=False)
+
+    result = await orch.run()
+
+    assert orch.tasks[0].status == "failed"
+    assert orch.tasks[0].files_changed == []
+    assert result.files_changed == []
+
+
+@pytest.mark.asyncio
+async def test_resume_without_cycle_reports_only_last_plan_tasks(tmp_path, monkeypatch):
+    """A resumed run that never enters a cycle reports the last plan's tasks only.
+
+    Cycle 1 completes ``t1``; cycle 2 plans ``t2`` instead, so ``t1`` is still in
+    ``tasks`` but is not part of the last plan. When the persisted cycle count
+    already reached ``max_cycles`` the loop body never runs, so the report must
+    come from the persisted active set and count only ``t2``.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = _PerCyclePlanner([
+        [("t1", "first", [])],
+        [("t2", "second", [])],
+    ])
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    assert [t.id for t in orch.tasks] == ["t1", "t2"]
+    assert store.load().active_ids == ["t2"]
+
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2.cycles >= settings.max_cycles
+    assert orch2._active_ids == {"t2"}
+    result = await orch2.run()
+    assert result.tasks_completed == 1
