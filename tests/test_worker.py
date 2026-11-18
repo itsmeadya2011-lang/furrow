@@ -688,6 +688,35 @@ def test_is_command_denied_wrapper_bypass(tmp_path):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_is_command_denied_wrapper_aware_tee_and_force_push(tmp_path):
+    """Wrapper-aware write detection and force-push detection stay exact.
+
+    ``tee`` writes through a path argument, so it must be resolved through the
+    wrapper (``sudo``/``env``/``command``) to its real program and targets. A
+    force push must only be denied for an actual ``git ... push`` carrying a
+    force flag, not merely because ``push`` or ``-f`` appear somewhere.
+    """
+    denied_commands = [
+        "sudo tee /etc/passwd",
+        "env FOO=1 tee /etc/passwd",
+        "command tee /etc/passwd",
+        "sudo -n tee /etc/passwd",
+        "git -C repo push --force",
+    ]
+    allowed_commands = [
+        "echo hi | sudo tee out.txt",
+        "echo hi | tee /dev/null",
+        "grep -f push-notes git-log",
+        "git status",
+        "git push origin main",
+    ]
+
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel

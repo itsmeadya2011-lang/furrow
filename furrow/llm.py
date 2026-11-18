@@ -366,8 +366,13 @@ class LLMClient:
         )
         text = ""
         for block in response.content or []:
-            if block.type == "text":
-                text += block.text or ""
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                t = getattr(block, "text", "")
+                if isinstance(t, str):
+                    text += t
+                elif t is not None:
+                    text += str(t)
         usage = _extract_anthropic_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
@@ -394,7 +399,13 @@ class LLMClient:
         message = getattr(choice, "message", None)
         if message is None:
             raise ValueError("provider response choice has no message")
-        text = message.content or ""
+        _content = getattr(message, "content", None)
+        if isinstance(_content, str):
+            text = _content
+        elif _content is None:
+            text = ""
+        else:
+            text = str(_content)
         usage = _extract_openai_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
@@ -424,11 +435,25 @@ class LLMClient:
         text = ""
         tool_calls: list[ToolCall] = []
         for block in response.content or []:
-            if block.type == "text":
-                text += block.text or ""
-            elif block.type == "tool_use":
+            btype = getattr(block, "type", None)
+            if btype == "text":
+                t = getattr(block, "text", "")
+                if isinstance(t, str):
+                    text += t
+                elif t is not None:
+                    text += str(t)
+            elif btype == "tool_use":
+                tid = getattr(block, "id", None)
+                name = getattr(block, "name", None)
+                if not (isinstance(tid, str) and tid):
+                    continue
+                if not (isinstance(name, str) and name):
+                    continue
+                args = getattr(block, "input", None)
+                if not isinstance(args, dict):
+                    args = {}
                 tool_calls.append(
-                    ToolCall(id=block.id, name=block.name, arguments=block.input or {})
+                    ToolCall(id=tid, name=name, arguments=args)
                 )
         usage = _extract_anthropic_usage(response)
         try:
@@ -471,7 +496,13 @@ class LLMClient:
         message = getattr(choice, "message", None)
         if message is None:
             raise ValueError("provider response choice has no message")
-        text = message.content or ""
+        _content = getattr(message, "content", None)
+        if isinstance(_content, str):
+            text = _content
+        elif _content is None:
+            text = ""
+        else:
+            text = str(_content)
         tool_calls: list[ToolCall] = []
         for tc in message.tool_calls or []:
             fn = getattr(tc, "function", None)
@@ -493,7 +524,7 @@ class LLMClient:
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
-            stop_reason=choice.finish_reason,
+            stop_reason=getattr(choice, "finish_reason", None),
             raw=response,
             usage=usage,
         )

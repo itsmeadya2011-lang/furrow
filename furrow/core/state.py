@@ -77,6 +77,37 @@ def state_path_for(
     return Path(workspace) / Path(relative)
 
 
+def _fsync_directory(directory: Path) -> None:
+    """fsync the parent directory so a rename landing in it is durable.
+
+    On POSIX, ``os.replace`` only makes the new directory entry visible; the
+    data is not durable until the directory itself is fsynced. A crash right
+    after :meth:`StateStore.save` could otherwise lose the state file even
+    though the temporary payload was fsynced.
+
+    Durability hardening must never make a save fail, so any filesystem that
+    cannot fsync a directory (or any ``OSError`` while opening/fsyncing it) is
+    logged at warning/debug level and swallowed. On non-POSIX platforms this
+    is a no-op.
+    """
+    if os.name != "posix":
+        return
+    fd = -1
+    try:
+        try:
+            fd = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        except OSError as exc:
+            logger.debug("Could not open directory %s for fsync: %s", directory, exc)
+            return
+        try:
+            os.fsync(fd)
+        except OSError as exc:
+            logger.warning("Could not fsync directory %s: %s", directory, exc)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 class StateStore:
     """Reads and writes a :class:`RunState` JSON document."""
 
@@ -136,6 +167,7 @@ class StateStore:
                 os.fsync(tmp.fileno())
             os.replace(tmp_name, self.path)
             tmp_name = None
+            _fsync_directory(self.path.parent)
         finally:
             if tmp_name is not None:
                 try:

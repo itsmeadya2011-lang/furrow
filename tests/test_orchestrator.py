@@ -538,6 +538,47 @@ async def test_worker_files_changed_empty_when_none(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_task_retries_union_files_changed(tmp_path, monkeypatch):
+    """A task that fails then succeeds should union files from both attempts."""
+    class RetryWorker:
+        calls = 0
+
+        def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+            self.task = task
+
+        async def run(self):
+            RetryWorker.calls += 1
+            if RetryWorker.calls == 1:
+                # First attempt: fails but records a.py
+                return WorkerResult(
+                    summary="fail",
+                    success=False,
+                    files_changed=["a.py"],
+                    error="boom",
+                )
+            # Second attempt: succeeds and records b.py
+            return WorkerResult(
+                summary="ok",
+                success=True,
+                files_changed=["b.py"],
+            )
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", RetryWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+
+    task = orch.tasks[0]
+    assert task.status == "completed"
+    assert task.files_changed == ["a.py", "b.py"]
+    assert result.files_changed == ["a.py", "b.py"]
+    assert RetryWorker.calls == 2
+
+
+@pytest.mark.asyncio
 async def test_blocked_dep_counted_in_tasks_blocked(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):

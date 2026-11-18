@@ -215,3 +215,71 @@ def test_load_deeply_nested_json_returns_none(tmp_path: Path) -> None:
 
     assert store.load() is None
 
+
+def test_save_fsyncs_the_parent_directory(tmp_path: Path, monkeypatch) -> None:
+    import furrow.core.state as state_module
+
+    real_open = state_module.os.open
+    real_fsync = state_module.os.fsync
+    real_close = state_module.os.close
+    real_fstat = state_module.os.fstat
+
+    opened_paths: list = []
+    fsynced_fds: list = []
+
+    def recording_open(path, flags, *args, **kwargs):
+        opened_paths.append(Path(path))
+        return real_open(path, flags, *args, **kwargs)
+
+    def recording_fsync(fd):
+        fsynced_fds.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(state_module.os, "open", recording_open)
+    monkeypatch.setattr(state_module.os, "fsync", recording_fsync)
+    monkeypatch.setattr(state_module.os, "close", real_close)
+    monkeypatch.setattr(state_module.os, "fstat", real_fstat)
+
+    store = StateStore(tmp_path / "s.json")
+    store.save(RunState(goal="g"))
+
+    # At least two fsync calls happened: the temp file and the parent directory.
+    # (The fd numbers may coincide because the temp file is closed before the
+    # directory is opened, so we count calls rather than distinct fds.)
+    assert len(fsynced_fds) >= 2
+    # The parent directory must have been opened (for fsync) during the save.
+    assert tmp_path in opened_paths
+
+
+def test_save_survives_directory_fsync_failure(tmp_path: Path, monkeypatch) -> None:
+    import stat as stat_module
+
+    import furrow.core.state as state_module
+
+    real_fsync = state_module.os.fsync
+    real_fstat = state_module.os.fstat
+
+    def failing_fsync(fd):
+        # Raise only for the directory fd (not a regular file), simulating a
+        # filesystem that cannot fsync a directory. Durability hardening must
+        # never make a save fail.
+        try:
+            mode = real_fstat(fd).st_mode
+        except OSError:
+            mode = 0
+        if not stat_module.S_ISREG(mode):
+            raise OSError("fsync not supported on directory")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(state_module.os, "fsync", failing_fsync)
+
+    store = StateStore(tmp_path / "s.json")
+    state = RunState(goal="survives")
+
+    # Must not raise despite the directory fsync failing.
+    store.save(state)
+
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.goal == "survives"
+

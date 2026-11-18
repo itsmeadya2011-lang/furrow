@@ -309,6 +309,16 @@ def test_api_status(client: TestClient, fake_orchestrator: type[FakeOrchestrator
     assert "result" in body
 
 
+def test_api_status_reports_run_error(client: TestClient) -> None:
+    server._CURRENT["error"] = "boom"
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    assert response.json()["error"] == "boom"
+    server._reset_registry()
+
+
 def test_websocket_streams_events(
     client: TestClient, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

@@ -256,6 +256,12 @@ def web(host: str, port: int) -> None:
 
     try:
         run(host=host, port=port)
+    except KeyboardInterrupt:
+        raise
+    except SystemExit as exc:
+        message = str(exc.code) if exc.code is not None else "the server could not start"
+        click.secho(f"Furrow failed: {message}", fg="red")
+        sys.exit(1)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)

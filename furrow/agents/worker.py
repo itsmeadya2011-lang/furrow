@@ -138,10 +138,16 @@ def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
     Leading variable assignments (``FOO=1``) and wrapper program names
     (``sudo``, ``env``, ``nohup``, ...) are skipped so that the real program
     that runs is reported, together with the remaining argument tokens.
+    Wrapper option flags are skipped too.
     """
     tokens = _shell_tokens(segment.strip())
     if not tokens:
         return None
+    VALUE_OPTS = {
+        "sudo": {"-u", "--user", "-g", "--group", "-p", "--prompt"},
+        "doas": {"-u", "--user", "-g", "--group", "-p", "--prompt"},
+        "env": {"-u", "--unset", "-C", "--chdir"},
+    }
     i = 0
     while i < len(tokens):
         token = tokens[i]
@@ -151,9 +157,31 @@ def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
         base = os.path.basename(token).lower()
         if base in _WRAPPER_PROGRAMS:
             i += 1
-            # ``env`` can take a variable assignment right after it.
-            if base == "env" and i < len(tokens) and _ASSIGNMENT_RE.match(tokens[i]):
-                i += 1
+            value_opts = VALUE_OPTS.get(base, set())
+            while i < len(tokens):
+                t = tokens[i]
+                if t == "--":
+                    i += 1
+                    break
+                if base == "env" and _ASSIGNMENT_RE.match(t):
+                    i += 1
+                    continue
+                if t.startswith("--"):
+                    if "=" in t:
+                        i += 1
+                        continue
+                    if t in value_opts:
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                if t.startswith("-"):
+                    if t in value_opts:
+                        i += 2
+                        continue
+                    i += 1
+                    continue
+                break
             continue
         break
     if i >= len(tokens):
@@ -340,21 +368,55 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
 _WRITE_PATH_PROGRAMS = frozenset({"tee"})
 
 
+def _git_subcommand(args: list[str]) -> str | None:
+    """Return the git subcommand, skipping global options that take a value."""
+    VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace",
+                  "--exec-path"}
+    i = 0
+    while i < len(args):
+        t = args[i]
+        if t == "--":
+            i += 1
+            continue
+        if t.startswith("--"):
+            if "=" in t:
+                i += 1
+                continue
+            if t in VALUE_OPTS:
+                i += 2
+                continue
+            i += 1
+            continue
+        if t.startswith("-"):
+            if t in VALUE_OPTS or t in ("-C", "-c"):
+                i += 2
+                continue
+            i += 1
+            continue
+        return t
+    return None
+
+
 def _is_force_push(segment: str, normalized: str) -> bool:
     """Report whether a segment is a git force push."""
-    if "git" not in normalized or "push" not in normalized:
+    parsed = _program_and_args(segment)
+    if parsed is None:
         return False
+    name, args = parsed
+    if name != "git":
+        return False
+    sub = _git_subcommand(args)
+    if sub != "push":
+        return False
+    push_args = args
+    # find push args after subcommand? use all args; flags may appear anywhere
     # Covers --force, --force-with-lease and --force-with-lease=<ref>.
-    if "--force" in normalized or "--force-with-lease" in normalized:
+    if any(a.lower().startswith("--force") for a in push_args):
         return True
-    tokens = _shell_tokens(segment)
-    # A short -f flag only counts as a shell token, so that ordinary
-    # commands (e.g. "ls -f") are not mistaken for a force push.
-    if any(token.lower() == "-f" for token in tokens):
+    if any(a.lower() == "-f" for a in push_args):
         return True
-    # A "+" refspec forces the update on the remote (e.g. "git push origin
-    # +main" or "git push origin HEAD:+main").
-    return any(token.startswith("+") or ":+" in token for token in tokens)
+    # A "+" refspec forces the update on the remote
+    return any(a.startswith("+") or ":+" in a for a in push_args)
 
 
 def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
@@ -366,14 +428,13 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
     expansion (``$`` or a backtick) is denied. A program with no path argument
     is allowed.
     """
-    program = _get_program_basename(segment)
-    if not program or program.lower() not in _WRITE_PATH_PROGRAMS:
+    parsed = _program_and_args(segment)
+    if parsed is None:
         return False
-    tokens = _shell_tokens(segment.strip())
-    if not tokens:
+    name, args = parsed
+    if name not in _WRITE_PATH_PROGRAMS:
         return False
-    # Skip the program name and option tokens (e.g. -a, --append).
-    for token in tokens[1:]:
+    for token in args:
         if token.startswith("-"):
             continue
         target = token.strip().strip("\"'")

@@ -1011,3 +1011,104 @@ async def test_write_file_creates_parent_dirs(tmp_path):
     await client.write_file(path, "data")
 
     assert await client.read_file(path) == "data"
+
+
+async def test_complete_anthropic_block_without_type_does_not_raise():
+    """A content block that has only ``text`` (no ``type``) is ignored.
+
+    The hardening reads ``type`` defensively; an untyped block must not raise an
+    AttributeError and must not contribute text, so ``complete`` returns "".
+    """
+
+    class _TextOnlyBlock:
+        text = "ignored text"
+
+    class _Resp:
+        usage = None
+        stop_reason = "end_turn"
+
+        def __init__(self) -> None:
+            self.content = [_TextOnlyBlock()]
+
+    class _Msgs:
+        async def create(self, **kwargs):
+            return _Resp()
+
+    class _Client:
+        messages = _Msgs()
+
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._anthropic = _Client()
+
+    result = await client.complete("hi")
+
+    assert result == ""
+
+
+async def test_chat_anthropic_skips_malformed_tool_use_block():
+    """A tool_use block missing ``id``/``name`` is skipped, the text is kept."""
+
+    class _TextBlock:
+        type = "text"
+        text = "working on it"
+
+    class _MalformedToolUse:
+        type = "tool_use"
+        # missing id and name
+
+        def __init__(self) -> None:
+            self.input = {"path": "x.py"}
+
+    class _Resp:
+        usage = None
+        stop_reason = "tool_use"
+
+        def __init__(self) -> None:
+            self.content = [_TextBlock(), _MalformedToolUse()]
+
+    class _Msgs:
+        async def create(self, **kwargs):
+            return _Resp()
+
+    class _Client:
+        messages = _Msgs()
+
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._anthropic = _Client()
+
+    result = await client.chat([{"role": "user", "content": "hi"}])
+
+    assert result.text == "working on it"
+    assert result.tool_calls == []
+
+
+async def test_chat_openai_choice_without_finish_reason_yields_none():
+    """A choice lacking ``finish_reason`` yields ``stop_reason`` of None."""
+
+    class _ChoiceNoFinish:
+        def __init__(self) -> None:
+            self.message = _FakeMessage("ok")
+
+    class _RespNoFinish:
+        def __init__(self) -> None:
+            self.choices = [_ChoiceNoFinish()]
+            self.usage = None
+
+    class _Completions:
+        async def create(self, **kwargs):
+            return _RespNoFinish()
+
+    class _Chat:
+        completions = _Completions()
+
+    class _Client:
+        chat = _Chat()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = _Client()
+
+    result = await client.chat([{"role": "user", "content": "hi"}])
+
+    assert result.text == "ok"
+    assert result.stop_reason is None
+

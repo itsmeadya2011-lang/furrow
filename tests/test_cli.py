@@ -200,6 +200,20 @@ def test_web_reports_friendly_error_on_bind_failure(
     assert "Furrow failed:" in result.output
 
 
+def test_web_reports_friendly_error_on_system_exit(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def raise_exit(*args: Any, **kwargs: Any) -> None:
+        raise SystemExit("address already in use")
+
+    monkeypatch.setattr("furrow.web.server.run", raise_exit)
+
+    result = runner.invoke(main, ["web"])
+
+    assert result.exit_code == 1
+    assert "Furrow failed:" in result.output
+
+
 def test_start_exits_1_on_failed_run(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

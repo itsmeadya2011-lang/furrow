@@ -472,9 +472,8 @@ class Orchestrator:
                     task.result = getattr(result, "summary", None)
                     task.error = getattr(result, "error", None)
                     task.attempts += 1
-                    task.files_changed = sorted(
-                        {str(p) for p in (getattr(result, "files_changed", None) or [])}
-                    )
+                    attempt_files = {str(p) for p in (getattr(result, "files_changed", None) or [])}
+                    task.files_changed = sorted(set(task.files_changed) | attempt_files)
                     task.finished_at = datetime.now(timezone.utc).isoformat()
                     if success:
                         task.status = "completed"
