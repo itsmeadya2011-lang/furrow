@@ -688,6 +688,75 @@ def test_is_command_denied_wrapper_bypass(tmp_path):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_is_command_denied_force_push_in_short_flag_cluster(tmp_path):
+    """A force push hidden in a short-flag cluster is denied.
+
+    ``git push -vf origin main`` is ``git push -v -f``: the ``f`` is a force
+    push even though the token is not exactly ``-f``.
+    """
+    denied = [
+        "git push -vf origin main",
+        "git push -fv origin main",
+    ]
+    allowed = [
+        "git push -v origin main",
+        "git push --dry-run origin main",
+        "git push -q origin main",
+        "ls -f",
+    ]
+    for cmd in denied:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_fdup_redirect_outside_workspace(tmp_path):
+    """``>& FILE`` writes to FILE, so it is checked like ``> FILE``.
+
+    ``>&2`` / ``2>&1`` only duplicate a descriptor and write no file.
+    """
+    denied = [
+        "echo x >& /etc/passwd",
+        "echo x >& ../outside.txt",
+        "echo x >& ~/x",
+    ]
+    allowed = [
+        "echo x >&2",
+        "cat foo 2>&1",
+        "echo x >& /dev/null",
+        "ls 2>/dev/null",
+    ]
+    for cmd in denied:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_checks_shell_dash_c_snippet(tmp_path):
+    """A nested shell snippet passed to ``sh -c`` is checked with the same rules."""
+    denied = [
+        "sh -c 'rm -rf /'",
+        'bash -c "rm -rf /"',
+        "sh -ec 'rm -rf /'",
+        "sh -c'rm -rf /'",
+        "sudo sh -c 'fdisk /dev/sda'",
+        "bash -c 'echo x > /etc/passwd'",
+        "sh -c 'git push --force'",
+    ]
+    allowed = [
+        "sh -c 'echo hi'",
+        "sh -c 'echo x > out.txt'",
+        "sh -c 'git push origin main'",
+        "sh script.sh",
+        "sh -n script.sh",
+        "ls -c",
+    ]
+    for cmd in denied:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel

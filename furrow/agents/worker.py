@@ -50,8 +50,11 @@ TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "length"})
 MAX_LIST_ENTRIES = 500
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
-# so the command on each side is checked as its own segment.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|(?<!>)\||\n|\r)+")
+# so the command on each side is checked as its own segment. ``&`` that is part
+# of a redirect operator (``>&`` or ``&>``) is NOT a separator: splitting it
+# would hide the redirect target, e.g. ``echo x >& /etc/passwd`` would become
+# ``echo x >`` + ``/etc/passwd`` and the escape would go unnoticed.
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|(?<!>)&(?!>)|(?<!>)\||\n|\r)+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
@@ -62,8 +65,31 @@ _HOME_VAR_RE = re.compile(
 )
 
 # The target of a redirection: ">> file", ">| file" (clobber override) or
-# "> file". ``&>`` and ``>&`` are caught because their ``>`` is matched here.
+# "> file". ``&>`` and ``&>>`` are caught because their ``>`` is matched here.
 _REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
+
+# ``>& FILE`` is a *write* redirect (it duplicates stdout onto a file), so its
+# target must be checked like any other write target. ``>&2`` / ``2>&1`` only
+# duplicate an existing descriptor and write no file, so a numeric target (or
+# ``&-``, which closes the descriptor) is not a write.
+_FDUP_RE = re.compile(r">&\s*([^\s;|&<>]+)")
+
+#: A bare file-descriptor number (``2``, ``1``) or the close spelling (``-``).
+_FD_NUMBER_RE = re.compile(r"-?\d+")
+
+
+def _is_fd_target(target: str) -> bool:
+    """True when a ``>&`` target only references a descriptor, writing no file.
+
+    ``>&2``, ``2>&1`` and ``>&-`` duplicate or close an existing descriptor;
+    anything else (``>& file``) names a file that is written to.
+    """
+    return bool(_FD_NUMBER_RE.fullmatch(target))
+
+
+#: Programs that run a shell snippet given after ``-c``. The snippet is itself
+#: a command and must be checked with the same rules.
+_SHELLS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash"})
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -333,6 +359,19 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
             return True
         if not _target_inside_workspace(target, workspace):
             return True
+    # ``>& FILE`` duplicates stdout onto FILE, so FILE is written to and must
+    # be inside the workspace. ``>&2`` / ``2>&1`` / ``>&-`` only reference an
+    # existing descriptor (or close it) and write no file, so they are fine.
+    for match in _FDUP_RE.finditer(segment):
+        target = match.group(1).strip().strip("\"'")
+        if not target or _is_fd_target(target):
+            continue
+        if target in _SPECIAL_WRITE_TARGETS:
+            continue
+        if "$" in target or "`" in target:
+            return True
+        if not _target_inside_workspace(target, workspace):
+            return True
     return False
 
 
@@ -348,10 +387,13 @@ def _is_force_push(segment: str, normalized: str) -> bool:
     if "--force" in normalized or "--force-with-lease" in normalized:
         return True
     tokens = _shell_tokens(segment)
-    # A short -f flag only counts as a shell token, so that ordinary
-    # commands (e.g. "ls -f") are not mistaken for a force push.
-    if any(token.lower() == "-f" for token in tokens):
-        return True
+    # A short -f flag counts as a shell token, so that ordinary commands
+    # (e.g. "ls -f") are not mistaken for a force push. It may also hide in a
+    # short-flag cluster such as "-vf" ("git push -vf origin main").
+    for token in tokens:
+        lowered = token.lower()
+        if lowered == "-f" or _short_cluster_has(lowered, "f"):
+            return True
     # A "+" refspec forces the update on the remote (e.g. "git push origin
     # +main" or "git push origin HEAD:+main").
     return any(token.startswith("+") or ":+" in token for token in tokens)
@@ -428,6 +470,47 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     return bool(_writes_outside_workspace(segment, workspace))
 
 
+def _shell_snippets(segment: str) -> list[str]:
+    """Return the script arguments passed to a shell via ``-c``.
+
+    ``sh -c 'rm -rf /'`` runs a whole new command line, so the snippet must be
+    checked with the same rules as the command itself. ``-c`` may also be
+    clustered (``bash -ec '...'``) or written as ``-cSCRIPT``.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return []
+    name, args = parsed
+    if name not in _SHELLS:
+        return []
+    snippets: list[str] = []
+    index = 0
+    while index < len(args):
+        token = args[index]
+        if token == "--":
+            break
+        if token == "-c":
+            if index + 1 < len(args):
+                snippets.append(args[index + 1])
+                index += 2
+                continue
+            break
+        if token.startswith("-c") and len(token) > 2:
+            # "-cSCRIPT" with the script attached (e.g. ``sh -c'rm -rf /'``).
+            snippets.append(token[2:])
+            index += 1
+            continue
+        if token.startswith("-") and not token.startswith("--") and "c" in token[1:]:
+            # A cluster such as "-ec": the script is the next argument.
+            if index + 1 < len(args):
+                snippets.append(args[index + 1])
+                index += 2
+                continue
+            break
+        index += 1
+    return snippets
+
+
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     """Check a command - or the text of a command substitution - against the policy."""
     normalized = _normalize_command(text)
@@ -439,11 +522,16 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
         return True
-    # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
+        # The shell runs the substituted text, so it is checked as well.
         for substitution in _extract_command_substitutions(text):
             if _text_is_denied(substitution, workspace, depth + 1):
                 return True
+        # ``sh -c '...'`` runs a nested shell snippet: check it too.
+        for segment in _split_command_segments(text):
+            for snippet in _shell_snippets(segment):
+                if snippet.strip() and _text_is_denied(snippet, workspace, depth + 1):
+                    return True
     return False
 
 

@@ -197,6 +197,33 @@ def parse_plan(text: str) -> Plan:
         raise ValueError(f"{e}\nExcerpt: {excerpt}") from e
 
 
+#: Failure keywords used by the prose fallback of :func:`parse_test_result`.
+_FAILURE_KEYWORD_RE = re.compile(
+    r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+    re.IGNORECASE,
+)
+
+#: Counter phrases that mention a failure keyword but report *zero* failures,
+#: e.g. "5 passed, 0 failed", "no failures", "0 errors", "errors=0".
+#: They describe a green run and must not be read as a failure.
+_ZERO_COUNT_RE = re.compile(
+    r"\b(?:0|no|none|zero)\s+(?:fail(?:ed|ure|ures)?|error(?:s)?)\b"
+    r"|\b(?:fail(?:ed|ure|ures)?|error(?:s)?)\b\s*[:=]?\s*(?:0|none|zero)\b"
+    r"(?=\s*[,;)]|\s*$)",
+    re.IGNORECASE,
+)
+
+
+def _has_failure_keyword(text: str) -> bool:
+    """True when *text* reports a failure that is not a zero counter.
+
+    ``5 passed, 0 failed`` and ``0 errors`` describe a green run and are not
+    failures, while ``1 failed, 0 errors`` still reports a real failure.
+    """
+    remainder = _ZERO_COUNT_RE.sub(" ", text)
+    return bool(_FAILURE_KEYWORD_RE.search(remainder))
+
+
 def parse_test_result(text: str) -> TestResult:
     """Parse a tester response into TestResult. NEVER raise."""
     try:
@@ -215,39 +242,36 @@ def parse_test_result(text: str) -> TestResult:
         if m:
             passed = m.group(1) == "true"
         else:
+            # An explicit verdict written as prose: "passed: true" / "passed: no"
+            # / "failed: true".  The negative spelling matters: without it an
+            # unquoted ``passed: false`` used to be read as a PASS.
             m_true = re.search(r"\bpassed\b\s*[:=]\s*(true|yes|success)\b", lower)
-            m_false = re.search(r"\b(failed|failure)\b\s*[:=]\s*(true|yes)\b", lower)
-            if m_false:
+            m_passed_false = re.search(r"\bpassed\b\s*[:=]\s*(false|no)\b", lower)
+            m_failed_true = re.search(r"\b(failed|failure)\b\s*[:=]\s*(true|yes)\b", lower)
+            if m_failed_true or m_passed_false:
                 passed = False
             elif m_true:
                 passed = True
             else:
                 m_success = re.search(
-                    r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
+                    r"\b(no failures?|all tests passed|tests passed|success)\b",
                     lower,
                 )
-                if m_success:
-                    passed = True
-                else:
-                    m_fail = re.search(
-                        r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-                        lower,
-                    )
-                    passed = not m_fail
+                # A green summary ("0 failed", "0 errors") is not a failure.
+                passed = True if m_success else not _has_failure_keyword(lower)
 
         summary = s.strip()[:500]
 
-        failure_words = re.compile(
-            r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-            re.IGNORECASE,
-        )
         failures = []
         seen = set()
         for line in s.splitlines():
             line_stripped = line.strip()
             if not line_stripped:
                 continue
-            if failure_words.search(line_stripped):
+            # Only a real failure line is a failure: a green counter such as
+            # "0 failed" or "5 passed, 0 errors" must not be reported as one,
+            # because a listed "failure" turns a pass into a failure.
+            if _has_failure_keyword(line_stripped):
                 if line_stripped not in seen:
                     seen.add(line_stripped)
                     failures.append(line_stripped)

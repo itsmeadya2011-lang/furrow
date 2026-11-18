@@ -110,6 +110,38 @@ def test_parse_test_result_never_raises_on_empty_string():
     assert isinstance(r, TestResult)
 
 
+def test_parse_test_result_heuristic_explicit_prose_verdict():
+    """An unquoted prose verdict is honoured, including the negative spelling.
+
+    ``passed: false`` used to be read as a PASS because only the positive
+    ``passed: true`` was recognised.
+    """
+    assert parsing.parse_test_result("passed: false").passed is False
+    assert parsing.parse_test_result("passed=false").passed is False
+    assert parsing.parse_test_result("passed: no").passed is False
+    assert parsing.parse_test_result("passed: true").passed is True
+    assert parsing.parse_test_result("passed: yes").passed is True
+    assert parsing.parse_test_result("failed: true").passed is False
+    assert parsing.parse_test_result("result: failed").passed is False
+
+
+def test_parse_test_result_heuristic_zero_error_counters_are_not_failures():
+    """Green zero-count summaries are passes and list no failures.
+
+    ``error count is 0`` used to be read as a failure because the bare word
+    ``error`` was matched, and a listed failure turns a pass into a failure.
+    """
+    for text in ["0 errors", "no failures", "5 passed, 0 failed", "1 passed, 0 errors"]:
+        r = parsing.parse_test_result(text)
+        assert r.passed is True, f"{text!r} should pass"
+        assert r.failures == [], f"{text!r} should list no failures"
+
+    # A single real failure alongside a zero counter is still a failure.
+    r = parsing.parse_test_result("1 failed, 0 errors")
+    assert r.passed is False
+    assert r.failures, "the failing line must still be reported"
+
+
 def test_extract_json_returns_the_first_balanced_candidate():
     assert parsing.extract_json("prefix [draft] suffix") == "[draft]"
 
