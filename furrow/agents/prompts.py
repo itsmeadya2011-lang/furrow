@@ -71,6 +71,34 @@ WORKER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "edit_file",
+        "description": (
+            "make a targeted edit to a file by replacing a specific string with a new string."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_string": {"type": "string"},
+                "new_string": {"type": "string"},
+            },
+            "required": ["path", "old_string", "new_string"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "search for a pattern in files under a workspace directory.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "include": {"type": "string"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
         "name": "list_files",
         "description": "list files under a workspace directory (relative paths).",
         "parameters": {

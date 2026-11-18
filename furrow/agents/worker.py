@@ -573,6 +573,27 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "edit_file":
+            if "old_string" not in args:
+                return "error: missing old_string"
+            if "new_string" not in args:
+                return "error: missing new_string"
+            old_string = args["old_string"]
+            new_string = args["new_string"]
+            if not isinstance(old_string, str):
+                return "error: invalid old_string (expected a string)"
+            if not isinstance(new_string, str):
+                return "error: invalid new_string (expected a string)"
+            return await self._edit_file(str(args.get("path", "")), old_string, new_string)
+        if name == "grep":
+            if "pattern" not in args:
+                return "error: missing pattern"
+            pattern = args["pattern"]
+            if not isinstance(pattern, str):
+                return "error: invalid pattern (expected a string)"
+            path = str(args.get("path", ".")) if args.get("path") is not None else "."
+            include = str(args.get("include", "")) if args.get("include") is not None else ""
+            return await self._grep(pattern, path, include)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -624,6 +645,65 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _edit_file(self, path: str, old_string: str, new_string: str) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if old_string not in content:
+            return "error: old_string not found in file"
+        new_content = content.replace(old_string, new_string)
+        try:
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path} ({len(new_content.encode('utf-8'))} bytes)"
+
+    async def _grep(self, pattern: str, path: str, include: str) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            import fnmatch
+            import re
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+        try:
+            entries = await asyncio.to_thread(self.client.list_files, resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        matches = []
+        base = self.workspace.resolve()
+        for entry in entries[:MAX_LIST_ENTRIES]:
+            try:
+                entry_path = Path(entry)
+                rel_path = str(entry_path.relative_to(base)) if entry_path.is_absolute() else entry
+            except ValueError:
+                rel_path = str(entry)
+            if include and not fnmatch.fnmatch(rel_path, include):
+                continue
+            file_path = Path(entry) if Path(entry).is_absolute() else base / entry
+            try:
+                file_content = await self.client.read_file(file_path)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            for line_num, line in enumerate(file_content.splitlines(), 1):
+                if regex.search(line):
+                    matches.append(f"{rel_path}:{line_num}:{line}")
+                    if len(matches) >= 100:
+                        break
+            if len(matches) >= 100:
+                break
+        if not matches:
+            return "no matches found"
+        return "\n".join(matches)
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
