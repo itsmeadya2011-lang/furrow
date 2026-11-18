@@ -41,6 +41,7 @@ furrow start "Add JWT auth to the API"
 Options:
 - `--model` — override the LLM model
 - `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
+- `--max-cost USD` — maximum cumulative LLM cost in USD (0 = unlimited; negative values are rejected)
 - `--workspace PATH` — project directory to work in
 - `--resume` — resume the persisted run instead of starting fresh
 
@@ -104,13 +105,14 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
 | `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
+| `FURROW_MAX_COST_USD` | (none) | Maximum cumulative LLM cost in USD; when exceeded the orchestrator stops the run |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 | `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |
 
 A `.env` file is read automatically via pydantic-settings.
 
-The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` rejects a negative value at the command line.
+The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. `max_cost_usd`, when set, must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` rejects a negative value at the command line.
 
 ## How the loop works
 

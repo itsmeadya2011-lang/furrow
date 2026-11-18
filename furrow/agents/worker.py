@@ -1,3 +1,5 @@
+"""WorkerAgent that executes tasks using an LLM tool-calling loop with read_file, write_file, list_files, and run_command tools, with a hardened command guard for security."""
+
 from __future__ import annotations
 
 import asyncio
@@ -652,10 +654,6 @@ class WorkerAgent:
         # the workspace.
         if is_command_denied(command, self.workspace):
             return "error: command denied"
-        try:
-            shlex.split(command)
-        except ValueError:
-            return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
@@ -674,7 +672,10 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
+                try:
+                    parts = shlex.split(command)
+                except ValueError:
+                    return "error: could not parse command"
                 if not parts:
                     return "error: empty command"
                 proc = await asyncio.create_subprocess_exec(

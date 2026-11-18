@@ -1,3 +1,5 @@
+"""LLMClient with lazy Anthropic/OpenAI/Ollama client creation, retry logic for transient errors, tool schema conversion, token usage tracking, and cost estimation."""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,5 @@
+"""TesterAgent that detects and runs project test commands (pytest, npm/pnpm/yarn, cargo, go), combines exit code with LLM verdict, and parses test failures."""
+
 from __future__ import annotations
 
 import asyncio

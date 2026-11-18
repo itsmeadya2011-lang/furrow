@@ -1,3 +1,5 @@
+"""PlannerAgent that calls an LLM to create a task plan with dependencies, with a one-shot retry for parse failures."""
+
 from __future__ import annotations
 
 from furrow.agents.parsing import parse_plan

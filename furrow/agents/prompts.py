@@ -1,3 +1,5 @@
+"""Prompt templates and tool schemas for the planner, worker, and tester agents."""
+
 from __future__ import annotations
 
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.

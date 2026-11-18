@@ -1,3 +1,5 @@
+"""Main orchestration loop that drives planner→execute→test→repeat with state persistence, plan merging, dependency wave scheduling, and fail-safe error handling."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +17,13 @@ from furrow.llm import LLMClient
 
 _UNSET = object()
 
+# Maximum characters shown in a one-line console summary (truncated with an
+# ellipsis). Keeps terminal output readable.
 _MAX_TEXT = 120
+
+# Number of consecutive cycles with no progress (same plan, no test pass)
+# before the loop stops.
+_NO_PROGRESS_THRESHOLD = 2
 
 
 class Orchestrator:
@@ -108,6 +116,23 @@ class Orchestrator:
         self._usage_seen = cumulative
         return cycle_usage
 
+    def _check_cost_budget(self) -> bool:
+        """Return True when the run has exceeded its configured cost budget.
+
+        When the budget is exceeded the stopped reason is set and an ERROR event
+        is emitted. Returns False when no budget is configured.
+        """
+        if self.settings.max_cost_usd is None:
+            return False
+        if self._usage.cost_usd <= self.settings.max_cost_usd:
+            return False
+        self._stopped_reason = (
+            f"cost budget exceeded: ${self._usage.cost_usd:.4f} "
+            f"> ${self.settings.max_cost_usd:.4f}"
+        )
+        self.event_bus.emit(Event(type=EventType.ERROR, message=self._stopped_reason))
+        return True
+
     def status(self) -> dict[str, Any]:
         """Return a snapshot of the current run."""
         return {
@@ -174,6 +199,8 @@ class Orchestrator:
         while True:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
+                break
+            if self._check_cost_budget():
                 break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
@@ -255,6 +282,9 @@ class Orchestrator:
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
             cycle_usage = self._accumulate_usage()
+            # Check cost budget after accumulating usage but before saving
+            # state, so the final cycle is still persisted.
+            cost_exceeded = self._check_cost_budget()
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
@@ -263,7 +293,7 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+            sig = "|".join(f"{t.id}:{t.description}:{t.files}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
@@ -271,7 +301,7 @@ class Orchestrator:
             guard_tripped = False
             if no_signal and sig == self._prev_sig:
                 self._no_progress += 1
-                if self._no_progress >= 2:
+                if self._no_progress >= _NO_PROGRESS_THRESHOLD:
                     self._stopped_reason = (
                         "no test runner detected" if skipped else "no progress"
                     )
@@ -302,7 +332,7 @@ class Orchestrator:
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
-            if guard_tripped:
+            if guard_tripped or cost_exceeded:
                 break
 
         if not self._stopped_reason:
@@ -385,20 +415,45 @@ class Orchestrator:
         self._active_ids = {t.id for t in plan.tasks}
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
-        ids = {t.id for t in tasks}
+        """Group tasks into dependency waves for parallel execution.
+
+        Uses a Kahn-style topological sort (O(n + e)) rather than repeatedly
+        scanning all remaining tasks. Tasks with cyclic or unresolvable
+        dependencies are marked blocked.
+        """
+        if not tasks:
+            return []
+        task_by_id = {t.id: t for t in tasks}
+        ids = set(task_by_id)
+        # dep_count: how many in-plan dependencies each task still needs.
+        dep_count: dict[str, int] = {}
+        # dependents: for each task id, which tasks depend on it.
+        dependents: dict[str, list[str]] = {t.id: [] for t in tasks}
+        for t in tasks:
+            in_plan = {d for d in t.dependencies if d in ids}
+            dep_count[t.id] = len(in_plan)
+            for d in in_plan:
+                dependents[d].append(t.id)
+
+        # Seed with tasks that have no dependencies.
+        wave = [task_by_id[tid] for tid in sorted(dep_count) if dep_count[tid] == 0]
         waves: list[list[TaskModel]] = []
-        done: set[str] = set()
-        remaining = list(tasks)
-        while remaining:
-            wave = [t for t in remaining if all(d in done or d not in ids for d in t.dependencies)]
-            if not wave:
-                for t in remaining:
-                    t.status = "blocked"
-                break
+        scheduled: set[str] = set()
+        while wave:
             waves.append(wave)
+            next_wave: list[TaskModel] = []
             for t in wave:
-                done.add(t.id)
-            remaining = [t for t in remaining if t not in wave]
+                scheduled.add(t.id)
+                for dep_id in dependents[t.id]:
+                    dep_count[dep_id] -= 1
+                    if dep_count[dep_id] == 0:
+                        next_wave.append(task_by_id[dep_id])
+            wave = next_wave
+
+        # Any task not scheduled has a cycle or unresolvable dependency.
+        for t in tasks:
+            if t.id not in scheduled:
+                t.status = "blocked"
         return waves
 
     async def _execute(self, plan: Plan) -> None:
@@ -427,47 +482,7 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
                 try:
                     result = await worker_for(task).run()
-                except asyncio.CancelledError:
-                    raise  # cancellation is not a task failure
-                except Exception as exc:
-                    # A raised exception is handled exactly like a worker that
-                    # returned success=False: it consumes one attempt and follows
-                    # the same retry / terminal-failure path.
-                    task.attempts += 1
-                    task.error = f"{type(exc).__name__}: {exc}"
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
-                    )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
-                    )
-                    task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
-                    if task.status == "pending":
-                        self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
-                        self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
-                        )
-                    else:
-                        self._say(f"[red]Task {task_id} failed: {detail}[/red]")
-                    return
-                try:
+                    # Process the worker result: update task state, emit events.
                     success = bool(getattr(result, "success", False))
                     task.result = getattr(result, "summary", None)
                     task.error = getattr(result, "error", None)
@@ -506,8 +521,13 @@ class Orchestrator:
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
                 except asyncio.CancelledError:
-                    raise
+                    raise  # cancellation is not a task failure
                 except Exception as exc:
+                    # A raised exception (either from worker.run() itself or from
+                    # attribute access while processing the result) is handled
+                    # exactly like a worker that returned success=False: it
+                    # consumes one attempt and follows the retry /
+                    # terminal-failure path.
                     task.attempts += 1
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()

@@ -1,3 +1,5 @@
+"""Robust JSON extraction and parsing utilities for LLM output, including code fence stripping, balanced-bracket JSON finding, plan parsing, and test result parsing with fallbacks."""
+
 from __future__ import annotations
 
 import json
