@@ -5,6 +5,8 @@ import re
 from collections.abc import Iterator
 from typing import Any
 
+from pydantic import ValidationError
+
 from furrow.config import Plan, TaskModel, TestResult
 
 
@@ -192,7 +194,7 @@ def parse_plan(text: str) -> Plan:
         else:
             raise ValueError("tasks must be a list")
         return Plan(tasks=tasks, rationale=rationale)
-    except (ValueError, TypeError) as e:
+    except (ValueError, TypeError, ValidationError) as e:
         excerpt = text[:300] if isinstance(text, str) else str(text)[:300]
         raise ValueError(f"{e}\nExcerpt: {excerpt}") from e
 
@@ -204,7 +206,7 @@ def parse_test_result(text: str) -> TestResult:
             data = parse_json(text)
             if isinstance(data, dict):
                 return TestResult(**data)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ValidationError):
             pass
 
         s = strip_code_fences(text) if isinstance(text, str) else str(text)
@@ -255,9 +257,9 @@ def parse_test_result(text: str) -> TestResult:
                     break
 
         return TestResult(passed=passed, summary=summary, failures=failures)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, ValidationError):
         try:
             s = strip_code_fences(text) if isinstance(text, str) else str(text)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ValidationError):
             s = str(text) if text is not None else ""
         return TestResult(passed=True, summary=s[:500], failures=[])
