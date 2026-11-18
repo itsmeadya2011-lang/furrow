@@ -20,6 +20,7 @@ from typing import Any
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -31,6 +32,14 @@ from furrow.core.state import StateStore
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Furrow")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 POLL_INTERVAL = 0.05
 
