@@ -37,11 +37,16 @@ def _run_settings(
     """Return a validated copy of the global settings with the given overrides applied.
 
     The module level ``settings`` object is never mutated: a fresh validated
-    instance is constructed for this run only.
+    instance is constructed for this run only. When *model* is supplied it
+    overrides every role-specific model (planner/worker/tester) so that a
+    single ``--model`` flag actually reaches the agents.
     """
     updates: dict[str, Any] = {}
     if model is not None:
         updates["model"] = model
+        updates["planner_model"] = model
+        updates["worker_model"] = model
+        updates["tester_model"] = model
     if max_cycles is not None:
         updates["max_cycles"] = max_cycles
     if workspace is not None:

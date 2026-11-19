@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
@@ -24,7 +24,7 @@ try:
     import structlog
     _STRUCTLOG_AVAILABLE = True
 except ImportError:
-    structlog = None  # type: ignore[assignment]
+    structlog = cast(Any, None)
     _STRUCTLOG_AVAILABLE = False
 
 
