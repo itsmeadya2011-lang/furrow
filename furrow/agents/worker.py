@@ -62,8 +62,12 @@ _HOME_VAR_RE = re.compile(
 )
 
 # The target of a redirection: ">> file", ">| file" (clobber override) or
-# "> file". ``&>`` and ``>&`` are caught because their ``>`` is matched here.
-_REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
+# "> file". File-descriptor prefixed forms ("2>", "2>>", "2>|") and the
+# bashism "&>" (redirect both stdout and stderr) are also matched.  The
+# character class for the target excludes "&" so "&1" style fd targets are
+# not misread as file paths, and "&>" is matched as a unit before the "&"
+# could be consumed as an optional prefix.
+_REDIRECT_RE = re.compile(r"(?:[0-9]?(?:>>|>\|?|>)|&>)\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.

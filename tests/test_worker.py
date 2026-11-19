@@ -615,6 +615,39 @@ def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
 
 
+def test_is_command_denied_denies_stderr_redirect_outside_workspace(tmp_path):
+    """``2>`` (stderr redirect) outside the workspace must be denied."""
+    denied = [
+        "echo hi 2> /etc/passwd",
+        "echo hi 2>> /etc/passwd",
+        "echo hi 2>| /etc/passwd",
+        "ls 2> ../../etc/passwd",
+    ]
+    for cmd in denied:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+
+
+def test_is_command_denied_denies_both_streams_redirect_outside_workspace(tmp_path):
+    """``&>`` (redirect both stdout and stderr) outside the workspace must be denied."""
+    denied = [
+        "echo hi &> /etc/passwd",
+        "echo hi &> ../../etc/passwd",
+    ]
+    for cmd in denied:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+
+
+def test_is_command_denied_allows_fd_redirect_inside_workspace(tmp_path):
+    """``2>`` and ``&>`` whose targets stay inside the workspace are allowed."""
+    allowed = [
+        "echo hi 2> out.txt",
+        "echo hi &> out.txt",
+        "ls 2>/dev/null",
+    ]
+    for cmd in allowed:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 def test_is_command_denied_rm_token_aware(tmp_path):
     """Dangerous ``rm`` is caught token-aware regardless of flag order."""
     denied_commands = [
