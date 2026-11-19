@@ -162,6 +162,31 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    def _fail_task(self, task: TaskModel, error_text: str, max_retries: int) -> str:
+        """Handle a task failure: update state, emit events, and return the new status."""
+        task.attempts += 1
+        task.error = error_text
+        task.finished_at = datetime.now(timezone.utc).isoformat()
+        task.status = "pending" if task.attempts <= max_retries else "failed"
+        self.event_bus.emit(
+            Event(
+                type=EventType.ERROR,
+                message=f"task {task.id} raised: {task.error}",
+                data={"task": task.id, "error": task.error, "attempts": task.attempts},
+            )
+        )
+        self.event_bus.emit(
+            Event(
+                type=EventType.TASK_FINISHED,
+                data={
+                    "task": task.id,
+                    "success": False,
+                    "summary": str(task.error or ""),
+                },
+            )
+        )
+        return task.status
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
@@ -433,30 +458,11 @@ class Orchestrator:
                     # A raised exception is handled exactly like a worker that
                     # returned success=False: it consumes one attempt and follows
                     # the same retry / terminal-failure path.
-                    task.attempts += 1
-                    task.error = f"{type(exc).__name__}: {exc}"
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
-                    )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
+                    task.status = self._fail_task(
+                        task, f"{type(exc).__name__}: {exc}", max_retries
                     )
                     task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
+                    detail = self._escape(self._one_line(task.error or ""))
                     if task.status == "pending":
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(
@@ -507,30 +513,11 @@ class Orchestrator:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    task.attempts += 1
-                    task.error = f"{type(exc).__name__}: {exc}"
-                    task.finished_at = datetime.now(timezone.utc).isoformat()
-                    task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
-                    )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
+                    task.status = self._fail_task(
+                        task, f"{type(exc).__name__}: {exc}", max_retries
                     )
                     task_id = self._escape(task.id)
-                    detail = self._escape(self._one_line(task.error))
+                    detail = self._escape(self._one_line(task.error or ""))
                     if task.status == "pending":
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(

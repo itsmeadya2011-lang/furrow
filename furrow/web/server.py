@@ -602,6 +602,12 @@ async def api_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/health")
+async def api_health() -> JSONResponse:
+    """Simple health check, always available."""
+    return JSONResponse(status_code=200, content={"status": "ok"})
+
+
 @app.post("/api/start")
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
@@ -647,6 +653,20 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the currently running Furrow run, if any."""
+    if not _CURRENT.get("running") or _CURRENT.get("task") is None:
+        return JSONResponse(
+            status_code=409,
+            content={"cancelled": False, "error": "no run in progress"},
+        )
+    task = _CURRENT.get("task")
+    assert task is not None
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
 
 
 @app.websocket("/ws")

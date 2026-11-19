@@ -269,6 +269,61 @@ def test_api_state_with_state(client: TestClient, tmp_path: Path) -> None:
     assert body["state"]["original_goal"] == "ship it"
 
 
+def test_api_health_returns_ok(client: TestClient) -> None:
+    """The health endpoint always returns 200 with {"status": "ok"}."""
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_api_cancel_without_a_run_returns_409(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """Cancelling when no run is in progress returns 409."""
+    server._reset_registry()
+
+    response = client.post("/api/cancel")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["cancelled"] is False
+    assert body["error"] == "no run in progress"
+    assert fake_orchestrator.instances == [], "no orchestrator may be created"
+
+
+def test_api_cancel_calls_cancel_on_the_running_task(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """Cancelling a running run calls _cancel_run and returns 200."""
+    server._reset_registry()
+
+    class CancellableTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    task = CancellableTask()
+    server._CURRENT.update(
+        {
+            "running": True,
+            "orchestrator": fake_orchestrator(goal="g"),
+            "result": None,
+            "task": task,
+            "error": None,
+        }
+    )
+
+    response = client.post("/api/cancel")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["cancelled"] is True
+    assert task.cancelled, "the task must have been cancelled"
+
+
 def test_api_start_returns_started(
     client: TestClient, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
