@@ -1237,3 +1237,88 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_resets_attempts_when_retrying_failed_task(tmp_path, monkeypatch):
+    """A failed task with attempts left gets a fresh budget (attempts reset to 0).
+
+    The retry budget is enforced within a cycle, not across cycles, so when a
+    failed task that still has attempts left is re-planned as pending in a new
+    cycle, its attempt counter must be reset.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    # Simulate a failed task that still has attempts left (as could happen if
+    # settings changed or state was manually edited between cycles).
+    task.status = "failed"
+    task.attempts = 1  # <= max_task_retries
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+    assert plan.tasks[0].attempts == 0  # fresh budget for the new cycle
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_keeps_attempts_when_failed_task_stays_failed(tmp_path, monkeypatch):
+    """A failed task with an exhausted budget keeps its attempts and stays failed."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    # Exhausted budget: attempts > max_task_retries
+    task.status = "failed"
+    task.attempts = 2  # > max_task_retries
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "failed"
+    assert plan.tasks[0].attempts == 2  # attempts preserved
+
+
+@pytest.mark.asyncio
+async def test_goal_and_feedback_reset_when_tests_pass_after_failure(tmp_path, monkeypatch):
+    """When tests pass after a previous failure, goal and feedback are reset.
+
+    Without this reset, the planner would receive stale failure feedback in a
+    later cycle even though tests already passed.
+    """
+    cycle = {"n": 0}
+
+    class AlternatingTester:
+        async def run(self, goal, tasks):
+            cycle["n"] += 1
+            if cycle["n"] == 1:
+                return TestResult(
+                    passed=False, summary="fail", failures=["test_x failed"], skipped=False
+                )
+            return TestResult(passed=True, summary="pass", failures=[], skipped=False)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="ORIG", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = AlternatingTester()
+    result = await orch.run()
+
+    assert result.cycles == 2
+    # After the passing cycle, the goal is back to the original and feedback is
+    # cleared, so the next cycle starts from a clean slate.
+    assert orch.goal == "ORIG"
+    assert orch._feedback == ""

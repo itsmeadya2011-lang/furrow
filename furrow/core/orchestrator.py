@@ -254,6 +254,13 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+            else:
+                # Tests passed: restore the original goal and clear any stale
+                # failure feedback so the next cycle starts from a clean slate
+                # instead of being guided by feedback from a cycle that already
+                # passed.
+                self.goal = self.original_goal
+                self._feedback = ""
             cycle_usage = self._accumulate_usage()
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
@@ -361,6 +368,10 @@ class Orchestrator:
                         pt.status = "pending"
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
+                        # The retry budget is enforced within a cycle, not across
+                        # cycles: give the task a fresh budget when it is
+                        # re-planned as pending in a new cycle.
+                        old.attempts = 0
                         pt.status = "pending"
                     else:
                         pt.status = "failed"
