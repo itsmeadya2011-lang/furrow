@@ -294,6 +294,45 @@ async def test_run_command_timeout(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_command_timeout_includes_partial_output(tmp_path):
+    """Regression: a timed-out command returns any output produced before the kill."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={
+                        "command": "echo 'partial output'; sleep 5"
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 0.2})
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    content = b["content"]
+                    assert "timed out" in content
+                    assert "partial output" in content
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
 async def test_run_command_timeout_kills_grandchildren(tmp_path):
     """Regression: timing out kills the whole process group, leaving no orphans."""
     marker = tmp_path / "orphan.txt"
@@ -1015,13 +1054,24 @@ async def test_create_subprocess_exec_passes_stdin_devnull(tmp_path, monkeypatch
 
     captured = {}
 
+    async def _empty_read():
+        return b""
+
+    class FakeStreamReader:
+        async def read(self, n=-1):
+            return b""
+
     class FakeProc:
         def __init__(self, **kwargs):
             captured.update(kwargs)
             self.returncode = 0
+            self.stdout = FakeStreamReader()
+            self.stderr = FakeStreamReader()
 
         async def communicate(self):
             return (b"", b"")
+        async def wait(self):
+            return 0
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         proc = FakeProc(**kwargs)

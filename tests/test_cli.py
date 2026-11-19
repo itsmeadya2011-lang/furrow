@@ -145,6 +145,23 @@ def test_status_with_state(runner: CliRunner, tmp_path: Path) -> None:
     assert "do the thing" in result.output
 
 
+def test_status_shows_stopped_reason(runner: CliRunner, tmp_path: Path) -> None:
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        stopped_reason="no progress",
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Stopped:" in result.output
+    assert "no progress" in result.output
+
+
 def test_resume_without_state(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["resume", "--workspace", str(tmp_path)])
 

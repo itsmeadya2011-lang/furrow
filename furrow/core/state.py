@@ -68,6 +68,7 @@ class RunState(BaseModel):
     last_passed: bool | None = None
     last_skipped: bool = False
     last_summary: str = ""
+    stopped_reason: str = ""
 
 
 def state_path_for(

@@ -748,17 +748,50 @@ class WorkerAgent:
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
+        async def drain(stream) -> bytes:
+            """Read from *stream* until EOF, returning the accumulated bytes."""
+            chunks: list[bytes] = []
+            while True:
+                try:
+                    chunk = await asyncio.wait_for(stream.read(65536), timeout=1.0)
+                except asyncio.TimeoutError:
+                    break
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            return b"".join(chunks)
+
+        stdout_task = asyncio.create_task(drain(proc.stdout))
+        stderr_task = asyncio.create_task(drain(proc.stderr))
+
+        timed_out = False
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
         except asyncio.TimeoutError:
+            timed_out = True
             await self._kill_process_tree(proc, new_session)
-            return "command timed out"
+
+        # Let the stream drain tasks finish (streams reach EOF after the process
+        # exits or is killed) so any buffered output is captured.
+        gathered = await asyncio.gather(
+            stdout_task, stderr_task, return_exceptions=True
+        )
+        stdout = gathered[0] if isinstance(gathered[0], bytes) else b""
+        stderr = gathered[1] if isinstance(gathered[1], bytes) else b""
+
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
+
+        if timed_out:
+            return (
+                f"command timed out after {timeout:g}s.\n{combined}"
+                if combined.strip()
+                else "command timed out"
+            )
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined

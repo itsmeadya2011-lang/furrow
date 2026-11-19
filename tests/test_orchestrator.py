@@ -205,6 +205,20 @@ async def test_no_progress_guard(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_stopped_reason_persisted_in_state(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    st = store.load()
+    assert st is not None
+    assert st.stopped_reason == "no progress"
+
+
+@pytest.mark.asyncio
 async def test_state_persistence(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
