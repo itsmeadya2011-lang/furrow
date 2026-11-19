@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from furrow.agents.parsing import parse_plan
-from furrow.agents.prompts import PLANNER_PROMPT, PLANNER_SYSTEM
+from furrow.agents.prompts import get_planner_prompt, get_planner_system
 from furrow.config import Plan, Settings
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
@@ -13,12 +13,14 @@ class PlannerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
 
     async def plan(self, goal: str, context: str = "") -> Plan:
-        prompt = PLANNER_PROMPT + "\n\nGoal: " + goal
+        prompt = get_planner_prompt(self.settings) + "\n\nGoal: " + goal
         if context:
             prompt += "\n\nContext:\n" + context
 
         model = self.settings.planner_model
-        response = await self.client.complete(prompt, system=PLANNER_SYSTEM, model=model)
+        response = await self.client.complete(
+            prompt, system=get_planner_system(self.settings), model=model
+        )
         try:
             return parse_plan(response)
         except ValueError as first:
@@ -27,7 +29,9 @@ class PlannerAgent:
                 + "\n\nYour previous reply could not be parsed. Reply with ONLY a JSON object "
                 + "matching the required shape, no prose, no markdown fences."
             )
-            response2 = await self.client.complete(stricter, system=PLANNER_SYSTEM, model=model)
+            response2 = await self.client.complete(
+                stricter, system=get_planner_system(self.settings), model=model
+            )
             try:
                 return parse_plan(response2)
             except ValueError as second:

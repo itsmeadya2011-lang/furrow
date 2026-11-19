@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
+from furrow.config import Settings
+from furrow.config import settings as global_settings
+
+DEFAULT_PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:
 - Independent when possible
@@ -23,7 +26,7 @@ Return JSON only (no markdown, no explanation) with this shape:
 If the goal is too large for one cycle, say so in rationale and break it
 into the most critical first slice."""
 
-TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
+DEFAULT_TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
 Given the goal and test output, determine if tests passed or failed.
 
@@ -36,16 +39,16 @@ Return JSON only (no markdown) with this shape:
 
 If tests failed, list each failure in the failures array."""
 
-PLANNER_SYSTEM = """You are the planning agent of Furrow, an autonomous coding system.
+DEFAULT_PLANNER_SYSTEM = """You are the planning agent of Furrow, an autonomous coding system.
 You break the user's goal into a small set of parallelizable coding tasks,
 returned as JSON."""
 
-WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
+DEFAULT_WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
 workspace using the available tools. Make minimal, targeted changes. When done,
 respond with a concise summary and no further tool calls."""
 
-TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
+DEFAULT_TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
 
 WORKER_TOOLS: list[dict] = [
@@ -89,3 +92,33 @@ WORKER_TOOLS: list[dict] = [
         },
     },
 ]
+
+
+def get_planner_prompt(settings: Settings | None = None) -> str:
+    """Get the planner prompt, using custom prompt from settings if provided."""
+    s = settings if settings is not None else global_settings
+    return s.planner_prompt if s.planner_prompt is not None else DEFAULT_PLANNER_PROMPT
+
+
+def get_planner_system(settings: Settings | None = None) -> str:
+    """Get the planner system prompt, using custom prompt from settings if provided."""
+    s = settings if settings is not None else global_settings
+    return s.planner_system if s.planner_system is not None else DEFAULT_PLANNER_SYSTEM
+
+
+def get_worker_system(settings: Settings | None = None) -> str:
+    """Get the worker system prompt, using custom prompt from settings if provided."""
+    s = settings if settings is not None else global_settings
+    return s.worker_system if s.worker_system is not None else DEFAULT_WORKER_SYSTEM
+
+
+def get_tester_prompt(settings: Settings | None = None) -> str:
+    """Get the tester prompt, using custom prompt from settings if provided."""
+    s = settings if settings is not None else global_settings
+    return s.tester_prompt if s.tester_prompt is not None else DEFAULT_TESTER_PROMPT
+
+
+def get_tester_system(settings: Settings | None = None) -> str:
+    """Get the tester system prompt, using custom prompt from settings if provided."""
+    s = settings if settings is not None else global_settings
+    return s.tester_system if s.tester_system is not None else DEFAULT_TESTER_SYSTEM

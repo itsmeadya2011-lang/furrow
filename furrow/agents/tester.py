@@ -1,17 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 from typing import Any
 
 from furrow.agents.parsing import parse_test_result
-from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
+from furrow.agents.prompts import get_tester_prompt, get_tester_system
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
@@ -183,21 +181,6 @@ class TesterAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
 
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-        """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
-
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
@@ -218,30 +201,18 @@ class TesterAgent:
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return self._node_test_command()
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json", encoding="utf-8") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return self._node_test_command()
             except (OSError, UnicodeError, ValueError) as exc:
                 logger.warning("Could not read package.json: %s", exc)
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            return self._node_test_command()
 
         python_markers = [
             "pyproject.toml",
@@ -259,6 +230,16 @@ class TesterAgent:
             return ["go", "test", "./..."]
 
         return None
+
+    def _node_test_command(self) -> list[str]:
+        """Return the appropriate test command for a Node.js project."""
+        if (self.workspace / "bun.lock").is_file() or (self.workspace / "bun.lockb").is_file():
+            return ["bun", "test", "--silent"]
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            return ["pnpm", "test", "--silent"]
+        if (self.workspace / "yarn.lock").is_file():
+            return ["yarn", "test", "--silent"]
+        return ["npm", "test", "--silent"]
 
     def _finalize(
         self,
@@ -391,7 +372,9 @@ class TesterAgent:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    await self._kill_process_tree(proc)
+                    from furrow.core.process import kill_process_tree
+
+                    await kill_process_tree(proc, new_session=(os.name == "posix"))
                     timed_out = True
                     returncode = 1
                     stdout = b""
@@ -410,10 +393,18 @@ class TesterAgent:
             llm_result: TestResult | None = None
             if not spawn_failed:
                 # A runner that never started has no output worth summarising.
-                prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+                prompt = (
+                    get_tester_prompt(self.settings)
+                    + "\n\nGoal: "
+                    + goal
+                    + "\n\nTest output:\n"
+                    + combined
+                )
                 try:
                     response = await self.client.complete(
-                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                        prompt,
+                        system=get_tester_system(self.settings),
+                        model=self.settings.tester_model,
                     )
                     llm_result = parse_test_result(response)
                 except Exception:

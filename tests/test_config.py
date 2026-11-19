@@ -84,6 +84,21 @@ def test_settings_state_path_no_argument_uses_workspace():
     assert s.state_path() == Path("/my/workspace/.furrow/state.json")
 
 
+def test_settings_custom_prompts_accessible():
+    s = Settings(
+        planner_prompt="custom planner prompt",
+        planner_system="custom planner system",
+        worker_system="custom worker system",
+        tester_prompt="custom tester prompt",
+        tester_system="custom tester system",
+    )
+    assert s.planner_prompt == "custom planner prompt"
+    assert s.planner_system == "custom planner system"
+    assert s.worker_system == "custom worker system"
+    assert s.tester_prompt == "custom tester prompt"
+    assert s.tester_system == "custom tester system"
+
+
 def test_test_result_not_collected_by_pytest():
     assert TestResult.__test__ is False
     assert set(TestResult.model_fields) == {"passed", "summary", "failures", "skipped"}
@@ -105,7 +120,7 @@ def test_skipped_can_be_set():
 
 def test_settings_env_override(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("FURROW_MAX_CYCLES", "7")
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.max_cycles == 7
 
 
@@ -228,7 +243,7 @@ def test_usage_add_accumulates_cost_usd():
 
 def test_settings_model_pricing_defaults_to_empty(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("FURROW_MODEL_PRICING", raising=False)
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.model_pricing == {}
     assert s.pricing_overrides() == {}
 
@@ -261,7 +276,7 @@ def test_settings_reads_model_pricing_from_the_environment(
         "FURROW_MODEL_PRICING",
         '{"my-model":{"input_per_million":1.0,"output_per_million":2.0}}',
     )
-    s = Settings(_env_file=None)
+    s = Settings(_env_file=None)  # type: ignore[call-arg]
     assert s.model_pricing["my-model"].input_per_million == 1.0
     assert s.model_pricing["my-model"].output_per_million == 2.0
     assert s.pricing_overrides() == {

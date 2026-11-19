@@ -108,6 +108,11 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 | `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |
+| `FURROW_PLANNER_PROMPT` | (built-in) | Custom planner prompt (multi-line string) |
+| `FURROW_PLANNER_SYSTEM` | (built-in) | Custom planner system prompt |
+| `FURROW_WORKER_SYSTEM` | (built-in) | Custom worker system prompt |
+| `FURROW_TESTER_PROMPT` | (built-in) | Custom tester prompt |
+| `FURROW_TESTER_SYSTEM` | (built-in) | Custom tester system prompt |
 
 A `.env` file is read automatically via pydantic-settings.
 

@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    planner_prompt: str | None = None
+    planner_system: str | None = None
+    worker_system: str | None = None
+    tester_prompt: str | None = None
+    tester_system: str | None = None
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

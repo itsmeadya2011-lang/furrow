@@ -81,6 +81,52 @@ def test_detect_command_valid_package_json_with_test_script(tmp_path):
     assert cmd == ["npm", "test", "--silent"]
 
 
+def test_detect_pnpm_lockfile(tmp_path):
+    """pnpm-lock.yaml makes the detector use pnpm."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["pnpm", "test", "--silent"]
+
+
+def test_detect_yarn_lockfile(tmp_path):
+    """yarn.lock makes the detector use yarn."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "yarn.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["yarn", "test", "--silent"]
+
+
+def test_detect_bun_lockfile(tmp_path):
+    """bun.lock makes the detector use bun."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bun.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["bun", "test", "--silent"]
+
+
+def test_detect_bun_lockb(tmp_path):
+    """bun.lockb makes the detector use bun."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bun.lockb").write_bytes(b"\x00")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["bun", "test", "--silent"]
+
+
+def test_detect_bun_wins_over_pnpm(tmp_path):
+    """bun.lock takes precedence over pnpm-lock.yaml when both exist."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bun.lock").write_text("")
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["bun", "test", "--silent"]
+
+
 def test_detect_cargo(tmp_path):
     (tmp_path / "Cargo.toml").write_text("[package]\n")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
