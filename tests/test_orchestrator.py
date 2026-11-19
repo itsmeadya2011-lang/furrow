@@ -1023,6 +1023,9 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
         def __init__(self):
             self.total_usage = Usage(input_tokens=10, output_tokens=20, calls=1, cost_usd=0.123456)
 
+        def get_all_model_usage(self):
+            return {}
+
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)
     store = StateStore(tmp_path / "state.json")
@@ -1226,6 +1229,9 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     class FakeClient:
         def __init__(self):
             self.total_usage = Usage(input_tokens=10, output_tokens=20, calls=1, cost_usd=0.5)
+
+        def get_all_model_usage(self):
+            return {}
 
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

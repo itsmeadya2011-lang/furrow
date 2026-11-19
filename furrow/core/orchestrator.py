@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -11,7 +12,9 @@ from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.costs import CycleCostBreakdown, RunCostSummary
 from furrow.llm import LLMClient
+from furrow.logging import get_logger, log_with_context
 
 _UNSET = object()
 
@@ -50,6 +53,8 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._cost_summary: RunCostSummary = RunCostSummary()
+        self._logger = get_logger("furrow.orchestrator")
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -108,6 +113,22 @@ class Orchestrator:
         self._usage_seen = cumulative
         return cycle_usage
 
+    def _accumulate_cost_breakdown(self, cycle: int) -> None:
+        """Track cost breakdown for all models used in this cycle."""
+        model_usage = self.client.get_all_model_usage()
+        if not model_usage:
+            return
+        
+        # Create or get the cycle breakdown
+        if not self._cost_summary.cycles or self._cost_summary.cycles[-1].cycle != cycle:
+            self._cost_summary.add_cycle(CycleCostBreakdown(cycle=cycle))
+        cycle_breakdown = self._cost_summary.cycles[-1]
+        
+        # Add usage for each model
+        for model, usage in model_usage.items():
+            if usage.calls > 0:
+                cycle_breakdown.add_usage(model, usage, self.settings.pricing_overrides())
+
     def status(self) -> dict[str, Any]:
         """Return a snapshot of the current run."""
         return {
@@ -131,7 +152,10 @@ class Orchestrator:
         return self._console_obj
 
     def _say(self, message: str) -> None:
-        """Print a progress message; a broken console must never break the run."""
+        """Print a progress message; a broken console must never break the run.
+        
+        Also logs the message with structured context for observability.
+        """
         console = self._console()
         if console is None:
             return
@@ -139,6 +163,13 @@ class Orchestrator:
             console.print(message)
         except Exception:  # pragma: no cover - printing must never break a run
             return
+        # Also log with structured context
+        with contextlib.suppress(Exception):  # Logging must never break the run
+            log_with_context(
+                self._logger, "info", message,
+                cycle=self.cycles,
+                goal=self._clip(self.original_goal)[:50],
+            )
 
     @staticmethod
     def _one_line(text: str) -> str:
@@ -187,6 +218,7 @@ class Orchestrator:
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
+                self._accumulate_cost_breakdown(self.cycles)
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
@@ -209,6 +241,7 @@ class Orchestrator:
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
+                self._accumulate_cost_breakdown(self.cycles)
                 break
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             try:
@@ -220,6 +253,7 @@ class Orchestrator:
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
+                self._accumulate_cost_breakdown(self.cycles)
                 break
             skipped = bool(getattr(test_result, "skipped", False))
             if not skipped:
@@ -255,6 +289,7 @@ class Orchestrator:
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
             cycle_usage = self._accumulate_usage()
+            self._accumulate_cost_breakdown(self.cycles)
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
@@ -334,6 +369,7 @@ class Orchestrator:
             skipped=bool(self._tests_skipped),
             usage=self._usage,
             files_changed=files_changed,
+            cost_summary=self._cost_summary,
         )
 
     def _context(self) -> str:

@@ -17,6 +17,7 @@ circular.  Token counts are therefore read by duck typing instead.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -203,6 +204,88 @@ def _token_count(usage: Any, field: str) -> float:
     except (TypeError, ValueError):
         return 0.0
     return max(0.0, count)
+
+
+@dataclass
+class ModelCostBreakdown:
+    """Cost breakdown for a single model."""
+    model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    calls: int = 0
+    input_cost_usd: float = 0.0
+    output_cost_usd: float = 0.0
+    total_cost_usd: float = 0.0
+
+    def add_usage(
+        self, usage: Usage, model: str, pricing: Mapping[str, ModelPricing] | None = None
+    ) -> None:
+        """Add usage from a call to this model."""
+        input_tokens = int(_token_count(usage, "input_tokens"))
+        output_tokens = int(_token_count(usage, "output_tokens"))
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        self.calls += 1
+        entry = price_for_model(model, pricing)
+        if entry is not None:
+            self.input_cost_usd += input_tokens / 1_000_000.0 * float(entry.input_per_million)
+            self.output_cost_usd += output_tokens / 1_000_000.0 * float(entry.output_per_million)
+        self.total_cost_usd = round(self.input_cost_usd + self.output_cost_usd, 6)
+
+
+@dataclass
+class CycleCostBreakdown:
+    """Cost breakdown for a single cycle."""
+    cycle: int
+    models: dict[str, ModelCostBreakdown] = field(default_factory=dict)
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_calls: int = 0
+    total_cost_usd: float = 0.0
+
+    def add_usage(
+        self, model: str, usage: Usage, pricing: Mapping[str, ModelPricing] | None = None
+    ) -> None:
+        """Add usage from a call in this cycle."""
+        if model not in self.models:
+            self.models[model] = ModelCostBreakdown(model=model)
+        self.models[model].add_usage(usage, model, pricing)
+        input_tokens = int(_token_count(usage, "input_tokens"))
+        output_tokens = int(_token_count(usage, "output_tokens"))
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.total_calls += 1
+        self.total_cost_usd = round(sum(m.total_cost_usd for m in self.models.values()), 6)
+
+
+@dataclass
+class RunCostSummary:
+    """Complete cost summary for a run."""
+    cycles: list[CycleCostBreakdown] = field(default_factory=list)
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_calls: int = 0
+    total_cost_usd: float = 0.0
+    models: dict[str, ModelCostBreakdown] = field(default_factory=dict)
+
+    def add_cycle(self, cycle_breakdown: CycleCostBreakdown) -> None:
+        """Add a cycle's cost breakdown to the run summary."""
+        self.cycles.append(cycle_breakdown)
+        self.total_input_tokens += cycle_breakdown.total_input_tokens
+        self.total_output_tokens += cycle_breakdown.total_output_tokens
+        self.total_calls += cycle_breakdown.total_calls
+        self.total_cost_usd = round(self.total_cost_usd + cycle_breakdown.total_cost_usd, 6)
+        for model, breakdown in cycle_breakdown.models.items():
+            if model not in self.models:
+                self.models[model] = ModelCostBreakdown(model=model)
+            self.models[model].input_tokens += breakdown.input_tokens
+            self.models[model].output_tokens += breakdown.output_tokens
+            self.models[model].calls += breakdown.calls
+            self.models[model].input_cost_usd += breakdown.input_cost_usd
+            self.models[model].output_cost_usd += breakdown.output_cost_usd
+            self.models[model].total_cost_usd = round(
+                self.models[model].input_cost_usd + self.models[model].output_cost_usd, 6
+            )
 
 
 def estimate_cost(

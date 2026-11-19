@@ -21,6 +21,7 @@ import click
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
+from furrow.costs import RunCostSummary
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,31 @@ def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[st
     return ("FAILED - tests did not pass.", "red")
 
 
+def _format_cost_breakdown(summary: RunCostSummary) -> list[str]:
+    """Format a cost breakdown into lines for display."""
+    lines: list[str] = []
+    if not summary.cycles:
+        return lines
+    
+    lines.append("  Cost breakdown by cycle:")
+    for cycle in summary.cycles:
+        lines.append(f"    Cycle {cycle.cycle}: ${cycle.total_cost_usd:.6f} "
+                     f"({cycle.total_calls} calls, "
+                     f"{cycle.total_input_tokens + cycle.total_output_tokens} tokens)")
+        for model, breakdown in sorted(cycle.models.items()):
+            lines.append(f"      {model}: ${breakdown.total_cost_usd:.6f} "
+                         f"({breakdown.calls} calls, "
+                         f"in {breakdown.input_tokens} / out {breakdown.output_tokens})")
+    
+    lines.append("  Cost breakdown by model:")
+    for model, breakdown in sorted(summary.models.items()):
+        lines.append(f"    {model}: ${breakdown.total_cost_usd:.6f} "
+                     f"({breakdown.calls} calls, "
+                     f"in {breakdown.input_tokens} / out {breakdown.output_tokens})")
+    
+    return lines
+
+
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
     click.echo("Run summary")
@@ -83,6 +109,14 @@ def _print_summary(result: RunResult) -> None:
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
             click.echo(f"  LLM cost:        ${cost:.6f}")
+            # Print detailed cost breakdown if available
+            cost_summary = getattr(result, "cost_summary", None)
+            if cost_summary is not None:
+                breakdown_lines = _format_cost_breakdown(cost_summary)
+                if breakdown_lines:
+                    click.echo("")
+                    for line in breakdown_lines:
+                        click.echo(line)
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -152,6 +186,15 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
+def _format_exception(exc: Exception) -> str:
+    """Format an exception for user-friendly display."""
+    exc_type = type(exc).__name__
+    message = str(exc)
+    if not message:
+        return exc_type
+    return f"{exc_type}: {message}"
+
+
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
@@ -166,8 +209,25 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)
+    except asyncio.CancelledError:
+        click.echo("Furrow cancelled.")
+        sys.exit(130)
+    except ValueError as exc:
+        # Configuration/validation errors
+        click.secho(f"Furrow failed: {_format_exception(exc)}", fg="red")
+        sys.exit(1)
+    except OSError as exc:
+        # File system / I/O errors
+        click.secho(f"Furrow failed (I/O error): {_format_exception(exc)}", fg="red")
+        sys.exit(1)
+    except RuntimeError as exc:
+        # Runtime errors (e.g., LLM API issues)
+        click.secho(f"Furrow failed: {_format_exception(exc)}", fg="red")
+        sys.exit(1)
     except Exception as exc:
-        click.secho(f"Furrow failed: {exc}", fg="red")
+        # Unexpected errors
+        click.secho(f"Furrow failed unexpectedly: {_format_exception(exc)}", fg="red")
+        logger.exception("Unexpected error during Furrow run")
         sys.exit(1)
     _print_summary(result)
     skipped = bool(getattr(result, "skipped", False))
@@ -205,7 +265,11 @@ def start(
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    try:
+        run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    except Exception as exc:
+        click.secho(f"Invalid configuration: {_format_exception(exc)}", fg="red")
+        sys.exit(1)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -262,8 +326,11 @@ def web(host: str, port: int) -> None:
         message = str(exc.code) if exc.code is not None else "the server could not start"
         click.secho(f"Furrow failed: {message}", fg="red")
         sys.exit(1)
+    except OSError as exc:
+        click.secho(f"Furrow failed: {_format_exception(exc)}", fg="red")
+        sys.exit(1)
     except Exception as exc:
-        click.secho(f"Furrow failed: {exc}", fg="red")
+        click.secho(f"Furrow failed: {_format_exception(exc)}", fg="red")
         sys.exit(1)
 
 

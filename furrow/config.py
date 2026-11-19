@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from furrow.costs import ModelPricing
+from furrow.costs import ModelPricing, RunCostSummary
 
 
 class Provider(str, Enum):
@@ -105,6 +105,7 @@ class RunResult(BaseModel):
     skipped: bool = False
     usage: Usage = Field(default_factory=Usage)
     files_changed: list[str] = Field(default_factory=list)
+    cost_summary: RunCostSummary | None = Field(default=None, exclude=True)
 
 
 class Settings(BaseSettings):

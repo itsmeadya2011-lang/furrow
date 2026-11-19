@@ -47,6 +47,7 @@ class LLMResponse:
     stop_reason: str | None = None
     raw: Any = None
     usage: Usage = field(default_factory=Usage)
+    model: str = ""
 
 
 def _is_retryable(exc: BaseException) -> bool:
@@ -229,6 +230,7 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        self._model_usage: dict[str, Usage] = {}
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -284,6 +286,21 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
+    def _add_model_usage(self, model: str, usage: Usage) -> None:
+        """Add usage to the per-model tracking."""
+        if model not in self._model_usage:
+            self._model_usage[model] = Usage()
+        self._model_usage[model].add(usage)
+
+    def get_model_usage(self, model: str) -> Usage:
+        """Get the accumulated usage for a specific model."""
+        return self._model_usage.get(model, Usage())
+
+    def get_all_model_usage(self) -> dict[str, Usage]:
+        """Get all per-model usage."""
+        return dict(self._model_usage)
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -379,7 +396,8 @@ class LLMClient:
         except Exception:
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
-        return LLMResponse(text=text, raw=response, usage=usage)
+        self._add_model_usage(model, usage)
+        return LLMResponse(text=text, raw=response, usage=usage, model=model)
 
     async def _complete_openai(
         self, client: AsyncOpenAI, prompt: str, system: str, model: str
@@ -412,7 +430,8 @@ class LLMClient:
         except Exception:
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
-        return LLMResponse(text=text, raw=response, usage=usage)
+        self._add_model_usage(model, usage)
+        return LLMResponse(text=text, raw=response, usage=usage, model=model)
 
     async def _chat_anthropic(
         self,
@@ -461,12 +480,14 @@ class LLMClient:
         except Exception:
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
+        self._add_model_usage(model, usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
             stop_reason=response.stop_reason,
             raw=response,
             usage=usage,
+            model=model,
         )
 
     async def _chat_openai_compatible(
@@ -521,12 +542,14 @@ class LLMClient:
         except Exception:
             usage.cost_usd = 0.0
         self.total_usage.add(usage)
+        self._add_model_usage(model, usage)
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
             stop_reason=getattr(choice, "finish_reason", None),
             raw=response,
             usage=usage,
+            model=model,
         )
 
     async def read_file(self, path: str | Path) -> str:
