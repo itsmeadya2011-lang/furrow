@@ -257,6 +257,33 @@ class TesterAgent:
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+        
+        # PHP projects
+        if (self.workspace / "composer.json").is_file():
+            if (self.workspace / "vendor/bin/phpunit").is_file():
+                return ["vendor/bin/phpunit"]
+            return ["phpunit"]
+        
+        # Ruby projects
+        if (self.workspace / "Gemfile").is_file():
+            if (self.workspace / "Rakefile").is_file() or (self.workspace / "rakefile.rb").is_file():
+                return ["bundle", "exec", "rake", "test"]
+            return ["bundle", "exec", "rspec"]
+        
+        # .NET projects
+        for pattern in ["*.csproj", "*.fsproj", "*.vbproj"]:
+            if any(self.workspace.glob(pattern)):
+                return ["dotnet", "test"]
+        
+        # Java Maven/Gradle projects
+        if (self.workspace / "pom.xml").is_file():
+            return ["mvn", "test"]
+        if (self.workspace / "build.gradle").is_file() or (self.workspace / "build.gradle.kts").is_file():
+            return ["./gradlew", "test"]
+        
+        # Makefile projects
+        if (self.workspace / "Makefile").is_file() or (self.workspace / "makefile").is_file():
+            return ["make", "test"]
 
         return None
 

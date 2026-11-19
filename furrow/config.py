@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import os
 from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from furrow.costs import ModelPricing
@@ -132,6 +133,33 @@ class Settings(BaseSettings):
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        upper = v.upper()
+        if upper not in valid_levels:
+            raise ValueError(f"log_level must be one of {valid_levels}")
+        return upper
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _validate_provider(cls, v: str) -> Provider:
+        if isinstance(v, Provider):
+            return v
+        try:
+            return Provider(v.lower())
+        except ValueError:
+            raise ValueError(f"provider must be one of {[p.value for p in Provider]}")
+
+    @model_validator(mode="after")
+    def _validate_workspace(self) -> "Settings":
+        """Validate that the workspace exists and is a directory."""
+        workspace = Path(self.workspace)
+        if workspace.exists() and not workspace.is_dir():
+            raise ValueError(f"workspace is not a directory: {workspace}")
+        return self
+
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
         base = Path(workspace) if workspace is not None else Path(self.workspace)
@@ -140,6 +168,14 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    @classmethod
+    def validate_and_create(cls, **kwargs: Any) -> "Settings":
+        """Create a Settings instance with validation, raising clear errors on failure."""
+        try:
+            return cls(**kwargs)
+        except Exception as e:
+            raise ValueError(f"Invalid configuration: {e}") from e
 
 
 settings = Settings()

@@ -634,6 +634,13 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "patch_file":
+            if "patch" not in args:
+                return "error: missing patch"
+            patch = args["patch"]
+            if not isinstance(patch, str):
+                return "error: invalid patch (expected a string)"
+            return await self._patch_file(str(args.get("path", "")), patch)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -685,6 +692,86 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _patch_file(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            # Read the original file
+            try:
+                original = await self.client.read_file(resolved)
+            except FileNotFoundError:
+                return f"error: file not found: {path}"
+            
+            # Apply the patch
+            try:
+                patched = self._apply_patch(original, patch)
+            except Exception as exc:
+                return f"error: failed to apply patch: {exc}"
+            
+            # Write the patched file
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, patched)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"patched {path} ({len(patched.encode('utf-8'))} bytes)"
+
+    @staticmethod
+    def _apply_patch(original: str, patch: str) -> str:
+        """Apply a unified diff patch to the original content."""
+        import difflib
+        
+        original_lines = original.splitlines(keepends=True)
+        patch_lines = patch.splitlines(keepends=True)
+        
+        # Parse the unified diff
+        # Find the @@ lines to get line ranges
+        hunks = []
+        i = 0
+        while i < len(patch_lines):
+            line = patch_lines[i]
+            if line.startswith('@@'):
+                # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+                import re
+                match = re.match(r'@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@', line)
+                if match:
+                    old_start = int(match.group(1)) - 1  # Convert to 0-indexed
+                    old_count = int(match.group(2)) if match.group(2) else 1
+                    new_start = int(match.group(3)) - 1  # Convert to 0-indexed
+                    new_count = int(match.group(4)) if match.group(4) else 1
+                    
+                    # Collect hunk lines
+                    hunk_lines = []
+                    i += 1
+                    while i < len(patch_lines) and not patch_lines[i].startswith('@@'):
+                        hunk_lines.append(patch_lines[i])
+                        i += 1
+                    hunks.append((old_start, old_count, new_start, new_count, hunk_lines))
+                    continue
+            i += 1
+        
+        # Apply hunks in reverse order to maintain line numbers
+        result_lines = original_lines[:]
+        for old_start, old_count, new_start, new_count, hunk_lines in reversed(hunks):
+            # Build new lines from hunk
+            new_lines = []
+            for line in hunk_lines:
+                if line.startswith('+') and not line.startswith('+++'):
+                    new_lines.append(line[1:])
+                elif line.startswith(' ') or line.startswith('-'):
+                    if line.startswith('-') and not line.startswith('---'):
+                        continue  # Deleted line
+                    new_lines.append(line[1:] if line.startswith(' ') else line)
+            
+            # Replace the old lines with new lines
+            end = min(old_start + old_count, len(result_lines))
+            result_lines[old_start:end] = new_lines
+        
+        return ''.join(result_lines)
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)

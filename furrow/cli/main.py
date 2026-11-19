@@ -3,7 +3,9 @@
 Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
-    furrow resume          continue the persisted run
+    furrow continue        continue the persisted run
+    furrow pause           pause the currently running run
+    furrow unpause         resume a paused run
     furrow web             serve the web UI
 """
 
@@ -13,6 +15,7 @@ import asyncio
 import inspect
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -235,16 +238,64 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
-    """Resume the persisted Furrow run."""
+def continue_run(workspace: Path | None, max_cycles: int | None) -> None:
+    """Continue the persisted Furrow run."""
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
-        click.secho("No furrow run state found to resume.", fg="red")
+        click.secho("No furrow run state found to continue.", fg="red")
         sys.exit(1)
     goal = state.original_goal or state.goal
     _execute(goal=goal, run_settings=run_settings, resume=True)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def pause(workspace: Path | None) -> None:
+    """Pause the currently running Furrow run."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.secho("No furrow run state found.", fg="red")
+        sys.exit(1)
+    if not getattr(state, "paused", False):
+        state.paused = True
+        state.paused_at = datetime.now(timezone.utc).isoformat()
+        store.save(state)
+        click.echo("Run paused.")
+    else:
+        click.echo("Run is already paused.")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def unpause(workspace: Path | None) -> None:
+    """Resume a paused Furrow run."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.secho("No furrow run state found.", fg="red")
+        sys.exit(1)
+    if getattr(state, "paused", False):
+        state.paused = False
+        state.paused_at = None
+        store.save(state)
+        click.echo("Run resumed.")
+    else:
+        click.echo("Run is not paused.")
 
 
 @main.command()

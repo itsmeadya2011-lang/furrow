@@ -70,17 +70,17 @@ def test_plan_and_test_result_still_work():
 
 
 def test_settings_state_path_absolute_workspace():
-    s = Settings()
+    s = Settings(anthropic_api_key="test-key")
     assert s.state_path(Path("/tmp/ws")) == Path("/tmp/ws/.furrow/state.json")
 
 
 def test_settings_state_path_custom_state_file():
-    s = Settings(state_file=Path("custom/state.json"))
+    s = Settings(anthropic_api_key="test-key", state_file=Path("custom/state.json"))
     assert s.state_path(Path("/tmp/ws")) == Path("/tmp/ws/custom/state.json")
 
 
 def test_settings_state_path_no_argument_uses_workspace():
-    s = Settings(workspace=Path("/my/workspace"))
+    s = Settings(anthropic_api_key="test-key", workspace=Path("/my/workspace"))
     assert s.state_path() == Path("/my/workspace/.furrow/state.json")
 
 
@@ -110,7 +110,7 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_settings_provider_default():
-    s = Settings()
+    s = Settings(anthropic_api_key="test-key")
     assert s.provider == Provider.ANTHROPIC
 
 
@@ -167,28 +167,31 @@ def test_null_status_in_plan_becomes_pending():
 def test_numeric_settings_reject_invalid_values():
     from pydantic import ValidationError
 
+    base = {"anthropic_api_key": "test-key"}
     with pytest.raises(ValidationError):
-        Settings(max_parallel_tasks=0)
+        Settings(**base, max_parallel_tasks=0)
     with pytest.raises(ValidationError):
-        Settings(max_worker_iterations=0)
+        Settings(**base, max_worker_iterations=0)
     with pytest.raises(ValidationError):
-        Settings(max_tokens=0)
+        Settings(**base, max_tokens=0)
     with pytest.raises(ValidationError):
-        Settings(request_timeout=0)
+        Settings(**base, request_timeout=0)
     with pytest.raises(ValidationError):
-        Settings(command_timeout=0)
+        Settings(**base, command_timeout=0)
     with pytest.raises(ValidationError):
-        Settings(test_timeout=0)
+        Settings(**base, test_timeout=0)
     with pytest.raises(ValidationError):
-        Settings(max_cycles=-1)
+        Settings(**base, max_cycles=-1)
     with pytest.raises(ValidationError):
-        Settings(max_retries=-1)
+        Settings(**base, max_retries=-1)
     with pytest.raises(ValidationError):
-        Settings(max_task_retries=-1)
+        Settings(**base, max_task_retries=-1)
 
 
 def test_numeric_settings_allow_valid_bounds():
+    base = {"anthropic_api_key": "test-key"}
     s = Settings(
+        **base,
         max_parallel_tasks=1,
         max_cycles=0,
         max_retries=0,

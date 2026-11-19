@@ -146,10 +146,10 @@ def test_status_with_state(runner: CliRunner, tmp_path: Path) -> None:
 
 
 def test_resume_without_state(runner: CliRunner, tmp_path: Path) -> None:
-    result = runner.invoke(main, ["resume", "--workspace", str(tmp_path)])
+    result = runner.invoke(main, ["continue-run", "--workspace", str(tmp_path)])
 
     assert result.exit_code == 1
-    assert "No furrow run state found to resume." in result.output
+    assert "No furrow run state found to continue." in result.output
 
 
 def test_resume_runs_orchestrator(
@@ -157,7 +157,7 @@ def test_resume_runs_orchestrator(
 ) -> None:
     _write_state(tmp_path)
 
-    result = runner.invoke(main, ["resume", "--workspace", str(tmp_path)])
+    result = runner.invoke(main, ["continue-run", "--workspace", str(tmp_path)])
 
     assert result.exit_code == 0
     assert fake_orchestrator.init_kwargs["resume"] is True
@@ -180,7 +180,7 @@ def test_resume_max_cycles_negative_rejected(
     _write_state(tmp_path)
 
     result = runner.invoke(
-        main, ["resume", "--workspace", str(tmp_path), "--max-cycles", "-1"]
+        main, ["continue-run", "--workspace", str(tmp_path), "--max-cycles", "-1"]
     )
 
     assert result.exit_code != 0

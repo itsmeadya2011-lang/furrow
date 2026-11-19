@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger, set_run_context, clear_run_context, generate_run_id
 
 _UNSET = object()
 
@@ -50,6 +52,19 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._paused: bool = False
+        # Metrics
+        self._started_at: str | None = None
+        self._cycle_start_time: float = 0.0
+        self._total_tasks_planned: int = 0
+        self._total_tasks_completed: int = 0
+        self._total_tasks_failed: int = 0
+        self._total_tasks_blocked: int = 0
+        # Logging context
+        self._run_id: str = generate_run_id()
+        self._logger = get_logger("furrow.orchestrator")
+        set_run_context(run_id=self._run_id)
+        self._logger.info("orchestrator_initialized", goal=goal, resume=resume)
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -81,6 +96,14 @@ class Orchestrator:
                     self._tests_run = 0
                 self._last_test_passed = getattr(st, "last_passed", None)
                 self._tests_skipped = bool(getattr(st, "last_skipped", False))
+                # Restore paused state
+                self._paused = getattr(st, "paused", False)
+                # Restore metrics
+                self._started_at = getattr(st, "started_at", None)
+                self._total_tasks_planned = getattr(st, "total_tasks_planned", 0)
+                self._total_tasks_completed = getattr(st, "total_tasks_completed", 0)
+                self._total_tasks_failed = getattr(st, "total_tasks_failed", 0)
+                self._total_tasks_blocked = getattr(st, "total_tasks_blocked", 0)
             else:
                 self._resume_state_missing = True
 
@@ -110,14 +133,38 @@ class Orchestrator:
 
     def status(self) -> dict[str, Any]:
         """Return a snapshot of the current run."""
+        active = [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
+        completed = sum(1 for t in active if t.status == "completed")
+        failed = sum(1 for t in active if t.status == "failed")
+        blocked = sum(1 for t in active if t.status == "blocked")
+        total_duration = self._calculate_total_duration()
         return {
             "goal": self.goal,
             "original_goal": self.original_goal,
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
+            "paused": self._paused,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "total_tasks_planned": self._total_tasks_planned,
+            "total_tasks_completed": self._total_tasks_completed,
+            "total_tasks_failed": self._total_tasks_failed,
+            "total_tasks_blocked": self._total_tasks_blocked,
+            "total_duration_seconds": total_duration,
         }
+
+    def pause(self) -> None:
+        """Request the orchestrator to pause at the next safe point."""
+        self._paused = True
+        self._say("[yellow]Pause requested - will pause after current cycle[/yellow]")
+        self.event_bus.emit(Event(type=EventType.PAUSED, message="Run paused"))
+
+    def resume(self) -> None:
+        """Resume a paused run."""
+        if self._paused:
+            self._paused = False
+            self._say("[green]Run resumed[/green]")
+            self.event_bus.emit(Event(type=EventType.RESUMED, message="Run resumed"))
 
     def _console(self) -> Any:
         """Return a rich Console, or None when rich is unavailable."""
@@ -163,6 +210,10 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
+        # Record start time if not already set
+        if self._started_at is None:
+            self._started_at = datetime.now(timezone.utc).isoformat()
+
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
@@ -175,15 +226,45 @@ class Orchestrator:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
                 break
+
+            # Handle pause: wait until resumed
+            while self._paused:
+                # Save state with paused flag
+                state = RunState(goal=self.goal, original_goal=self.original_goal,
+                                 cycles=self.cycles, tasks=self.tasks, history=self.history,
+                                 usage=self._usage, no_progress=self._no_progress,
+                                 prev_sig=self._prev_sig, tests_run=self._tests_run,
+                                 last_passed=self._last_test_passed, last_skipped=self._tests_skipped,
+                                 last_summary="", paused=True, paused_at=datetime.now(timezone.utc).isoformat(),
+                                 total_tasks_planned=self._total_tasks_planned,
+                                 total_tasks_completed=self._total_tasks_completed,
+                                 total_tasks_failed=self._total_tasks_failed,
+                                 total_tasks_blocked=self._total_tasks_blocked,
+                                 total_duration_seconds=self._calculate_total_duration(),
+                                 started_at=self._started_at)
+                try:
+                    self.state_store.save(state)
+                except Exception as e:
+                    self.event_bus.emit(
+                        Event(type=EventType.ERROR,
+                             message=f"could not save paused state to {self.state_store.path}: {e}")
+                    )
+                self._say("[yellow]Run paused - waiting for resume...[/yellow]")
+                await asyncio.sleep(1)
+
+            self._cycle_start_time = time.monotonic()
             self.cycles += 1
+            set_run_context(cycle=self.cycles)
+            self._logger.info("cycle_started", cycle=self.cycles)
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
-                plan = await self.planner.plan(self.goal, context=self._context())
+                plan = await self.planner.plan(self.goal, context=self._context(), existing_tasks=self.tasks)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                self._logger.error("planner_failed", error=str(e), cycle=self.cycles)
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
@@ -191,6 +272,7 @@ class Orchestrator:
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
+            self._total_tasks_planned += planned
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
             if not plan.tasks:
@@ -255,12 +337,29 @@ class Orchestrator:
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
             cycle_usage = self._accumulate_usage()
+            cycle_duration = time.monotonic() - self._cycle_start_time
+            self._total_duration_seconds = getattr(self, '_total_duration_seconds', 0.0) + cycle_duration
+            
+            # Count task statuses for this cycle
+            active = [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
+            cycle_completed = sum(1 for t in active if t.status == "completed")
+            cycle_failed = sum(1 for t in active if t.status == "failed")
+            cycle_blocked = sum(1 for t in active if t.status == "blocked")
+            self._total_tasks_completed += cycle_completed
+            self._total_tasks_failed += cycle_failed
+            self._total_tasks_blocked += cycle_blocked
+            
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
                 tests_passed=test_result.passed, test_summary=test_result.summary,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
+                tasks_planned=planned,
+                tasks_completed=cycle_completed,
+                tasks_failed=cycle_failed,
+                tasks_blocked=cycle_blocked,
+                duration_seconds=cycle_duration,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
@@ -286,7 +385,13 @@ class Orchestrator:
                              usage=self._usage, no_progress=self._no_progress,
                              prev_sig=self._prev_sig, tests_run=self._tests_run,
                              last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
+                             last_summary=test_result.summary,
+                             total_tasks_planned=self._total_tasks_planned,
+                             total_tasks_completed=self._total_tasks_completed,
+                             total_tasks_failed=self._total_tasks_failed,
+                             total_tasks_blocked=self._total_tasks_blocked,
+                             total_duration_seconds=self._total_duration_seconds,
+                             started_at=self._started_at)
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:
@@ -312,6 +417,7 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
+        self._logger.info("orchestrator_stopped", stopped_reason=self._stopped_reason, cycles=self.cycles)
 
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
@@ -322,6 +428,7 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
+        clear_run_context()
         return RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
@@ -335,6 +442,16 @@ class Orchestrator:
             usage=self._usage,
             files_changed=files_changed,
         )
+    
+    def _calculate_total_duration(self) -> float:
+        """Calculate total duration in seconds."""
+        if not self._started_at:
+            return 0.0
+        try:
+            start = datetime.fromisoformat(self._started_at.replace('Z', '+00:00'))
+            return (datetime.now(timezone.utc) - start).total_seconds()
+        except Exception:
+            return getattr(self, '_total_duration_seconds', 0.0)
 
     def _context(self) -> str:
         if self._feedback:
@@ -420,11 +537,14 @@ class Orchestrator:
             if task.id in self._skip_ids:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
+                self._logger.info("task_skipped", task_id=task.id, reason="already_completed")
                 return
+            set_run_context(task_id=task.id)
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                self._logger.info("task_started", task_id=task.id, description=task.description)
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -455,6 +575,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._logger.error("task_raised", task_id=task.id, error=task.error, attempts=task.attempts)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":
@@ -491,6 +612,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._logger.info("task_finished", task_id=task.id, status=task.status, success=success, files_changed=task.files_changed)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error or "unknown error"))
                     if task.status == "completed":
@@ -519,6 +641,7 @@ class Orchestrator:
                                   "attempts": task.attempts},
                         )
                     )
+                    self._logger.error("task_raised", task_id=task.id, error=task.error, attempts=task.attempts)
                     self.event_bus.emit(
                         Event(
                             type=EventType.TASK_FINISHED,

@@ -75,6 +75,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -94,6 +95,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .metrics {
+    display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: .75rem;
+    padding-top: .75rem; border-top: 1px solid #2b3240;
+    font-size: .85rem; color: #8a93a5;
+  }
+  .metrics b { color: #d7dae0; }
+  .progress-bar {
+    width: 100%; height: 6px; background: #1d2430; border-radius: 3px;
+    overflow: hidden; margin: .5rem 0;
+  }
+  .progress-fill {
+    height: 100%; background: #4c8dff; transition: width 0.3s ease;
+  }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
@@ -115,6 +129,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    display: flex; gap: .5rem; flex-wrap: wrap; margin-top: .3rem;
+    font-size: .8rem; color: #8a93a5;
+  }
+  .panel-file {
+    background: #1d2430; padding: .1rem .4rem; border-radius: 3px;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -132,6 +153,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .controls {
+    display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem;
+  }
+  .paused-indicator {
+    color: #f0b367; font-weight: bold; animation: pulse 1s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
 </style>
 </head>
 <body>
@@ -140,6 +171,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="pause" disabled>Pause</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -148,6 +180,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+  </div>
+  <div class="metrics" id="metrics">
+    <span>planned: <b id="metric-planned">0</b></span>
+    <span>completed: <b id="metric-completed">0</b></span>
+    <span>failed: <b id="metric-failed">0</b></span>
+    <span>blocked: <b id="metric-blocked">0</b></span>
+    <span>duration: <b id="metric-duration">0s</b></span>
+    <span>cost: <b id="metric-cost">$0.00</b></span>
+  </div>
+  <div class="progress-bar" id="progress-container" style="display: none;">
+    <div class="progress-fill" id="progress-fill" style="width: 0%;"></div>
   </div>
 </div>
 <pre id="log"></pre>
@@ -161,8 +204,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const pauseBtn = document.getElementById('pause');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
   let socket = null;
   let lastSummary = null;
+  let isPaused = false;
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -173,8 +220,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
     pending: 'pending',
     running: 'running',
@@ -191,6 +236,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       return SAFE_STATUSES[key];
     }
     return 'unknown';
+  }
+
+  function formatDuration(seconds) {
+    if (seconds < 60) return seconds.toFixed(1) + 's';
+    if (seconds < 3600) return (seconds / 60).toFixed(1) + 'm';
+    return (seconds / 3600).toFixed(1) + 'h';
   }
 
   function renderStatus(status, result, running) {
@@ -210,6 +261,36 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    
+    // Update metrics
+    if (status) {
+      document.getElementById('metric-planned').textContent = 
+        text(status.total_tasks_planned) || '0';
+      document.getElementById('metric-completed').textContent = 
+        text(status.total_tasks_completed) || '0';
+      document.getElementById('metric-failed').textContent = 
+        text(status.total_tasks_failed) || '0';
+      document.getElementById('metric-blocked').textContent = 
+        text(status.total_tasks_blocked) || '0';
+      document.getElementById('metric-duration').textContent = 
+        formatDuration(Number(status.total_duration_seconds) || 0);
+      document.getElementById('metric-cost').textContent = 
+        '$' + (Number(status.usage?.cost_usd) || 0).toFixed(4);
+      
+      // Show progress bar if we have planned tasks
+      const planned = Number(status.total_tasks_planned) || 0;
+      const completed = Number(status.total_tasks_completed) || 0;
+      if (planned > 0) {
+        document.getElementById('progress-container').style.display = 'block';
+        const pct = Math.round((completed / planned) * 100);
+        document.getElementById('progress-fill').style.width = pct + '%';
+      }
+    }
+    
+    // Update pause button state
+    pauseBtn.disabled = !running;
+    startBtn.disabled = running;
+    resumeBtn.disabled = running;
   }
 
   function renderTasks(tasks) {
@@ -251,10 +332,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      if (task.files_changed && task.files_changed.length > 0) {
+        const files = document.createElement('span');
+        files.textContent = 'files: ' + task.files_changed.length;
+        meta.appendChild(files);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
+
+      if (task.files_changed && task.files_changed.length > 0) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'panel-files';
+        task.files_changed.forEach(function(f) {
+          const fileEl = document.createElement('span');
+          fileEl.className = 'panel-file';
+          fileEl.textContent = f;
+          filesDiv.appendChild(fileEl);
+        });
+        panel.appendChild(filesDiv);
+      }
 
       const result = text(task.result);
       const error = text(task.error);
@@ -306,14 +404,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   }
 
+  async function sendPause() {
+    try {
+      await fetch('/api/pause', { method: 'POST' });
+    } catch (err) {
+      append('! could not pause run');
+    }
+  }
+
+  async function sendResume() {
+    try {
+      await fetch('/api/resume', { method: 'POST' });
+    } catch (err) {
+      append('! could not resume run');
+    }
+  }
+
   function connect(payload) {
     if (socket) { socket.close(); }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
       socket.send(JSON.stringify(payload));
     };
@@ -354,6 +466,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
         color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'state_saved') {
         line = 'state saved';
+      } else if (type === 'paused') {
+        line = 'RUN PAUSED';
+        color = '#f0b367';
+        isPaused = true;
+        pauseBtn.textContent = 'Paused';
+        pauseBtn.disabled = true;
+        resumeBtn.disabled = false;
+      } else if (type === 'resumed') {
+        line = 'RUN RESUMED';
+        color = '#57d38c';
+        isPaused = false;
+        pauseBtn.textContent = 'Pause';
+        pauseBtn.disabled = false;
+        resumeBtn.disabled = true;
       } else if (type === 'log') {
         line = text(msg.message);
       } else if (type === 'error') {
@@ -405,6 +531,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('pause').onclick = function () {
+    sendPause();
   };
 
   loadState();
@@ -594,9 +723,10 @@ async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""
     orchestrator = _CURRENT.get("orchestrator")
     result = _CURRENT.get("result")
+    status_data = orchestrator.status() if orchestrator is not None else None
     return {
         "running": bool(_CURRENT.get("running")),
-        "status": orchestrator.status() if orchestrator is not None else None,
+        "status": status_data,
         "result": result.model_dump(mode="json") if result is not None else None,
         "error": _CURRENT.get("error"),
     }
@@ -647,6 +777,32 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/pause")
+async def api_pause() -> JSONResponse:
+    """Pause the currently running Furrow run."""
+    orchestrator = _CURRENT.get("orchestrator")
+    if orchestrator is None or not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"paused": False, "error": "no run in progress"},
+        )
+    orchestrator.pause()
+    return JSONResponse(status_code=200, content={"paused": True})
+
+
+@app.post("/api/resume")
+async def api_resume() -> JSONResponse:
+    """Resume a paused Furrow run."""
+    orchestrator = _CURRENT.get("orchestrator")
+    if orchestrator is None or not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"resumed": False, "error": "no run in progress"},
+        )
+    orchestrator.resume()
+    return JSONResponse(status_code=200, content={"resumed": True})
 
 
 @app.websocket("/ws")

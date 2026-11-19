@@ -49,6 +49,11 @@ class HistoryEntry(BaseModel):
     test_summary: str = ""
     timestamp: str = Field(default_factory=utcnow)
     usage: Usage = Field(default_factory=Usage)
+    tasks_planned: int = 0
+    tasks_completed: int = 0
+    tasks_failed: int = 0
+    tasks_blocked: int = 0
+    duration_seconds: float = 0.0
 
 
 class RunState(BaseModel):
@@ -68,6 +73,15 @@ class RunState(BaseModel):
     last_passed: bool | None = None
     last_skipped: bool = False
     last_summary: str = ""
+    paused: bool = False
+    paused_at: str | None = None
+    # Metrics
+    total_tasks_planned: int = 0
+    total_tasks_completed: int = 0
+    total_tasks_failed: int = 0
+    total_tasks_blocked: int = 0
+    total_duration_seconds: float = 0.0
+    started_at: str | None = None
 
 
 def state_path_for(
