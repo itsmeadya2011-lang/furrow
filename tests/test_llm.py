@@ -161,7 +161,7 @@ def test_to_openai_messages_assistant_text_and_tool_use():
                     "type": "function",
                     "function": {
                         "name": "write_file",
-                        'arguments': '{"path": "a.txt", "content": "hi"}',
+                        "arguments": '{"path": "a.txt", "content": "hi"}',
                     },
                 }
             ],
@@ -183,10 +183,13 @@ def test_to_openai_messages_user_tool_result():
 
 def test_to_openai_messages_user_tool_result_with_text():
     messages = [
-        {"role": "user", "content": [
-            {"type": "text", "text": "here is the result"},
-            {"type": "tool_result", "tool_use_id": "t1", "content": "tool output"},
-        ]}
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "here is the result"},
+                {"type": "tool_result", "tool_use_id": "t1", "content": "tool output"},
+            ],
+        }
     ]
     assert to_openai_messages(messages) == [
         {"role": "tool", "tool_call_id": "t1", "content": "tool output"},
@@ -540,6 +543,7 @@ async def test_aclose_resets_so_fresh_client_created():
     fresh = client.ollama
     assert fresh is not fake
 
+
 class _FakeResponseNoChoices:
     def __init__(self) -> None:
         self.choices = []
@@ -582,8 +586,10 @@ async def test_complete_openai_empty_choices_raises_valueerror():
 
     fake = _FakeOpenAI("ok")
     fake.chat.completions = type("C", (), {})()
+
     async def create(**kwargs):
         return _FakeResponseNoChoices()
+
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
@@ -596,8 +602,10 @@ async def test_chat_openai_empty_choices_raises_valueerror():
 
     fake = _FakeOpenAI("ok")
     fake.chat.completions = type("C", (), {})()
+
     async def create(**kwargs):
         return _FakeResponseNoChoices()
+
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
@@ -610,8 +618,10 @@ async def test_complete_openai_choice_no_message_raises_valueerror():
 
     fake = _FakeOpenAI("ok")
     fake.chat.completions = type("C", (), {})()
+
     async def create(**kwargs):
         return _FakeResponseNoMessage()
+
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
@@ -624,8 +634,10 @@ async def test_chat_openai_choice_no_message_raises_valueerror():
 
     fake = _FakeOpenAI("ok")
     fake.chat.completions = type("C", (), {})()
+
     async def create(**kwargs):
         return _FakeResponseNoMessage()
+
     fake.chat.completions.create = create
     client = LLMClient(settings=Settings(provider=Provider.OPENAI))
     client._openai = fake
@@ -789,9 +801,7 @@ async def test_retry_returns_the_result_of_a_successful_call(
 
 
 @pytest.mark.parametrize("tenacity_available", [True, False])
-async def test_retry_succeeds_after_a_transient_error(
-    monkeypatch, fast_sleep, tenacity_available
-):
+async def test_retry_succeeds_after_a_transient_error(monkeypatch, fast_sleep, tenacity_available):
     monkeypatch.setattr("furrow.llm._TENACITY_AVAILABLE", tenacity_available)
     calls = []
 
@@ -918,9 +928,7 @@ async def test_cost_uses_the_model_that_was_actually_requested():
 async def test_unknown_model_leaves_the_cost_at_zero_but_the_call_succeeds():
     fake = _FakeOpenAI("ok")
     fake.chat.completions.usage = _FakeOpenAIUsage(prompt_tokens=1000, completion_tokens=500)
-    client = LLMClient(
-        settings=Settings(provider=Provider.OPENAI, model="totally-unknown-model")
-    )
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, model="totally-unknown-model"))
     client._openai = fake
 
     result = await client.complete("hi")
@@ -981,9 +989,7 @@ async def test_pricing_overrides_are_used_for_the_cost():
         settings=Settings(
             provider=Provider.OPENAI,
             model="gpt-4o-mini",
-            model_pricing={
-                "gpt-4o-mini": {"input_per_million": 1.0, "output_per_million": 2.0}
-            },
+            model_pricing={"gpt-4o-mini": {"input_per_million": 1.0, "output_per_million": 2.0}},
         )
     )
     client._openai = fake
@@ -1111,4 +1117,3 @@ async def test_chat_openai_choice_without_finish_reason_yields_none():
 
     assert result.text == "ok"
     assert result.stop_reason is None
-

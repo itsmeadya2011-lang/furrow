@@ -199,65 +199,65 @@ def parse_plan(text: str) -> Plan:
 
 def parse_test_result(text: str) -> TestResult:
     """Parse a tester response into TestResult. NEVER raise."""
+    # Normalise the text to a string we can work with.
     try:
-        try:
-            data = parse_json(text)
-            if isinstance(data, dict):
-                return TestResult(**data)
-        except (ValueError, TypeError):
-            pass
-
         s = strip_code_fences(text) if isinstance(text, str) else str(text)
-        lower = s.lower()
+    except (ValueError, TypeError):
+        s = str(text) if text is not None else ""
 
-        passed = True
-        m = re.search(r'"passed"\s*:\s*(true|false)', lower)
-        if m:
-            passed = m.group(1) == "true"
+    # First, try to extract a JSON object from the response.
+    try:
+        data = parse_json(s)
+        if isinstance(data, dict):
+            return TestResult(**data)
+    except (ValueError, TypeError):
+        pass
+
+    # Fall back to heuristic classification of the raw text.
+    lower = s.lower()
+
+    passed = True
+    m = re.search(r'"passed"\s*:\s*(true|false)', lower)
+    if m:
+        passed = m.group(1) == "true"
+    else:
+        m_true = re.search(r"\bpassed\b\s*[:=]\s*(true|yes|success)\b", lower)
+        m_false = re.search(r"\b(failed|failure)\b\s*[:=]\s*(true|yes)\b", lower)
+        if m_false:
+            passed = False
+        elif m_true:
+            passed = True
         else:
-            m_true = re.search(r"\bpassed\b\s*[:=]\s*(true|yes|success)\b", lower)
-            m_false = re.search(r"\b(failed|failure)\b\s*[:=]\s*(true|yes)\b", lower)
-            if m_false:
-                passed = False
-            elif m_true:
+            m_success = re.search(
+                r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
+                lower,
+            )
+            if m_success:
                 passed = True
             else:
-                m_success = re.search(
-                    r"\b(no failures?|0 failed|all tests passed|tests passed|success)\b",
+                m_fail = re.search(
+                    r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
                     lower,
                 )
-                if m_success:
-                    passed = True
-                else:
-                    m_fail = re.search(
-                        r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-                        lower,
-                    )
-                    passed = not m_fail
+                passed = not m_fail
 
-        summary = s.strip()[:500]
+    summary = s.strip()[:500]
 
-        failure_words = re.compile(
-            r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
-            re.IGNORECASE,
-        )
-        failures = []
-        seen = set()
-        for line in s.splitlines():
-            line_stripped = line.strip()
-            if not line_stripped:
-                continue
-            if failure_words.search(line_stripped):
-                if line_stripped not in seen:
-                    seen.add(line_stripped)
-                    failures.append(line_stripped)
-                if len(failures) >= 10:
-                    break
+    failure_words = re.compile(
+        r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+        re.IGNORECASE,
+    )
+    failures = []
+    seen = set()
+    for line in s.splitlines():
+        line_stripped = line.strip()
+        if not line_stripped:
+            continue
+        if failure_words.search(line_stripped):
+            if line_stripped not in seen:
+                seen.add(line_stripped)
+                failures.append(line_stripped)
+            if len(failures) >= 10:
+                break
 
-        return TestResult(passed=passed, summary=summary, failures=failures)
-    except (ValueError, TypeError):
-        try:
-            s = strip_code_fences(text) if isinstance(text, str) else str(text)
-        except (ValueError, TypeError):
-            s = str(text) if text is not None else ""
-        return TestResult(passed=True, summary=s[:500], failures=[])
+    return TestResult(passed=passed, summary=summary, failures=failures)

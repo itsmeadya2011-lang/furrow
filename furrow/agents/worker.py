@@ -99,7 +99,7 @@ def _normalize_command(command: str) -> str:
     # Canonicalize every spelling of the HOME variable to "$home".
     cmd = _HOME_VAR_RE.sub("$home", cmd)
     # Collapse runs of whitespace to single space
-    cmd = re.sub(r'\s+', ' ', cmd)
+    cmd = re.sub(r"\s+", " ", cmd)
     return cmd
 
 
@@ -370,8 +370,7 @@ _WRITE_PATH_PROGRAMS = frozenset({"tee"})
 
 def _git_subcommand(args: list[str]) -> str | None:
     """Return the git subcommand, skipping global options that take a value."""
-    VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace",
-                  "--exec-path"}
+    VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
     i = 0
     while i < len(args):
         t = args[i]
@@ -727,7 +726,9 @@ class WorkerAgent:
         try:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
+                    "/bin/sh",
+                    "-c",
+                    command,
                     cwd=str(self.workspace),
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
