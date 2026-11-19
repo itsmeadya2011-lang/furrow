@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,6 +13,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import ProgressTracker, get_logger
 
 _UNSET = object()
 
@@ -50,6 +52,12 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        
+        # Progress tracking
+        self._run_id = str(uuid.uuid4())[:8]
+        self._logger = get_logger("furrow.orchestrator")
+        self._progress = ProgressTracker(self._logger, self._run_id)
+        
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -170,6 +178,7 @@ class Orchestrator:
                                       message="no state file found, starting fresh"))
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
+        self._progress.cycle_started(0, self.original_goal)
 
         while True:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
@@ -178,8 +187,9 @@ class Orchestrator:
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            self._progress.cycle_started(self.cycles, self.goal)
             try:
-                plan = await self.planner.plan(self.goal, context=self._context())
+                plan = await self.planner.plan(self.goal, context=self._context(), workspace=self.settings.workspace)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -229,6 +239,12 @@ class Orchestrator:
                     type=EventType.TEST_FINISHED,
                     data={"passed": test_result.passed, "summary": test_result.summary},
                 )
+            )
+            self._progress.cycle_finished(
+                self.cycles, 
+                len(plan.tasks), 
+                test_result.passed if not skipped else None, 
+                test_result.summary
             )
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
@@ -312,6 +328,17 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
+        
+        # Update usage tracking
+        cycle_usage = self._accumulate_usage()
+        self._progress.usage_updated(
+            self._usage.input_tokens,
+            self._usage.output_tokens,
+            self._usage.cost_usd
+        )
+        
+        # Log run completion
+        self._progress.run_finished(self._stopped_reason, self._last_test_passed)
 
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
@@ -425,6 +452,7 @@ class Orchestrator:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                self._progress.task_started(task.id, task.description)
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -455,6 +483,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._progress.task_finished(task.id, False, str(task.error or ""), task.attempts)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":
@@ -491,6 +520,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._progress.task_finished(task.id, task.status == "completed", str(task.result or ""), task.attempts)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error or "unknown error"))
                     if task.status == "completed":
@@ -529,6 +559,7 @@ class Orchestrator:
                             },
                         )
                     )
+                    self._progress.task_finished(task.id, False, str(task.error or ""), task.attempts)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":

@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from furrow.costs import ModelPricing
@@ -107,6 +107,13 @@ class RunResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
 
 
+class ConfigValidationError(Exception):
+    """Raised when configuration validation fails."""
+    def __init__(self, message: str, field: str | None = None):
+        self.field = field
+        super().__init__(message)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
@@ -132,6 +139,57 @@ class Settings(BaseSettings):
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _normalize_log_level(cls, v: str) -> str:
+        if isinstance(v, str):
+            return v.upper()
+        return "INFO"
+
+    @field_validator("workspace", mode="before")
+    @classmethod
+    def _resolve_workspace(cls, v: str | Path) -> Path:
+        if isinstance(v, str):
+            return Path(v).resolve()
+        return v.resolve()
+
+    @field_validator("ollama_base_url")
+    @classmethod
+    def _normalize_ollama_url(cls, v: str) -> str:
+        if not v:
+            return "http://localhost:11434"
+        url = v.rstrip("/")
+        if not url.startswith(("http://", "https://")):
+            url = "http://" + url
+        return url
+
+    @model_validator(mode="after")
+    def _validate_provider_keys(self) -> "Settings":
+        """Validate that required API keys are present for the selected provider."""
+        if self.provider == Provider.ANTHROPIC:
+            if not self.anthropic_api_key and not self._get_env("ANTHROPIC_API_KEY"):
+                raise ConfigValidationError(
+                    "ANTHROPIC_API_KEY is required when using the Anthropic provider. "
+                    "Set it via FURROW_ANTHROPIC_API_KEY environment variable or .env file.",
+                    "anthropic_api_key"
+                )
+        elif self.provider == Provider.OPENAI:
+            if not self.openai_api_key and not self._get_env("OPENAI_API_KEY"):
+                raise ConfigValidationError(
+                    "OPENAI_API_KEY is required when using the OpenAI provider. "
+                    "Set it via FURROW_OPENAI_API_KEY environment variable or .env file.",
+                    "openai_api_key"
+                )
+        elif self.provider == Provider.OLLAMA:
+            # Ollama doesn't require an API key, but we can validate the URL is reachable
+            pass
+        return self
+
+    @staticmethod
+    def _get_env(key: str) -> str | None:
+        import os
+        return os.getenv(key)
+
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
         base = Path(workspace) if workspace is not None else Path(self.workspace)
@@ -140,6 +198,34 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def validate_for_run(self) -> list[str]:
+        """Validate settings for a run and return a list of warnings (non-fatal issues)."""
+        warnings = []
+        
+        # Check if workspace exists
+        if not self.workspace.exists():
+            warnings.append(f"Workspace directory does not exist: {self.workspace}")
+        elif not self.workspace.is_dir():
+            warnings.append(f"Workspace path is not a directory: {self.workspace}")
+        
+        # Warn about high token limits
+        if self.max_tokens > 8192:
+            warnings.append(f"max_tokens ({self.max_tokens}) is very high, may increase costs")
+        
+        # Warn about low timeouts
+        if self.request_timeout < 30:
+            warnings.append(f"request_timeout ({self.request_timeout}s) is very low, may cause failures")
+        if self.command_timeout < 60:
+            warnings.append(f"command_timeout ({self.command_timeout}s) is low, commands may time out")
+        if self.test_timeout < 60:
+            warnings.append(f"test_timeout ({self.test_timeout}s) is low, tests may time out")
+        
+        # Warn about Ollama if not running locally
+        if self.provider == Provider.OLLAMA and not self.ollama_base_url.startswith(("http://localhost", "http://127.0.0.1")):
+            warnings.append(f"Using remote Ollama at {self.ollama_base_url}, ensure it's accessible")
+        
+        return warnings
 
 
 settings = Settings()

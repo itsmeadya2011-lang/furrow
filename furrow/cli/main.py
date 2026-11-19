@@ -18,7 +18,7 @@ from typing import Any
 
 import click
 
-from furrow.config import RunResult, Settings, settings
+from furrow.config import ConfigValidationError, RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
@@ -47,7 +47,16 @@ def _run_settings(
     if workspace is not None:
         updates["workspace"] = Path(workspace)
     merged = {**settings.model_dump(), **updates}
-    return Settings.model_validate(merged)
+    try:
+        return Settings.model_validate(merged)
+    except ConfigValidationError as e:
+        click.secho(f"Configuration error: {e}", fg="red")
+        if e.field:
+            click.secho(f"  Field: {e.field}", fg="yellow")
+        sys.exit(1)
+    except Exception as e:
+        click.secho(f"Invalid configuration: {e}", fg="red")
+        sys.exit(1)
 
 
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
@@ -154,6 +163,11 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
 
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
+    # Show configuration warnings
+    warnings = run_settings.validate_for_run()
+    for warning in warnings:
+        click.secho(f"Warning: {warning}", fg="yellow")
+    
     store = StateStore(run_settings.state_path())
     orchestrator = Orchestrator(
         goal=goal,

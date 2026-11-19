@@ -65,7 +65,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
     margin: 0 0 1rem; color: #f0f2f5;
   }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
   input {
     flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
     border: 1px solid #2b3240; border-radius: 6px; font: inherit;
@@ -73,13 +73,33 @@ INDEX_HTML = r"""<!DOCTYPE html>
   button {
     padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    transition: border-color 0.2s, background-color 0.2s;
   }
-  button:hover { border-color: #4c8dff; }
+  button:hover { border-color: #4c8dff; background: #253045; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button.primary { background: #1e3a5f; border-color: #4c8dff; }
+  button.primary:hover { background: #254878; }
+  button.danger { background: #5f1e1e; border-color: #e0685f; }
+  button.danger:hover { background: #782525; }
+  
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: 0.85rem; line-height: 1.5;
   }
+  #log .log-line { margin: 0.2rem 0; }
+  #log .log-time { color: #6a7385; margin-right: 0.5rem; }
+  #log .log-cycle { color: #4c8dff; font-weight: bold; }
+  #log .log-plan { color: #f0b367; }
+  #log .log-task-start { color: #4c8dff; }
+  #log .log-task-ok { color: #57d38c; }
+  #log .log-task-fail { color: #e0685f; }
+  #log .log-test { color: #c89cff; }
+  #log .log-state { color: #8a93a5; }
+  #log .log-error { color: #e0685f; }
+  #log .log-done { color: #57d38c; font-weight: bold; }
+  
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
     margin-bottom: 1rem; background: #171b23;
@@ -94,52 +114,117 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  
+  /* Progress bar */
+  .progress-container {
+    margin: 0.5rem 0;
+    height: 6px;
+    background: #1a1f2e;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .progress-bar {
+    height: 100%;
+    background: linear-gradient(90deg, #4c8dff, #57d38c);
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+  .progress-bar.stalled { background: linear-gradient(90deg, #e0685f, #f0b367); }
+  
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color 0.2s, box-shadow 0.2s;
   }
+  .panel.running { border-color: #4c8dff; box-shadow: 0 0 0 1px #4c8d44; }
+  .panel.completed { border-color: #57d38c; }
+  .panel.failed { border-color: #e0685f; }
+  .panel.blocked { border-color: #f0b367; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
   }
   .panel-id { font-size: .85rem; color: #8a93a5; }
   .panel-status {
-    font-size: .8rem; font-weight: 700; text-transform: uppercase;
-    padding: .05rem .4rem; border-radius: 3px;
+    font-size: .7rem; font-weight: 700; text-transform: uppercase;
+    padding: .1rem .5rem; border-radius: 3px;
+    letter-spacing: 0.05em;
   }
   .panel-desc {
-    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
+    margin: 0 0 .4rem; font-size: .95rem; color: #d7dae0;
     word-break: break-word;
   }
   .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    display: flex; gap: .8rem; font-size: .8rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-meta span { display: flex; align-items: center; gap: 0.3rem; }
+  .panel-files {
+    font-size: .75rem; color: #6a7385; margin-top: 0.3rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
   .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
-    white-space: pre-wrap;
+    margin: 0 0 .3rem; font-size: .85rem; color: #57d38c;
+    white-space: pre-wrap; max-height: 100px; overflow: auto;
   }
   .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+    margin: 0; font-size: .85rem; color: #e0685f; white-space: pre-wrap;
+    max-height: 100px; overflow: auto;
   }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { background: #2b3240; color: #8a93a5; }
+  .status-running { background: #1e3a5f; color: #4c8dff; animation: pulse 1.5s infinite; }
+  .status-completed { background: #1e3d2e; color: #57d38c; }
+  .status-failed { background: #3d1e1e; color: #e0685f; }
+  .status-blocked { background: #3d321e; color: #f0b367; }
+  .status-skipped { background: #2b3240; color: #8a93a5; }
+  .status-unknown { background: #2b3240; color: #8a93a5; }
+  
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  
+  /* Stats bar */
+  .stats-bar {
+    display: flex; gap: 1.5rem; margin: 0.5rem 0; padding: 0.5rem;
+    background: #171b23; border: 1px solid #2b3240; border-radius: 6px;
+    font-size: 0.8rem; flex-wrap: wrap;
+  }
+  .stat { display: flex; align-items: center; gap: 0.4rem; }
+  .stat-label { color: #8a93a5; }
+  .stat-value { color: #d7dae0; font-weight: 500; }
+  .stat-value.tokens { color: #c89cff; }
+  .stat-value.cost { color: #f0b367; }
+  .stat-value.time { color: #4c8dff; }
+  
+  /* Keyboard hints */
+  .kbd-hint {
+    font-size: 0.7rem; color: #6a7385; margin-top: 0.5rem;
+    display: flex; gap: 1rem; flex-wrap: wrap;
+  }
+  .kbd-hint kbd {
+    background: #1a1f2e; border: 1px solid #2b3240; border-radius: 3px;
+    padding: 0.1rem 0.4rem; font-family: inherit;
+  }
+  
+  /* Task dependency indicator */
+  .dep-badge {
+    font-size: 0.65rem; background: #2b3240; color: #8a93a5;
+    padding: 0.1rem 0.3rem; border-radius: 2px; margin-left: 0.3rem;
+  }
 </style>
 </head>
 <body>
 <h1>Furrow</h1>
 <div class="bar">
   <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
+  <button id="start" class="primary">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" class="danger" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -149,9 +234,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
   </div>
+  <div class="progress-container" id="progress-container" style="display: none;">
+    <div class="progress-bar" id="progress-bar"></div>
+  </div>
+</div>
+<div class="stats-bar" id="stats-bar" style="display: none;">
+  <div class="stat"><span class="stat-label">Cycles:</span><span class="stat-value" id="stat-cycles">0</span></div>
+  <div class="stat"><span class="stat-label">Tasks:</span><span class="stat-value" id="stat-tasks">0</span></div>
+  <div class="stat"><span class="stat-label">Completed:</span><span class="stat-value" id="stat-completed">0</span></div>
+  <div class="stat"><span class="stat-label">Failed:</span><span class="stat-value" id="stat-failed">0</span></div>
+  <div class="stat"><span class="stat-label">Tokens:</span><span class="stat-value tokens" id="stat-tokens">0</span></div>
+  <div class="stat"><span class="stat-label">Cost:</span><span class="stat-value cost" id="stat-cost">$0.00</span></div>
+  <div class="stat"><span class="stat-label">Time:</span><span class="stat-value time" id="stat-time">0s</span></div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="kbd-hint">
+  <kbd>Enter</kbd> Start/Resume &nbsp;
+  <kbd>Esc</kbd> Stop &nbsp;
+  <kbd>L</kbd> Clear log &nbsp;
+  <kbd>T</kbd> Toggle tasks
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -161,11 +264,43 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const progressContainerEl = document.getElementById('progress-container');
+  const progressBarEl = document.getElementById('progress-bar');
+  const statsBarEl = document.getElementById('stats-bar');
+  const statCyclesEl = document.getElementById('stat-cycles');
+  const statTasksEl = document.getElementById('stat-tasks');
+  const statCompletedEl = document.getElementById('stat-completed');
+  const statFailedEl = document.getElementById('stat-failed');
+  const statTokensEl = document.getElementById('stat-tokens');
+  const statCostEl = document.getElementById('stat-cost');
+  const statTimeEl = document.getElementById('stat-time');
   let socket = null;
   let lastSummary = null;
+  let runStartTime = null;
+  let tasksVisible = true;
+  let currentCycle = 0;
+  let maxCycles = 0;
 
-  function append(line) {
-    logEl.textContent += line + '\n';
+  function append(line, className = '') {
+    const lineEl = document.createElement('div');
+    lineEl.className = 'log-line' + (className ? ' ' + className : '');
+    lineEl.textContent = line;
+    logEl.appendChild(lineEl);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function appendColored(time, text, color) {
+    const lineEl = document.createElement('div');
+    lineEl.className = 'log-line';
+    const timeEl = document.createElement('span');
+    timeEl.className = 'log-time';
+    timeEl.textContent = time;
+    const textEl = document.createElement('span');
+    textEl.style.color = color;
+    textEl.textContent = text;
+    lineEl.appendChild(timeEl);
+    lineEl.appendChild(textEl);
+    logEl.appendChild(lineEl);
     logEl.scrollTop = logEl.scrollHeight;
   }
 
@@ -173,8 +308,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
     pending: 'pending',
     running: 'running',
@@ -193,6 +326,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return 'unknown';
   }
 
+  function formatTime(seconds) {
+    if (seconds < 60) return seconds.toFixed(0) + 's';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return mins + 'm ' + secs.toFixed(0) + 's';
+  }
+
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
@@ -208,8 +348,39 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const total = (Number(usage.input_tokens) || 0) +
       (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
+    usageEl.textContent = calls + ' calls, ' + total.toLocaleString() + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    
+    // Update stats bar
+    if (running || result) {
+      statsBarEl.style.display = 'flex';
+      const cycles = Number(status && status.cycles) || 0;
+      const tasks = (status && status.tasks) ? status.tasks.length : 0;
+      const completed = (status && status.tasks) ? 
+        status.tasks.filter(t => t.status === 'completed').length : 0;
+      const failed = (status && status.tasks) ? 
+        status.tasks.filter(t => t.status === 'failed').length : 0;
+      statCyclesEl.textContent = cycles;
+      statTasksEl.textContent = tasks;
+      statCompletedEl.textContent = completed;
+      statFailedEl.textContent = failed;
+      statTokensEl.textContent = total.toLocaleString();
+      statCostEl.textContent = '$' + cost.toFixed(4);
+      if (runStartTime) {
+        statTimeEl.textContent = formatTime((Date.now() - runStartTime) / 1000);
+      }
+    }
+    
+    // Update progress bar
+    if (running && maxCycles > 0) {
+      progressContainerEl.style.display = 'block';
+      const pct = Math.min(100, (cycles / maxCycles) * 100);
+      progressBarEl.style.width = pct + '%';
+      if (pct >= 90) progressBarEl.classList.add('stalled');
+      else progressBarEl.classList.remove('stalled');
+    } else {
+      progressContainerEl.style.display = 'none';
+    }
   }
 
   function renderTasks(tasks) {
@@ -228,7 +399,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = text(task.status) || 'pending';
 
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = 'panel ' + statusClass(status);
       panel.id = 'task-' + text(task.id);
 
       const head = document.createElement('div');
@@ -242,6 +413,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       head.appendChild(idEl);
       head.appendChild(statusEl);
 
+      // Show dependencies
+      if (task.dependencies && task.dependencies.length > 0) {
+        const depEl = document.createElement('span');
+        depEl.className = 'dep-badge';
+        depEl.textContent = 'deps: ' + task.dependencies.join(', ');
+        head.appendChild(depEl);
+      }
+
       const desc = document.createElement('div');
       desc.className = 'panel-desc';
       desc.textContent = text(task.description);
@@ -251,6 +430,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      
+      // Show files if any
+      if (task.files && task.files.length > 0) {
+        const filesEl = document.createElement('span');
+        filesEl.textContent = 'files: ' + task.files.slice(0, 3).join(', ') + 
+          (task.files.length > 3 ? ' +' + (task.files.length - 3) : '');
+        meta.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -312,10 +499,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
+      runStartTime = Date.now();
       socket.send(JSON.stringify(payload));
+      document.getElementById('start').disabled = true;
+      document.getElementById('resume').disabled = true;
+      document.getElementById('stop').disabled = false;
+      progressBarEl.classList.remove('stalled');
+      maxCycles = payload.max_cycles || 0;
     };
     function truncate(value, max) {
       const s = text(value);
@@ -335,42 +526,54 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const time = eventTime(msg);
       let line = '';
       let color = '#8a93a5';
+      let className = '';
       if (type === 'cycle_started') {
+        currentCycle = data.cycle;
         line = 'cycle ' + text(data.cycle) + ' started';
+        color = '#4c8dff';
+        className = 'log-cycle';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        color = '#f0b367';
+        className = 'log-plan';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+        color = '#4c8dff';
+        className = 'log-task-start';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
         line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
           truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+        className = ok ? 'log-task-ok' : 'log-task-fail';
       } else if (type === 'test_started') {
         line = 'running tests...';
+        color = '#c89cff';
+        className = 'log-test';
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+        className = 'log-test';
       } else if (type === 'state_saved') {
         line = 'state saved';
+        color = '#8a93a5';
+        className = 'log-state';
       } else if (type === 'log') {
         line = text(msg.message);
+        color = '#8a93a5';
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
         color = '#e0685f';
+        className = 'log-error';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
         color = '#57d38c';
+        className = 'log-done';
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
-      logEl.scrollTop = logEl.scrollHeight;
+      appendColored(time, line, color);
       return line;
     }
 
@@ -388,11 +591,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
       if (msg.type === 'done') {
         loadStatus();
+        document.getElementById('start').disabled = false;
+        document.getElementById('resume').disabled = false;
+        document.getElementById('stop').disabled = true;
+        progressContainerEl.style.display = 'none';
       }
     };
     socket.onclose = function () {
       append('-- closed');
       socket = null;
+      document.getElementById('start').disabled = false;
+      document.getElementById('resume').disabled = false;
+      document.getElementById('stop').disabled = true;
       loadStatus();
     };
     socket.onerror = function () {
@@ -401,11 +611,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+    const goal = goalEl.value.trim();
+    if (!goal) return;
+    connect({ goal: goal, resume: false, max_cycles: 0 });
   };
   document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+    const goal = goalEl.value.trim();
+    connect({ goal: goal, resume: true, max_cycles: 0 });
   };
+  document.getElementById('stop').onclick = function () {
+    if (socket) { socket.close(); }
+  };
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.key === 'Enter') {
+      document.getElementById('start').click();
+    } else if (e.key === 'Escape') {
+      document.getElementById('stop').click();
+    } else if (e.key === 'l' || e.key === 'L') {
+      logEl.textContent = '';
+    } else if (e.key === 't' || e.key === 'T') {
+      tasksVisible = !tasksVisible;
+      tasksEl.style.display = tasksVisible ? 'flex' : 'none';
+    }
+  });
 
   loadState();
   loadStatus();

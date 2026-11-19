@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import json
 import os
 import re
@@ -634,6 +635,14 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "edit_file":
+            if "old_text" not in args or "new_text" not in args:
+                return "error: missing old_text or new_text"
+            old_text = args["old_text"]
+            new_text = args["new_text"]
+            if not isinstance(old_text, str) or not isinstance(new_text, str):
+                return "error: invalid old_text or new_text (expected strings)"
+            return await self._edit_file(str(args.get("path", "")), old_text, new_text)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -685,6 +694,34 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _edit_file(self, path: str, old_text: str, new_text: str) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if old_text not in content:
+            # Try to find a close match by normalizing whitespace
+            import difflib
+            matcher = difflib.SequenceMatcher(None, content, old_text)
+            match = matcher.find_longest_match(0, len(content), 0, len(old_text))
+            if match.size < len(old_text) * 0.8:
+                return f"error: old_text not found in file (matched {match.size}/{len(old_text)} chars)"
+            # Extract the actual matching text from the file
+            actual_old = content[match.a:match.a + match.size]
+            content = content.replace(actual_old, new_text, 1)
+        else:
+            content = content.replace(old_text, new_text, 1)
+        try:
+            await self.client.write_file(resolved, content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path} ({len(old_text)} -> {len(new_text)} chars)"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)

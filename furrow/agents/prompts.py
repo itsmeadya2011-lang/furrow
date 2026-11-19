@@ -21,7 +21,15 @@ Return JSON only (no markdown, no explanation) with this shape:
 }
 
 If the goal is too large for one cycle, say so in rationale and break it
-into the most critical first slice."""
+into the most critical first slice.
+
+Guidelines:
+- Tasks should be small enough to complete in a few tool calls
+- Prefer editing existing files over creating new ones when possible
+- Each task should have a clear, testable outcome
+- Include specific file paths when known
+- Dependencies should only be used when tasks truly depend on each other
+- Consider the project structure and existing patterns"""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
@@ -43,7 +51,11 @@ returned as JSON."""
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
 workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+respond with a concise summary and no further tool calls.
+
+Prefer edit_file over write_file for modifications: it makes surgical changes
+and preserves surrounding context. Use write_file only for new files or when
+the entire file content must be replaced."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -68,6 +80,19 @@ WORKER_TOOLS: list[dict] = [
                 "content": {"type": "string"},
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "make a targeted edit to an existing file. Provide the exact old text to replace and the new text. The old text must match exactly (including whitespace).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old_text": {"type": "string"},
+                "new_text": {"type": "string"},
+            },
+            "required": ["path", "old_text", "new_text"],
         },
     },
     {

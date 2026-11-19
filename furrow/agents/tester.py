@@ -140,7 +140,197 @@ def parse_test_output(output: str) -> list[dict]:
             )
             seen_locations.add(location_key)
 
-    # Extract exception types and messages
+    # Jest/Vitest failures: "FAIL  tests/foo.test.js" or "● Test name"
+    jest_fail_pattern = re.compile(
+        r"^FAIL\s+([^\s]+)$", re.MULTILINE
+    )
+    for match in jest_fail_pattern.finditer(output):
+        file_path = match.group(1)
+        location_key = f"jest:{file_path}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": file_path,
+                    "line": None,
+                    "test": None,
+                    "error": "Jest test file failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Jest/Vitest individual test failures: "● test name"
+    jest_test_fail_pattern = re.compile(
+        r"^\s*[●✕]\s+(.+)$", re.MULTILINE
+    )
+    for match in jest_test_fail_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        location_key = f"jest:test:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "Test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Mocha failures: "  1) test name"
+    mocha_fail_pattern = re.compile(
+        r"^\s+\d+\)\s+(.+)$", re.MULTILINE
+    )
+    for match in mocha_fail_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        location_key = f"mocha:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "Mocha test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Go test failures: "--- FAIL: TestName (0.00s)"
+    go_fail_pattern = re.compile(
+        r"^--- FAIL: (\S+)\s+\([\d.]+s\)$", re.MULTILINE
+    )
+    for match in go_fail_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"go:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "Go test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Go test panic/stack trace
+    go_panic_pattern = re.compile(
+        r"panic: (.+)$", re.MULTILINE
+    )
+    for match in go_panic_pattern.finditer(output):
+        panic_msg = match.group(1).strip()
+        location_key = f"go:panic:{panic_msg[:50]}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": None,
+                    "error": f"panic: {panic_msg}",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Rust test failures: "test test_name ... FAILED"
+    rust_fail_pattern = re.compile(
+        r"^test\s+(\S+)\s+\.\.\.\s+FAILED$", re.MULTILINE
+    )
+    for match in rust_fail_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"rust:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "Rust test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Java/Maven failures: "Tests run: X, Failures: Y, Errors: Z"
+    # or individual test failures
+    maven_fail_pattern = re.compile(
+        r"<<< FAILURE!|<<< ERROR!", re.MULTILINE
+    )
+    if maven_fail_pattern.search(output):
+        # Extract test class/method from maven output
+        maven_test_pattern = re.compile(
+            r"Running\s+(\S+)", re.MULTILINE
+        )
+        for match in maven_test_pattern.finditer(output):
+            test_class = match.group(1)
+            location_key = f"maven:{test_class}"
+            if location_key not in seen_locations:
+                failures.append(
+                    {
+                        "file": test_class.replace(".", "/") + ".java",
+                        "line": None,
+                        "test": test_class,
+                        "error": "Maven test failed",
+                    }
+                )
+                seen_locations.add(location_key)
+
+    # Gradle failures
+    gradle_fail_pattern = re.compile(
+        r"> Task :test FAILED", re.MULTILINE
+    )
+    if gradle_fail_pattern.search(output):
+        gradle_test_pattern = re.compile(
+            r"(\S+Test)\s+FAILED", re.MULTILINE
+        )
+        for match in gradle_test_pattern.finditer(output):
+            test_class = match.group(1)
+            location_key = f"gradle:{test_class}"
+            if location_key not in seen_locations:
+                failures.append(
+                    {
+                        "file": test_class.replace(".", "/") + ".java",
+                        "line": None,
+                        "test": test_class,
+                        "error": "Gradle test failed",
+                    }
+                )
+                seen_locations.add(location_key)
+
+    # PHPUnit failures
+    phpunit_fail_pattern = re.compile(
+        r"^\d+\)\s+(.+?)(?:\s+\(.+\))?$", re.MULTILINE
+    )
+    for match in phpunit_fail_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        location_key = f"phpunit:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "PHPUnit test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # .NET test failures
+    dotnet_fail_pattern = re.compile(
+        r"Failed\s+(\S+)\s+\[", re.MULTILINE
+    )
+    for match in dotnet_fail_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"dotnet:{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": ".NET test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Extract exception types and messages (generic)
     exception_pattern = re.compile(r"([A-Za-z]+Error|[A-Za-z]+Exception):\s*(.+)$", re.MULTILINE)
     if not failures:
         for match in exception_pattern.finditer(output):
@@ -206,6 +396,11 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_jest_config = any(self.workspace.glob("jest.config.*"))
+        has_vitest_config = any(self.workspace.glob("vitest.config.*"))
+        has_mocha_config = any(self.workspace.glob(".mocharc*")) or (self.workspace / "mocha.opts").is_file()
+        has_playwright = (self.workspace / "playwright.config.ts").is_file() or (self.workspace / "playwright.config.js").is_file()
+        has_cypress = (self.workspace / "cypress.config.ts").is_file() or (self.workspace / "cypress.config.js").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
@@ -216,13 +411,33 @@ class TesterAgent:
         # Check for Node.js test runners
         if has_package:
             # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+            if has_jest_config or has_vitest_config:
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
+            # Check for playwright
+            if has_playwright:
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "exec", "playwright", "test"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "playwright", "test"]
+                return ["npx", "playwright", "test"]
+            # Check for cypress
+            if has_cypress:
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "exec", "cypress", "run"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "cypress", "run"]
+                return ["npx", "cypress", "run"]
+            # Check for mocha
+            if has_mocha_config:
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json", encoding="utf-8") as fh:
@@ -253,10 +468,60 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Java - Maven
+        if (self.workspace / "pom.xml").is_file():
+            return ["mvn", "test", "-q"]
+        # Java - Gradle
+        if (self.workspace / "build.gradle").is_file() or (self.workspace / "build.gradle.kts").is_file():
+            return ["./gradlew", "test", "--quiet"]
+        # Java - Gradle wrapper not present
+        if (self.workspace / "settings.gradle").is_file() or (self.workspace / "settings.gradle.kts").is_file():
+            return ["gradle", "test", "--quiet"]
+
+        # PHP - Composer
+        if (self.workspace / "composer.json").is_file():
+            # Check for phpunit
+            try:
+                with open(self.workspace / "composer.json", encoding="utf-8") as fh:
+                    composer_data = json.load(fh)
+                require_dev = composer_data.get("require-dev", {})
+                if "phpunit/phpunit" in require_dev or "phpunit/phpunit" in composer_data.get("require", {}):
+                    return ["./vendor/bin/phpunit", "--no-coverage"]
+            except (OSError, UnicodeError, ValueError):
+                pass
+            # Fallback to composer scripts
+            return ["composer", "test"]
+
+        # Ruby - Bundler
+        if (self.workspace / "Gemfile").is_file():
+            return ["bundle", "exec", "rake", "test"]
+
+        # Rust
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
+        # Go
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+        # .NET
+        if any(self.workspace.glob("*.csproj")) or any(self.workspace.glob("*.sln")):
+            return ["dotnet", "test", "--verbosity", "quiet"]
+        # Swift
+        if (self.workspace / "Package.swift").is_file():
+            return ["swift", "test"]
+        # Elixir
+        if (self.workspace / "mix.exs").is_file():
+            return ["mix", "test"]
+        # CMake (C/C++)
+        if (self.workspace / "CMakeLists.txt").is_file() and (self.workspace / "build").is_dir():
+            return ["ctest", "--output-on-failure", "-j"]
+        # Makefile with test target
+        if (self.workspace / "Makefile").is_file():
+            try:
+                content = (self.workspace / "Makefile").read_text()
+                if "test:" in content:
+                    return ["make", "test"]
+            except (OSError, UnicodeError):
+                pass
 
         return None
 
