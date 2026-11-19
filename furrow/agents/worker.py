@@ -714,7 +714,7 @@ class WorkerAgent:
         if is_command_denied(command, self.workspace):
             return "error: command denied"
         try:
-            shlex.split(command)
+            parts = shlex.split(command)
         except ValueError:
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
@@ -735,7 +735,6 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
             else:
-                parts = shlex.split(command)
                 if not parts:
                     return "error: empty command"
                 proc = await asyncio.create_subprocess_exec(

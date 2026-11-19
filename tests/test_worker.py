@@ -200,6 +200,45 @@ async def test_denied_command(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_unbalanced_quotes_command_is_denied(tmp_path):
+    """A command with unbalanced quotes cannot be parsed by shlex and is rejected."""
+    from furrow.config import TaskModel
+
+    denied_commands = [
+        'echo "hello',
+        "echo 'hello",
+        'echo "hello "world"',
+        "echo 'hello 'world'",
+    ]
+    for cmd in denied_commands:
+        responses = [
+            LLMResponse(
+                text="",
+                tool_calls=[
+                    ToolCall(id="t1", name="run_command", arguments={"command": cmd})
+                ],
+            ),
+            LLMResponse(text="done", tool_calls=[]),
+        ]
+        client = FakeLLMClient(responses)
+        settings = make_settings(tmp_path)
+        task = TaskModel(id="1", description="cmd")
+        agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+        await agent.run()
+        second_call = client.calls[1]["messages"]
+        found_denied = False
+        for m in second_call:
+            if isinstance(m.get("content"), list):
+                for b in m["content"]:
+                    if b.get("type") == "tool_result":
+                        assert b["content"] == "error: could not parse command", (
+                            f"Command '{cmd}' should fail to parse"
+                        )
+                        found_denied = True
+        assert found_denied
+
+
+@pytest.mark.asyncio
 async def test_safe_command(tmp_path):
     responses = [
         LLMResponse(
