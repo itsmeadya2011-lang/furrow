@@ -18,6 +18,9 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger, new_span, trace_context
+
+logger = get_logger(__name__)
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -229,6 +232,10 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        # Per-model usage tracking
+        self._model_usage: dict[str, Usage] = {}
+        # Per-operation usage tracking
+        self._operation_usage: dict[str, Usage] = {}
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -284,6 +291,7 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -315,20 +323,49 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
+    def _track_usage(self, model: str, operation: str, usage: Usage) -> None:
+        """Track usage per model and per operation."""
+        self.total_usage.add(usage)
+        if model not in self._model_usage:
+            self._model_usage[model] = Usage()
+        self._model_usage[model].add(usage)
+        if operation not in self._operation_usage:
+            self._operation_usage[operation] = Usage()
+        self._operation_usage[operation].add(usage)
+
+    def get_model_usage(self, model: str) -> Usage:
+        """Get usage for a specific model."""
+        return self._model_usage.get(model, Usage())
+
+    def get_operation_usage(self, operation: str) -> Usage:
+        """Get usage for a specific operation."""
+        return self._operation_usage.get(operation, Usage())
+
+    def get_all_model_usage(self) -> dict[str, Usage]:
+        """Get usage breakdown by model."""
+        return dict(self._model_usage)
+
+    def get_all_operation_usage(self) -> dict[str, Usage]:
+        """Get usage breakdown by operation."""
+        return dict(self._operation_usage)
+
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         provider = self.settings.provider
+        operation = "complete"
 
         async def call() -> str:
-            if provider == Provider.ANTHROPIC:
-                response = await self._complete_anthropic(prompt, system, model)
-            elif provider == Provider.OPENAI:
-                response = await self._complete_openai(self.openai, prompt, system, model)
-            elif provider == Provider.OLLAMA:
-                response = await self._complete_openai(self.ollama, prompt, system, model)
-            else:
-                raise ValueError(f"Unsupported provider: {provider}")
-            return response.text
+            with trace_context():
+                with new_span(f"llm_complete", model=model, provider=provider.value):
+                    if provider == Provider.ANTHROPIC:
+                        response = await self._complete_anthropic(prompt, system, model)
+                    elif provider == Provider.OPENAI:
+                        response = await self._complete_openai(self.openai, prompt, system, model)
+                    elif provider == Provider.OLLAMA:
+                        response = await self._complete_openai(self.ollama, prompt, system, model)
+                    else:
+                        raise ValueError(f"Unsupported provider: {provider}")
+                    return response.text
 
         return await self._retry(call)
 
@@ -341,19 +378,22 @@ class LLMClient:
     ) -> LLMResponse:
         model = model or self.settings.model
         provider = self.settings.provider
+        operation = "chat"
 
         async def call() -> LLMResponse:
-            if provider == Provider.ANTHROPIC:
-                return await self._chat_anthropic(messages, tools, system, model)
-            elif provider == Provider.OPENAI:
-                return await self._chat_openai_compatible(
-                    self.openai, messages, tools, system, model
-                )
-            elif provider == Provider.OLLAMA:
-                return await self._chat_openai_compatible(
-                    self.ollama, messages, tools, system, model
-                )
-            raise ValueError(f"Unsupported provider: {provider}")
+            with trace_context():
+                with new_span(f"llm_chat", model=model, provider=provider.value, tools=len(tools or [])):
+                    if provider == Provider.ANTHROPIC:
+                        return await self._chat_anthropic(messages, tools, system, model)
+                    elif provider == Provider.OPENAI:
+                        return await self._chat_openai_compatible(
+                            self.openai, messages, tools, system, model
+                        )
+                    elif provider == Provider.OLLAMA:
+                        return await self._chat_openai_compatible(
+                            self.ollama, messages, tools, system, model
+                        )
+                    raise ValueError(f"Unsupported provider: {provider}")
 
         return await self._retry(call)
 
@@ -378,7 +418,8 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._track_usage(model, "complete", usage)
+        logger.debug("llm_complete_anthropic", model=model, usage=usage.model_dump())
         return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _complete_openai(
@@ -411,7 +452,8 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._track_usage(model, "complete", usage)
+        logger.debug("llm_complete_openai", model=model, usage=usage.model_dump())
         return LLMResponse(text=text, raw=response, usage=usage)
 
     async def _chat_anthropic(
@@ -460,7 +502,8 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._track_usage(model, "chat", usage)
+        logger.debug("llm_chat_anthropic", model=model, tool_calls=len(tool_calls), usage=usage.model_dump())
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
@@ -520,7 +563,8 @@ class LLMClient:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
         except Exception:
             usage.cost_usd = 0.0
-        self.total_usage.add(usage)
+        self._track_usage(model, "chat", usage)
+        logger.debug("llm_chat_openai", model=model, tool_calls=len(tool_calls), usage=usage.model_dump())
         return LLMResponse(
             text=text,
             tool_calls=tool_calls,
@@ -544,3 +588,17 @@ class LLMClient:
         if not p.exists():
             return []
         return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+
+    def get_usage_summary(self) -> dict[str, Any]:
+        """Get a comprehensive usage summary."""
+        total_cost = sum(u.cost_usd for u in self._model_usage.values())
+        total_cost += sum(u.cost_usd for u in self._operation_usage.values())
+        # Avoid double counting - total_usage already has the sum
+        total_cost = self.total_usage.cost_usd
+        
+        return {
+            "total": self.total_usage.model_dump(),
+            "by_model": {k: v.model_dump() for k, v in self._model_usage.items()},
+            "by_operation": {k: v.model_dump() for k, v in self._operation_usage.items()},
+            "total_cost_usd": total_cost,
+        }

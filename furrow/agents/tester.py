@@ -7,6 +7,7 @@ import os
 import re
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,7 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
-from furrow.logging import get_logger
+from furrow.logging import get_logger, new_span, trace_context
 
 logger = get_logger(__name__)
 
@@ -199,6 +200,7 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        """Detect the test command for the project."""
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -206,6 +208,14 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_cargo = (self.workspace / "Cargo.toml").is_file()
+        has_go_mod = (self.workspace / "go.mod").is_file()
+        has_makefile = (self.workspace / "Makefile").is_file()
+        has_cmake = (self.workspace / "CMakeLists.txt").is_file()
+        has_gradle = (self.workspace / "build.gradle").is_file() or (self.workspace / "build.gradle.kts").is_file()
+        has_maven = (self.workspace / "pom.xml").is_file()
+        has_mix = (self.workspace / "mix.exs").is_file()
+        has_rebar = (self.workspace / "rebar.config").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
@@ -253,10 +263,36 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
-        if (self.workspace / "Cargo.toml").is_file():
+        if has_cargo:
             return ["cargo", "test", "-q"]
-        if (self.workspace / "go.mod").is_file():
+        
+        if has_go_mod:
             return ["go", "test", "./..."]
+
+        if has_makefile:
+            # Check if Makefile has a test target
+            try:
+                makefile_content = (self.workspace / "Makefile").read_text(encoding="utf-8")
+                if re.search(r"^\s*test\s*:", makefile_content, re.MULTILINE):
+                    return ["make", "test"]
+            except (OSError, UnicodeError) as exc:
+                logger.warning("Could not read Makefile: %s", exc)
+
+        if has_cmake:
+            # Try ctest for CMake projects
+            return ["ctest", "--output-on-failure"]
+
+        if has_gradle:
+            return ["./gradlew", "test", "--quiet"]
+        
+        if has_maven:
+            return ["mvn", "test", "-q"]
+
+        if has_mix:
+            return ["mix", "test"]
+        
+        if has_rebar:
+            return ["rebar3", "ct", "-q"]
 
         return None
 
@@ -344,97 +380,111 @@ class TesterAgent:
         return TestResult(passed=passed, summary=summary, failures=failures)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
-        try:
-            cmd = await self.detect_command()
-            if cmd is None:
-                return TestResult(
-                    passed=True,
-                    skipped=True,
-                    summary="No test runner detected for this project (tests skipped).",
-                    failures=[],
-                )
-
-            # The test-suite timeout is a separate concern from the LLM request
-            # timeout: `request_timeout` bounds a single API call, while a test
-            # suite may legitimately run for minutes.
-            timeout = resolve_test_timeout(self.settings)
-
-            spawn_kwargs: dict[str, Any] = {}
-            if os.name == "posix":
-                spawn_kwargs["start_new_session"] = True
-
-            spawn_failed = False
-            spawn_error = ""
-            timed_out = False
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    *cmd,
-                    cwd=str(self.workspace),
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-            except Exception as exc:
-                # The runner could not even be started.  That is an
-                # infrastructure error, not a test failure, and it has to be
-                # distinguishable from "the tests ran and failed".
-                spawn_failed = True
-                message = str(exc)
-                spawn_error = (
-                    f"{type(exc).__name__}: {message}" if message else type(exc).__name__
-                )
-                returncode = 1
-                stdout = b""
-                stderr = b""
-            else:
+        with trace_context():
+            with new_span("tester_run", goal=goal[:100]):
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-                except asyncio.TimeoutError:
-                    await self._kill_process_tree(proc)
-                    timed_out = True
-                    returncode = 1
-                    stdout = b""
-                    stderr = f"Test command timed out after {timeout:g}s.".encode()
-                else:
-                    returncode = proc.returncode if proc.returncode is not None else 0
+                    cmd = await self.detect_command()
+                    if cmd is None:
+                        logger.info("tester_no_runner_detected", workspace=str(self.workspace))
+                        return TestResult(
+                            passed=True,
+                            skipped=True,
+                            summary="No test runner detected for this project (tests skipped).",
+                            failures=[],
+                        )
 
-            combined = (
-                stdout.decode("utf-8", errors="replace")
-                + "\n"
-                + stderr.decode("utf-8", errors="replace")
-            )
-            if len(combined) > 20000:
-                combined = "[... output truncated ...]\n" + combined[-20000:]
+                    # The test-suite timeout is a separate concern from the LLM request
+                    # timeout: `request_timeout` bounds a single API call, while a test
+                    # suite may legitimately run for minutes.
+                    timeout = resolve_test_timeout(self.settings)
 
-            llm_result: TestResult | None = None
-            if not spawn_failed:
-                # A runner that never started has no output worth summarising.
-                prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
-                try:
-                    response = await self.client.complete(
-                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                    spawn_kwargs: dict[str, Any] = {}
+                    if os.name == "posix":
+                        spawn_kwargs["start_new_session"] = True
+
+                    spawn_failed = False
+                    spawn_error = ""
+                    timed_out = False
+                    start_time = time.monotonic()
+                    try:
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            cwd=str(self.workspace),
+                            stdin=asyncio.subprocess.DEVNULL,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            **spawn_kwargs,
+                        )
+                    except Exception as exc:
+                        # The runner could not even be started.  That is an
+                        # infrastructure error, not a test failure, and it has to be
+                        # distinguishable from "the tests ran and failed".
+                        spawn_failed = True
+                        message = str(exc)
+                        spawn_error = (
+                            f"{type(exc).__name__}: {message}" if message else type(exc).__name__
+                        )
+                        returncode = 1
+                        stdout = b""
+                        stderr = b""
+                    else:
+                        try:
+                            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                        except asyncio.TimeoutError:
+                            await self._kill_process_tree(proc)
+                            timed_out = True
+                            returncode = 1
+                            stdout = b""
+                            stderr = f"Test command timed out after {timeout:g}s.".encode()
+                        else:
+                            returncode = proc.returncode if proc.returncode is not None else 0
+
+                    elapsed = time.monotonic() - start_time
+                    combined = (
+                        stdout.decode("utf-8", errors="replace")
+                        + "\n"
+                        + stderr.decode("utf-8", errors="replace")
                     )
-                    llm_result = parse_test_result(response)
-                except Exception:
-                    llm_result = None
+                    if len(combined) > 20000:
+                        combined = "[... output truncated ...]\n" + combined[-20000:]
 
-            return self._finalize(
-                llm_result=llm_result,
-                returncode=returncode,
-                combined=combined,
-                spawn_failed=spawn_failed,
-                spawn_error=spawn_error,
-                timed_out=timed_out,
-                timeout=timeout,
-            )
-        except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
-            return TestResult(
-                passed=False,
-                summary=f"Tester error: {message}",
-                failures=[f"tester error: {message}"],
-            )
+                    logger.info("tester_command_finished", 
+                                cmd=" ".join(cmd), 
+                                returncode=returncode, 
+                                timed_out=timed_out,
+                                elapsed=elapsed)
+
+                    llm_result: TestResult | None = None
+                    if not spawn_failed:
+                        # A runner that never started has no output worth summarising.
+                        prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+                        with new_span("tester_llm_call", cmd=" ".join(cmd)):
+                            try:
+                                response = await self.client.complete(
+                                    prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                                )
+                                llm_result = parse_test_result(response)
+                            except Exception as exc:
+                                logger.warning("tester_llm_error", error=str(exc), exc_info=True)
+                                llm_result = None
+
+                    return self._finalize(
+                        llm_result=llm_result,
+                        returncode=returncode,
+                        combined=combined,
+                        spawn_failed=spawn_failed,
+                        spawn_error=spawn_error,
+                        timed_out=timed_out,
+                        timeout=timeout,
+                    )
+                except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"
+                    logger.error("tester_run_failed", error=message, exc_info=True)
+                    return TestResult(
+                        passed=False,
+                        summary=f"Tester error: {message}",
+                        failures=[f"tester error: {message}"],
+                    )
 
 
 def _extract_failures(output: str, limit: int = 10) -> list[str]:

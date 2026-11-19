@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,9 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_cycle, get_logger, new_span, set_cycle, set_task_id, trace_context
+
+logger = get_logger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -39,6 +43,26 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+    }
+)
+
+# Additional dangerous patterns to catch
+DANGEROUS_PATTERNS = frozenset(
+    {
+        # Shell injection patterns
+        "$(", "`",  # command substitution
+        "eval", "exec",  # code execution
+        # Path traversal
+        "..",  # directory traversal (in paths)
+        # Network/system access
+        "nc ", "netcat", "telnet", "ssh", "scp", "rsync",
+        "curl", "wget", "fetch",  # downloading
+        # Process manipulation
+        "kill", "killall", "pkill",
+        # Filesystem
+        "mount", "umount", "losetup",
+        # Kernel/module
+        "insmod", "rmmod", "modprobe",
     }
 )
 
@@ -78,6 +102,12 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Targets that discard output rather than write a real file.
 _SPECIAL_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+# Maximum command output length before truncation
+MAX_COMMAND_OUTPUT = 20000
+
+# Maximum file read length before truncation
+MAX_FILE_READ = 20000
 
 
 def _normalize_command(command: str) -> str:
@@ -449,6 +479,18 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
     return False
 
 
+def _pattern_in_normalized(pattern: str, normalized: str) -> bool:
+    """Check whether a dangerous pattern appears in the normalized command.
+
+    Patterns that are bare words (no spaces, no special chars) are matched as
+    whole words so that e.g. ``kill`` does not match ``kills``. Patterns that
+    already contain spaces or special characters are matched as substrings.
+    """
+    if " " in pattern or not pattern.replace("_", "").isalnum():
+        return pattern in normalized
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(pattern)}(?![A-Za-z0-9_])", normalized) is not None
+
+
 def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
@@ -464,6 +506,10 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
 
     # DENY by PATTERN
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+        return True
+
+    # DENY additional dangerous patterns
+    if any(_pattern_in_normalized(pattern, normalized) for pattern in DANGEROUS_PATTERNS):
         return True
 
     # DENY dangerous rm/chmod (token-aware, not substring-based). Works even
@@ -512,6 +558,9 @@ def is_command_denied(command: str, workspace: Path) -> bool:
     """Check if command is denied by security policy."""
     if not command or not command.strip():
         return False
+    # Check for null bytes (potential injection)
+    if "\x00" in command:
+        return True
     return _text_is_denied(command, workspace, depth=0)
 
 
@@ -519,6 +568,9 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
     base = Path(workspace).resolve()
     if not path:
+        return None
+    # Check for null bytes
+    if "\x00" in path:
         return None
     p = Path(path)
     candidate = (p if p.is_absolute() else base / p).resolve()
@@ -549,6 +601,7 @@ class WorkerAgent:
         try:
             return await self._run()
         except Exception as exc:  # pragma: no cover - defensive
+            logger.error("worker_run_failed", task_id=self.task.id, error=str(exc), exc_info=True)
             return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
 
     async def _run(self) -> WorkerResult:
@@ -562,12 +615,16 @@ class WorkerAgent:
         iterations = 0
         for i in range(max_iters):
             iterations = i + 1
-            response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
-            )
+            with trace_context(task_id=self.task.id, cycle=get_cycle()):
+                with new_span("worker_llm_call", task_id=self.task.id, iteration=iterations):
+                    response: LLMResponse = await self.client.chat(
+                        messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+                    )
+            
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
                 if response.stop_reason in TRUNCATED_STOP_REASONS:
+                    logger.warning("worker_truncated", task_id=self.task.id, stop_reason=response.stop_reason)
                     return WorkerResult(
                         summary=summary,
                         success=False,
@@ -575,12 +632,14 @@ class WorkerAgent:
                         iterations=iterations,
                         error=f"worker response truncated (stop_reason={response.stop_reason})",
                     )
+                logger.info("worker_completed", task_id=self.task.id, iterations=iterations)
                 return WorkerResult(
                     summary=summary,
                     success=True,
                     files_changed=sorted(self.files_changed),
                     iterations=iterations,
                 )
+            
             # append assistant turn
             blocks: list[dict[str, Any]] = []
             if response.text:
@@ -594,7 +653,8 @@ class WorkerAgent:
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
-                result = await self._execute_tool(tc)
+                with new_span("worker_tool_execution", task_id=self.task.id, tool=tc.name):
+                    result = await self._execute_tool(tc)
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
@@ -603,6 +663,7 @@ class WorkerAgent:
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        logger.warning("worker_iteration_budget_exhausted", task_id=self.task.id, iterations=max_iters)
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -625,22 +686,25 @@ class WorkerAgent:
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
             return "error: invalid tool arguments"
-        if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
-        if name == "write_file":
-            if "content" not in args:
-                return "error: missing content"
-            content = args["content"]
-            if not isinstance(content, str):
-                return "error: invalid content (expected a string)"
-            return await self._write_file(str(args.get("path", "")), content)
-        if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
-        if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
-        return f"unknown tool: {name}"
+        
+        with trace_context(task_id=self.task.id):
+            with new_span(f"worker_tool_{name}", task_id=self.task.id, tool=name):
+                if name == "read_file":
+                    return await self._read_file(str(args.get("path", "")))
+                if name == "write_file":
+                    if "content" not in args:
+                        return "error: missing content"
+                    content = args["content"]
+                    if not isinstance(content, str):
+                        return "error: invalid content (expected a string)"
+                    return await self._write_file(str(args.get("path", "")), content)
+                if name == "list_files":
+                    return await self._list_files(
+                        str(args.get("path", "")) if args.get("path") is not None else "."
+                    )
+                if name == "run_command":
+                    return await self._run_command(str(args.get("command", "")))
+                return f"unknown tool: {name}"
 
     @staticmethod
     def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:
@@ -668,9 +732,10 @@ class WorkerAgent:
         try:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("worker_read_file_error", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
-        if len(content) > 20000:
-            content = content[:20000] + "\n[... output truncated ...]"
+        if len(content) > MAX_FILE_READ:
+            content = content[:MAX_FILE_READ] + "\n[... output truncated ...]"
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -681,9 +746,11 @@ class WorkerAgent:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("worker_write_file_error", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
+        logger.info("worker_file_written", task_id=self.task.id, path=path, size=len(content.encode('utf-8')))
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
 
     async def _list_files(self, path: str) -> str:
@@ -693,6 +760,7 @@ class WorkerAgent:
         try:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("worker_list_files_error", task_id=self.task.id, path=path, error=str(exc))
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
@@ -712,11 +780,13 @@ class WorkerAgent:
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            logger.warning("worker_command_denied", task_id=self.task.id, command=command)
             return "error: command denied"
         try:
             shlex.split(command)
         except ValueError:
             return "error: could not parse command"
+        
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
@@ -724,6 +794,8 @@ class WorkerAgent:
         # killing the direct child only.
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+        
+        start_time = time.monotonic()
         try:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
@@ -747,20 +819,31 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("worker_command_spawn_error", task_id=self.task.id, command=command, error=str(exc))
             return f"error: {exc}"
+        
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
+            elapsed = time.monotonic() - start_time
+            logger.warning("worker_command_timeout", task_id=self.task.id, command=command, timeout=timeout, elapsed=elapsed)
             return "command timed out"
+        
+        elapsed = time.monotonic() - start_time
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
-        cap = 20000
-        if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
+        
+        if len(combined) > MAX_COMMAND_OUTPUT:
+            combined = "[... output truncated ...]\n" + combined[-MAX_COMMAND_OUTPUT:]
+        
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
+            logger.warning("worker_command_failed", task_id=self.task.id, command=command, exit_code=proc.returncode, elapsed=elapsed)
+        else:
+            logger.info("worker_command_succeeded", task_id=self.task.id, command=command, elapsed=elapsed)
+        
         return combined
 
     @staticmethod
