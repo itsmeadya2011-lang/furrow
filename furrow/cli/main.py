@@ -28,6 +28,12 @@ logger = logging.getLogger(__name__)
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
 
+try:
+    from importlib.metadata import version as _pkg_version
+    VERSION = _pkg_version("furrow")
+except Exception:  # pragma: no cover - package metadata may be absent
+    VERSION = "0.1.0"
+
 
 def _run_settings(
     model: str | None = None,
@@ -179,6 +185,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(VERSION, "-V", "--version", prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)

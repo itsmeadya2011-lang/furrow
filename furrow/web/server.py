@@ -115,6 +115,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    font-size: .8rem; color: #6b7280; margin-top: .3rem;
+    word-break: break-word;
+  }
+  .panel-files b { color: #8a93a5; }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -142,14 +147,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <button id="resume">Resume</button>
 </div>
 <div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <div class="goal" id="goal-display">\u2014</div>
+    <div class="meta" id="header-meta">
+      <span>cycle <b id="cycle">\u2014</b></span>
+      <span>state <b id="state">idle</b></span>
+      <span id="stopped-reason" class="reason"></span>
+      <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+      <span>tests <b id="tests-run">0</b></span>
+    </div>
   </div>
-</div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
 <script>
@@ -161,6 +167,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const testsRunEl = document.getElementById('tests-run');
   let socket = null;
   let lastSummary = null;
 
@@ -171,6 +178,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
+  }
+
+  function escapeHtml(value) {
+    return text(value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   // The task status is planned by the LLM, so it is untrusted input: it is
@@ -210,6 +226,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    const testsRun = Number((status && status.tests_run) ||
+      (result && result.tests_run)) || 0;
+    testsRunEl.textContent = testsRun;
   }
 
   function renderTasks(tasks) {
@@ -251,6 +270,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      const files = Array.isArray(task.files_changed) ? task.files_changed : [];
+      if (files.length) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        const label = document.createElement('b');
+        label.textContent = 'files:';
+        filesEl.appendChild(label);
+        const joined = escapeHtml(
+          files.map(function (f) { return text(f); }).join(', ')
+        );
+        filesEl.appendChild(document.createTextNode(' ' + joined));
+        panel.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);

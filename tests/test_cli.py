@@ -571,6 +571,26 @@ def test_status_shows_per_task_files_changed(
     assert "[furrow/core/orchestrator.py, furrow/config.py]" in result.output
 
 
+def test_status_shows_tests_run_count(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    """The status command prints the persisted tests-run counter."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        tests_run=5,
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Tests run:" in result.output
+    assert "5" in result.output
+
+
 def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> None:
     """The status command prints the usage persisted in the run state."""
     state = RunState(
@@ -714,3 +734,20 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_main_has_a_version_flag(runner: CliRunner) -> None:
+    """`furrow --version` prints the package version and exits 0."""
+    result = runner.invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert "furrow" in result.output.lower()
+    assert result.output.strip()
+
+
+def test_main_version_flag_short_form(runner: CliRunner) -> None:
+    """`furrow -V` is accepted as an alias for `--version`."""
+    result = runner.invoke(main, ["-V"])
+
+    assert result.exit_code == 0
+    assert result.output.strip()

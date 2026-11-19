@@ -624,6 +624,40 @@ def test_index_contains_status_skipped_css_rule(client: TestClient) -> None:
     assert ".status-skipped" in html
 
 
+def test_index_header_surfaces_tests_run_element(client: TestClient) -> None:
+    """The status header exposes a tests-run counter bound in the script."""
+    html = client.get("/").text
+    assert 'id="tests-run"' in html
+    script = _inline_script(client)
+    assert "getElementById('tests-run')" in script
+    assert "testsRunEl" in script
+
+
+def test_index_script_renders_files_changed_in_task_panels(client: TestClient) -> None:
+    """A task panel renders its files_changed list, escaped, when present."""
+    html = client.get("/").text
+    script = _inline_script(client)
+    assert "files_changed" in script
+    assert "escapeHtml" in script
+    assert "panel-files" in html
+
+
+def test_index_script_escapes_untrusted_file_paths(client: TestClient) -> None:
+    """The files_changed list is HTML-escaped before insertion into the DOM."""
+    script = _inline_script(client)
+    assert "replace(/&/g, '&amp;')" in script
+    assert "replace(/</g, '&lt;')" in script
+    assert "replace(/>/g, '&gt;')" in script
+
+
+def test_index_script_surfaces_tests_run_in_render_status(client: TestClient) -> None:
+    """renderStatus() reads tests_run from status/result and writes it to the header."""
+    script = _inline_script(client)
+    assert "tests-run" in script
+    assert "testsRunEl" in script
+    assert "tests_run" in script
+
+
 def test_start_request_rejects_negative_max_cycles(client: TestClient) -> None:
     response = client.post("/api/start", json={"goal": "x", "max_cycles": -1})
     assert response.status_code == 422
