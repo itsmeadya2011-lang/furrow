@@ -75,6 +75,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .filter-bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .filter-btn {
+    padding: .35rem .7rem; border-radius: 4px; border: 1px solid #2b3240;
+    background: #171b23; color: #8a93a5; font: inherit; cursor: pointer;
+    font-size: .85rem;
+  }
+  .filter-btn.active {
+    border-color: #4c8dff; background: #1d2430; color: #4c8dff;
+  }
+  .filter-btn:hover { border-color: #4c8dff; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -115,6 +126,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    font-size: .8rem; color: #57d38c; margin-top: .3rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .panel-deps {
+    font-size: .8rem; color: #f0b367; margin-top: .3rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -132,6 +151,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .hidden { display: none !important; }
+  .log-toolbar { display: flex; gap: .5rem; margin-bottom: .5rem; }
+  .log-toolbar button { font-size: .85rem; padding: .35rem .7rem; }
 </style>
 </head>
 <body>
@@ -148,9 +170,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>cost <b id="cost">$0.000000</b></span>
   </div>
 </div>
+<div class="log-toolbar">
+  <button id="clear-log">Clear Log</button>
+  <label><input type="checkbox" id="auto-scroll" checked /> Auto-scroll</label>
+</div>
 <pre id="log"></pre>
+<div class="filter-bar">
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="pending">Pending</button>
+  <button class="filter-btn" data-filter="running">Running</button>
+  <button class="filter-btn" data-filter="completed">Completed</button>
+  <button class="filter-btn" data-filter="failed">Failed</button>
+  <button class="filter-btn" data-filter="blocked">Blocked</button>
+  <button class="filter-btn" data-filter="skipped">Skipped</button>
+</div>
 <div class="panels" id="tasks"></div>
 <script>
   const logEl = document.getElementById('log');
@@ -161,12 +197,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const costEl = document.getElementById('cost');
   let socket = null;
   let lastSummary = null;
+  let currentFilter = 'all';
+  let autoScroll = true;
 
   function append(line) {
     logEl.textContent += line + '\n';
-    logEl.scrollTop = logEl.scrollHeight;
+    if (autoScroll) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
   }
 
   function text(value) {
@@ -210,6 +251,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    costEl.textContent = '$' + cost.toFixed(6);
+  }
+
+  function filterTask(status) {
+    if (currentFilter === 'all') return true;
+    const key = text(status).trim().toLowerCase();
+    return key === currentFilter;
   }
 
   function renderTasks(tasks) {
@@ -226,10 +274,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
     list.forEach(function (task) {
       const status = text(task.status) || 'pending';
+      if (!filterTask(status)) return;
 
       const panel = document.createElement('div');
       panel.className = 'panel';
       panel.id = 'task-' + text(task.id);
+      panel.dataset.status = status.toLowerCase();
 
       const head = document.createElement('div');
       head.className = 'panel-head';
@@ -251,6 +301,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      // Files changed
+      const files = task.files_changed || [];
+      if (files.length > 0) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        filesEl.textContent = 'files: ' + files.join(', ');
+        panel.appendChild(filesEl);
+      }
+
+      // Dependencies
+      const deps = task.dependencies || [];
+      if (deps.length > 0) {
+        const depsEl = document.createElement('div');
+        depsEl.className = 'panel-deps';
+        depsEl.textContent = 'deps: ' + deps.join(', ');
+        panel.appendChild(depsEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -274,6 +342,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
       tasksEl.appendChild(panel);
     });
   }
+
+  // Filter button handlers
+  document.querySelectorAll('.filter-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.filter-btn').forEach(function(b) {
+        b.classList.remove('active');
+      });
+      btn.classList.add('active');
+      currentFilter = btn.dataset.filter;
+      // Re-render tasks with new filter
+      loadStatus();
+    });
+  });
+
+  // Clear log button
+  document.getElementById('clear-log').addEventListener('click', function() {
+    logEl.textContent = '';
+  });
+
+  // Auto-scroll checkbox
+  document.getElementById('auto-scroll').addEventListener('change', function(e) {
+    autoScroll = e.target.checked;
+    if (autoScroll) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  });
 
   async function loadState() {
     try {
@@ -370,7 +464,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
       span.textContent = time + ' ' + line;
       logEl.appendChild(span);
       logEl.appendChild(document.createTextNode('\n'));
-      logEl.scrollTop = logEl.scrollHeight;
+      if (autoScroll) {
+        logEl.scrollTop = logEl.scrollHeight;
+      }
       return line;
     }
 
@@ -420,6 +516,7 @@ class StartRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -428,6 +525,7 @@ class SocketRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -442,17 +540,22 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override.
+def _run_settings(max_cycles: int | None, max_cost_usd: float | None = None) -> Settings:
+    """Settings for a run, with optional ``max_cycles`` and ``max_cost_usd`` overrides.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
     pydantic validation and would happily build a ``Settings`` object with an
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    updates: dict[str, Any] = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if max_cost_usd is not None:
+        updates["max_cost_usd"] = max_cost_usd
+    if not updates:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -553,10 +656,10 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, max_cost_usd: float | None, bus: EventBus
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
-    run_settings = _run_settings(max_cycles)
+    run_settings = _run_settings(max_cycles, max_cost_usd)
     return Orchestrator(
         goal=goal,
         settings=run_settings,
@@ -626,7 +729,9 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(
+            goal, request.resume, request.max_cycles, request.max_cost_usd, bus
+        )
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -685,7 +790,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(
+                goal, resume, request.max_cycles, request.max_cost_usd, bus
+            )
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

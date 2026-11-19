@@ -80,9 +80,7 @@ def parse_test_output(output: str) -> list[dict]:
     seen_locations = set()
 
     # Patterns for pytest-style failures
-    pytest_failed_pattern = re.compile(
-        r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE
-    )
+    pytest_failed_pattern = re.compile(r"^FAILED\s+([^\s]+)::([^\s]+)\s*-?\s*(.*)$", re.MULTILINE)
     for match in pytest_failed_pattern.finditer(output):
         test_path = match.group(1)
         test_name = match.group(2)
@@ -253,6 +251,46 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Ruby projects
+        if (self.workspace / "Gemfile").is_file() or (self.workspace / "Rakefile").is_file():
+            # Check for RSpec
+            if (self.workspace / ".rspec").is_file() or (self.workspace / "spec").is_dir():
+                return ["bundle", "exec", "rspec"]
+            # Check for Minitest
+            if (self.workspace / "test").is_dir():
+                return ["bundle", "exec", "rake", "test"]
+            return ["bundle", "exec", "rake", "test"]
+
+        # PHP projects
+        if (self.workspace / "composer.json").is_file():
+            has_phpunit_xml = (
+                (self.workspace / "phpunit.xml").is_file()
+                or (self.workspace / "phpunit.xml.dist").is_file()
+            )
+            if has_phpunit_xml:
+                return ["./vendor/bin/phpunit"]
+            # Check for pest
+            if (self.workspace / "pest.php").is_file():
+                return ["./vendor/bin/pest"]
+            # Default to phpunit if available
+            if (self.workspace / "vendor/bin/phpunit").is_file():
+                return ["./vendor/bin/phpunit"]
+
+        # Java projects
+        if (self.workspace / "pom.xml").is_file():
+            return ["mvn", "test", "-q"]
+        has_gradle = (
+            (self.workspace / "build.gradle").is_file()
+            or (self.workspace / "build.gradle.kts").is_file()
+        )
+        if has_gradle:
+            return ["./gradlew", "test", "--quiet"]
+
+        # .NET projects
+        for pattern in ["*.csproj", "*.fsproj", "*.vbproj"]:
+            if list(self.workspace.glob(pattern)):
+                return ["dotnet", "test", "--no-restore", "-v", "q"]
+
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
@@ -286,9 +324,7 @@ class TesterAgent:
         if spawn_failed:
             # The runner never started: this is an infrastructure error, not a
             # test failure, and it must be reported as such.
-            summary = (
-                f"The test runner could not be started: {spawn_error}. The tests did not run."
-            )
+            summary = f"The test runner could not be started: {spawn_error}. The tests did not run."
             return TestResult(
                 passed=False,
                 summary=summary,
@@ -381,9 +417,7 @@ class TesterAgent:
                 # distinguishable from "the tests ran and failed".
                 spawn_failed = True
                 message = str(exc)
-                spawn_error = (
-                    f"{type(exc).__name__}: {message}" if message else type(exc).__name__
-                )
+                spawn_error = f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 returncode = 1
                 stdout = b""
                 stderr = b""

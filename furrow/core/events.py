@@ -1,9 +1,8 @@
-"""Event bus used to stream orchestrator progress to CLI and web consumers."""
-
 from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -67,6 +66,11 @@ class EventBus:
         self._subscribers: list[asyncio.Queue[Event]] = []
         self._dropped = 0
         self._dropped_by_queue: dict[asyncio.Queue[Event], int] = {}
+        self._log_callback: Callable[[Event], None] | None = None
+
+    def set_log_callback(self, callback: Callable[[Event], None] | None) -> None:
+        """Register a callback that receives every emitted event for logging."""
+        self._log_callback = callback
 
     def subscribe(self) -> asyncio.Queue[Event]:
         """Register and return a new bounded queue that receives every emitted event."""
@@ -84,6 +88,10 @@ class EventBus:
         """Publish an event to every subscriber. Never blocks and never raises."""
         for queue in list(self._subscribers):
             self._deliver(queue, event)
+        # Call the log callback if registered
+        if self._log_callback is not None:
+            with contextlib.suppress(Exception):
+                self._log_callback(event)
 
     def _deliver(self, queue: asyncio.Queue[Event], event: Event) -> None:
         """Put ``event`` on ``queue``, dropping the oldest event if it is full."""

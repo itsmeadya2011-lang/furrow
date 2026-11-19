@@ -31,6 +31,7 @@ logger = get_logger(__name__)
 STATE_VERSION = 1
 
 DEFAULT_STATE_RELATIVE_PATH = Path(".furrow/state.json")
+DEFAULT_LOG_RELATIVE_PATH = Path(".furrow/events.log")
 
 
 def utcnow() -> str:
@@ -74,6 +75,11 @@ def state_path_for(
     workspace: str | Path, relative: str | Path = DEFAULT_STATE_RELATIVE_PATH
 ) -> Path:
     """Absolute-ish path of the state file for a workspace: workspace / relative."""
+    return Path(workspace) / Path(relative)
+
+
+def log_path_for(workspace: str | Path, relative: str | Path = DEFAULT_LOG_RELATIVE_PATH) -> Path:
+    """Absolute-ish path of the event log file for a workspace: workspace / relative."""
     return Path(workspace) / Path(relative)
 
 

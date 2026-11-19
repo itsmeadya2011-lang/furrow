@@ -376,8 +376,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["list_files", "read_file", "run_command", "search_files", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -426,7 +426,7 @@ async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
         "echo $(rm -rf /)",
         "echo `rm -rf /`",
         # every spelling of the HOME variable
-        "rm -rf \"$HOME\"",
+        'rm -rf "$HOME"',
         "rm -rf ${HOME}",
         "rm -rf '$HOME'",
         # redirections that escape the workspace
@@ -451,9 +451,7 @@ async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
         responses = [
             LLMResponse(
                 text="",
-                tool_calls=[
-                    ToolCall(id="t1", name="run_command", arguments={"command": test_cmd})
-                ],
+                tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": test_cmd})],
             ),
             LLMResponse(text="done", tool_calls=[]),
         ]
@@ -500,9 +498,7 @@ async def test_allowed_command_table(tmp_path):
         responses = [
             LLMResponse(
                 text="",
-                tool_calls=[
-                    ToolCall(id="t1", name="run_command", arguments={"command": cmd})
-                ],
+                tool_calls=[ToolCall(id="t1", name="run_command", arguments={"command": cmd})],
             ),
             LLMResponse(text="done", tool_calls=[]),
         ]
@@ -1069,6 +1065,7 @@ async def test_execute_tool_invalid_args_do_not_raise(tmp_path):
         assert isinstance(out, str)
         assert out.startswith("error: ")
 
+
 def test_coerce_tool_args_deeply_nested_returns_none(monkeypatch):
     """Deeply nested JSON raises RecursionError inside json.loads; the worker
 
@@ -1109,7 +1106,6 @@ async def test_read_file_truncation_marker(tmp_path):
     assert "[... output truncated ...]" in out
 
 
- 
 @pytest.mark.asyncio
 async def test_run_command_stderr_newline_format(tmp_path):
     from furrow.config import TaskModel
@@ -1158,8 +1154,10 @@ async def test_run_command_stderr_newline_format(tmp_path):
     def slow_list(directory):
         seen["tid"] = threading.get_ident()
         import time
+
         time.sleep(0.1)
         from pathlib import Path as _P
+
         return [str(p) for p in _P(directory).rglob("*") if _P(p).is_file()]
 
     client.list_files = slow_list
@@ -1177,6 +1175,7 @@ async def test_run_command_stderr_newline_format(tmp_path):
     await t
     assert seen["tid"] != loop_thread
     assert progress["n"] > 0
+
 
 @pytest.mark.skipif(os.name != "posix", reason="symlinks require POSIX")
 def test_resolve_in_workspace_rejects_symlink_escape(tmp_path):

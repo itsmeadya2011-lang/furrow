@@ -10,7 +10,7 @@ from furrow.agents.worker import WorkerAgent
 from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
-from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.core.state import HistoryEntry, RunState, StateStore, log_path_for
 from furrow.llm import LLMClient
 
 _UNSET = object()
@@ -19,9 +19,15 @@ _MAX_TEXT = 120
 
 
 class Orchestrator:
-    def __init__(self, goal: str, client: LLMClient | None = None,
-                 settings: Settings | None = None, state_store: StateStore | None = None,
-                 event_bus: EventBus | None = None, resume: bool = False) -> None:
+    def __init__(
+        self,
+        goal: str,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        state_store: StateStore | None = None,
+        event_bus: EventBus | None = None,
+        resume: bool = False,
+    ) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
@@ -29,12 +35,15 @@ class Orchestrator:
         self.cycles = 0
         self.tasks: list[TaskModel] = []
         self.event_bus = event_bus if event_bus is not None else EventBus()
+        self.event_bus.set_log_callback(self._log_event)
         self.state_store = (
             state_store if state_store is not None else StateStore(self.settings.state_path())
         )
+        self.log_path = log_path_for(self.settings.workspace, self.settings.log_file)
         self.planner = PlannerAgent(client=self.client, settings=self.settings)
-        self.tester = TesterAgent(client=self.client, settings=self.settings,
-                                 workspace=self.settings.workspace)
+        self.tester = TesterAgent(
+            client=self.client, settings=self.settings, workspace=self.settings.workspace
+        )
         self.history: list[HistoryEntry] = []
         self._feedback = ""
         self._active_ids: set[str] = set()
@@ -162,12 +171,23 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    def _log_event(self, event: Event) -> None:
+        """Append an event to the event log file."""
+        try:
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(event.to_dict().__str__() + "\n")
+        except Exception:
+            # Logging must never break the run
+            pass
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
-            self.event_bus.emit(Event(type=EventType.LOG,
-                                      message="no state file found, starting fresh"))
+            self.event_bus.emit(
+                Event(type=EventType.LOG, message="no state file found, starting fresh")
+            )
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
@@ -188,8 +208,12 @@ class Orchestrator:
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
-            self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
-                                    data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
+            self.event_bus.emit(
+                Event(
+                    type=EventType.PLAN_CREATED,
+                    data={"rationale": plan.rationale, "tasks": len(plan.tasks)},
+                )
+            )
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
@@ -247,21 +271,43 @@ class Orchestrator:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:
                     failures = [
-                        test_result.summary
-                        or "the test suite failed without a detailed report"
+                        test_result.summary or "the test suite failed without a detailed report"
                     ]
                 self._feedback = "\n".join(failures)
-                self.goal = (f"{self.original_goal}\n\n"
-                             "The previous cycle left failing tests. Fix them:\n"
-                             f"{self._feedback}")
+                self.goal = (
+                    f"{self.original_goal}\n\n"
+                    "The previous cycle left failing tests. Fix them:\n"
+                    f"{self._feedback}"
+                )
             cycle_usage = self._accumulate_usage()
-            self.history.append(HistoryEntry(
-                cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
-                task_summaries=[t.id for t in self.tasks],
-                tests_passed=test_result.passed, test_summary=test_result.summary,
-                timestamp=datetime.now(timezone.utc).isoformat(),
-                usage=cycle_usage,
-            ))
+            # Check cost budget
+            if (
+                self.settings.max_cost_usd > 0
+                and self._usage.cost_usd >= self.settings.max_cost_usd
+            ):
+                self._stopped_reason = (
+                    "cost budget exceeded "
+                    f"(${self._usage.cost_usd:.6f} >= ${self.settings.max_cost_usd:.6f})"
+                )
+                self.event_bus.emit(
+                    Event(
+                        type=EventType.LOG,
+                        message=f"Cost budget exceeded: ${self._usage.cost_usd:.6f}",
+                    )
+                )
+                break
+            self.history.append(
+                HistoryEntry(
+                    cycle=self.cycles,
+                    goal=self.goal,
+                    plan_rationale=plan.rationale,
+                    task_summaries=[t.id for t in self.tasks],
+                    tests_passed=test_result.passed,
+                    test_summary=test_result.summary,
+                    timestamp=datetime.now(timezone.utc).isoformat(),
+                    usage=cycle_usage,
+                )
+            )
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
@@ -272,21 +318,27 @@ class Orchestrator:
             if no_signal and sig == self._prev_sig:
                 self._no_progress += 1
                 if self._no_progress >= 2:
-                    self._stopped_reason = (
-                        "no test runner detected" if skipped else "no progress"
-                    )
+                    self._stopped_reason = "no test runner detected" if skipped else "no progress"
                     guard_tripped = True
             else:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
                     self._no_progress = 0
                 self._prev_sig = sig
 
-            state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
+            state = RunState(
+                goal=self.goal,
+                original_goal=self.original_goal,
+                cycles=self.cycles,
+                tasks=self.tasks,
+                history=self.history,
+                usage=self._usage,
+                no_progress=self._no_progress,
+                prev_sig=self._prev_sig,
+                tests_run=self._tests_run,
+                last_passed=test_result.passed,
+                last_skipped=skipped,
+                last_summary=test_result.summary,
+            )
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:
@@ -296,12 +348,15 @@ class Orchestrator:
                 # path that could not be written) and do NOT emit STATE_SAVED,
                 # which would tell consumers the state was saved when it was not.
                 self.event_bus.emit(
-                    Event(type=EventType.ERROR,
-                         message=f"could not save state to {self.state_store.path}: {e}")
+                    Event(
+                        type=EventType.ERROR,
+                        message=f"could not save state to {self.state_store.path}: {e}",
+                    )
                 )
             else:
-                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                        data={"path": str(self.state_store.path)}))
+                self.event_bus.emit(
+                    Event(type=EventType.STATE_SAVED, data={"path": str(self.state_store.path)})
+                )
             if guard_tripped:
                 break
 
@@ -411,15 +466,23 @@ class Orchestrator:
             """Return the worker for *task*, creating it once so retries reuse it."""
             worker = workers.get(task.id)
             if worker is None:
-                worker = WorkerAgent(task=task, client=self.client, settings=self.settings,
-                                     workspace=self.settings.workspace, goal=self.original_goal)
+                worker = WorkerAgent(
+                    task=task,
+                    client=self.client,
+                    settings=self.settings,
+                    workspace=self.settings.workspace,
+                    goal=self.original_goal,
+                )
                 workers[task.id] = worker
             return worker
 
         async def run_one(task: TaskModel) -> None:
             if task.id in self._skip_ids:
-                self.event_bus.emit(Event(type=EventType.LOG,
-                                        message=f"task {task.id} already completed - skipping"))
+                self.event_bus.emit(
+                    Event(
+                        type=EventType.LOG, message=f"task {task.id} already completed - skipping"
+                    )
+                )
                 return
             async with sem:
                 task.status = "running"
@@ -441,8 +504,7 @@ class Orchestrator:
                         Event(
                             type=EventType.ERROR,
                             message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
+                            data={"task": task.id, "error": task.error, "attempts": task.attempts},
                         )
                     )
                     self.event_bus.emit(
@@ -460,9 +522,11 @@ class Orchestrator:
                     if task.status == "pending":
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
+                            Event(
+                                type=EventType.LOG,
+                                message=f"task {task.id} failed, retrying "
+                                f"(attempt {task.attempts} of {max_retries + 1})",
+                            )
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
@@ -498,9 +562,11 @@ class Orchestrator:
                     elif task.status == "pending":
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
+                            Event(
+                                type=EventType.LOG,
+                                message=f"task {task.id} failed, retrying "
+                                f"(attempt {task.attempts} of {max_retries + 1})",
+                            )
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
@@ -515,8 +581,7 @@ class Orchestrator:
                         Event(
                             type=EventType.ERROR,
                             message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
+                            data={"task": task.id, "error": task.error, "attempts": task.attempts},
                         )
                     )
                     self.event_bus.emit(
@@ -534,9 +599,11 @@ class Orchestrator:
                     if task.status == "pending":
                         self._say(f"[yellow]Task {task_id} failed: {detail} - retrying[/yellow]")
                         self.event_bus.emit(
-                            Event(type=EventType.LOG,
-                                 message=f"task {task.id} failed, retrying "
-                                         f"(attempt {task.attempts} of {max_retries + 1})")
+                            Event(
+                                type=EventType.LOG,
+                                message=f"task {task.id} failed, retrying "
+                                f"(attempt {task.attempts} of {max_retries + 1})",
+                            )
                         )
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
@@ -550,16 +617,14 @@ class Orchestrator:
             """
             if not tasks:
                 return
-            results = await asyncio.gather(*[run_one(t) for t in tasks],
-                                           return_exceptions=True)
+            results = await asyncio.gather(*[run_one(t) for t in tasks], return_exceptions=True)
             for res in results:
                 if isinstance(res, asyncio.CancelledError):
                     raise res
 
         async def run_retries(tasks: list[TaskModel]) -> None:
             """Re-run tasks that failed while retries remain, until the budget is spent."""
-            retry_queue = [t for t in tasks
-                           if t.status == "pending" and t.attempts <= max_retries]
+            retry_queue = [t for t in tasks if t.status == "pending" and t.attempts <= max_retries]
             while retry_queue:
                 batch = retry_queue
                 retry_queue = []

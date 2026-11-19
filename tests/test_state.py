@@ -282,4 +282,3 @@ def test_save_survives_directory_fsync_failure(tmp_path: Path, monkeypatch) -> N
     loaded = store.load()
     assert loaded is not None
     assert loaded.goal == "survives"
-

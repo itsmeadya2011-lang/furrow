@@ -20,18 +20,20 @@ import click
 
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
-from furrow.core.state import RunState, StateStore
+from furrow.core.state import RunState, StateStore, log_path_for
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+MAX_COST_HELP = "Maximum cost in USD (0 = unlimited)."
 
 
 def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
+    max_cost_usd: float | None = None,
     workspace: Path | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
@@ -44,6 +46,8 @@ def _run_settings(
         updates["model"] = model
     if max_cycles is not None:
         updates["max_cycles"] = max_cycles
+    if max_cost_usd is not None:
+        updates["max_cost_usd"] = max_cost_usd
     if workspace is not None:
         updates["workspace"] = Path(workspace)
     merged = {**settings.model_dump(), **updates}
@@ -188,6 +192,7 @@ def main() -> None:
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
+@click.option("--max-cost", type=click.FloatRange(min=0), default=None, help=MAX_COST_HELP)
 @click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
@@ -199,13 +204,16 @@ def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
+    max_cost: float | None,
     workspace: Path | None,
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model, max_cycles=max_cycles, max_cost_usd=max_cost, workspace=workspace
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -225,6 +233,68 @@ def status(workspace: Path | None) -> None:
         click.echo("No furrow run state found.")
         return
     _print_state(state)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--force", is_flag=True, help="Clear without confirmation prompt.")
+def clear(workspace: Path | None, force: bool) -> None:
+    """Clear the persisted Furrow run state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    if not force:
+        click.confirm(
+            f"This will delete the state file at {store.path}. Continue?",
+            abort=True,
+        )
+    store.clear()
+    click.echo("Furrow run state cleared.")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("-n", "--lines", type=int, default=50, help="Number of lines to show.")
+@click.option("-f", "--follow", is_flag=True, help="Follow the log file (like tail -f).")
+def log(workspace: Path | None, lines: int, follow: bool) -> None:
+    """View the event log of the Furrow run."""
+    run_settings = _run_settings(workspace=workspace)
+    log_path = log_path_for(run_settings.workspace, run_settings.log_file)
+    if not log_path.exists():
+        click.echo("No furrow event log found.")
+        return
+
+    if follow:
+        # Simple tail -f implementation
+        import time
+
+        with open(log_path, encoding="utf-8") as f:
+            # Seek to end
+            f.seek(0, 2)
+            while True:
+                line = f.readline()
+                if line:
+                    click.echo(line.rstrip())
+                else:
+                    time.sleep(0.1)
+    else:
+        # Show last N lines
+        with open(log_path, encoding="utf-8") as f:
+            all_lines = f.readlines()
+            for line in all_lines[-lines:]:
+                click.echo(line.rstrip())
 
 
 @main.command()
