@@ -44,6 +44,7 @@ class Orchestrator:
         self._resume = resume
         self._last_test_passed: bool | None = None
         self._tests_skipped: bool = False
+        self._last_test_summary: str = ""
         self._console_obj: Any = _UNSET
         self._resume_state_missing = False
         self._usage: Usage = Usage()
@@ -117,6 +118,8 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "last_summary": self._last_test_summary,
+            "tests_run": self._tests_run,
         }
 
     def _console(self) -> Any:
@@ -237,6 +240,7 @@ class Orchestrator:
                 self._say(f"[red]Tests failed: {summary}[/red]")
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
+            self._last_test_summary = test_result.summary
             if skipped:
                 # A skipped run (e.g. no test runner detected) is not a failure:
                 # keep the original goal and drop the stale feedback so the loop

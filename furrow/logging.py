@@ -31,16 +31,17 @@ except ImportError:
 def configure_logging(level: str = "INFO") -> None:
     """Configure structlog to wrap stdlib logging."""
     log_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        format="%(message)s",
-        level=log_level,
-        stream=sys.stdout,
-    )
 
     if not _STRUCTLOG_AVAILABLE:
         # Fall back to stdlib logging if structlog is not available
         _configure_stdlib_fallback(level)
         return
+
+    logging.basicConfig(
+        format="%(message)s",
+        level=log_level,
+        stream=sys.stdout,
+    )
 
     structlog.configure(
         processors=[
