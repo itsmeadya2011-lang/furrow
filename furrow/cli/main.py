@@ -41,7 +41,12 @@ def _run_settings(
     """
     updates: dict[str, Any] = {}
     if model is not None:
+        # --model overrides the default model and propagates to every agent
+        # role (planner, worker, tester) so the whole run uses the same model.
         updates["model"] = model
+        updates["planner_model"] = model
+        updates["worker_model"] = model
+        updates["tester_model"] = model
     if max_cycles is not None:
         updates["max_cycles"] = max_cycles
     if workspace is not None:
@@ -103,6 +108,9 @@ def _print_state(state: RunState) -> None:
     text, colour = _result_line(passed=passed, skipped=skipped, tests_run=tests_run)
     click.echo(f"  Tests run:     {tests_run}")
     click.secho(f"  Result:        {text}", fg=colour)
+    last_summary = getattr(state, "last_summary", None) or ""
+    if last_summary:
+        click.echo(f"  Last summary:  {last_summary}")
     usage = getattr(state, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens")

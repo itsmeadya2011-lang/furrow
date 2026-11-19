@@ -350,17 +350,24 @@ class Orchestrator:
             if old is not None:
                 old_desc = old.description
                 old_files = list(old.files)
+                work_changed = old_desc != pt.description or old_files != pt.files
                 # Preserve terminal states; only retry-eligible failed tasks may
                 # be reset to pending. Blocked tasks must remain blocked so that
                 # retry budgets and dependency outcomes are not lost across cycles.
+                # When the task's description or files changed, it is new work:
+                # reset the attempt counter so it gets a fresh retry budget.
                 if old.status == "completed":
-                    if old_desc == pt.description and old_files == pt.files:
+                    if work_changed:
+                        pt.status = "pending"
+                        old.attempts = 0
+                    else:
                         pt.status = "completed"
                         self._skip_ids.add(pt.id)
-                    else:
-                        pt.status = "pending"
                 elif old.status == "failed":
-                    if old.attempts <= max_retries:
+                    if work_changed:
+                        pt.status = "pending"
+                        old.attempts = 0
+                    elif old.attempts <= max_retries:
                         pt.status = "pending"
                     else:
                         pt.status = "failed"
