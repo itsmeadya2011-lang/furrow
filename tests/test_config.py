@@ -114,6 +114,35 @@ def test_settings_provider_default():
     assert s.provider == Provider.ANTHROPIC
 
 
+def test_settings_provider_for_returns_global_when_no_override():
+    s = Settings(provider=Provider.OPENAI)
+    assert s.provider_for("planner") == Provider.OPENAI
+    assert s.provider_for("worker") == Provider.OPENAI
+    assert s.provider_for("tester") == Provider.OPENAI
+
+
+def test_settings_provider_for_role_override_wins():
+    s = Settings(
+        provider=Provider.ANTHROPIC,
+        planner_provider=Provider.OPENAI,
+        worker_provider=Provider.OLLAMA,
+        tester_provider=Provider.ANTHROPIC,
+    )
+    assert s.provider_for("planner") == Provider.OPENAI
+    assert s.provider_for("worker") == Provider.OLLAMA
+    assert s.provider_for("tester") == Provider.ANTHROPIC
+
+
+def test_settings_provider_for_unknown_role_falls_back_to_global():
+    s = Settings(provider=Provider.OPENAI)
+    assert s.provider_for("unknown") == Provider.OPENAI
+
+
+def test_settings_provider_for_none_override_falls_back_to_global():
+    s = Settings(provider=Provider.ANTHROPIC, planner_provider=None)
+    assert s.provider_for("planner") == Provider.ANTHROPIC
+
+
 def test_run_result_new_defaults():
     r = RunResult()
     assert r.tasks_blocked == 0

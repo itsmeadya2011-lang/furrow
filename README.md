@@ -90,6 +90,9 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `FURROW_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, or `ollama` |
+| `FURROW_PLANNER_PROVIDER` | (none) | Provider override for the planner agent; falls back to `FURROW_PROVIDER` when unset |
+| `FURROW_WORKER_PROVIDER` | (none) | Provider override for the worker agent; falls back to `FURROW_PROVIDER` when unset |
+| `FURROW_TESTER_PROVIDER` | (none) | Provider override for the tester agent; falls back to `FURROW_PROVIDER` when unset |
 | `FURROW_MODEL` | `claude-sonnet-4-20250514` | Default model for completions/chat |
 | `FURROW_PLANNER_MODEL` | `claude-3-5-haiku-20241022` | Model for the planner |
 | `FURROW_WORKER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the worker |

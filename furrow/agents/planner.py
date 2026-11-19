@@ -18,7 +18,10 @@ class PlannerAgent:
             prompt += "\n\nContext:\n" + context
 
         model = self.settings.planner_model
-        response = await self.client.complete(prompt, system=PLANNER_SYSTEM, model=model)
+        response = await self.client.complete(
+            prompt, system=PLANNER_SYSTEM, model=model,
+            provider=self.settings.provider_for("planner"),
+        )
         try:
             return parse_plan(response)
         except ValueError as first:

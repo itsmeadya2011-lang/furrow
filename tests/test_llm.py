@@ -1112,3 +1112,101 @@ async def test_chat_openai_choice_without_finish_reason_yields_none():
     assert result.text == "ok"
     assert result.stop_reason is None
 
+
+async def test_complete_uses_provider_override():
+    """``complete(provider=...)`` overrides the client's configured provider."""
+    from furrow.config import Provider
+
+    anthropic_calls = []
+
+    class _FakeAnthropicClient:
+        class _Msgs:
+            async def create(self, **kwargs):
+                anthropic_calls.append(kwargs)
+                return _FakeAnthropicResponse("anthropic answer")
+
+        messages = _Msgs()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._anthropic = _FakeAnthropicClient()
+
+    result = await client.complete("hi", provider=Provider.ANTHROPIC)
+
+    assert result == "anthropic answer"
+    assert len(anthropic_calls) == 1
+
+
+async def test_complete_falls_back_to_settings_provider_when_no_override():
+    """Without a provider override, the client's configured provider is used."""
+    from furrow.config import Provider
+
+    openai_calls = []
+
+    class _FakeOpenAIClient:
+        class _Chat:
+            class _Completions:
+                async def create(self, **kwargs):
+                    openai_calls.append(kwargs)
+                    return _FakeResponse("openai answer")
+
+            completions = _Completions()
+
+        chat = _Chat()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = _FakeOpenAIClient()
+
+    result = await client.complete("hi")
+
+    assert result == "openai answer"
+    assert len(openai_calls) == 1
+
+
+async def test_chat_uses_provider_override():
+    """``chat(provider=...)`` overrides the client's configured provider."""
+    from furrow.config import Provider
+
+    anthropic_calls = []
+
+    class _FakeAnthropicClient:
+        class _Msgs:
+            async def create(self, **kwargs):
+                anthropic_calls.append(kwargs)
+                return _FakeAnthropicResponse("anthropic chat answer")
+
+        messages = _Msgs()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._anthropic = _FakeAnthropicClient()
+
+    result = await client.chat([{"role": "user", "content": "hi"}], provider=Provider.ANTHROPIC)
+
+    assert result.text == "anthropic chat answer"
+    assert len(anthropic_calls) == 1
+
+
+async def test_chat_falls_back_to_settings_provider_when_no_override():
+    """Without a provider override, the client's configured provider is used."""
+    from furrow.config import Provider
+
+    openai_calls = []
+
+    class _FakeOpenAIClient:
+        class _Chat:
+            class _Completions:
+                async def create(self, **kwargs):
+                    openai_calls.append(kwargs)
+                    return _FakeResponse("openai chat answer")
+
+            completions = _Completions()
+
+        chat = _Chat()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._openai = _FakeOpenAIClient()
+
+    result = await client.chat([{"role": "user", "content": "hi"}])
+
+    assert result.text == "openai chat answer"
+    assert len(openai_calls) == 1
+

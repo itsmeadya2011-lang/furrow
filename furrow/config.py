@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC
+    planner_provider: Provider | None = None
+    worker_provider: Provider | None = None
+    tester_provider: Provider | None = None
     model: str = "claude-sonnet-4-20250514"
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
@@ -131,6 +134,19 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    def provider_for(self, role: str) -> Provider:
+        """Return the LLM provider for a given agent role.
+
+        ``role`` is one of ``"planner"``, ``"worker"``, or ``"tester"``.
+        A role-specific override (``planner_provider``, etc.) wins over the
+        global ``provider``. Returns the global provider when no override is
+        set or when *role* is unknown.
+        """
+        override = getattr(self, f"{role}_provider", None)
+        if override is not None:
+            return override
+        return self.provider
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
