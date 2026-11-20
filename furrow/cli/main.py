@@ -4,6 +4,7 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow clear           delete the persisted run state
     furrow web             serve the web UI
 """
 
@@ -33,6 +34,9 @@ def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    planner_model: str | None = None,
+    worker_model: str | None = None,
+    tester_model: str | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -42,6 +46,12 @@ def _run_settings(
     updates: dict[str, Any] = {}
     if model is not None:
         updates["model"] = model
+    if planner_model is not None:
+        updates["planner_model"] = planner_model
+    if worker_model is not None:
+        updates["worker_model"] = worker_model
+    if tester_model is not None:
+        updates["tester_model"] = tester_model
     if max_cycles is not None:
         updates["max_cycles"] = max_cycles
     if workspace is not None:
@@ -186,7 +196,16 @@ def main() -> None:
 
 @main.command()
 @click.argument("goal", required=False)
-@click.option("--model", default=None, help="Override the LLM model.")
+@click.option(
+    "--goal",
+    "goal_flag",
+    default=None,
+    help="Goal for the agent (alternative to the positional argument).",
+)
+@click.option("--model", default=None, help="Override the LLM model for all agents.")
+@click.option("--planner-model", default=None, help="Override the LLM model for the planner only.")
+@click.option("--worker-model", default=None, help="Override the LLM model for the worker only.")
+@click.option("--tester-model", default=None, help="Override the LLM model for the tester only.")
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 @click.option(
     "--workspace",
@@ -197,16 +216,28 @@ def main() -> None:
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
 def start(
     goal: str | None,
+    goal_flag: str | None,
     model: str | None,
+    planner_model: str | None,
+    worker_model: str | None,
+    tester_model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
-    if not goal:
-        goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
-    _execute(goal=goal, run_settings=run_settings, resume=resume)
+    effective_goal = goal_flag if goal_flag is not None else goal
+    if not effective_goal:
+        effective_goal = click.prompt("Enter your goal for Furrow")
+    run_settings = _run_settings(
+        model=model,
+        planner_model=planner_model,
+        worker_model=worker_model,
+        tester_model=tester_model,
+        max_cycles=max_cycles,
+        workspace=workspace,
+    )
+    _execute(goal=effective_goal, run_settings=run_settings, resume=resume)
 
 
 @main.command()
@@ -245,6 +276,33 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         sys.exit(1)
     goal = state.original_goal or state.goal
     _execute(goal=goal, run_settings=run_settings, resume=True)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--force", is_flag=True, help="Delete without prompting for confirmation.")
+def clear(workspace: Path | None, force: bool) -> None:
+    """Delete the persisted Furrow run state for a workspace."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    if not force:
+        confirm = click.confirm(
+            f"Delete the persisted run state at {store.path}?",
+            default=False,
+        )
+        if not confirm:
+            click.echo("Aborted.")
+            return
+    store.clear()
+    click.echo(f"Cleared run state at {store.path}.")
 
 
 @main.command()

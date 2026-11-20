@@ -39,9 +39,15 @@ Start (or resume) a run for the specified goal.
 furrow start "Add JWT auth to the API"
 ```
 
+If `goal` is omitted, Furrow will prompt for it.
+
 Options:
-- `--model` — override the LLM model
-- `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
+- `--goal TEXT` — Goal for the agent (alternative to the positional argument; takes precedence when both are given).
+- `--model TEXT` — Override the LLM model for all agents.
+- `--planner-model TEXT` — Override the LLM model for the planner only.
+- `--worker-model TEXT` — Override the LLM model for the worker only.
+- `--tester-model TEXT` — Override the LLM model for the tester only.
+- `--max-cycles N` — Maximum number of cycles (0 = unlimited; negative values are rejected)
 - `--workspace PATH` — project directory to work in
 - `--resume` — resume the persisted run instead of starting fresh
 
@@ -68,6 +74,21 @@ furrow resume --workspace /path/to/project --max-cycles 5
 ```
 
 The exit codes are the same as for `furrow start`: `1` when the resumed run ends `FAILED`, `0` for `PASSED`, `SKIPPED` and `NOT RUN`.
+
+### `furrow clear`
+Delete the persisted Furrow run state for a workspace.
+
+```bash
+furrow clear
+furrow clear --workspace /path/to/project
+furrow clear --force        # delete without prompting
+```
+
+Options:
+- `--workspace PATH` — project directory whose state should be cleared
+- `--force` — delete without prompting for confirmation
+
+If no state file exists, the command reports that and exits successfully.
 
 ### `furrow web`
 Serve the web UI and stream orchestrator events.

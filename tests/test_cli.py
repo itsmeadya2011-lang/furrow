@@ -714,3 +714,113 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_start_goal_flag(runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]) -> None:
+    """The --goal flag supplies the goal instead of the positional argument."""
+    result = runner.invoke(main, ["start", "--goal", "build with a flag"])
+
+    assert result.exit_code == 0
+    assert fake_orchestrator.init_kwargs["goal"] == "build with a flag"
+
+
+def test_start_positional_goal_still_works(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The positional goal argument still works when --goal is not given."""
+    result = runner.invoke(main, ["start", "build with positional"])
+
+    assert result.exit_code == 0
+    assert fake_orchestrator.init_kwargs["goal"] == "build with positional"
+
+
+def test_start_goal_flag_wins_over_positional(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """When both are given, --goal takes precedence over the positional argument."""
+    result = runner.invoke(
+        main, ["start", "positional goal", "--goal", "flag goal"]
+    )
+
+    assert result.exit_code == 0
+    assert fake_orchestrator.init_kwargs["goal"] == "flag goal"
+
+
+def test_start_passes_per_agent_models(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The --planner-model, --worker-model and --tester-model options reach settings."""
+    result = runner.invoke(
+        main,
+        [
+            "start", "build a thing",
+            "--planner-model", "planner-model-x",
+            "--worker-model", "worker-model-y",
+            "--tester-model", "tester-model-z",
+        ],
+    )
+
+    assert result.exit_code == 0
+    settings = fake_orchestrator.init_kwargs["settings"]
+    assert settings.planner_model == "planner-model-x"
+    assert settings.worker_model == "worker-model-y"
+    assert settings.tester_model == "tester-model-z"
+
+
+def test_start_model_still_applies_to_all_agents(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The legacy --model option still overrides the default model for all agents."""
+    result = runner.invoke(main, ["start", "build a thing", "--model", "shared-model"])
+
+    assert result.exit_code == 0
+    settings = fake_orchestrator.init_kwargs["settings"]
+    assert settings.model == "shared-model"
+
+
+def test_clear_without_state(runner: CliRunner, tmp_path: Path) -> None:
+    """`furrow clear` reports that nothing exists when there is no state file."""
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found" in result.output
+
+
+def test_clear_deletes_state(runner: CliRunner, tmp_path: Path) -> None:
+    """`furrow clear --force` deletes the persisted state file."""
+    _write_state(tmp_path)
+    assert (tmp_path / ".furrow" / "state.json").is_file()
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path), "--force"])
+
+    assert result.exit_code == 0
+    assert "Cleared run state" in result.output
+    assert not (tmp_path / ".furrow" / "state.json").is_file()
+
+
+def test_clear_prompts_and_respects_no(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`furrow clear` without --force prompts and aborts when the user says no."""
+    _write_state(tmp_path)
+    monkeypatch.setattr("click.confirm", lambda *args, **kwargs: False)
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Aborted" in result.output
+    assert (tmp_path / ".furrow" / "state.json").is_file()
+
+
+def test_clear_prompts_and_respects_yes(
+    runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`furrow clear` without --force prompts and deletes when the user says yes."""
+    _write_state(tmp_path)
+    monkeypatch.setattr("click.confirm", lambda *args, **kwargs: True)
+
+    result = runner.invoke(main, ["clear", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Cleared run state" in result.output
+    assert not (tmp_path / ".furrow" / "state.json").is_file()
