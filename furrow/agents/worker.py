@@ -14,6 +14,7 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger, log_event, log_error
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -49,6 +50,9 @@ TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "length"})
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
+# Maximum conversation history to keep (prevents context window overflow)
+MAX_CONVERSATION_TURNS = 20
+
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|(?<!>)\||\n|\r)+")
@@ -78,6 +82,9 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Targets that discard output rather than write a real file.
 _SPECIAL_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+# Maximum retries for a single tool call
+MAX_TOOL_RETRIES = 2
 
 
 def _normalize_command(command: str) -> str:
@@ -544,15 +551,43 @@ class WorkerAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
         self.files_changed: set[str] = set()
+        self._log = get_logger("furrow.worker")
+        self._task_id = task.id
+        self._consecutive_errors = 0
+        self._max_consecutive_errors = 3
 
     async def run(self) -> WorkerResult:
+        log_event(self._log, "worker.started", task_id=self._task_id, description=self.task.description[:100])
         try:
-            return await self._run()
+            result = await self._run()
+            log_event(self._log, "worker.finished", task_id=self._task_id, success=result.success, iterations=result.iterations, files_changed=len(result.files_changed))
+            return result
         except Exception as exc:  # pragma: no cover - defensive
+            log_error(self._log, "worker.failed", exc, task_id=self._task_id)
             return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
+
+    def _manage_context(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Manage conversation context to prevent window overflow.
+        
+        Keeps the system prompt, initial user message, and the most recent turns.
+        """
+        if len(messages) <= MAX_CONVERSATION_TURNS:
+            return messages
+        
+        # Keep first message (initial instructions) and last N turns
+        # Each turn is 2 messages (assistant + user), so we keep roughly MAX_CONVERSATION_TURNS/2 turns
+        keep_turns = MAX_CONVERSATION_TURNS // 2
+        # First message + last (keep_turns * 2) messages
+        first = messages[:1]
+        last = messages[-(keep_turns * 2):]
+        log_event(self._log, "worker.context_truncated", task_id=self._task_id, original_length=len(messages), new_length=len(first) + len(last))
+        return first + last
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
+        # Only use per-task timeout if explicitly set on the task
+        task_timeout = self.task.timeout
+        
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -560,14 +595,32 @@ class WorkerAgent:
             }
         ]
         iterations = 0
+        start_time = asyncio.get_event_loop().time()
         for i in range(max_iters):
+            # Check per-task timeout (only if explicitly set)
+            if task_timeout is not None and asyncio.get_event_loop().time() - start_time > task_timeout:
+                log_event(self._log, "worker.task_timeout", task_id=self._task_id, timeout=task_timeout, iterations=iterations)
+                return WorkerResult(
+                    summary=f"Task timed out after {task_timeout}s",
+                    success=False,
+                    files_changed=sorted(self.files_changed),
+                    iterations=iterations,
+                    error=f"Task timeout ({task_timeout}s) exceeded",
+                )
+            
             iterations = i + 1
+            log_event(self._log, "worker.iteration_start", task_id=self._task_id, iteration=iterations, max_iterations=max_iters)
+            
+            # Manage context window before each LLM call
+            messages = self._manage_context(messages)
+            
             response: LLMResponse = await self.client.chat(
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
                 if response.stop_reason in TRUNCATED_STOP_REASONS:
+                    log_event(self._log, "worker.truncated", task_id=self._task_id, iteration=iterations, stop_reason=response.stop_reason)
                     return WorkerResult(
                         summary=summary,
                         success=False,
@@ -575,6 +628,7 @@ class WorkerAgent:
                         iterations=iterations,
                         error=f"worker response truncated (stop_reason={response.stop_reason})",
                     )
+                log_event(self._log, "worker.completed", task_id=self._task_id, iteration=iterations, summary=summary[:200])
                 return WorkerResult(
                     summary=summary,
                     success=True,
@@ -591,18 +645,64 @@ class WorkerAgent:
                 )
             messages.append({"role": "assistant", "content": blocks})
 
-            # execute tools
+            # execute tools with retry logic
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
-                result = await self._execute_tool(tc)
+                log_event(self._log, "worker.tool_call", task_id=self._task_id, iteration=iterations, tool=tc.name, tool_id=tc.id)
+                result = await self._execute_tool_with_retry(tc)
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
+                # Track consecutive errors for early termination
+                # Only count unexpected errors, not normal tool failures like "file not found"
+                if result.startswith("error:") and not self._is_expected_tool_error(result):
+                    self._consecutive_errors += 1
+                    if self._consecutive_errors >= self._max_consecutive_errors:
+                        log_event(self._log, "worker.max_consecutive_errors", task_id=self._task_id, errors=self._consecutive_errors)
+                        return WorkerResult(
+                            summary="Too many consecutive tool errors",
+                            success=False,
+                            files_changed=sorted(self.files_changed),
+                            iterations=iterations,
+                            error=f"Max consecutive errors ({self._max_consecutive_errors}) reached",
+                        )
+                else:
+                    self._consecutive_errors = 0
             messages.append({"role": "user", "content": result_blocks})
 
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        log_event(self._log, "worker.iteration_budget_exhausted", task_id=self._task_id, iterations=max_iters)
+        return WorkerResult(
+            summary="worker iteration budget exhausted",
+            success=False,
+            files_changed=sorted(self.files_changed),
+            iterations=max_iters,
+            error="worker iteration budget exhausted",
+        )
+
+    def _is_expected_tool_error(self, result: str) -> bool:
+        """Check if a tool error is expected/normal (e.g., file not found, command failed)."""
+        expected_errors = [
+            "no such file",
+            "file not found",
+            "path escapes workspace",
+            "could not parse command",
+            "command denied",
+            "empty command",
+            "invalid tool arguments",
+            "missing content",
+            "invalid content",
+            "unknown tool",
+        ]
+        result_lower = result.lower()
+        return any(e in result_lower for e in expected_errors)
+
+        # budget exhausted: the worker was truncated, so this is NOT a success.
+        # Reporting success here would make the orchestrator mark the task as
+        # completed instead of retrying it.
+        log_event(self._log, "worker.iteration_budget_exhausted", task_id=self._task_id, iterations=max_iters)
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -641,6 +741,22 @@ class WorkerAgent:
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
+
+    async def _execute_tool_with_retry(self, tc: ToolCall) -> str:
+        """Execute a tool with retry logic for transient failures."""
+        last_error = None
+        for attempt in range(MAX_TOOL_RETRIES + 1):
+            result = await self._execute_tool(tc)
+            if not result.startswith("error:"):
+                if attempt > 0:
+                    log_event(self._log, "worker.tool_retry_succeeded", task_id=self._task_id, tool=tc.name, attempt=attempt)
+                return result
+            last_error = result
+            if attempt < MAX_TOOL_RETRIES:
+                log_event(self._log, "worker.tool_retry", task_id=self._task_id, tool=tc.name, attempt=attempt + 1, max_retries=MAX_TOOL_RETRIES, error=result[:200])
+                await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+        log_event(self._log, "worker.tool_failed_after_retries", task_id=self._task_id, tool=tc.name, retries=MAX_TOOL_RETRIES, error=last_error[:200])
+        return last_error
 
     @staticmethod
     def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:

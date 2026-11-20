@@ -18,6 +18,7 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger, log_event, log_error
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -229,6 +230,7 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        self._log = get_logger("furrow.llm")
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -239,6 +241,7 @@ class LLMClient:
             self._anthropic = AsyncAnthropic(
                 api_key=api_key, timeout=self.settings.request_timeout
             )
+            log_event(self._log, "llm.client_created", provider="anthropic")
         return self._anthropic
 
     @property
@@ -250,6 +253,7 @@ class LLMClient:
             self._openai = AsyncOpenAI(
                 api_key=api_key, timeout=self.settings.request_timeout
             )
+            log_event(self._log, "llm.client_created", provider="openai")
         return self._openai
 
     @property
@@ -261,6 +265,7 @@ class LLMClient:
             self._ollama = AsyncOpenAI(
                 api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
             )
+            log_event(self._log, "llm.client_created", provider="ollama", base_url=base_url)
         return self._ollama
 
     async def aclose(self) -> None:
@@ -284,6 +289,8 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+        log_event(self._log, "llm.clients_closed")
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -310,6 +317,7 @@ class LLMClient:
                 last_exc = exc
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
+                log_event(self._log, "llm.retry", attempt=attempt_index + 1, max_attempts=max_attempts, error=str(exc)[:200])
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
         if last_exc is not None:
             raise last_exc
@@ -318,6 +326,7 @@ class LLMClient:
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         provider = self.settings.provider
+        log_event(self._log, "llm.complete_started", provider=provider.value, model=model, prompt_length=len(prompt))
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
@@ -330,7 +339,9 @@ class LLMClient:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        log_event(self._log, "llm.complete_finished", provider=provider.value, model=model, response_length=len(result))
+        return result
 
     async def chat(
         self,
@@ -341,6 +352,8 @@ class LLMClient:
     ) -> LLMResponse:
         model = model or self.settings.model
         provider = self.settings.provider
+        tool_names = [t.get("name") for t in tools] if tools else []
+        log_event(self._log, "llm.chat_started", provider=provider.value, model=model, message_count=len(messages), tools=tool_names)
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
@@ -355,7 +368,9 @@ class LLMClient:
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        log_event(self._log, "llm.chat_finished", provider=provider.value, model=model, has_tool_calls=bool(result.tool_calls), tool_calls=len(result.tool_calls), stop_reason=result.stop_reason, usage_input=result.usage.input_tokens, usage_output=result.usage.output_tokens)
+        return result
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(

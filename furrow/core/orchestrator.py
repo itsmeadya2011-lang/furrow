@@ -12,6 +12,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger, log_event, log_error, new_correlation_id, set_correlation_id
 
 _UNSET = object()
 
@@ -50,6 +51,9 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        # Initialize structured logging with correlation ID for this run
+        self._log = get_logger("furrow.orchestrator")
+        self._run_id = new_correlation_id()
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -81,8 +85,10 @@ class Orchestrator:
                     self._tests_run = 0
                 self._last_test_passed = getattr(st, "last_passed", None)
                 self._tests_skipped = bool(getattr(st, "last_skipped", False))
+                log_event(self._log, "orchestrator.resumed", run_id=self._run_id, cycles=self.cycles, tasks=len(self.tasks))
             else:
                 self._resume_state_missing = True
+                log_event(self._log, "orchestrator.resume_failed_no_state", run_id=self._run_id)
 
     def _client_usage(self) -> Usage:
         """Cumulative usage of the LLM client (zero when the client does not report it)."""
@@ -163,31 +169,39 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
+        log_event(self._log, "orchestrator.run_started", run_id=self._run_id, goal=self.original_goal, resume=self._resume, max_cycles=self.settings.max_cycles)
+
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
             self.event_bus.emit(Event(type=EventType.LOG,
                                       message="no state file found, starting fresh"))
+            log_event(self._log, "orchestrator.no_state_file", run_id=self._run_id)
 
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
         while True:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
+                log_event(self._log, "orchestrator.max_cycles_reached", run_id=self._run_id, cycles=self.cycles)
                 break
             self.cycles += 1
+            log_event(self._log, "orchestrator.cycle_started", run_id=self._run_id, cycle=self.cycles)
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
+                log_event(self._log, "orchestrator.cancelled", run_id=self._run_id, cycle=self.cycles)
                 raise
             except Exception as e:
+                log_error(self._log, "orchestrator.planner_failed", e, run_id=self._run_id, cycle=self.cycles)
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
+            log_event(self._log, "orchestrator.plan_created", run_id=self._run_id, cycle=self.cycles, tasks=len(plan.tasks), rationale=plan.rationale[:200])
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
@@ -198,13 +212,16 @@ class Orchestrator:
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
                 self._stopped_reason = "goal complete"
+                log_event(self._log, "orchestrator.goal_complete_no_tasks", run_id=self._run_id, cycle=self.cycles)
                 break
             self._merge_plan(plan)
             try:
                 await self._execute(plan)
             except asyncio.CancelledError:
+                log_event(self._log, "orchestrator.cancelled_during_execute", run_id=self._run_id, cycle=self.cycles)
                 raise
             except Exception as e:
+                log_error(self._log, "orchestrator.execute_failed", e, run_id=self._run_id, cycle=self.cycles)
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
@@ -214,8 +231,10 @@ class Orchestrator:
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
+                log_event(self._log, "orchestrator.cancelled_during_test", run_id=self._run_id, cycle=self.cycles)
                 raise
             except Exception as e:
+                log_error(self._log, "orchestrator.tester_failed", e, run_id=self._run_id, cycle=self.cycles)
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
@@ -224,6 +243,7 @@ class Orchestrator:
             skipped = bool(getattr(test_result, "skipped", False))
             if not skipped:
                 self._tests_run += 1
+            log_event(self._log, "orchestrator.test_finished", run_id=self._run_id, cycle=self.cycles, passed=test_result.passed, skipped=skipped, summary=test_result.summary[:200])
             self.event_bus.emit(
                 Event(
                     type=EventType.TEST_FINISHED,
@@ -243,6 +263,7 @@ class Orchestrator:
                 # does not chase a test runner that does not exist.
                 self.goal = self.original_goal
                 self._feedback = ""
+                log_event(self._log, "orchestrator.tests_skipped", run_id=self._run_id, cycle=self.cycles)
             elif not test_result.passed:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:
@@ -254,7 +275,15 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+                log_event(self._log, "orchestrator.tests_failed", run_id=self._run_id, cycle=self.cycles, failures=len(failures))
             cycle_usage = self._accumulate_usage()
+            
+            # Check cost budget
+            if self.settings.max_cost_usd > 0 and self._usage.cost_usd >= self.settings.max_cost_usd:
+                self._stopped_reason = f"cost budget exceeded (${self._usage.cost_usd:.4f} >= ${self.settings.max_cost_usd:.4f})"
+                log_event(self._log, "orchestrator.budget_exceeded", run_id=self._run_id, cycle=self.cycles, cost=self._usage.cost_usd, budget=self.settings.max_cost_usd)
+                break
+            
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],
@@ -275,6 +304,7 @@ class Orchestrator:
                     self._stopped_reason = (
                         "no test runner detected" if skipped else "no progress"
                     )
+                    log_event(self._log, "orchestrator.no_progress_guard_tripped", run_id=self._run_id, cycle=self.cycles, reason=self._stopped_reason)
                     guard_tripped = True
             else:
                 if sig != self._prev_sig or (test_result.passed and not skipped):
@@ -289,12 +319,14 @@ class Orchestrator:
                              last_summary=test_result.summary)
             try:
                 self.state_store.save(state)
+                log_event(self._log, "orchestrator.state_saved", run_id=self._run_id, cycle=self.cycles, path=str(self.state_store.path))
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 # The state was NOT written: report the failure (including the
                 # path that could not be written) and do NOT emit STATE_SAVED,
                 # which would tell consumers the state was saved when it was not.
+                log_error(self._log, "orchestrator.state_save_failed", e, run_id=self._run_id, cycle=self.cycles, path=str(self.state_store.path))
                 self.event_bus.emit(
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
@@ -311,6 +343,7 @@ class Orchestrator:
             else:
                 self._stopped_reason = "goal complete"
 
+        log_event(self._log, "orchestrator.run_finished", run_id=self._run_id, cycles=self.cycles, stopped_reason=self._stopped_reason, passed=bool(self._last_test_passed))
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
         active = (
@@ -395,6 +428,8 @@ class Orchestrator:
                 for t in remaining:
                     t.status = "blocked"
                 break
+            # Sort by priority (higher first) within the wave for better scheduling
+            wave.sort(key=lambda t: t.priority, reverse=True)
             waves.append(wave)
             for t in wave:
                 done.add(t.id)
@@ -421,6 +456,10 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.LOG,
                                         message=f"task {task.id} already completed - skipping"))
                 return
+            
+            # Track LLM usage before task execution
+            usage_before = self._client_usage()
+            
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
@@ -467,6 +506,16 @@ class Orchestrator:
                     else:
                         self._say(f"[red]Task {task_id} failed: {detail}[/red]")
                     return
+                
+                # Calculate cost delta for this task
+                usage_after = self._client_usage()
+                task_cost = max(0.0, usage_after.cost_usd - usage_before.cost_usd)
+                task_input = max(0, usage_after.input_tokens - usage_before.input_tokens)
+                task_output = max(0, usage_after.output_tokens - usage_before.output_tokens)
+                task.cost_usd = task_cost
+                task.input_tokens = task_input
+                task.output_tokens = task_output
+                
                 try:
                     success = bool(getattr(result, "success", False))
                     task.result = getattr(result, "summary", None)

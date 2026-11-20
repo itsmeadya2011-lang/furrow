@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import os
 import re
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +17,7 @@ from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
-from furrow.logging import get_logger
+from furrow.logging import get_logger, log_event, log_error
 
 logger = get_logger(__name__)
 
@@ -53,6 +55,11 @@ _ALL_ZERO_SUMMARY_RE = re.compile(
     r"(?:\w+\s*[:=]\s*(?:0|none|zero)\s*[,;]?\s*)*\)",
     re.IGNORECASE,
 )
+
+# Cache for test results to detect flaky tests
+_test_result_cache: dict[str, tuple[float, TestResult]] = {}
+_CACHE_TTL = 300  # 5 minutes
+_FLAKY_RETRIES = 2  # Number of retries to detect flakiness
 
 
 def resolve_test_timeout(settings: Settings) -> float:
@@ -182,6 +189,7 @@ class TesterAgent:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self._log = get_logger("furrow.tester")
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
@@ -197,6 +205,87 @@ class TesterAgent:
                 proc.kill()
         with contextlib.suppress(Exception):
             await proc.wait()
+
+    def _get_cache_key(self, cmd: list[str]) -> str:
+        """Generate a cache key for the test command."""
+        cmd_str = " ".join(cmd)
+        return hashlib.sha256(cmd_str.encode()).hexdigest()[:16]
+
+    def _get_cached_result(self, cache_key: str) -> TestResult | None:
+        """Get cached test result if still valid."""
+        if cache_key in _test_result_cache:
+            timestamp, result = _test_result_cache[cache_key]
+            if time.time() - timestamp < _CACHE_TTL:
+                log_event(self._log, "tester.cache_hit", cache_key=cache_key)
+                return result
+            else:
+                del _test_result_cache[cache_key]
+        return None
+
+    def _cache_result(self, cache_key: str, result: TestResult) -> None:
+        """Cache a test result."""
+        _test_result_cache[cache_key] = (time.time(), result)
+        log_event(self._log, "tester.cache_store", cache_key=cache_key)
+
+    async def _run_test_command(self, cmd: list[str], timeout: float) -> tuple[int, str, bool]:
+        """Run the test command and return (returncode, output, timed_out)."""
+        spawn_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            spawn_kwargs["start_new_session"] = True
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(self.workspace),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
+        except Exception as exc:
+            log_error(self._log, "tester.spawn_failed", exc, command=cmd)
+            return 1, f"Failed to start test command: {exc}", False
+
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            timed_out = False
+        except asyncio.TimeoutError:
+            await self._kill_process_tree(proc)
+            timed_out = True
+            return 1, f"Test command timed out after {timeout:g}s", True
+
+        returncode = proc.returncode if proc.returncode is not None else 0
+        combined = (
+            stdout.decode("utf-8", errors="replace")
+            + "\n"
+            + stderr.decode("utf-8", errors="replace")
+        )
+        if len(combined) > 20000:
+            combined = "[... output truncated ...]\n" + combined[-20000:]
+        return returncode, combined, timed_out
+
+    async def _check_flaky(self, cmd: list[str], timeout: float, initial_result: TestResult) -> TestResult:
+        """Re-run tests to detect flaky behavior."""
+        if initial_result.passed:
+            return initial_result
+
+        log_event(self._log, "tester.flaky_check_started", retries=_FLAKY_RETRIES)
+        flaky_failures = []
+        for retry in range(_FLAKY_RETRIES):
+            returncode, output, timed_out = await self._run_test_command(cmd, timeout)
+            if returncode == 0 and not timed_out:
+                # Test passed on retry - likely flaky
+                log_event(self._log, "tester.flaky_detected", retry=retry + 1)
+                flaky_failures.append(f"Retry {retry + 1}: Test passed (was failing initially)")
+            else:
+                log_event(self._log, "tester.flaky_check_failed", retry=retry + 1, returncode=returncode, timed_out=timed_out)
+
+        if flaky_failures:
+            # Mark as flaky but still failed
+            initial_result.failures.extend(flaky_failures)
+            initial_result.summary += f" [FLAKY: passed on {len(flaky_failures)}/{_FLAKY_RETRIES} retries]"
+            log_event(self._log, "tester.flaky_confirmed", flaky_count=len(flaky_failures))
+        return initial_result
 
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
@@ -235,7 +324,7 @@ class TesterAgent:
                         return ["yarn", "test", "--silent"]
                     return ["npm", "test", "--silent"]
             except (OSError, UnicodeError, ValueError) as exc:
-                logger.warning("Could not read package.json: %s", exc)
+                log_event(logger, "tester.package_json_read_failed", error=str(exc))
             # Fallback: npm test if package.json exists (Python case handled above)
             if (self.workspace / "pnpm-lock.yaml").is_file():
                 return ["pnpm", "test", "--silent"]
@@ -344,9 +433,12 @@ class TesterAgent:
         return TestResult(passed=passed, summary=summary, failures=failures)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        task_ids = [t.id for t in tasks]
+        log_event(self._log, "tester.run_started", task_count=len(tasks), task_ids=task_ids)
         try:
             cmd = await self.detect_command()
             if cmd is None:
+                log_event(self._log, "tester.no_runner_detected", task_ids=task_ids)
                 return TestResult(
                     passed=True,
                     skipped=True,
@@ -359,6 +451,7 @@ class TesterAgent:
             # suite may legitimately run for minutes.
             timeout = resolve_test_timeout(self.settings)
 
+            # Run the test command with original logic to maintain compatibility
             spawn_kwargs: dict[str, Any] = {}
             if os.name == "posix":
                 spawn_kwargs["start_new_session"] = True
@@ -366,6 +459,7 @@ class TesterAgent:
             spawn_failed = False
             spawn_error = ""
             timed_out = False
+            log_event(self._log, "tester.command_started", command=cmd, timeout=timeout)
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -384,6 +478,7 @@ class TesterAgent:
                 spawn_error = (
                     f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 )
+                log_error(self._log, "tester.spawn_failed", exc, command=cmd)
                 returncode = 1
                 stdout = b""
                 stderr = b""
@@ -393,6 +488,7 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     await self._kill_process_tree(proc)
                     timed_out = True
+                    log_event(self._log, "tester.command_timed_out", command=cmd, timeout=timeout)
                     returncode = 1
                     stdout = b""
                     stderr = f"Test command timed out after {timeout:g}s.".encode()
@@ -416,10 +512,11 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                except Exception as exc:
+                    log_error(self._log, "tester.llm_parse_failed", exc)
                     llm_result = None
 
-            return self._finalize(
+            result = self._finalize(
                 llm_result=llm_result,
                 returncode=returncode,
                 combined=combined,
@@ -428,8 +525,17 @@ class TesterAgent:
                 timed_out=timed_out,
                 timeout=timeout,
             )
+
+            # Check for flaky tests if the test failed (but don't change the passed status)
+            if not result.passed and not result.skipped and not timed_out and not spawn_failed:
+                # Just log flaky info, don't modify the result
+                log_event(self._log, "tester.flaky_check_skipped", reason="not_implemented_in_compat_mode")
+
+            log_event(self._log, "tester.run_finished", passed=result.passed, skipped=result.skipped, failures=len(result.failures), returncode=returncode, timed_out=timed_out)
+            return result
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
+            log_error(self._log, "tester.run_failed", exc)
             return TestResult(
                 passed=False,
                 summary=f"Tester error: {message}",
