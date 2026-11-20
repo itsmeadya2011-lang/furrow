@@ -542,7 +542,7 @@ async def test_aclose_resets_so_fresh_client_created():
 
 class _FakeResponseNoChoices:
     def __init__(self) -> None:
-        self.choices = []
+        self.choices: list = []
         self.usage = None
 
 
@@ -554,7 +554,7 @@ class _FakeChoiceNoMessage:
 
 class _FakeResponseNoMessage:
     def __init__(self) -> None:
-        self.choices = [_FakeChoiceNoMessage()]
+        self.choices: list = [_FakeChoiceNoMessage()]
         self.usage = None
 
 

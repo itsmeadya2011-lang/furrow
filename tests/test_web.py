@@ -51,6 +51,7 @@ class FakeOrchestrator:
             "resume": resume,
         }
         self.goal = goal
+        self.client = client
         self.event_bus = event_bus
         self._status: dict[str, Any] = {
             "goal": goal,

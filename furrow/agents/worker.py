@@ -537,6 +537,76 @@ def is_command_denied(command: str, workspace: Path) -> bool:
     return _text_is_denied(command, workspace, depth=0)
 
 
+def get_command_denied_reason(command: str, workspace: Path) -> str:
+    """Return a human-readable reason why the command was denied, or an empty string if allowed."""
+    if not command or not command.strip():
+        return ""
+    return _get_denied_reason(command, workspace, depth=0)
+
+
+def _get_denied_reason(text: str, workspace: Path, depth: int) -> str:
+    """Internal helper to get the reason a command/text is denied."""
+    normalized = _normalize_command(text)
+    # Check against DENIED_COMMANDS patterns
+    for denied in DENIED_COMMANDS:
+        if denied.lower() in normalized:
+            return f"denied pattern: {denied}"
+    # Check each segment
+    for segment in _split_command_segments(text):
+        reason = _get_segment_denied_reason(segment, workspace)
+        if reason:
+            return reason
+    # Check command substitutions
+    if depth < _MAX_SUBSTITUTION_DEPTH:
+        for substitution in _extract_command_substitutions(text):
+            reason = _get_denied_reason(substitution, workspace, depth + 1)
+            if reason:
+                return f"in command substitution: {reason}"
+    return ""
+
+
+def _get_segment_denied_reason(segment: str, workspace: Path) -> str:
+    """Get the reason a single segment is denied."""
+    normalized = _normalize_command(segment)
+    if not normalized:
+        return ""
+
+    # DENY by PROGRAM NAME (first token)
+    program = _get_program_basename(segment)
+    if program:
+        program = program.lower()
+        if program in DENIED_PROGRAMS or program.startswith("mkfs."):
+            return f"denied program: {program}"
+
+    # DENY by PATTERN (already checked in _get_denied_reason, but check again for segment-specific)
+    for denied in DENIED_COMMANDS:
+        if denied.lower() in normalized:
+            return f"denied pattern in segment: {denied}"
+
+    # DENY dangerous rm/chmod and denied programs via parsed program name
+    parsed = _program_and_args(segment)
+    if parsed is not None:
+        name, args = parsed
+        if name in DENIED_PROGRAMS or name.startswith("mkfs."):
+            return f"denied program (resolved): {name}"
+        if name == "rm" and _is_dangerous_rm(args, workspace):
+            return "dangerous rm -rf outside workspace"
+        if name == "chmod" and _is_dangerous_chmod(args, workspace):
+            return "dangerous recursive chmod outside workspace"
+
+    # DENY a force push
+    if _is_force_push(segment, normalized):
+        return "git force push denied"
+
+    # DENY a redirection or a file-writing argument that escapes the workspace
+    if _redirects_outside_workspace(segment, workspace):
+        return "redirection outside workspace"
+    if _writes_outside_workspace(segment, workspace):
+        return "write outside workspace"
+
+    return ""
+
+
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     """Return the absolute path for `path` inside `workspace`, or None when it escapes."""
     base = Path(workspace).resolve()
@@ -734,6 +804,9 @@ class WorkerAgent:
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            reason = get_command_denied_reason(command, self.workspace)
+            if reason:
+                return f"error: command denied ({reason})"
             return "error: command denied"
         try:
             shlex.split(command)

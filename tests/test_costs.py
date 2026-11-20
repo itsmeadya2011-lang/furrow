@@ -96,8 +96,14 @@ def test_price_for_model_unknown_model_returns_none() -> None:
 
 
 def test_price_for_model_never_raises() -> None:
-    assert price_for_model("gpt-4o", {"broken": "not-a-price"}) is not None
+    assert price_for_model("gpt-4o", {"broken": "not-a-price"}) is not None  # type: ignore[dict-item]
     assert price_for_model(None) is None  # type: ignore[arg-type]
+
+
+def test_price_for_model_invalid_override_is_ignored() -> None:
+    # An override value that is not a ModelPricing should be ignored, not crash.
+    # The function catches the validation error and falls back to the default table.
+    assert price_for_model("gpt-4o", {"broken": "not-a-price"}) is not None  # type: ignore[dict-item]
 
 
 def test_price_for_model_overrides_beat_the_built_in_table() -> None:
@@ -158,5 +164,5 @@ def test_estimate_cost_never_raises() -> None:
         input_tokens = None
         output_tokens = "not-a-number"
 
-    assert estimate_cost("gpt-4o", _Weird()) == 0.0
+    assert estimate_cost("gpt-4o", _Weird()) == 0.0  # type: ignore[arg-type]
     assert estimate_cost("gpt-4o", None) == 0.0  # type: ignore[arg-type]
