@@ -719,11 +719,14 @@ class WorkerAgent:
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
         rels = []
         base = self.workspace.resolve()
+        truncated = len(entries) > MAX_LIST_ENTRIES
         for e in entries[:MAX_LIST_ENTRIES]:
             try:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
+        if truncated:
+            rels.append(f"[... {len(entries) - MAX_LIST_ENTRIES} more entries not shown ...]")
         return "\n".join(rels)
 
     async def _run_command(self, command: str) -> str:
