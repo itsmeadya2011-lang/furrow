@@ -281,8 +281,9 @@ class LLMClient:
                     result = close()
                     if asyncio.iscoroutine(result):
                         await result
-            except Exception:
-                pass
+            except Exception as exc:  # pragma: no cover - defensive
+                import logging
+                logging.getLogger(__name__).warning("Failed to close %s: %s", attr, exc)
             setattr(self, attr, None)
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.

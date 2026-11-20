@@ -574,7 +574,7 @@ class WorkerAgent:
             return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
 
     async def _run(self) -> WorkerResult:
-        max_iters = self.settings.max_worker_iterations
+        max_iters = self.settings.max_worker_iterations or 10
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -739,7 +739,9 @@ class WorkerAgent:
             shlex.split(command)
         except ValueError:
             return "error: could not parse command"
-        timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+        timeout = float(getattr(self.settings, "command_timeout", 300.0))
+        if timeout <= 0:
+            timeout = 300.0
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
         # instead of leaking orphans. On other platforms we fall back to
