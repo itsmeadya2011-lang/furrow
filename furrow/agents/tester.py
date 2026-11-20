@@ -215,33 +215,38 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+            # Check for specific test runner configs
+            # Jest
+            jest_args = ["jest", "--ci", "--reporters=default", "--reporters=jest-junit"]
+            for pattern in ["jest.config.*", "jest.config.*"]:
+                if any(self.workspace.glob(pattern)):
+                    return self._node_test_command(jest_args)
+            # Vitest
+            vitest_args = ["vitest", "run", "--reporter=default"]
+            for pattern in ["vitest.config.*", "vitest.workspace.*"]:
+                if any(self.workspace.glob(pattern)):
+                    return self._node_test_command(vitest_args)
+            # Mocha
+            mocha_args = ["mocha", "--reporter=spec"]
+            for pattern in [".mocharc*", "mocha.opts", "mocha.config.*"]:
+                if any(self.workspace.glob(pattern)):
+                    return self._node_test_command(mocha_args)
+            # Playwright
+            playwright_args = ["playwright", "test"]
+            for pattern in ["playwright.config.*"]:
+                if any(self.workspace.glob(pattern)):
+                    return self._node_test_command(playwright_args)
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json", encoding="utf-8") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                    return self._node_test_command()
             except (OSError, UnicodeError, ValueError) as exc:
                 logger.warning("Could not read package.json: %s", exc)
             # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            return self._node_test_command()
 
         python_markers = [
             "pyproject.toml",
@@ -259,6 +264,18 @@ class TesterAgent:
             return ["go", "test", "./..."]
 
         return None
+
+    def _node_test_command(self, args: list[str] | None = None) -> list[str]:
+        """Build a Node.js test command based on the lockfile."""
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            base = ["pnpm", "exec"]
+        elif (self.workspace / "yarn.lock").is_file():
+            base = ["yarn", "exec"]
+        else:
+            base = ["npx"]
+        if args:
+            return [*base, *args]
+        return [*base, "npm", "test", "--silent"]
 
     def _finalize(
         self,

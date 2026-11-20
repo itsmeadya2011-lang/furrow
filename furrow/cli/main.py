@@ -21,6 +21,7 @@ import click
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
+from furrow.git import create_git_manager
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -152,14 +153,22 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
-def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
+def _execute(
+    goal: str,
+    run_settings: Settings,
+    resume: bool,
+    auto_git: bool = True,
+) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
+    git_manager = create_git_manager(run_settings.workspace, run_settings) if auto_git else None
     orchestrator = Orchestrator(
         goal=goal,
         settings=run_settings,
         state_store=store,
         resume=resume,
+        git_manager=git_manager,
+        auto_git=auto_git,
     )
     try:
         result = asyncio.run(_run_and_release(orchestrator))
@@ -195,18 +204,20 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option("--no-git", is_flag=True, help="Disable automatic git commit/push after cycles.")
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    no_git: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
-    _execute(goal=goal, run_settings=run_settings, resume=resume)
+    _execute(goal=goal, run_settings=run_settings, resume=resume, auto_git=not no_git)
 
 
 @main.command()
@@ -235,7 +246,8 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--no-git", is_flag=True, help="Disable automatic git commit/push after cycles.")
+def resume(workspace: Path | None, max_cycles: int | None, no_git: bool) -> None:
     """Resume the persisted Furrow run."""
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
@@ -244,7 +256,7 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         click.secho("No furrow run state found to resume.", fg="red")
         sys.exit(1)
     goal = state.original_goal or state.goal
-    _execute(goal=goal, run_settings=run_settings, resume=True)
+    _execute(goal=goal, run_settings=run_settings, resume=True, auto_git=not no_git)
 
 
 @main.command()

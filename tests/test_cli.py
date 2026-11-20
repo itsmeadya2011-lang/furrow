@@ -34,6 +34,8 @@ class FakeOrchestrator:
         state_store: Any = None,
         event_bus: Any = None,
         resume: bool = False,
+        git_manager: Any = None,
+        auto_git: bool = False,
     ) -> None:
         FakeOrchestrator.init_kwargs = {
             "goal": goal,
@@ -42,6 +44,8 @@ class FakeOrchestrator:
             "state_store": state_store,
             "event_bus": event_bus,
             "resume": resume,
+            "git_manager": git_manager,
+            "auto_git": auto_git,
         }
         self.goal = goal
 
@@ -655,6 +659,8 @@ class ClientReleasingOrchestrator:
         state_store: Any = None,
         event_bus: Any = None,
         resume: bool = False,
+        git_manager: Any = None,
+        auto_git: bool = False,
     ) -> None:
         ClientReleasingOrchestrator.instances.append(self)
         self.goal = goal

@@ -2,11 +2,17 @@
 
 Configures structlog to wrap stdlib logging when available, with a defensive
 fallback to stdlib logging if structlog is missing.
+
+Supports both human-readable console output and JSON structured logging.
+Controlled by FURROW_LOG_FORMAT environment variable:
+- "console" (default): human-readable output
+- "json": JSON structured output
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from typing import Any
 
@@ -28,6 +34,25 @@ except ImportError:
     _STRUCTLOG_AVAILABLE = False
 
 
+def _get_log_format() -> str:
+    """Get the log format from environment variable."""
+    return os.getenv("FURROW_LOG_FORMAT", "console").lower()
+
+
+def _console_renderer() -> Any:
+    """Create a console renderer for human-readable output."""
+    if not _STRUCTLOG_AVAILABLE:
+        return None
+    return structlog.dev.ConsoleRenderer(colors=True)
+
+
+def _json_renderer() -> Any:
+    """Create a JSON renderer for structured output."""
+    if not _STRUCTLOG_AVAILABLE:
+        return None
+    return structlog.processors.JSONRenderer()
+
+
 def configure_logging(level: str = "INFO") -> None:
     """Configure structlog to wrap stdlib logging."""
     log_level = getattr(logging, level.upper(), logging.INFO)
@@ -42,6 +67,9 @@ def configure_logging(level: str = "INFO") -> None:
         _configure_stdlib_fallback(level)
         return
 
+    log_format = _get_log_format()
+    renderer = _json_renderer() if log_format == "json" else _console_renderer()
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
@@ -50,7 +78,7 @@ def configure_logging(level: str = "INFO") -> None:
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
+            renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,

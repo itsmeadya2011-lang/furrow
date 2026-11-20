@@ -69,7 +69,8 @@ def test_detect_command_unreadable_package_json_falls_back(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None
-    assert cmd == ["npm", "test", "--silent"]
+    # Falls back to npx when no lockfile is present
+    assert cmd == ["npx", "npm", "test", "--silent"]
 
 
 def test_detect_command_valid_package_json_with_test_script(tmp_path):
@@ -78,7 +79,8 @@ def test_detect_command_valid_package_json_with_test_script(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None
-    assert cmd == ["npm", "test", "--silent"]
+    # Falls back to npx when no lockfile is present
+    assert cmd == ["npx", "npm", "test", "--silent"]
 
 
 def test_detect_cargo(tmp_path):

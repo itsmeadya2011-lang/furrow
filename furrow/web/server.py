@@ -16,6 +16,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -27,6 +28,7 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.git import create_git_manager
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +77,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -122,6 +125,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-error {
     margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
   }
+  .panel-files {
+    margin: .4rem 0; font-size: .85rem; color: #8a93a5;
+  }
+  .panel-files summary {
+    cursor: pointer; color: #4c8dff;
+  }
+  .panel-files summary:hover { text-decoration: underline; }
+  .panel-files pre {
+    margin: .4rem 0 0; padding: .5rem; background: #0b0e13;
+    border: 1px solid #2b3240; border-radius: 4px;
+    overflow: auto; max-height: 300px;
+    font-size: .8rem; white-space: pre-wrap;
+  }
+  .diff-add { color: #57d38c; }
+  .diff-remove { color: #e0685f; }
+  .diff-context { color: #8a93a5; }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
@@ -132,6 +151,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .diff-modal {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center;
+    z-index: 1000;
+  }
+  .diff-modal.hidden { display: none; }
+  .diff-modal-content {
+    background: #171b23; border: 1px solid #2b3240; border-radius: 8px;
+    padding: 1rem; max-width: 90vw; max-height: 80vh; overflow: auto;
+    width: 800px;
+  }
+  .diff-modal-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 1rem; padding-bottom: .5rem; border-bottom: 1px solid #2b3240;
+  }
+  .diff-modal-close {
+    background: none; border: none; color: #8a93a5; font-size: 1.5rem; cursor: pointer;
+  }
+  .diff-modal-close:hover { color: #f0f2f5; }
 </style>
 </head>
 <body>
@@ -152,6 +190,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+
+<!-- Diff Modal -->
+<div id="diff-modal" class="diff-modal hidden">
+  <div class="diff-modal-content">
+    <div class="diff-modal-header">
+      <h2 id="diff-modal-title">Diff</h2>
+      <button class="diff-modal-close" id="diff-modal-close">&times;</button>
+    </div>
+    <pre id="diff-modal-content"></pre>
+  </div>
+</div>
+
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -161,6 +211,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const diffModal = document.getElementById('diff-modal');
+  const diffModalTitle = document.getElementById('diff-modal-title');
+  const diffModalContent = document.getElementById('diff-modal-content');
+  const diffModalClose = document.getElementById('diff-modal-close');
   let socket = null;
   let lastSummary = null;
 
@@ -193,6 +247,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return 'unknown';
   }
 
+  function highlightDiff(diffText) {
+    // Simple diff highlighting for unified diff format
+    return diffText.split('\n').map(line => {
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        return '<span class="diff-add">' + escapeHtml(line) + '</span>';
+      } else if (line.startsWith('-') && !line.startsWith('---')) {
+        return '<span class="diff-remove">' + escapeHtml(line) + '</span>';
+      } else if (line.startsWith('@@')) {
+        return '<span style="color:#f0b367;">' + escapeHtml(line) + '</span>';
+      } else {
+        return '<span class="diff-context">' + escapeHtml(line) + '</span>';
+      }
+    }).join('\n');
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
@@ -211,6 +286,45 @@ INDEX_HTML = r"""<!DOCTYPE html>
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
   }
+
+  async function fetchTaskDiff(taskId) {
+    try {
+      const res = await fetch('/api/diff/' + encodeURIComponent(taskId));
+      if (!res.ok) {
+        throw new Error('Failed to fetch diff: ' + res.status);
+      }
+      return await res.json();
+    } catch (err) {
+      return { error: String(err) };
+    }
+  }
+
+  function showDiffModal(taskId, taskDesc) {
+    diffModalTitle.textContent = 'Diff for ' + taskId + ': ' + taskDesc;
+    diffModalContent.textContent = 'Loading...';
+    diffModal.classList.remove('hidden');
+    fetchTaskDiff(taskId).then(data => {
+      if (data.error) {
+        diffModalContent.textContent = 'Error: ' + data.error;
+      } else if (data.diff) {
+        diffModalContent.innerHTML = highlightDiff(data.diff);
+      } else {
+        diffModalContent.textContent = 'No changes recorded for this task.';
+      }
+    });
+  }
+
+  function hideDiffModal() {
+    diffModal.classList.add('hidden');
+  }
+
+  diffModalClose.addEventListener('click', hideDiffModal);
+  diffModal.addEventListener('click', function(e) {
+    if (e.target === diffModal) hideDiffModal();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') hideDiffModal();
+  });
 
   function renderTasks(tasks) {
     while (tasksEl.firstChild) {
@@ -269,6 +383,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
         errorEl.className = 'panel-error';
         errorEl.textContent = error;
         panel.appendChild(errorEl);
+      }
+
+      // Files changed section with diff button
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const filesSection = document.createElement('details');
+        filesSection.className = 'panel-files';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Files changed (' + filesChanged.length + ')';
+        filesSection.appendChild(summary);
+        const pre = document.createElement('pre');
+        pre.textContent = filesChanged.join('\n');
+        filesSection.appendChild(pre);
+
+        // Diff button
+        const diffBtn = document.createElement('button');
+        diffBtn.textContent = 'View Diff';
+        diffBtn.style.marginTop = '0.4rem';
+        diffBtn.style.fontSize = '0.8rem';
+        diffBtn.style.padding = '0.3rem 0.6rem';
+        diffBtn.onclick = function() { showDiffModal(task.id, task.description); };
+        filesSection.appendChild(diffBtn);
+
+        panel.appendChild(filesSection);
       }
 
       tasksEl.appendChild(panel);
@@ -401,10 +539,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+    connect({ goal: goalEl.value, resume: false, auto_git: true });
   };
   document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+    connect({ goal: goalEl.value, resume: true, auto_git: true });
   };
 
   loadState();
@@ -421,6 +559,7 @@ class StartRequest(BaseModel):
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
+    auto_git: bool = True
 
 
 class SocketRequest(BaseModel):
@@ -429,6 +568,7 @@ class SocketRequest(BaseModel):
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
+    auto_git: bool = True
 
 
 def _reset_registry() -> None:
@@ -553,16 +693,19 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, bus: EventBus, auto_git: bool = True
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
     run_settings = _run_settings(max_cycles)
+    git_manager = create_git_manager(run_settings.workspace, run_settings) if auto_git else None
     return Orchestrator(
         goal=goal,
         settings=run_settings,
         state_store=StateStore(run_settings.state_path()),
         event_bus=bus,
         resume=resume,
+        git_manager=git_manager,
+        auto_git=auto_git,
     )
 
 
@@ -587,6 +730,74 @@ async def api_state() -> dict[str, Any]:
         "state": state.model_dump(mode="json") if state is not None else None,
         "exists": store.exists(),
     }
+
+
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for monitoring."""
+    return {
+        "status": "healthy",
+        "service": "furrow",
+        "version": "0.1.0",
+    }
+
+
+@app.get("/api/diff/{task_id}")
+async def api_diff(task_id: str) -> dict[str, Any]:
+    """Get the git diff for a specific task."""
+    # Try to get the diff from the current or last run
+    orchestrator = _CURRENT.get("orchestrator")
+    result = _CURRENT.get("result")
+
+    # Check current orchestrator tasks
+    if orchestrator is not None:
+        for task in orchestrator.tasks:
+            if task.id == task_id:
+                # Get the diff for files changed in this task
+                diff = await _get_task_diff(task, orchestrator.settings.workspace)
+                return {"diff": diff}
+
+    # Check result tasks
+    if result is not None and hasattr(result, "tasks"):
+        for task in result.tasks:
+            if task.get("id") == task_id:
+                # We don't have the actual task object here, try state file
+                pass
+
+    # Fall back to state file
+    store = _state_store()
+    state = store.load()
+    if state is not None:
+        for task in state.tasks:
+            if task.id == task_id:
+                ws = orchestrator.settings.workspace if orchestrator else settings.workspace
+                diff = await _get_task_diff(task, ws)
+                return {"diff": diff}
+
+    return {"diff": None, "error": "Task not found"}
+
+
+async def _get_task_diff(task: Any, workspace: Path) -> str | None:
+    """Get the git diff for files changed in a task."""
+    try:
+        files_changed = getattr(task, "files_changed", None) or []
+        if not files_changed:
+            return None
+
+        # Run git diff for the specific files
+        proc = await asyncio.create_subprocess_exec(
+            "git", "diff", "--", *files_changed,
+            cwd=str(workspace),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if proc.returncode != 0:
+            return None
+        diff = stdout.decode("utf-8", errors="replace")
+        return diff if diff.strip() else None
+    except Exception:
+        return None
 
 
 @app.get("/api/status")
@@ -626,7 +837,9 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(
+            goal, request.resume, request.max_cycles, bus, request.auto_git
+        )
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -676,6 +889,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             return
         goal = request.goal.strip()
         resume = request.resume
+        auto_git = request.auto_git
         if not goal and not resume:
             await _send_error(websocket, "goal is required")
             return
@@ -685,7 +899,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus, auto_git)
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

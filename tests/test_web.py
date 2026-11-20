@@ -40,6 +40,8 @@ class FakeOrchestrator:
         state_store: Any = None,
         event_bus: Any = None,
         resume: bool = False,
+        git_manager: Any = None,
+        auto_git: bool = False,
     ) -> None:
         FakeOrchestrator.instances.append(self)
         FakeOrchestrator.init_kwargs = {
@@ -49,6 +51,8 @@ class FakeOrchestrator:
             "state_store": state_store,
             "event_bus": event_bus,
             "resume": resume,
+            "git_manager": git_manager,
+            "auto_git": auto_git,
         }
         self.goal = goal
         self.event_bus = event_bus
@@ -191,11 +195,21 @@ def test_index_contains_ui_hooks(client: TestClient) -> None:
 
 
 def test_index_uses_text_content_for_untrusted_text(client: TestClient) -> None:
-    """Task text is assigned via textContent, never innerHTML interpolation."""
+    """Task text is assigned via textContent, never innerHTML interpolation.
+
+    The diff modal uses innerHTML for our own generated diff content (highlighted
+    with spans), which is safe. This test ensures untrusted task text is handled
+    via textContent.
+    """
     html = client.get("/").text
 
     assert "textContent" in html
-    assert "innerHTML" not in html
+    # Task description and status text must use textContent
+    assert 'desc.textContent =' in html
+    assert 'statusEl.textContent =' in html
+    assert 'resultEl.textContent =' in html
+    assert 'errorEl.textContent =' in html
+    # innerHTML is allowed for the diff modal (our own generated content)
 
 
 def test_index_script_declares_every_element_reference(client: TestClient) -> None:

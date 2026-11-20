@@ -11,6 +11,7 @@ from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.git import GitManager
 from furrow.llm import LLMClient
 
 _UNSET = object()
@@ -21,7 +22,9 @@ _MAX_TEXT = 120
 class Orchestrator:
     def __init__(self, goal: str, client: LLMClient | None = None,
                  settings: Settings | None = None, state_store: StateStore | None = None,
-                 event_bus: EventBus | None = None, resume: bool = False) -> None:
+                 event_bus: EventBus | None = None, resume: bool = False,
+                 git_manager: GitManager | None = None,
+                 auto_git: bool = False) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.goal = goal
@@ -50,6 +53,8 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._git_manager = git_manager
+        self._auto_git = auto_git
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -302,6 +307,45 @@ class Orchestrator:
             else:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
+
+            # Compute files changed in this cycle for git commit
+            cycle_files_changed = sorted(
+                {f for t in self.tasks for f in (getattr(t, "files_changed", None) or [])}
+            )
+
+            # Auto-commit and push if enabled
+            if self._auto_git and self._git_manager is not None:
+                try:
+                    git_result = await self._git_manager.maybe_commit_and_push(
+                        cycle=self.cycles,
+                        goal=self.original_goal,
+                        tasks=[t.model_dump() for t in self.tasks],
+                        files_changed=cycle_files_changed,
+                    )
+                    if git_result.get("committed"):
+                        self.event_bus.emit(
+                            Event(type=EventType.LOG,
+                                 message=(
+                                    f"Committed cycle {self.cycles} changes: "
+                                    f"{git_result.get('commit_hash', '')[:8]}"
+                                 ))
+                        )
+                    if git_result.get("pushed"):
+                        self.event_bus.emit(
+                            Event(type=EventType.LOG,
+                                 message=f"Pushed to {self._git_manager.remote}")
+                        )
+                    if git_result.get("error"):
+                        self.event_bus.emit(
+                            Event(type=EventType.ERROR,
+                                 message=f"Git operation failed: {git_result['error']}")
+                        )
+                except Exception as exc:
+                    self.event_bus.emit(
+                        Event(type=EventType.ERROR,
+                             message=f"Git operation raised: {exc}")
+                    )
+
             if guard_tripped:
                 break
 
