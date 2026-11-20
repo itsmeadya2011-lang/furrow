@@ -281,7 +281,7 @@ def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
 
 
 def _extract_command_substitutions(command: str) -> list[str]:
-    """Return the text of every ``$(...)`` and `` `...` `` substitution.
+    """Return the text of every ``$(...)``, `` `...` `` and ``<(...)/>(...)`` substitution.
 
     The shell runs the substituted text, so it has to be checked with the
     very same rules as the command itself.
@@ -302,6 +302,28 @@ def _extract_command_substitutions(command: str) -> list[str]:
             continue
         if char == "$" and command[index + 1 : index + 2] == "(":
             # Walk to the matching closing parenthesis, nested ones included.
+            depth = 0
+            cursor = index + 1
+            while cursor < length:
+                if command[cursor] == "(":
+                    depth += 1
+                elif command[cursor] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                cursor += 1
+            if cursor >= length:
+                break  # unbalanced parentheses
+            text = command[index + 2 : cursor]
+            if text.strip():
+                substitutions.append(text)
+            index = cursor + 1
+            continue
+        if char in "<>" and command[index + 1 : index + 2] == "(":
+            # Walk to the matching closing parenthesis of a process
+            # substitution <(...) or >(...), nested ones included. The
+            # `(` of `$(...)` is handled by the `$(` branch above, so it is
+            # never mistaken for a process substitution here.
             depth = 0
             cursor = index + 1
             while cursor < length:

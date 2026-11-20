@@ -610,6 +610,40 @@ def test_is_command_denied_checks_command_substitutions(tmp_path):
     assert is_command_denied("echo `fdisk /dev/sda`", tmp_path) is True
 
 
+def test_is_command_denied_checks_process_substitutions(tmp_path):
+    """The text of a process substitution is checked with the same rules.
+
+    Bash process substitution ``<(...)`` and ``>(...)`` runs an arbitrary
+    command, so its inner text has to be denied just like a command
+    substitution - including nested process substitutions.
+    """
+    denied_commands = [
+        "cat <(rm -rf /)",
+        "diff <(echo a) <(fdisk /dev/sda)",
+        "cat <(echo <(mkfs.ext4 /dev/sda))",
+        "tee >(chmod -R 777 /)",
+    ]
+    allowed_commands = [
+        "diff <(sort a.txt) <(sort b.txt)",
+        "cat <(echo hi)",
+        "echo hi > out.txt",
+        "echo $(echo ok)",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_extract_command_substitutions_includes_process_substitutions():
+    """``_extract_command_substitutions`` returns process substitution text."""
+    from furrow.agents.worker import _extract_command_substitutions
+
+    substitutions = _extract_command_substitutions("diff <(sort a) >(cat)")
+    assert "sort a" in substitutions
+    assert "cat" in substitutions
+
+
 def test_is_command_denied_allows_redirect_inside_workspace(tmp_path):
     """A redirect whose target stays inside the workspace is allowed."""
     assert is_command_denied("echo hi > out.txt", tmp_path) is False
