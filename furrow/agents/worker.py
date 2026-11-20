@@ -530,10 +530,81 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     return False
 
 
+def _expand_var_refs(text: str, assignments: dict[str, str]) -> str:
+    """Expand ``$VAR`` and ``${VAR}`` references in *text* using *assignments*.
+
+    A negative lookahead after the variable name prevents ``$VARIABLE`` from
+    matching when the assignment is for ``VAR``.
+    """
+    result = text
+    for var_name, var_value in assignments.items():
+        result = result.replace(f"${{{var_name}}}", var_value)
+        result = re.sub(rf"\${re.escape(var_name)}(?![A-Za-z0-9_])", var_value, result)
+    return result
+
+
+def _expand_assignments(command: str) -> str:
+    """Expand shell variable assignments so the guard sees the real command.
+
+    A shell can hide a dangerous command behind a variable, e.g.::
+
+        X="rm -rf /"; $X
+
+    The guard previously checked the literal text of each segment, so the
+    ``$X`` segment looked harmless.  This function collects every assignment
+    in the command (in order, so later assignments can reference earlier
+    ones) and expands ``$VAR`` / ``${VAR}`` references in the rest of each
+    segment before the guard inspects it.
+
+    Pure assignments (a segment that is *only* an assignment) contribute
+    nothing to the expanded text; assignments that prefix a segment are
+    stripped off and the remainder is expanded.
+    """
+    segments = _split_command_segments(command)
+    assignments: dict[str, str] = {}
+    expanded: list[str] = []
+
+    for segment in segments:
+        tokens = _shell_tokens(segment)
+        if not tokens:
+            continue
+        i = 0
+        # Consume leading assignments (X=foo, X="foo", …).  A shell lets
+        # several assignments prefix a simple command, e.g.
+        # ``A=1 B=2 cmd arg``.
+        while i < len(tokens) and _ASSIGNMENT_RE.match(tokens[i]):
+            token = tokens[i]
+            var_name, _, var_value = token.partition("=")
+            # Strip a single layer of surrounding quotes so the stored
+            # value matches what the shell would actually assign.
+            if (
+                len(var_value) >= 2
+                and var_value[0] == var_value[-1]
+                and var_value[0] in ('"', "'")
+            ):
+                var_value = var_value[1:-1]
+            # Chained assignments: X="$Y" where Y was set earlier.
+            var_value = _expand_var_refs(var_value, assignments)
+            assignments[var_name] = var_value
+            i += 1
+        rest = tokens[i:]
+        if not rest:
+            # Pure assignment: nothing to check in this segment.
+            continue
+        expanded.append(_expand_var_refs(" ".join(rest), assignments))
+
+    return " ; ".join(expanded)
+
+
 def is_command_denied(command: str, workspace: Path) -> bool:
     """Check if command is denied by security policy."""
     if not command or not command.strip():
         return False
+    # Expand variable assignments so a command hidden behind ``$VAR`` is
+    # inspected with the same rules as a directly-written command.
+    expanded = _expand_assignments(command)
+    if expanded:
+        command = expanded
     return _text_is_denied(command, workspace, depth=0)
 
 
