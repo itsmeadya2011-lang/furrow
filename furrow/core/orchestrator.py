@@ -263,6 +263,9 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+            if self.settings.max_cost_usd and self._usage.cost_usd >= self.settings.max_cost_usd:
+                self._stopped_reason = "max_cost exceeded"
+                break
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress

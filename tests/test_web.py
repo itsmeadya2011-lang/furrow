@@ -705,3 +705,11 @@ def test_api_start_resume_without_state_returns_400(
     assert body["started"] is False
     assert body["error"] == "no goal to resume"
     assert fake_orchestrator.instances == [], "no run may be started"
+
+
+def test_index_handles_files_changed_in_render_tasks(client: TestClient) -> None:
+    resp = client.get("/")
+    assert resp.status_code == 200
+    text = resp.text
+    assert "renderTasks" in text
+    assert "files_changed" in text

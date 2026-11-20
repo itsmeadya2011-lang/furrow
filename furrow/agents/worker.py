@@ -662,6 +662,14 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "grep":
+            return await self._grep(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+                str(args.get("include", "")) if args.get("include") is not None else "",
+            )
+        if name == "delete_file":
+            return await self._delete_file(str(args.get("path", "")))
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -805,3 +813,95 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+
+    async def _grep(self, pattern: str, path: str, include: str) -> str:
+        """Search for a regex pattern in files within the workspace."""
+        if not pattern:
+            return "error: pattern is required"
+        
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        if not resolved.exists():
+            return f"error: path does not exist: {path}"
+        
+        if not resolved.is_dir():
+            return "error: path is not a directory"
+        
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+        
+        matches = []
+        match_count = 0
+        MAX_MATCHES = 200
+        
+        def is_binary(filepath: Path) -> bool:
+            try:
+                with filepath.open("rb") as f:
+                    chunk = f.read(8192)
+                    return b"\x00" in chunk
+            except (OSError, ValueError):
+                return True
+        
+        try:
+            for root, _dirs, files in os.walk(resolved):
+                for file in files:
+                    filepath = Path(root) / file
+                    if include:
+                        import fnmatch
+                        if not fnmatch.fnmatch(file, include):
+                            continue
+                    
+                    if is_binary(filepath):
+                        continue
+                    
+                    try:
+                        content = filepath.read_text(encoding="utf-8", errors="replace")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    
+                    for i, line in enumerate(content.splitlines(), 1):
+                        if regex.search(line):
+                            try:
+                                rel_path = filepath.relative_to(self.workspace.resolve())
+                            except ValueError:
+                                rel_path = filepath
+                            matches.append(f"{rel_path}:{i}: {line}")
+                            match_count += 1
+                            if match_count >= MAX_MATCHES:
+                                msg = f"[... output truncated at {MAX_MATCHES} matches ...]"
+                                matches.append(msg)
+                                return "\n".join(matches)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        
+        if not matches:
+            return "no matches found"
+        return "\n".join(matches)
+
+    async def _delete_file(self, path: str) -> str:
+        """Delete a regular file within the workspace."""
+        if not path:
+            return "error: path is required"
+        
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        
+        if not resolved.exists():
+            return f"error: file does not exist: {path}"
+        
+        if not resolved.is_file():
+            return f"error: not a regular file: {path}"
+        
+        try:
+            resolved.unlink()
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(f"{rel} (deleted)")
+        return f"deleted {path}"

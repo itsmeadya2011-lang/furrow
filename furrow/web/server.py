@@ -115,6 +115,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    font-size: .85rem; color: #8a93a5; margin-bottom: .4rem;
+    word-break: break-all;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -255,6 +259,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
+
+      const filesChanged = task.files_changed;
+      if (Array.isArray(filesChanged) && filesChanged.length > 0) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        filesEl.textContent = 'Files: ' + filesChanged.join(', ');
+        panel.appendChild(filesEl);
+      }
 
       const result = text(task.result);
       const error = text(task.error);

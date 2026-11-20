@@ -376,8 +376,10 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == [
+        "delete_file", "grep", "list_files", "read_file", "run_command", "write_file"
+    ]
+    assert len(WORKER_TOOLS) == 6
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -1262,3 +1264,133 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_finds_matches(tmp_path):
+    (tmp_path / "a.py").write_text("hello world\nfoo bar\n")
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="g")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._grep("hello", str(tmp_path), "")
+    assert "a.py:1" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_path_argument(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "b.py").write_text("needle here\n")
+    (tmp_path / "c.py").write_text("needle here\n")
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="g")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._grep("needle", "sub", "")
+    assert "b.py" in out
+    assert "c.py" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_include_filter(tmp_path):
+    (tmp_path / "a.py").write_text("needle\n")
+    (tmp_path / "b.txt").write_text("needle\n")
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="g")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._grep("needle", str(tmp_path), "*.py")
+    assert "a.py" in out
+    assert "b.txt" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_no_matches(tmp_path):
+    (tmp_path / "a.py").write_text("nothing\n")
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="g")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._grep("zzzzz", str(tmp_path), "")
+    assert out == "no matches found"
+
+
+@pytest.mark.asyncio
+async def test_grep_skips_binary(tmp_path):
+    (tmp_path / "bin.dat").write_bytes(b"needle\x00binary")
+    (tmp_path / "text.py").write_text("needle\n")
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="g")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._grep("needle", str(tmp_path), "")
+    assert "text.py" in out
+    assert "bin.dat" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_caps_at_200(tmp_path):
+    lines = "\n".join(["match"] * 250)
+    (tmp_path / "big.py").write_text(lines)
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="g")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._grep("match", str(tmp_path), "")
+    assert "truncated at 200" in out
+
+
+@pytest.mark.asyncio
+async def test_delete_file_removes(tmp_path):
+    f = tmp_path / "del.txt"
+    f.write_text("x")
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="d")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._delete_file("del.txt")
+    assert "deleted" in out
+    assert not f.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_file_tracks_changed(tmp_path):
+    (tmp_path / "del.txt").write_text("x")
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="d")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    await agent._delete_file("del.txt")
+    assert "del.txt (deleted)" in agent.files_changed
+
+
+@pytest.mark.asyncio
+async def test_delete_file_rejects_outside(tmp_path):
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="d")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._delete_file("../outside.txt")
+    assert "escapes workspace" in out
+
+
+@pytest.mark.asyncio
+async def test_delete_file_rejects_directory(tmp_path):
+    (tmp_path / "dir").mkdir()
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="d")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._delete_file("dir")
+    assert "not a regular file" in out
+
+
+@pytest.mark.asyncio
+async def test_delete_file_nonexistent(tmp_path):
+    from furrow.config import TaskModel
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="d")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._delete_file("nope.txt")
+    assert "does not exist" in out
