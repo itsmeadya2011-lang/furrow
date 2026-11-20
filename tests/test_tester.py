@@ -477,7 +477,10 @@ def test_tester_run_exception_includes_message_in_failures(tmp_path, monkeypatch
     assert res.failures
     assert any("RuntimeError" in f for f in res.failures)
 
-    """Old head-only behaviour is gone - beginning of output is not kept."""
+
+def test_truncation_keeps_tail_when_llm_raises(tmp_path, monkeypatch):
+    """When the LLM raises, the fallback still keeps the tail (with summary)
+    and drops the head of long output."""
     (tmp_path / "pyproject.toml").write_text("[project]\n")
 
     head_start = "UNIQUE_HEAD_MARKER_111"
