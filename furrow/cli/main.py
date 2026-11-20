@@ -121,6 +121,36 @@ def _print_state(state: RunState) -> None:
         click.echo("Tasks:  (none)")
 
 
+def _print_history(state: RunState) -> None:
+    """Print the cycle history from the persisted run state."""
+    if not state.history:
+        click.echo("No cycle history recorded.")
+        return
+    click.echo("Furrow cycle history")
+    for entry in state.history:
+        click.echo(f"  Cycle {entry.cycle}  ({entry.timestamp})")
+        click.echo(f"    Goal:    {entry.goal}")
+        click.echo(f"    Plan:    {entry.plan_rationale}")
+        tests_passed = entry.tests_passed
+        if tests_passed is True:
+            click.echo(f"    Tests:   PASSED — {entry.test_summary}")
+        elif tests_passed is False:
+            click.echo(f"    Tests:   FAILED — {entry.test_summary}")
+        else:
+            click.echo(f"    Tests:   {entry.test_summary or 'not run'}")
+        usage = entry.usage
+        if usage.calls > 0:
+            click.echo(
+                f"    LLM:     {usage.calls} calls, {usage.total_tokens} tokens "
+                f"(in {usage.input_tokens} / out {usage.output_tokens})"
+            )
+            cost = float(usage.cost_usd or 0.0)
+            if cost > 0:
+                click.echo(f"    Cost:    ${cost:.6f}")
+        click.echo(f"    Tasks:   {', '.join(entry.task_summaries) or 'none'}")
+        click.echo()
+
+
 async def _release_client(client: Any) -> None:
     """Release the HTTP resources of an LLM client, when it supports closing.
 
@@ -265,6 +295,29 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def history(workspace: Path | None) -> None:
+    """Show the cycle history of the persisted Furrow run."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+    click.echo(f"Original goal: {state.original_goal}")
+    click.echo(f"Current goal:  {state.goal}")
+    click.echo(f"Cycles:        {state.cycles}")
+    click.echo(f"Updated:       {state.updated_at}")
+    click.echo()
+    _print_history(state)
 
 
 if __name__ == "__main__":

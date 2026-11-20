@@ -354,6 +354,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
         color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'state_saved') {
         line = 'state saved';
+      } else if (type === 'cycle_finished') {
+        line = 'cycle ' + text(data.cycle) + ' finished';
       } else if (type === 'log') {
         line = text(msg.message);
       } else if (type === 'error') {

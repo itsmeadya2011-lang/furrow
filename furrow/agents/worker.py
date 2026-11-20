@@ -695,11 +695,16 @@ class WorkerAgent:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
+        # rglob follows symlinks, so filter out any entry that escapes the workspace
+        # (e.g. a symlink inside the workspace pointing at a file outside it).
         rels = []
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
+            target = resolve_in_workspace(self.workspace, e)
+            if target is None:
+                continue
             try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
+                rels.append(str(target.relative_to(base)))
             except ValueError:
                 rels.append(str(e))
         return "\n".join(rels)
