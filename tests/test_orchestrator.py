@@ -249,6 +249,27 @@ async def test_events(tmp_path, monkeypatch):
     assert EventType.CYCLE_STARTED in types
     assert EventType.TASK_STARTED in types
     assert EventType.TASK_FINISHED in types
+    assert EventType.DONE in types
+
+
+@pytest.mark.asyncio
+async def test_done_event_carries_stopped_reason_and_cycles(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    events = []
+    while not q.empty():
+        events.append(q.get_nowait())
+    done = [e for e in events if e.type == EventType.DONE]
+    assert len(done) == 1
+    assert done[0].data["stopped_reason"] == "max_cycles reached"
+    assert done[0].data["cycles"] == 1
+    assert done[0].message == "max_cycles reached"
 
 
 @pytest.mark.asyncio
