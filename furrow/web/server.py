@@ -75,6 +75,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button.danger {
+    border-color: #e0685f;
+    color: #e0685f;
+  }
+  button.danger:hover {
+    background: #e0685f;
+    color: #10131a;
+  }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -140,6 +148,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="clear-state" class="danger">Clear State</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -407,6 +416,25 @@ INDEX_HTML = r"""<!DOCTYPE html>
     connect({ goal: goalEl.value, resume: true });
   };
 
+  document.getElementById('clear-state').onclick = async function () {
+    if (!confirm('This will delete the persisted run state. Continue?')) {
+      return;
+    }
+    try {
+      const res = await fetch('/api/state', { method: 'DELETE' });
+      const body = await res.json();
+      if (res.ok) {
+        append('-- state cleared');
+        loadState();
+        loadStatus();
+      } else {
+        append('!! ' + (body.detail || 'failed to clear state'));
+      }
+    } catch (err) {
+      append('!! could not clear state: ' + err);
+    }
+  };
+
   loadState();
   loadStatus();
 </script>
@@ -589,6 +617,15 @@ async def api_state() -> dict[str, Any]:
     }
 
 
+@app.delete("/api/state")
+async def api_clear_state() -> dict[str, Any]:
+    """Clear the persisted run state."""
+    store = _state_store()
+    if store.exists():
+        store.clear()
+    return {"cleared": True}
+
+
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""
@@ -742,6 +779,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             _cancel_run(run_task)
     finally:
         bus.unsubscribe(queue)
+
+
+@app.get("/health")
+async def health_check() -> dict[str, str]:
+    """Health check endpoint for load balancers and monitoring."""
+    return {"status": "ok"}
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:

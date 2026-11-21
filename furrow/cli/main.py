@@ -4,6 +4,8 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow clear           clear the persisted run state
+    furrow config          show the current configuration
     furrow web             serve the web UI
 """
 
@@ -166,6 +168,19 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)
+    except ValueError as exc:
+        # Handle configuration errors (e.g., missing API keys) with a clear message
+        msg = str(exc)
+        if "API_KEY is not set" in msg or "api_key" in msg.lower():
+            click.secho(f"Configuration error: {msg}", fg="red")
+            click.echo("Set the appropriate environment variable or use a .env file:")
+            click.echo(
+                "  FURROW_ANTHROPIC_API_KEY, FURROW_OPENAI_API_KEY, "
+                "or FURROW_PROVIDER=ollama"
+            )
+        else:
+            click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
@@ -234,6 +249,30 @@ def status(workspace: Path | None) -> None:
     default=None,
     help=WORKSPACE_HELP,
 )
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+def clear(workspace: Path | None, yes: bool) -> None:
+    """Clear the persisted Furrow run state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    if not yes and not click.confirm(
+        "This will delete the persisted run state. Continue?"
+    ):
+        click.echo("Aborted.")
+        return
+    store.clear()
+    click.echo("Furrow run state cleared.")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 def resume(workspace: Path | None, max_cycles: int | None) -> None:
     """Resume the persisted Furrow run."""
@@ -265,6 +304,49 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def config(workspace: Path | None) -> None:
+    """Show the current Furrow configuration."""
+    run_settings = _run_settings(workspace=workspace)
+    click.echo("Furrow configuration")
+    click.echo(f"  Provider:              {run_settings.provider.value}")
+    click.echo(f"  Model:                 {run_settings.model}")
+    click.echo(f"  Planner model:         {run_settings.planner_model}")
+    click.echo(f"  Worker model:          {run_settings.worker_model}")
+    click.echo(f"  Tester model:          {run_settings.tester_model}")
+    click.echo(f"  Max parallel tasks:    {run_settings.max_parallel_tasks}")
+    click.echo(f"  Max cycles:            {run_settings.max_cycles}")
+    click.echo(f"  Max worker iterations: {run_settings.max_worker_iterations}")
+    click.echo(f"  Max retries:           {run_settings.max_retries}")
+    click.echo(f"  Max task retries:      {run_settings.max_task_retries}")
+    click.echo(f"  Request timeout:       {run_settings.request_timeout}s")
+    click.echo(f"  Command timeout:       {run_settings.command_timeout}s")
+    click.echo(f"  Test timeout:          {run_settings.test_timeout}s")
+    click.echo(f"  Max tokens:            {run_settings.max_tokens}")
+    click.echo(f"  Workspace:             {run_settings.workspace}")
+    click.echo(f"  State file:            {run_settings.state_file}")
+    click.echo(f"  Log level:             {run_settings.log_level}")
+    if run_settings.model_pricing:
+        click.echo(f"  Custom model pricing:  {len(run_settings.model_pricing)} models")
+    else:
+        click.echo("  Custom model pricing:  (none, using built-in table)")
+    api_key_set = []
+    if run_settings.anthropic_api_key:
+        api_key_set.append("ANTHROPIC_API_KEY")
+    if run_settings.openai_api_key:
+        api_key_set.append("OPENAI_API_KEY")
+    if api_key_set:
+        click.echo(f"  API keys set:          {', '.join(api_key_set)}")
+    else:
+        click.echo("  API keys set:          (none, using environment variables)")
 
 
 if __name__ == "__main__":
