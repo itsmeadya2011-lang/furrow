@@ -41,7 +41,7 @@ You break the user's goal into a small set of parallelizable coding tasks,
 returned as JSON."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
-You implement the assigned task by reading, writing, and running code in the
+You implement the assigned task by reading, writing, searching, and running code in the
 workspace using the available tools. Make minimal, targeted changes. When done,
 respond with a concise summary and no further tool calls."""
 
@@ -86,6 +86,25 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"command": {"type": "string"}},
             "required": ["command"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": (
+            "search for a pattern in files under the workspace "
+            "using ripgrep-compatible regex."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "include": {"type": "string"},
+                "exclude": {"type": "string"},
+                "case_sensitive": {"type": "boolean"},
+                "max_results": {"type": "integer"},
+            },
+            "required": ["pattern"],
         },
     },
 ]

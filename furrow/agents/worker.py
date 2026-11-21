@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fnmatch
 import json
 import os
 import re
@@ -13,7 +14,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.llm import IGNORED_DIRECTORIES, LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -665,6 +666,15 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "grep":
+            return await self._grep(
+                pattern=str(args.get("pattern", "")),
+                path=str(args.get("path", "")) if args.get("path") is not None else ".",
+                include=args.get("include"),
+                exclude=args.get("exclude"),
+                case_sensitive=bool(args.get("case_sensitive", False)),
+                max_results=int(args.get("max_results", 100)),
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -739,6 +749,176 @@ class WorkerAgent:
             note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
             text = f"{text}\n{note}" if text else note
         return text
+
+    async def _grep(
+        self,
+        pattern: str,
+        path: str,
+        include: str | None = None,
+        exclude: str | None = None,
+        case_sensitive: bool = False,
+        max_results: int = 100,
+    ) -> str:
+        """Search for a pattern in files under the workspace.
+
+        Uses ripgrep (rg) if available, otherwise falls back to Python's re module.
+        Results are capped at max_results and output is truncated if too large.
+        """
+        if not pattern:
+            return "error: empty pattern"
+
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+
+        # Try ripgrep first for performance
+        rg_available = False
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "rg", "--version",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+            rg_available = proc.returncode == 0
+        except (OSError, ValueError):
+            pass
+
+        if rg_available:
+            return await self._grep_with_ripgrep(
+                resolved, pattern, include, exclude, case_sensitive, max_results
+            )
+        else:
+            return await self._grep_with_python(
+                resolved, pattern, include, exclude, case_sensitive, max_results
+            )
+
+    async def _grep_with_ripgrep(
+        self,
+        directory: Path,
+        pattern: str,
+        include: str | None,
+        exclude: str | None,
+        case_sensitive: bool,
+        max_results: int,
+    ) -> str:
+        """Search using ripgrep (rg)."""
+        args = ["rg", "--json", "--no-heading"]
+        if not case_sensitive:
+            args.append("-i")
+        if include:
+            args.extend(["-g", include])
+        if exclude:
+            args.extend(["-g", f"!{exclude}"])
+        args.append(pattern)
+        args.append(str(directory))
+
+        timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                cwd=str(self.workspace),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            await self._kill_process_tree(proc, True)
+            return "grep timed out"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+
+        if proc.returncode not in (0, 1):
+            return f"grep failed (exit {proc.returncode}): {err}"
+
+        # Parse ripgrep JSON output
+        import json
+        lines: list[str] = []
+        total_matches = 0
+        for line in out.strip().splitlines():
+            try:
+                data = json.loads(line)
+                if data.get("type") == "match":
+                    total_matches += 1
+                    if len(lines) < max_results:
+                        match_data = data["data"]
+                        file_path = match_data["path"]["text"]
+                        line_num = match_data["line_number"]
+                        line_text = match_data["lines"]["text"].rstrip("\n")
+                        lines.append(f"{file_path}:{line_num}: {line_text}")
+            except (json.JSONDecodeError, KeyError):
+                continue
+
+        result = "\n".join(lines)
+        if total_matches > max_results:
+            result += f"\n[... {total_matches - max_results} more matches not shown]"
+        return result if result else "no matches found"
+
+    async def _grep_with_python(
+        self,
+        directory: Path,
+        pattern: str,
+        include: str | None,
+        exclude: str | None,
+        case_sensitive: bool,
+        max_results: int,
+    ) -> str:
+        """Search using Python's re module as a fallback."""
+        import re
+
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            regex = re.compile(pattern, flags)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+
+        matches = []
+        base = self.workspace.resolve()
+
+        for root, dirs, files in os.walk(directory):
+            # Prune ignored directories (same as list_files)
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+            ]
+
+            for name in files:
+                filepath = Path(root) / name
+                # Check include/exclude patterns
+                if include and not fnmatch.fnmatch(name, include):
+                    continue
+                if exclude and fnmatch.fnmatch(name, exclude):
+                    continue
+
+                try:
+                    rel_path = str(filepath.relative_to(base))
+                except ValueError:
+                    rel_path = str(filepath)
+
+                try:
+                    content = filepath.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    continue
+
+                for line_num, line in enumerate(content.splitlines(), 1):
+                    if regex.search(line):
+                        matches.append(f"{rel_path}:{line_num}: {line.strip()}")
+                        if len(matches) >= max_results:
+                            break
+                if len(matches) >= max_results:
+                    break
+            if len(matches) >= max_results:
+                break
+
+        result = "\n".join(matches[:max_results])
+        if len(matches) > max_results:
+            result += f"\n[... {len(matches) - max_results} more matches not shown]"
+        return result if result else "no matches found"
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

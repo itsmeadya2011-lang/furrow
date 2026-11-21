@@ -378,8 +378,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["grep", "list_files", "read_file", "run_command", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -1319,3 +1319,200 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_basic_search(tmp_path):
+    """Basic grep finds matching lines in files."""
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def bar():\n    return 2\n")
+    (tmp_path / "c.txt").write_text("hello world\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="def", path=".")
+
+    assert "a.py" in out
+    assert "def foo" in out
+    assert "b.py" in out
+    assert "def bar" in out
+    assert "c.txt" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_case_insensitive(tmp_path):
+    """Case insensitive grep finds matches regardless of case."""
+    (tmp_path / "a.py").write_text("def FOO():\n    return 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="foo", path=".", case_sensitive=False)
+
+    assert "a.py" in out
+    assert "FOO" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_case_sensitive(tmp_path):
+    """Case sensitive grep only matches exact case."""
+    (tmp_path / "a.py").write_text("def FOO():\n    return 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="foo", path=".", case_sensitive=True)
+
+    assert "no matches found" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_grep_include_pattern(tmp_path):
+    """Include pattern limits search to matching files."""
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.js").write_text("function foo() {\n    return 1;\n}")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="foo", path=".", include="*.py")
+
+    assert "a.py" in out
+    assert "b.js" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_exclude_pattern(tmp_path):
+    """Exclude pattern skips matching files."""
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "test_foo.py").write_text("def test_foo():\n    pass\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="foo", path=".", exclude="test_*")
+
+    assert "a.py" in out
+    assert "test_foo.py" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_max_results(tmp_path):
+    """Max results limits the number of matches returned."""
+    for i in range(10):
+        (tmp_path / f"f{i}.py").write_text(f"def func{i}():\n    pass\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="func", path=".", max_results=3)
+
+    # Count match lines (excluding the "more matches not shown" note)
+    match_lines = [line for line in out.splitlines() if "more matches not shown" not in line]
+    assert len(match_lines) == 3
+    assert "more matches not shown" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_no_matches(tmp_path):
+    """Grep returns appropriate message when no matches found."""
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="nonexistent", path=".")
+
+    assert "no matches" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_grep_empty_pattern(tmp_path):
+    """Empty pattern returns error."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="", path=".")
+
+    assert "error: empty pattern" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_path_escape(tmp_path):
+    """Grep rejects paths that escape the workspace."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="foo", path="../")
+
+    assert "error: path escapes workspace" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_invalid_regex(tmp_path):
+    """Invalid regex pattern returns error."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep(pattern="[invalid", path=".")
+
+    # Both ripgrep and Python fallback return an error for invalid regex
+    assert "error" in out.lower() or "failed" in out.lower()
+
+
+@pytest.mark.asyncio
+async def test_grep_via_execute_tool(tmp_path):
+    """Grep tool can be invoked through the execute_tool dispatcher."""
+    (tmp_path / "a.py").write_text("def hello():\n    return 'world'\n")
+    from furrow.llm import ToolCall
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    tc = ToolCall(
+        id="t1",
+        name="grep",
+        arguments={"pattern": "hello", "path": "."},
+    )
+    out = await agent._execute_tool(tc)
+
+    assert "a.py" in out
+    assert "hello" in out
