@@ -51,6 +51,7 @@ class FakeOrchestrator:
             "resume": resume,
         }
         self.goal = goal
+        self.client = client
         self.event_bus = event_bus
         self._status: dict[str, Any] = {
             "goal": goal,
@@ -542,7 +543,8 @@ def test_api_start_releases_the_llm_client_when_the_run_finishes(
 
     assert response.status_code == 200
     assert len(recording_orchestrator.instances) == 1
-    recorder = cast(RecordingClient, recording_orchestrator.instances[0].client)
+    orchestrator = recording_orchestrator.instances[0]
+    recorder = cast(RecordingClient, orchestrator.client)
     assert _wait_until(lambda: recorder.closed), "the run never released the client"
 
 

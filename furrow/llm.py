@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -57,6 +58,55 @@ IGNORED_DIRECTORIES = frozenset(
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
+
+
+@dataclass(slots=True)
+class _CacheEntry:
+    """A cached LLM response with expiration time."""
+
+    value: Any
+    expires_at: float
+
+
+class _LLMCache:
+    """Simple in-memory cache for LLM responses with TTL and size limits."""
+
+    def __init__(self, max_size: int = 1000, ttl: int = 3600) -> None:
+        self._cache: dict[str, _CacheEntry] = {}
+        self._max_size = max_size
+        self._ttl = ttl
+
+    def _make_key(self, *parts: str) -> str:
+        """Create a cache key from the given parts."""
+        return "|".join(parts)
+
+    def get(self, key: str) -> Any | None:
+        """Get a value from the cache if it exists and hasn't expired."""
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        if time.time() > entry.expires_at:
+            del self._cache[key]
+            return None
+        return entry.value
+
+    def set(self, key: str, value: Any) -> None:
+        """Set a value in the cache with TTL."""
+        # Evict oldest entries if we're at capacity
+        if len(self._cache) >= self._max_size:
+            # Remove the oldest entry (first inserted)
+            oldest_key = next(iter(self._cache))
+            del self._cache[oldest_key]
+        self._cache[key] = _CacheEntry(
+            value=value, expires_at=time.time() + self._ttl
+        )
+
+    def clear(self) -> None:
+        """Clear all cached entries."""
+        self._cache.clear()
+
+    def __len__(self) -> int:
+        return len(self._cache)
 
 
 @dataclass(slots=True)
@@ -255,6 +305,13 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        # Initialize cache if enabled
+        self._cache: _LLMCache | None = None
+        if self.settings.llm_cache_enabled:
+            self._cache = _LLMCache(
+                max_size=self.settings.llm_cache_max_size,
+                ttl=self.settings.llm_cache_ttl,
+            )
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -289,6 +346,14 @@ class LLMClient:
             )
         return self._ollama
 
+    def _cache_key(self, method: str, prompt: str, system: str, model: str, tools: list[dict] | None = None) -> str:
+        """Generate a cache key for the given request."""
+        # Include tools in the key if provided
+        tools_str = ""
+        if tools:
+            tools_str = json.dumps(tools, sort_keys=True)
+        return self._cache._make_key(method, model, system, prompt, tools_str) if self._cache else ""
+
     async def aclose(self) -> None:
         """Release any lazily-created provider clients.
 
@@ -310,6 +375,9 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+        # Clear the cache on close
+        if self._cache:
+            self._cache.clear()
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -345,6 +413,13 @@ class LLMClient:
         model = model or self.settings.model
         provider = self.settings.provider
 
+        # Check cache first
+        cache_key = self._cache_key("complete", prompt, system, model) if self._cache else ""
+        if cache_key and self._cache:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
                 response = await self._complete_anthropic(prompt, system, model)
@@ -356,7 +431,11 @@ class LLMClient:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        # Cache the result
+        if cache_key and self._cache:
+            self._cache.set(cache_key, result)
+        return result
 
     async def chat(
         self,
@@ -367,6 +446,13 @@ class LLMClient:
     ) -> LLMResponse:
         model = model or self.settings.model
         provider = self.settings.provider
+
+        # Check cache first
+        cache_key = self._cache_key("chat", json.dumps(messages, sort_keys=True), system, model, tools) if self._cache else ""
+        if cache_key and self._cache:
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
@@ -381,7 +467,11 @@ class LLMClient:
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        # Cache the result
+        if cache_key and self._cache:
+            self._cache.set(cache_key, result)
+        return result
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(

@@ -115,6 +115,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .3rem;
+    font-size: .8rem; color: #4c8dff;
+  }
+  .panel-file {
+    background: #1d2430; border: 1px solid #2b3240; border-radius: 3px;
+    padding: .1rem .4rem;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -132,6 +140,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .task-filter {
+    display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem;
+    align-items: center;
+  }
+  .task-filter input {
+    flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
+    border: 1px solid #2b3240; border-radius: 6px; font: inherit;
+  }
+  .task-filter button {
+    padding: .4rem .8rem; border-radius: 4px; border: 1px solid #2b3240;
+    background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    font-size: .85rem;
+  }
+  .task-filter button.active {
+    border-color: #4c8dff; background: #1d2430;
+  }
+  .task-filter button:hover { border-color: #4c8dff; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -151,6 +177,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <pre id="log"></pre>
+<div class="task-filter" id="task-filter">
+  <input type="text" id="task-search" placeholder="Search tasks..." />
+  <button class="filter-btn active" data-filter="all">All</button>
+  <button class="filter-btn" data-filter="pending">Pending</button>
+  <button class="filter-btn" data-filter="running">Running</button>
+  <button class="filter-btn" data-filter="completed">Completed</button>
+  <button class="filter-btn" data-filter="failed">Failed</button>
+  <button class="filter-btn" data-filter="blocked">Blocked</button>
+</div>
 <div class="panels" id="tasks"></div>
 <script>
   const logEl = document.getElementById('log');
@@ -230,6 +265,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const panel = document.createElement('div');
       panel.className = 'panel';
       panel.id = 'task-' + text(task.id);
+      panel.dataset.status = status;
+      panel.dataset.description = text(task.description).toLowerCase();
 
       const head = document.createElement('div');
       head.className = 'panel-head';
@@ -252,6 +289,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
 
+      // Show files changed
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'panel-files';
+        filesChanged.forEach(function (file) {
+          const fileEl = document.createElement('span');
+          fileEl.className = 'panel-file';
+          fileEl.textContent = file;
+          filesDiv.appendChild(fileEl);
+        });
+        meta.appendChild(filesDiv);
+      }
+
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
@@ -273,7 +324,43 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
       tasksEl.appendChild(panel);
     });
+    applyTaskFilter();
   }
+
+  // Task filtering and search
+  let currentFilter = 'all';
+  let currentSearch = '';
+
+  function applyTaskFilter() {
+    const panels = tasksEl.querySelectorAll('.panel');
+    panels.forEach(function (panel) {
+      const status = panel.dataset.status || 'pending';
+      const description = panel.dataset.description || '';
+      const matchesFilter = currentFilter === 'all' || status === currentFilter;
+      const matchesSearch = currentSearch === '' || description.includes(currentSearch);
+      if (matchesFilter && matchesSearch) {
+        panel.classList.remove('hidden');
+      } else {
+        panel.classList.add('hidden');
+      }
+    });
+  }
+
+  document.getElementById('task-search').addEventListener('input', function (e) {
+    currentSearch = e.target.value.toLowerCase();
+    applyTaskFilter();
+  });
+
+  document.querySelectorAll('.filter-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      document.querySelectorAll('.filter-btn').forEach(function (b) {
+        b.classList.remove('active');
+      });
+      btn.classList.add('active');
+      currentFilter = btn.dataset.filter;
+      applyTaskFilter();
+    });
+  });
 
   async function loadState() {
     try {

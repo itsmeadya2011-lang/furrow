@@ -96,7 +96,7 @@ def test_price_for_model_unknown_model_returns_none() -> None:
 
 
 def test_price_for_model_never_raises() -> None:
-    assert price_for_model("gpt-4o", {"broken": "not-a-price"}) is not None
+    assert price_for_model("gpt-4o", {"broken": ModelPricing(input_per_million=1.0, output_per_million=2.0)}) is not None
     assert price_for_model(None) is None  # type: ignore[arg-type]
 
 
@@ -155,8 +155,8 @@ def test_estimate_cost_negative_tokens_never_costs_negative() -> None:
 
 def test_estimate_cost_never_raises() -> None:
     class _Weird:
-        input_tokens = None
-        output_tokens = "not-a-number"
+        input_tokens: int | None = None
+        output_tokens: str | int = "not-a-number"
 
-    assert estimate_cost("gpt-4o", _Weird()) == 0.0
+    assert estimate_cost("gpt-4o", _Weird()) == 0.0  # type: ignore[arg-type]
     assert estimate_cost("gpt-4o", None) == 0.0  # type: ignore[arg-type]

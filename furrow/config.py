@@ -131,6 +131,9 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    llm_cache_enabled: bool = Field(default=False, description="Enable LLM response caching")
+    llm_cache_ttl: int = Field(default=3600, ge=1, description="LLM cache TTL in seconds")
+    llm_cache_max_size: int = Field(default=1000, ge=1, description="Maximum number of cached responses")
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
