@@ -27,11 +27,15 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+MAX_TASK_RETRIES_HELP = "Per-task retry budget within a cycle (0 = no retries)."
+MAX_WORKER_ITERATIONS_HELP = "Tool-call iterations per worker turn."
 
 
 def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
+    max_task_retries: int | None = None,
+    max_worker_iterations: int | None = None,
     workspace: Path | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
@@ -44,6 +48,10 @@ def _run_settings(
         updates["model"] = model
     if max_cycles is not None:
         updates["max_cycles"] = max_cycles
+    if max_task_retries is not None:
+        updates["max_task_retries"] = max_task_retries
+    if max_worker_iterations is not None:
+        updates["max_worker_iterations"] = max_worker_iterations
     if workspace is not None:
         updates["workspace"] = Path(workspace)
     merged = {**settings.model_dump(), **updates}
@@ -189,6 +197,18 @@ def main() -> None:
 @click.option("--model", default=None, help="Override the LLM model.")
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 @click.option(
+    "--max-task-retries",
+    type=click.IntRange(min=0),
+    default=None,
+    help=MAX_TASK_RETRIES_HELP,
+)
+@click.option(
+    "--max-worker-iterations",
+    type=click.IntRange(min=1),
+    default=None,
+    help=MAX_WORKER_ITERATIONS_HELP,
+)
+@click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
     default=None,
@@ -199,13 +219,21 @@ def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
+    max_task_retries: int | None,
+    max_worker_iterations: int | None,
     workspace: Path | None,
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        max_cycles=max_cycles,
+        max_task_retries=max_task_retries,
+        max_worker_iterations=max_worker_iterations,
+        workspace=workspace,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
