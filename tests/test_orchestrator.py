@@ -678,6 +678,32 @@ async def test_merge_plan_retries_failed_with_attempts_left(tmp_path, monkeypatc
     assert plan.tasks[0].status == "pending"
 
 
+async def test_merge_plan_resets_attempts_when_retrying_failed_task(tmp_path, monkeypatch):
+    """A failed task retried in a new cycle starts with a fresh attempts counter.
+
+    The retry budget is enforced within a cycle, not across cycles, so a task
+    that is reset to "pending" for retry must get the full retry budget again.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "failed"
+    task.attempts = 1  # used 1 attempt, 1 retry remaining
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    merged = plan.tasks[0]
+    assert merged.status == "pending"
+    assert merged.attempts == 0  # attempts reset for fresh retry budget
+
+
 @pytest.mark.asyncio
 async def test_merge_plan_keeps_recorded_result_and_error_when_plan_is_none(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)

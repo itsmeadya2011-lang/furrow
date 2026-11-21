@@ -362,6 +362,11 @@ class Orchestrator:
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"
+                        # The retry budget is enforced within a cycle, not across
+                        # cycles: a task that is retried in a new cycle starts
+                        # with a fresh attempts counter so it gets the full
+                        # retry budget again.
+                        old.attempts = 0
                     else:
                         pt.status = "failed"
                 elif old.status == "blocked":

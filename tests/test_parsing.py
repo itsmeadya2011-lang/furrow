@@ -169,6 +169,27 @@ def test_parse_plan_converts_recursionerror_to_valueerror(monkeypatch):
         parsing.parse_plan("[[1]]")
 
 
+def test_parse_plan_rejects_duplicate_task_ids():
+    text = (
+        '{"tasks": ['
+        '{"id": "t1", "description": "first"}, '
+        '{"id": "t1", "description": "duplicate"}'
+        '], "rationale": "r"}'
+    )
+    with pytest.raises(ValueError, match="duplicate task id"):
+        parsing.parse_plan(text)
+
+
+def test_parse_plan_rejects_non_string_task_id():
+    text = (
+        '{"tasks": ['
+        '{"id": 42, "description": "numeric id"}'
+        '], "rationale": "r"}'
+    )
+    with pytest.raises(ValueError, match="string id"):
+        parsing.parse_plan(text)
+
+
 def test_parse_test_result_falls_back_on_recursionerror(monkeypatch):
     monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
     r = parsing.parse_test_result("[[1]]")

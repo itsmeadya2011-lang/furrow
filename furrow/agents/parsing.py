@@ -184,8 +184,15 @@ def parse_plan(text: str) -> Plan:
             tasks_data = []
         tasks = []
         if isinstance(tasks_data, list):
+            seen_ids: set[str] = set()
             for t in tasks_data:
                 if isinstance(t, dict):
+                    task_id = t.get("id")
+                    if not isinstance(task_id, str):
+                        raise ValueError("Each task must have a string id")
+                    if task_id in seen_ids:
+                        raise ValueError(f"duplicate task id: {task_id!r}")
+                    seen_ids.add(task_id)
                     tasks.append(TaskModel(**t))
                 else:
                     raise ValueError("Each task must be an object")
