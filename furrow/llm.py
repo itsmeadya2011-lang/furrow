@@ -255,6 +255,27 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        self._usage_by_agent: dict[str, Usage] = {}
+
+    def _get_agent_usage(self, agent_name: str) -> Usage:
+        """Get or create usage tracker for an agent."""
+        if agent_name not in self._usage_by_agent:
+            self._usage_by_agent[agent_name] = Usage()
+        return self._usage_by_agent[agent_name]
+
+    def _add_agent_usage(self, agent_name: str, usage: Usage) -> None:
+        """Add usage to both total and agent-specific trackers."""
+        self.total_usage.add_agent_usage(agent_name, usage)
+        agent_usage = self._get_agent_usage(agent_name)
+        agent_usage.add(usage)
+
+    def get_agent_usage(self, agent_name: str) -> Usage:
+        """Get the usage for a specific agent."""
+        return self._usage_by_agent.get(agent_name, Usage())
+
+    def get_all_agent_usage(self) -> dict[str, Usage]:
+        """Get usage for all agents."""
+        return dict(self._usage_by_agent)
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -341,7 +362,7 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    async def complete(self, prompt: str, system: str = "", model: str | None = None, agent_name: str = "") -> str:
         model = model or self.settings.model
         provider = self.settings.provider
 
@@ -354,6 +375,8 @@ class LLMClient:
                 response = await self._complete_openai(self.ollama, prompt, system, model)
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
+            if agent_name:
+                self._add_agent_usage(agent_name, response.usage)
             return response.text
 
         return await self._retry(call)
@@ -364,6 +387,7 @@ class LLMClient:
         tools: list[dict] | None = None,
         system: str = "",
         model: str | None = None,
+        agent_name: str = "",
     ) -> LLMResponse:
         model = model or self.settings.model
         provider = self.settings.provider
@@ -381,7 +405,10 @@ class LLMClient:
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
-        return await self._retry(call)
+        response = await self._retry(call)
+        if agent_name:
+            self._add_agent_usage(agent_name, response.usage)
+        return response
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(

@@ -2,6 +2,7 @@
 
 Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
+    furrow plan "<goal>"   show the execution plan without running (dry-run)
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
     furrow web             serve the web UI
@@ -11,16 +12,20 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import click
 
-from furrow.config import RunResult, Settings, settings
+from furrow.agents.planner import PlannerAgent
+from furrow.config import Plan, RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
+from furrow.llm import LLMClient
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -83,6 +88,14 @@ def _print_summary(result: RunResult) -> None:
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
             click.echo(f"  LLM cost:        ${cost:.6f}")
+        # Per-agent breakdown
+        by_agent = getattr(usage, "by_agent", {})
+        if by_agent:
+            click.echo("  LLM cost by agent:")
+            for agent_name, agent_usage in by_agent.items():
+                agent_cost = float(getattr(agent_usage, "cost_usd", 0.0) or 0.0)
+                if agent_cost > 0:
+                    click.echo(f"    {agent_name}: ${agent_cost:.6f} ({agent_usage.calls} calls, {agent_usage.total_tokens} tokens)")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -109,6 +122,14 @@ def _print_state(state: RunState) -> None:
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
             click.echo(f"  LLM cost:        ${cost:.6f}")
+        # Per-agent breakdown
+        by_agent = getattr(usage, "by_agent", {})
+        if by_agent:
+            click.echo("  LLM cost by agent:")
+            for agent_name, agent_usage in by_agent.items():
+                agent_cost = float(getattr(agent_usage, "cost_usd", 0.0) or 0.0)
+                if agent_cost > 0:
+                    click.echo(f"    {agent_name}: ${agent_cost:.6f} ({agent_usage.calls} calls, {agent_usage.total_tokens} tokens)")
     if state.tasks:
         click.echo("Tasks:")
         for task in state.tasks:
@@ -119,6 +140,44 @@ def _print_state(state: RunState) -> None:
             click.echo(line)
     else:
         click.echo("Tasks:  (none)")
+
+
+def _print_plan(plan: Plan) -> None:
+    """Print the execution plan in a readable format."""
+    click.echo("Execution Plan")
+    click.echo(f"  Rationale: {plan.rationale}")
+    click.echo(f"  Tasks: {len(plan.tasks)}")
+    if not plan.tasks:
+        click.echo("  (no tasks planned)")
+        return
+    for i, task in enumerate(plan.tasks, 1):
+        deps = f" (depends on: {', '.join(task.dependencies)})" if task.dependencies else ""
+        files = f" [{', '.join(task.files)}]" if task.files else ""
+        click.echo(f"  {i}. {task.id}: {task.description}{files}{deps}")
+
+
+async def _plan_only(goal: str, run_settings: Settings) -> Plan:
+    """Run only the planner and return the plan."""
+    client = LLMClient(settings=run_settings)
+    planner = PlannerAgent(client=client, settings=run_settings)
+    try:
+        plan = await planner.plan(goal, context="")
+    finally:
+        await client.aclose()
+    return plan
+
+
+def _execute_plan(goal: str, run_settings: Settings) -> None:
+    """Run the planner and print the plan without executing."""
+    try:
+        plan = asyncio.run(_plan_only(goal, run_settings))
+    except KeyboardInterrupt:
+        click.echo("Furrow stopped by user.")
+        sys.exit(0)
+    except Exception as exc:
+        click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
+    _print_plan(plan)
 
 
 async def _release_client(client: Any) -> None:
@@ -154,6 +213,17 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
 
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
+    # Validate required API keys based on provider
+    provider = run_settings.provider
+    if provider.value == "anthropic" and not (run_settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")):
+        click.secho("Furrow failed: ANTHROPIC_API_KEY is not set", fg="red")
+        click.echo("Set it via FURROW_ANTHROPIC_API_KEY env var or --model to use a different provider.")
+        sys.exit(1)
+    if provider.value == "openai" and not (run_settings.openai_api_key or os.getenv("OPENAI_API_KEY")):
+        click.secho("Furrow failed: OPENAI_API_KEY is not set", fg="red")
+        click.echo("Set it via FURROW_OPENAI_API_KEY env var or --model to use a different provider.")
+        sys.exit(1)
+    
     store = StateStore(run_settings.state_path())
     orchestrator = Orchestrator(
         goal=goal,
@@ -168,6 +238,14 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         sys.exit(0)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
+        # Print additional context for common errors
+        error_msg = str(exc).lower()
+        if "api key" in error_msg or "authentication" in error_msg or "unauthorized" in error_msg:
+            click.echo("Hint: Check your API key configuration (FURROW_ANTHROPIC_API_KEY or FURROW_OPENAI_API_KEY)")
+        elif "connection" in error_msg or "timeout" in error_msg or "network" in error_msg:
+            click.echo("Hint: Network issue - check your internet connection and provider status")
+        elif "rate limit" in error_msg or "429" in error_msg:
+            click.echo("Hint: Rate limited - consider reducing max_parallel_tasks or waiting before retrying")
         sys.exit(1)
     _print_summary(result)
     skipped = bool(getattr(result, "skipped", False))
@@ -225,6 +303,27 @@ def status(workspace: Path | None) -> None:
         click.echo("No furrow run state found.")
         return
     _print_state(state)
+
+
+@main.command()
+@click.argument("goal", required=False)
+@click.option("--model", default=None, help="Override the LLM model.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def plan(
+    goal: str | None,
+    model: str | None,
+    workspace: Path | None,
+) -> None:
+    """Show the execution plan for GOAL without running it (dry-run)."""
+    if not goal:
+        goal = click.prompt("Enter your goal for Furrow")
+    run_settings = _run_settings(model=model, workspace=workspace)
+    _execute_plan(goal=goal, run_settings=run_settings)
 
 
 @main.command()

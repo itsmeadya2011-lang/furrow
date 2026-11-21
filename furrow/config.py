@@ -78,6 +78,8 @@ class Usage(BaseModel):
     output_tokens: int = 0
     calls: int = 0
     cost_usd: float = 0.0
+    # Per-agent usage breakdown: agent_name -> Usage
+    by_agent: dict[str, Usage] = Field(default_factory=dict)
 
     @property
     def total_tokens(self) -> int:
@@ -90,6 +92,22 @@ class Usage(BaseModel):
         self.output_tokens += other.output_tokens
         self.calls += other.calls
         self.cost_usd += other.cost_usd
+        # Merge per-agent breakdowns
+        for agent_name, agent_usage in other.by_agent.items():
+            if agent_name in self.by_agent:
+                self.by_agent[agent_name].add(agent_usage)
+            else:
+                self.by_agent[agent_name] = agent_usage.model_copy()
+        return self
+
+    def add_agent_usage(self, agent_name: str, agent_usage: Usage) -> Usage:
+        """Add usage for a specific agent."""
+        if agent_name in self.by_agent:
+            self.by_agent[agent_name].add(agent_usage)
+        else:
+            self.by_agent[agent_name] = agent_usage.model_copy()
+        # Also add to totals
+        self.add(agent_usage)
         return self
 
 

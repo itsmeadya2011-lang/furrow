@@ -6,6 +6,7 @@ orchestrator event to the browser:
     GET  /            single page UI (inline HTML/CSS/JS)
     GET  /api/state  persisted run state
     GET  /api/status status of the currently active run
+    GET  /api/metrics run metrics and statistics
     POST /api/start  start a background run
     WS   /ws         run a goal and stream its events
 """
@@ -16,6 +17,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import time
 from typing import Any
 
 import uvicorn
@@ -27,12 +29,31 @@ from furrow.config import RunResult, Settings, settings
 from furrow.core.events import Event, EventBus
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import StateStore
+from furrow.logging import correlation_context, get_logger, new_run_id
 
 logger = logging.getLogger(__name__)
+web_logger = get_logger("furrow.web")
 
 app = FastAPI(title="Furrow")
 
 POLL_INTERVAL = 0.05
+
+# Metrics tracking
+_METRICS = {
+    "runs_started": 0,
+    "runs_completed": 0,
+    "runs_failed": 0,
+    "runs_cancelled": 0,
+    "total_cycles": 0,
+    "total_tasks_completed": 0,
+    "total_tasks_failed": 0,
+    "total_tasks_blocked": 0,
+    "total_tokens_input": 0,
+    "total_tokens_output": 0,
+    "total_cost_usd": 0.0,
+    "run_durations": [],  # seconds
+    "start_time": time.time(),
+}
 
 DEFAULT_CURRENT: dict[str, Any] = {
     "running": False,
@@ -94,7 +115,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
-  .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
+.panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
@@ -132,6 +153,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+
+  /* Dependency graph styles */
+  .graph-container {
+    border: 1px solid #2b3240; border-radius: 8px; padding: 1rem;
+    background: #171b23; margin-top: 1rem;
+  }
+  .graph-title {
+    font-size: 1rem; font-weight: 700; color: #f0f2f5; margin-bottom: .75rem;
+  }
+  #depgraph {
+    width: 100%; height: 300px; background: #0b0e13;
+    border: 1px solid #2b3240; border-radius: 4px;
+  }
+  .graph-legend {
+    display: flex; gap: 1rem; margin-top: .75rem; flex-wrap: wrap;
+    font-size: .8rem; color: #8a93a5;
+  }
+  .legend-item { display: flex; align-items: center; gap: .3rem; }
+  .legend-color {
+    width: 12px; height: 12px; border-radius: 3px;
+  }
 </style>
 </head>
 <body>
@@ -152,6 +194,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="graph-container" id="graph-container" style="display: none;">
+  <div class="graph-title">Task Dependency Graph</div>
+  <canvas id="depgraph"></canvas>
+  <div class="graph-legend" id="graph-legend"></div>
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -275,11 +322,132 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
   }
 
+  // Dependency graph rendering
+  function renderDepGraph(tasks) {
+    const container = document.getElementById('graph-container');
+    const canvas = document.getElementById('depgraph');
+    const legend = document.getElementById('graph-legend');
+    if (!tasks || tasks.length === 0) {
+      container.style.display = 'none';
+      return;
+    }
+    container.style.display = 'block';
+
+    // Set canvas size
+    const rect = canvas.getBoundingClientRect();
+    canvas.width = rect.width * devicePixelRatio;
+    canvas.height = rect.height * devicePixelRatio;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(devicePixelRatio, devicePixelRatio);
+
+    // Clear
+    ctx.clearRect(0, 0, rect.width, rect.height);
+
+    // Status colors
+    const statusColors = {
+      pending: '#8a93a5',
+      running: '#4c8dff',
+      completed: '#57d38c',
+      failed: '#e0685f',
+      blocked: '#f0b367',
+      skipped: '#8a93a5',
+      unknown: '#8a93a5',
+    };
+
+    // Layout tasks in a grid
+    const nodeRadius = 20;
+    const padding = 50;
+    const cols = Math.ceil(Math.sqrt(tasks.length));
+    const rows = Math.ceil(tasks.length / cols);
+    const cellWidth = (rect.width - 2 * padding) / cols;
+    const cellHeight = (rect.height - 2 * padding) / rows;
+
+    const positions = new Map();
+    tasks.forEach((task, i) => {
+      const col = i % cols;
+      const row = Math.floor(i / cols);
+      const x = padding + col * cellWidth + cellWidth / 2;
+      const y = padding + row * cellHeight + cellHeight / 2;
+      positions.set(task.id, { x, y });
+    });
+
+    // Draw edges (dependencies)
+    ctx.lineWidth = 2;
+    tasks.forEach(task => {
+      const from = positions.get(task.id);
+      if (!from) return;
+      (task.dependencies || []).forEach(depId => {
+        const to = positions.get(depId);
+        if (!to) return;
+        ctx.strokeStyle = '#4c8dff';
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+
+        // Arrow head
+        const angle = Math.atan2(to.y - from.y, to.x - from.x);
+        const headLen = 10;
+        ctx.beginPath();
+        ctx.moveTo(to.x - headLen * Math.cos(angle - Math.PI / 6),
+                   to.y - headLen * Math.sin(angle - Math.PI / 6));
+        ctx.lineTo(to.x, to.y);
+        ctx.lineTo(to.x - headLen * Math.cos(angle + Math.PI / 6),
+                   to.y - headLen * Math.sin(angle + Math.PI / 6));
+        ctx.fillStyle = '#4c8dff';
+        ctx.fill();
+      });
+    });
+
+    // Draw nodes
+    tasks.forEach(task => {
+      const pos = positions.get(task.id);
+      if (!pos) return;
+      const status = text(task.status) || 'pending';
+      const color = statusColors[status] || statusColors.unknown;
+
+      // Circle
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, nodeRadius, 0, 2 * Math.PI);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#2b3240';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Task ID text
+      ctx.fillStyle = '#10131a';
+      ctx.font = 'bold 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(text(task.id), pos.x, pos.y);
+    });
+
+    // Draw legend
+    legend.innerHTML = '';
+    const uniqueStatuses = [...new Set(tasks.map(t => text(t.status) || 'pending'))];
+    uniqueStatuses.forEach(status => {
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      const colorBox = document.createElement('span');
+      colorBox.className = 'legend-color';
+      colorBox.style.backgroundColor = statusColors[status] || statusColors.unknown;
+      const label = document.createElement('span');
+      label.textContent = status;
+      item.appendChild(colorBox);
+      item.appendChild(label);
+      legend.appendChild(item);
+    });
+  }
+
   async function loadState() {
     try {
       const res = await fetch('/api/state');
       const body = await res.json();
-      if (body.state && body.state.tasks) { renderTasks(body.state.tasks); }
+      if (body.state && body.state.tasks) { 
+        renderTasks(body.state.tasks);
+        renderDepGraph(body.state.tasks);
+      }
     } catch (err) {
       append('! could not load state');
     }
@@ -293,7 +461,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = body.status || null;
       const result = body.result || null;
       renderStatus(status, result, running);
-      if (status && status.tasks) { renderTasks(status.tasks); }
+      if (status && status.tasks) { 
+        renderTasks(status.tasks);
+        renderDepGraph(status.tasks);
+      }
       if (body.result) {
         const summary = text(body.result.summary);
         if (summary && summary !== lastSummary) {
@@ -477,14 +648,27 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
         return
     _CURRENT["running"] = False
     if task.cancelled():
+        _METRICS["runs_cancelled"] += 1
         _CURRENT["error"] = "run cancelled"
         return
     exc = task.exception()
     if exc is not None:
         logger.error("Furrow run failed: %s", exc)
+        _METRICS["runs_failed"] += 1
         _CURRENT["error"] = str(exc)
         return
-    _CURRENT["result"] = task.result()
+    result = task.result()
+    _CURRENT["result"] = result
+    _METRICS["runs_completed"] += 1
+    _METRICS["total_cycles"] += result.cycles
+    _METRICS["total_tasks_completed"] += result.tasks_completed
+    _METRICS["total_tasks_failed"] += result.tasks_failed
+    _METRICS["total_tasks_blocked"] += getattr(result, "tasks_blocked", 0) or 0
+    usage = getattr(result, "usage", None)
+    if usage is not None:
+        _METRICS["total_tokens_input"] += usage.input_tokens
+        _METRICS["total_tokens_output"] += usage.output_tokens
+        _METRICS["total_cost_usd"] += float(getattr(usage, "cost_usd", 0.0) or 0.0)
 
 
 def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
@@ -533,9 +717,12 @@ async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
     released when the run finishes, when it fails and when it is cancelled
     (e.g. because the websocket client went away).
     """
+    start_time = time.time()
     try:
         return await orchestrator.run()
     finally:
+        duration = time.time() - start_time
+        _METRICS["run_durations"].append(duration)
         await _release_client(getattr(orchestrator, "client", None))
 
 
@@ -602,6 +789,69 @@ async def api_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/metrics")
+async def api_metrics() -> dict[str, Any]:
+    """Server metrics and statistics."""
+    uptime = time.time() - _METRICS["start_time"]
+    avg_duration = 0.0
+    if _METRICS["run_durations"]:
+        avg_duration = sum(_METRICS["run_durations"]) / len(_METRICS["run_durations"])
+    return {
+        "uptime_seconds": uptime,
+        "runs_started": _METRICS["runs_started"],
+        "runs_completed": _METRICS["runs_completed"],
+        "runs_failed": _METRICS["runs_failed"],
+        "runs_cancelled": _METRICS["runs_cancelled"],
+        "total_cycles": _METRICS["total_cycles"],
+        "total_tasks_completed": _METRICS["total_tasks_completed"],
+        "total_tasks_failed": _METRICS["total_tasks_failed"],
+        "total_tasks_blocked": _METRICS["total_tasks_blocked"],
+        "total_tokens_input": _METRICS["total_tokens_input"],
+        "total_tokens_output": _METRICS["total_tokens_output"],
+        "total_cost_usd": _METRICS["total_cost_usd"],
+        "average_run_duration_seconds": avg_duration,
+    }
+
+
+@app.get("/api/debug")
+async def api_debug() -> dict[str, Any]:
+    """Debug information about the current run."""
+    orchestrator = _CURRENT.get("orchestrator")
+    result = _CURRENT.get("result")
+    debug_info = {
+        "running": bool(_CURRENT.get("running")),
+        "error": _CURRENT.get("error"),
+        "settings": {
+            "max_cycles": settings.max_cycles,
+            "max_parallel_tasks": settings.max_parallel_tasks,
+            "max_worker_iterations": settings.max_worker_iterations,
+            "max_task_retries": settings.max_task_retries,
+            "provider": settings.provider.value,
+            "model": settings.model,
+            "planner_model": settings.planner_model,
+            "worker_model": settings.worker_model,
+            "tester_model": settings.tester_model,
+        },
+    }
+    if orchestrator is not None:
+        debug_info["orchestrator"] = {
+            "goal": orchestrator.goal,
+            "original_goal": orchestrator.original_goal,
+            "cycles": orchestrator.cycles,
+            "tasks_count": len(orchestrator.tasks),
+            "active_task_ids": list(orchestrator._active_ids),
+            "no_progress": orchestrator._no_progress,
+            "prev_sig": orchestrator._prev_sig,
+            "stopped_reason": orchestrator._stopped_reason,
+            "usage": orchestrator._usage.model_dump() if orchestrator._usage else None,
+            "client_usage": orchestrator.client.total_usage.model_dump() if hasattr(orchestrator.client, 'total_usage') else None,
+            "client_agent_usage": {k: v.model_dump() for k, v in orchestrator.client.get_all_agent_usage().items()} if hasattr(orchestrator.client, 'get_all_agent_usage') else None,
+        }
+    if result is not None:
+        debug_info["result"] = result.model_dump(mode="json")
+    return debug_info
+
+
 @app.post("/api/start")
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
@@ -624,6 +874,8 @@ async def api_start(request: StartRequest) -> JSONResponse:
                 status_code=400,
                 content={"started": False, "error": "no goal to resume"},
             )
+    _METRICS["runs_started"] += 1
+    web_logger.info("run.started", goal=goal, resume=request.resume)
     bus = EventBus()
     try:
         orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
@@ -684,6 +936,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             # of overwriting the registry entry of the running one.
             await _send_error(websocket, "a run is already in progress")
             return
+        _METRICS["runs_started"] += 1
+        web_logger.info("run.started", goal=goal, resume=resume)
         try:
             orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
         except ValidationError as validation_error:
