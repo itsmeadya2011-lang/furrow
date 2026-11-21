@@ -90,7 +90,10 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `FURROW_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, or `ollama` |
+| `FURROW_PROVIDER` | `anthropic` | Default LLM provider: `anthropic`, `openai`, or `ollama` |
+| `FURROW_PLANNER_PROVIDER` | (none) | Provider for the planner (falls back to `FURROW_PROVIDER`) |
+| `FURROW_WORKER_PROVIDER` | (none) | Provider for the worker (falls back to `FURROW_PROVIDER`) |
+| `FURROW_TESTER_PROVIDER` | (none) | Provider for the tester (falls back to `FURROW_PROVIDER`) |
 | `FURROW_MODEL` | `claude-sonnet-4-20250514` | Default model for completions/chat |
 | `FURROW_PLANNER_MODEL` | `claude-3-5-haiku-20241022` | Model for the planner |
 | `FURROW_WORKER_MODEL` | `claude-3-5-sonnet-20241022` | Model for the worker |
@@ -113,6 +116,16 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 A `.env` file is read automatically via pydantic-settings.
 
 The numeric settings are validated: `max_parallel_tasks` >= 1, `max_cycles` >= 0 (0 still means unlimited), `max_retries` >= 0, `max_task_retries` >= 0, `max_worker_iterations` >= 1, `max_tokens` >= 1, and `request_timeout`, `command_timeout` and `test_timeout` must be greater than 0. An out-of-range value is rejected when the settings are built for a run, and `--max-cycles` rejects a negative value at the command line.
+
+### Multi-provider model routing
+
+Each agent (planner, worker, tester) can use a different LLM provider. Set `FURROW_PLANNER_PROVIDER`, `FURROW_WORKER_PROVIDER`, or `FURROW_TESTER_PROVIDER` to override the default `FURROW_PROVIDER` for a specific agent. This enables configurations like:
+
+- Planner: Anthropic (`claude-3-5-haiku-20241022`) for fast, cheap planning
+- Worker: OpenAI (`gpt-4o`) for capable code generation
+- Tester: Ollama (`llama3.1`) for local test classification
+
+CLI overrides are also available: `--provider`, `--planner-provider`, `--worker-provider`, `--tester-provider`.
 
 ## How the loop works
 

@@ -18,7 +18,7 @@ from typing import Any
 
 import click
 
-from furrow.config import RunResult, Settings, settings
+from furrow.config import Provider, RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
@@ -33,6 +33,10 @@ def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    provider: Provider | None = None,
+    planner_provider: Provider | None = None,
+    worker_provider: Provider | None = None,
+    tester_provider: Provider | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +50,14 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if provider is not None:
+        updates["provider"] = provider
+    if planner_provider is not None:
+        updates["planner_provider"] = planner_provider
+    if worker_provider is not None:
+        updates["worker_provider"] = worker_provider
+    if tester_provider is not None:
+        updates["tester_provider"] = tester_provider
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -187,6 +199,30 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
+@click.option(
+    "--provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the LLM provider.",
+)
+@click.option(
+    "--planner-provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the planner provider.",
+)
+@click.option(
+    "--worker-provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the worker provider.",
+)
+@click.option(
+    "--tester-provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the tester provider.",
+)
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 @click.option(
     "--workspace",
@@ -198,6 +234,10 @@ def main() -> None:
 def start(
     goal: str | None,
     model: str | None,
+    provider: Provider | None,
+    planner_provider: Provider | None,
+    worker_provider: Provider | None,
+    tester_provider: Provider | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
@@ -205,7 +245,15 @@ def start(
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        provider=provider,
+        planner_provider=planner_provider,
+        worker_provider=worker_provider,
+        tester_provider=tester_provider,
+        max_cycles=max_cycles,
+        workspace=workspace,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +283,47 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option(
+    "--provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the LLM provider.",
+)
+@click.option(
+    "--planner-provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the planner provider.",
+)
+@click.option(
+    "--worker-provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the worker provider.",
+)
+@click.option(
+    "--tester-provider",
+    type=click.Choice(["anthropic", "openai", "ollama"]),
+    default=None,
+    help="Override the tester provider.",
+)
+def resume(
+    workspace: Path | None,
+    max_cycles: int | None,
+    provider: Provider | None,
+    planner_provider: Provider | None,
+    worker_provider: Provider | None,
+    tester_provider: Provider | None,
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        workspace=workspace,
+        provider=provider,
+        planner_provider=planner_provider,
+        worker_provider=worker_provider,
+        tester_provider=tester_provider,
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

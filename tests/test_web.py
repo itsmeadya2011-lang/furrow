@@ -644,7 +644,7 @@ def test_run_settings_applies_a_valid_max_cycles_override() -> None:
     """A valid override is applied to the settings of the run."""
     original = server.settings.max_cycles
 
-    run_settings = server._run_settings(3)
+    run_settings = server._run_settings(max_cycles=3)
 
     assert run_settings.max_cycles == 3
     assert server.settings.max_cycles == original, "the shared settings must not be modified"
@@ -663,7 +663,7 @@ def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:
     bounds of ``furrow.config.Settings``.
     """
     with pytest.raises(ValidationError):
-        server._run_settings(-1)
+        server._run_settings(max_cycles=-1)
 
 
 def test_build_orchestrator_uses_run_settings_for_the_state_store(
@@ -672,7 +672,7 @@ def test_build_orchestrator_uses_run_settings_for_the_state_store(
     """The state store path comes from the run settings, not the module-global settings."""
     custom_workspace = tmp_path / "custom"
     run_settings = server.settings.model_copy(update={"workspace": custom_workspace})
-    monkeypatch.setattr(server, "_run_settings", lambda _: run_settings)
+    monkeypatch.setattr(server, "_run_settings", lambda **kwargs: run_settings)
 
     bus = server.EventBus()
     server._build_orchestrator("g", False, None, bus)

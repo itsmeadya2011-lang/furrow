@@ -588,7 +588,11 @@ class WorkerAgent:
         for i in range(max_iters):
             iterations = i + 1
             response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+                messages,
+                tools=WORKER_TOOLS,
+                system=WORKER_SYSTEM,
+                model=self.settings.worker_model,
+                provider=self.settings.effective_worker_provider(),
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
