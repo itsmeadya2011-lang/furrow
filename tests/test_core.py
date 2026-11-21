@@ -105,6 +105,9 @@ def test_fail_task_marks_failed_when_budget_exhausted(tmp_path):
     assert not any("retrying" in e.message for e in logs)
     errors = [e for e in events if e.type == EventType.ERROR]
     assert any("boom" in e.message for e in errors)
+    finished = [e for e in events if e.type == EventType.TASK_FINISHED]
+    assert len(finished) == 1
+    assert finished[0].data["success"] is False
 
 
 def test_fail_task_sets_finished_at(tmp_path):
