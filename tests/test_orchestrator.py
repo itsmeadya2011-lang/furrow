@@ -416,6 +416,41 @@ async def test_task_that_raises_without_retries_fails_immediately(tmp_path, monk
 
 
 @pytest.mark.asyncio
+async def test_worker_budget_exhausted_fails_without_retry(tmp_path, monkeypatch):
+    """A worker that exhausts its iteration budget must not consume retry budget.
+
+    Retrying a budget-exhausted worker just restarts it from scratch and hits
+    the same budget again, so the task is marked failed immediately.
+    """
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(
+                summary="worker iteration budget exhausted",
+                success=False,
+                files_changed=[],
+                error="worker iteration budget exhausted",
+                iterations=3,
+                budget_exhausted=True,
+            )
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    task = orch.tasks[0]
+    assert task.status == "failed"
+    assert task.attempts == 1  # no retries consumed
+    assert len(calls) == 1  # worker ran only once
+    assert result.tasks_failed == 1
+
+
+@pytest.mark.asyncio
 async def test_dependency_of_raised_task_is_blocked(tmp_path, monkeypatch):
     class FW(FakeWorker):
         async def run(self):

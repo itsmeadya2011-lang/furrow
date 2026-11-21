@@ -240,6 +240,7 @@ async def test_iteration_budget(tmp_path):
     result = await agent.run()
     assert result.iterations == 3
     assert result.error == "worker iteration budget exhausted"
+    assert result.budget_exhausted is True
     # A truncated worker must never look successful, otherwise the orchestrator
     # marks the task as completed and never retries it.
     assert result.success is False
@@ -309,6 +310,21 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
     assert out == "command timed out"
     await asyncio.sleep(1.0)
     assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_returns_partial_output(tmp_path):
+    """Regression: a timed-out command returns whatever output it produced."""
+    # ``yes`` produces endless output; it will be killed before it finishes.
+    command = "yes partial-output-line"
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 0.2})
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command(command)
+    assert "partial-output-line" in out
+    assert "command timed out" in out
 
 
 @pytest.mark.asyncio

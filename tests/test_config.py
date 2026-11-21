@@ -45,6 +45,21 @@ def test_worker_result_defaults():
     assert w.files_changed == []
     assert w.error is None
     assert w.iterations == 0
+    assert w.budget_exhausted is False
+
+
+def test_worker_result_budget_exhausted():
+    w = WorkerResult(
+        summary="worker iteration budget exhausted",
+        success=False,
+        files_changed=[],
+        error="worker iteration budget exhausted",
+        iterations=3,
+        budget_exhausted=True,
+    )
+    assert w.budget_exhausted is True
+    assert w.success is False
+    assert w.iterations == 3
 
 
 def test_run_result_defaults():

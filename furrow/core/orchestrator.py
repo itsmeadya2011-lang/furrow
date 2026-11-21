@@ -477,6 +477,13 @@ class Orchestrator:
                     task.finished_at = datetime.now(timezone.utc).isoformat()
                     if success:
                         task.status = "completed"
+                    elif getattr(result, "budget_exhausted", False):
+                        # The worker ran out of iterations without completing
+                        # the task. Retrying it would just restart the same
+                        # worker from scratch and hit the same budget again, so
+                        # mark it failed immediately instead of spending retry
+                        # budget on a lost cause.
+                        task.status = "failed"
                     elif task.attempts <= max_retries:
                         task.status = "pending"
                     else:

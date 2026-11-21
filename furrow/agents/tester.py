@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -185,18 +183,15 @@ class TesterAgent:
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-        """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
+        """Kill the test command and any grandchildren it spawned.
+
+        Delegates to the shared :func:`furrow.core.process.kill_process_tree`.
+        The import is local to avoid a circular import (``furrow.core.__init__``
+        imports the orchestrator, which imports this module).
+        """
+        from furrow.core.process import kill_process_tree
+
+        await kill_process_tree(proc, new_session=True)
 
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()

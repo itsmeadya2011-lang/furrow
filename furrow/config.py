@@ -69,6 +69,7 @@ class WorkerResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
     error: str | None = None
     iterations: int = 0
+    budget_exhausted: bool = False
 
 
 class Usage(BaseModel):

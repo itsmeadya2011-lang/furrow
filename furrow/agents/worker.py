@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
 import shlex
-import signal
 from pathlib import Path
 from typing import Any
 
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
+from furrow.core.process import kill_process_tree
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
@@ -634,6 +633,7 @@ class WorkerAgent:
             files_changed=sorted(self.files_changed),
             iterations=max_iters,
             error="worker iteration budget exhausted",
+            budget_exhausted=True,
         )
 
     def _initial_text(self) -> str:
@@ -787,8 +787,26 @@ class WorkerAgent:
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
+            # Kill the whole process tree first, then drain whatever output the
+            # child managed to write before it was killed so the model can see
+            # partial progress instead of losing everything.
             await self._kill_process_tree(proc, new_session)
-            return "command timed out"
+            try:
+                partial_out, partial_err = await asyncio.wait_for(
+                    proc.communicate(), timeout=5.0
+                )
+            except (asyncio.TimeoutError, ProcessLookupError, OSError):
+                partial_out, partial_err = b"", b""
+            out = partial_out.decode("utf-8", errors="replace")
+            err = partial_err.decode("utf-8", errors="replace")
+            combined = out + "\n[stderr]\n" + err if err.strip() else out
+            if combined:
+                combined += "\n"
+            combined += "command timed out"
+            cap = 20000
+            if len(combined) > cap:
+                combined = "[... output truncated ...]\n" + combined[-cap:]
+            return combined
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
@@ -801,21 +819,8 @@ class WorkerAgent:
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
-        """Kill a timed-out command together with every process it spawned."""
-        if new_session:
-            try:
-                pgid = os.getpgid(proc.pid)
-            except (OSError, AttributeError):
-                pgid = None
-            if pgid is not None:
-                try:
-                    os.killpg(pgid, signal.SIGKILL)
-                except (OSError, AttributeError):
-                    pass
-                else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
-        # Fallback: no process group available (or killing it failed).
-        with contextlib.suppress(ProcessLookupError, OSError):
-            proc.kill()
+        """Kill a timed-out command together with every process it spawned.
+
+        Delegates to the shared :func:`furrow.core.process.kill_process_tree`.
+        """
+        await kill_process_tree(proc, new_session=new_session)
