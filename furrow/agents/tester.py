@@ -199,6 +199,13 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        # Allow custom test command override via settings
+        custom_cmd = getattr(self.settings, "test_command", None)
+        if custom_cmd:
+            import shlex
+            return shlex.split(custom_cmd)
+
+        test_files = getattr(self.settings, "test_files", None) or []
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -211,7 +218,10 @@ class TesterAgent:
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
-            return [sys.executable, "-m", "pytest", "-q"]
+            cmd = [sys.executable, "-m", "pytest", "-q"]
+            if test_files:
+                cmd.extend(test_files)
+            return cmd
 
         # Check for Node.js test runners
         if has_package:
@@ -243,6 +253,20 @@ class TesterAgent:
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
 
+        # Deno
+        if (self.workspace / "deno.json").is_file() or (self.workspace / "deno.jsonc").is_file():
+            cmd = ["deno", "test"]
+            if test_files:
+                cmd.extend(test_files)
+            return cmd
+
+        # Bun
+        if (self.workspace / "bun.lockb").is_file() or (self.workspace / "bun.lock").is_file():
+            cmd = ["bun", "test"]
+            if test_files:
+                cmd.extend(test_files)
+            return cmd
+
         python_markers = [
             "pyproject.toml",
             "pytest.ini",
@@ -251,12 +275,64 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
-            return [sys.executable, "-m", "pytest", "-q"]
+            cmd = [sys.executable, "-m", "pytest", "-q"]
+            if test_files:
+                cmd.extend(test_files)
+            return cmd
+
+        # Ruby RSpec
+        if (self.workspace / "Gemfile").is_file():
+            cmd = ["bundle", "exec", "rspec"]
+            if test_files:
+                cmd.extend(test_files)
+            return cmd
+
+        # PHP PHPUnit
+        if (self.workspace / "composer.json").is_file():
+            # Check for phpunit in composer.json
+            try:
+                with open(self.workspace / "composer.json", encoding="utf-8") as fh:
+                    composer_data = json.load(fh)
+                require = composer_data.get("require", {})
+                require_dev = composer_data.get("require-dev", {})
+                if "phpunit/phpunit" in require or "phpunit/phpunit" in require_dev:
+                    cmd = ["./vendor/bin/phpunit"]
+                    if test_files:
+                        cmd.extend(test_files)
+                    return cmd
+            except (OSError, UnicodeError, ValueError) as exc:
+                logger.warning("Could not read composer.json: %s", exc)
 
         if (self.workspace / "Cargo.toml").is_file():
-            return ["cargo", "test", "-q"]
+            cmd = ["cargo", "test", "-q"]
+            if test_files:
+                cmd.extend(["--", *test_files])
+            return cmd
         if (self.workspace / "go.mod").is_file():
-            return ["go", "test", "./..."]
+            cmd = ["go", "test", "./..."]
+            if test_files:
+                cmd = ["go", "test", *test_files]
+            return cmd
+
+        # Java Maven
+        if (self.workspace / "pom.xml").is_file():
+            cmd = ["mvn", "test"]
+            if test_files:
+                # Maven test files are specified via -Dtest=...
+                cmd.extend(["-Dtest=" + ",".join(test_files)])
+            return cmd
+
+        # Java Gradle
+        is_gradle = (
+            (self.workspace / "build.gradle").is_file()
+            or (self.workspace / "build.gradle.kts").is_file()
+        )
+        if is_gradle:
+            cmd = ["./gradlew", "test"]
+            if test_files:
+                # Gradle test files via --tests
+                cmd.extend(["--tests", ",".join(test_files)])
+            return cmd
 
         return None
 

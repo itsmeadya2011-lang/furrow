@@ -115,8 +115,8 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
-    anthropic_api_key: str | None = None
-    openai_api_key: str | None = None
+    anthropic_api_key: str | None = Field(default=None, exclude=True)
+    openai_api_key: str | None = Field(default=None, exclude=True)
     ollama_base_url: str = "http://localhost:11434"
     max_parallel_tasks: int = Field(default=5, ge=1)
     max_cycles: int = Field(default=0, ge=0)
@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    max_cost_usd: float | None = Field(default=None, ge=0)
+    cost_alert_threshold: float = Field(default=0.8, ge=0.0, le=1.0)
+    max_history_entries: int = Field(default=100, ge=1)
+    test_command: str | None = None
+    test_files: list[str] = Field(default_factory=list)
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

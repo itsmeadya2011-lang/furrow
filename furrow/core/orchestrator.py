@@ -10,7 +10,7 @@ from furrow.agents.worker import WorkerAgent
 from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
-from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.core.state import HistoryEntry, RunState, StateStore, compact_history
 from furrow.llm import LLMClient
 
 _UNSET = object()
@@ -263,6 +263,30 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+
+            # Check cost budget after accumulating this cycle's usage
+            max_cost = self.settings.max_cost_usd
+            if max_cost is not None and self._usage.cost_usd >= max_cost:
+                self._stopped_reason = (
+                    f"cost budget exceeded: ${self._usage.cost_usd:.6f} >= ${max_cost:.6f}"
+                )
+                self.event_bus.emit(
+                    Event(type=EventType.ERROR,
+                          message=self._stopped_reason)
+                )
+                break
+            # Alert when approaching budget
+            if max_cost is not None:
+                threshold = max_cost * self.settings.cost_alert_threshold
+                if self._usage.cost_usd >= threshold:
+                    self.event_bus.emit(
+                        Event(type=EventType.LOG,
+                              message=(
+                                  f"Cost alert: ${self._usage.cost_usd:.6f} >= "
+                                  f"${threshold:.6f} ({self.settings.cost_alert_threshold:.0%} "
+                                  f"of ${max_cost:.6f} budget)"
+                              ))
+                    )
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
@@ -287,6 +311,11 @@ class Orchestrator:
                              prev_sig=self._prev_sig, tests_run=self._tests_run,
                              last_passed=test_result.passed, last_skipped=skipped,
                              last_summary=test_result.summary)
+            # Compact history if it exceeds the configured limit
+            max_history = self.settings.max_history_entries
+            if max_history and len(state.history) > max_history:
+                state = compact_history(state, max_history)
+                self.history = state.history  # Keep in-memory history in sync
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:
