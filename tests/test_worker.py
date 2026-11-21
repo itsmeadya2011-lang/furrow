@@ -323,7 +323,9 @@ async def test_list_files_caps_at_500_entries(tmp_path):
     agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
     out = await agent._list_files(".")
     lines = out.splitlines()
-    assert len(lines) == 500
+    # 500 file lines plus one note telling the model 20 entries were omitted.
+    assert len(lines) == 501
+    assert "20 more entries not shown" in lines[-1]
 
 
 @pytest.mark.asyncio
@@ -1262,3 +1264,58 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
                     assert "escapes workspace" in b["content"]
                     found = True
     assert found
+
+
+@pytest.mark.asyncio
+async def test_list_files_reports_omitted_entries(tmp_path, monkeypatch):
+    """When the listing is capped, a note reports how many entries were omitted."""
+    from furrow.config import TaskModel
+
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("x")
+    monkeypatch.setattr("furrow.agents.worker.MAX_LIST_ENTRIES", 3)
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files(".")
+
+    lines = out.splitlines()
+    assert len(lines) == 4  # 3 file lines + 1 note
+    assert "2 more entries not shown" in lines[-1]
+
+
+@pytest.mark.asyncio
+async def test_list_files_no_note_when_under_cap(tmp_path):
+    """A listing that fits under the cap has no truncation note."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.txt").write_text("x")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files(".")
+
+    assert "not shown" not in out
+    assert "a.txt" in out
+
+
+@pytest.mark.asyncio
+async def test_read_file_reports_total_size(tmp_path):
+    """A truncated read reports the file's total size, not just the marker."""
+    from furrow.config import TaskModel
+
+    big = "a" * 25000
+    (tmp_path / "big.txt").write_text(big)
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="read")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._read_file("big.txt")
+
+    assert "[... output truncated ...]" in out
+    assert "25000 chars total" in out

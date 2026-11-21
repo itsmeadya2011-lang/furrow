@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any
 
 import anthropic
@@ -1111,4 +1112,46 @@ async def test_chat_openai_choice_without_finish_reason_yields_none():
 
     assert result.text == "ok"
     assert result.stop_reason is None
+
+
+def test_list_files_skips_generated_directories(tmp_path):
+    """VCS internals, caches, virtualenvs, build output and metadata are skipped."""
+    client = LLMClient()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("x")
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("x")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "main.cpython-313.pyc").write_text("x")
+    (tmp_path / "node_modules" / "pkg").mkdir(parents=True)
+    (tmp_path / "node_modules" / "pkg" / "index.js").write_text("x")
+    (tmp_path / ".furrow").mkdir()
+    (tmp_path / ".furrow" / "state.json").write_text("{}")
+    (tmp_path / "pkg.egg-info").mkdir()
+    (tmp_path / "pkg.egg-info" / "PKG-INFO").write_text("x")
+
+    files = client.list_files(tmp_path)
+
+    assert files == ["src/main.py"]
+
+
+def test_list_files_returns_sorted_relative_paths(tmp_path):
+    """The listing is sorted and uses paths relative to the directory."""
+    client = LLMClient()
+    (tmp_path / "b.txt").write_text("x")
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "c.txt").write_text("x")
+    (tmp_path / "a.txt").write_text("x")
+
+    files = client.list_files(tmp_path)
+
+    assert files == sorted(files)
+    assert "a.txt" in files
+    assert "b.txt" in files
+    assert any(f.replace(os.sep, "/").endswith("a/c.txt") for f in files)
+
+
+def test_list_files_missing_directory_returns_empty(tmp_path):
+    client = LLMClient()
+    assert client.list_files(tmp_path / "does-not-exist") == []
 

@@ -49,6 +49,9 @@ TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "length"})
 # Maximum number of entries returned by the ``list_files`` tool.
 MAX_LIST_ENTRIES = 500
 
+# Maximum number of characters returned by the ``read_file`` tool.
+MAX_READ_CHARS = 20000
+
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|(?<!>)\||\n|\r)+")
@@ -691,8 +694,11 @@ class WorkerAgent:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        if len(content) > 20000:
-            content = content[:20000] + "\n[... output truncated ...]"
+        if len(content) > MAX_READ_CHARS:
+            content = (
+                content[:MAX_READ_CHARS]
+                + f"\n[... output truncated ...] ({len(content)} chars total)"
+            )
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
@@ -716,7 +722,10 @@ class WorkerAgent:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the context.
+        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the
+        # context, and tell the model when entries were left out so it knows
+        # to list a subdirectory instead of assuming it saw everything.
+        total = len(entries)
         rels = []
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
@@ -724,7 +733,12 @@ class WorkerAgent:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:
                 rels.append(str(e))
-        return "\n".join(rels)
+        text = "\n".join(rels)
+        omitted = total - len(rels)
+        if omitted > 0:
+            note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
+            text = f"{text}\n{note}" if text else note
+        return text
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

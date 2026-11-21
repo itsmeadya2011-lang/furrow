@@ -28,6 +28,32 @@ except ImportError:  # pragma: no cover - tenacity is a declared dependency
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
+#: Directories that never hold first-party source and would only flood a
+#: listing: version-control internals, caches, virtualenvs, dependency
+#: installs, build output and editor metadata. ``node_modules`` or ``.git``
+#: alone can hold tens of thousands of files, so they are pruned before the
+#: tree is walked.
+IGNORED_DIRECTORIES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".tox",
+        ".venv",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".idea",
+        ".vscode",
+        "__pycache__",
+        "build",
+        "dist",
+        "node_modules",
+        "venv",
+        ".furrow",
+    }
+)
+
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
@@ -540,7 +566,26 @@ class LLMClient:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
+        """List files under *directory*, as paths relative to it.
+
+        Version-control internals, caches, virtualenvs, dependency installs,
+        build output and editor metadata are skipped (see
+        :data:`IGNORED_DIRECTORIES`): they are not first-party source and
+        would otherwise bury the real files. A ``*.egg-info`` directory is
+        skipped too. The result is sorted so the listing is deterministic.
+        """
         p = Path(directory)
         if not p.exists():
             return []
-        return [str(f.relative_to(p)) for f in p.rglob("*") if f.is_file()]
+        results: list[str] = []
+        for root, dirs, files in os.walk(p):
+            # Prune ignored directories in place so os.walk never descends.
+            dirs[:] = [
+                d
+                for d in dirs
+                if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+            ]
+            for name in files:
+                results.append(os.path.relpath(os.path.join(root, name), p))
+        results.sort()
+        return results
