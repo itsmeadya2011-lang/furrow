@@ -306,7 +306,7 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
     task = TaskModel(id="1", description="cmd")
     agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
     out = await agent._run_command(command)
-    assert out == "command timed out"
+    assert out == "command timed out after 0.2s"
     await asyncio.sleep(1.0)
     assert not marker.exists()
 

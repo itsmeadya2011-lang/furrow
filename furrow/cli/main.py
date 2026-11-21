@@ -18,6 +18,7 @@ from typing import Any
 
 import click
 
+from furrow import __version__
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
@@ -179,6 +180,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)
@@ -258,9 +260,23 @@ def web(host: str, port: int) -> None:
         run(host=host, port=port)
     except KeyboardInterrupt:
         raise
+    except OSError as exc:
+        click.secho(
+            f"Furrow failed: could not start the web server on {host}:{port} ({exc}). "
+            "Is the port already in use?",
+            fg="red",
+        )
+        sys.exit(1)
     except SystemExit as exc:
-        message = str(exc.code) if exc.code is not None else "the server could not start"
-        click.secho(f"Furrow failed: {message}", fg="red")
+        if exc.code == 1:
+            click.secho(
+                f"Furrow failed: the web server could not start on {host}:{port}. "
+                "Is the port already in use?",
+                fg="red",
+            )
+        else:
+            message = str(exc.code) if exc.code is not None else "the server could not start"
+            click.secho(f"Furrow failed: {message}", fg="red")
         sys.exit(1)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")

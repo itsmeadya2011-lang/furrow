@@ -107,6 +107,21 @@ def _make_result(**kwargs: Any) -> RunResult:
     return result
 
 
+def test_version(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert "furrow" in result.output.lower()
+    assert "0.1.0" in result.output
+
+
+def test_version_short_flag(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["--version"])
+
+    assert result.exit_code == 0
+    assert "0.1.0" in result.output
+
+
 def test_start_requires_goal_prompt(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

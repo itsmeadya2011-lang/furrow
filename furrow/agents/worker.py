@@ -788,7 +788,7 @@ class WorkerAgent:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
-            return "command timed out"
+            return f"command timed out after {timeout:g}s"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
