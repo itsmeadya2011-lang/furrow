@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    # Custom test command (overrides auto-detection). Can be a string (split by shlex)
+    # or a list of strings. If set, the auto-detection is skipped.
+    test_command: list[str] | str | None = None
+    # Webhook URL for external integrations. Called on run events (cycle_started, cycle_finished, task_started, task_finished, test_finished, run_finished, run_error).
+    webhook_url: str | None = None
+    # Optional secret for webhook signature verification (HMAC-SHA256).
+    webhook_secret: str | None = None
+    # Events to send to webhook (default: all). Can be a list of event types.
+    webhook_events: list[str] | None = None
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

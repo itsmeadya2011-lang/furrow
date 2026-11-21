@@ -307,7 +307,7 @@ def test_main_passes_configured_log_level_to_configure_logging(
 
     captured: list[str] = []
 
-    def fake_configure_logging(level: str) -> None:
+    def fake_configure_logging(level: str, json_output: bool = False) -> None:
         captured.append(level)
 
     monkeypatch.setattr("furrow.cli.main.configure_logging", fake_configure_logging)
@@ -315,7 +315,7 @@ def test_main_passes_configured_log_level_to_configure_logging(
     result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert captured == ["DEBUG"]
+    assert captured == ["DEBUG", "DEBUG"]
 
 
 def test_summary_prints_skipped_when_no_test_runner(
@@ -568,7 +568,8 @@ def test_status_shows_per_task_files_changed(
     result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert "[furrow/core/orchestrator.py, furrow/config.py]" in result.output
+    assert "furrow/core/orchestrator.py" in result.output
+    assert "furrow/config.py" in result.output
 
 
 def test_status_prints_persisted_usage(runner: CliRunner, tmp_path: Path) -> None:

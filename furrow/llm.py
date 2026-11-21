@@ -28,6 +28,36 @@ except ImportError:  # pragma: no cover - tenacity is a declared dependency
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
+# Additional error patterns that indicate retryable conditions
+RETRYABLE_ERROR_PATTERNS = [
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "quota exceeded",
+    "context window",
+    "max_tokens",
+    "context length",
+    "overloaded",
+    "service unavailable",
+    "temporarily unavailable",
+    "try again",
+    "timeout",
+]
+
+# Non-retryable error patterns (explicit failures)
+NON_RETRYABLE_ERROR_PATTERNS = [
+    "invalid api key",
+    "unauthorized",
+    "authentication failed",
+    "permission denied",
+    "forbidden",
+    "not found",
+    "model not found",
+    "invalid request",
+    "bad request",
+    "malformed",
+]
+
 #: Directories that never hold first-party source and would only flood a
 #: listing: version-control internals, caches, virtualenvs, dependency
 #: installs, build output and editor metadata. ``node_modules`` or ``.git``
@@ -95,7 +125,19 @@ def _is_retryable(exc: BaseException) -> bool:
         status_code = getattr(response, "status_code", None)
     if status_code is None:
         status_code = getattr(exc, "status_code", None)
-    return status_code in RETRYABLE_STATUS_CODES
+    if status_code in RETRYABLE_STATUS_CODES:
+        return True
+
+    # Check error message for retryable patterns
+    error_msg = str(exc).lower()
+    for pattern in RETRYABLE_ERROR_PATTERNS:
+        if pattern in error_msg:
+            return True
+    for pattern in NON_RETRYABLE_ERROR_PATTERNS:
+        if pattern in error_msg:
+            return False
+
+    return False
 
 
 def _extract_anthropic_usage(response: Any) -> Usage:
@@ -310,20 +352,44 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
-    async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
+
+    def _log_retry(self, attempt: int, max_attempts: int, exc: Exception, model: str) -> None:
+        """Log a retry attempt."""
+        from furrow.logging import get_logger
+        logger = get_logger(__name__)
+        logger.warning(
+            "LLM call failed, retrying",
+            attempt=attempt,
+            max_attempts=max_attempts,
+            error=str(exc),
+            model=model,
+        )
+
+    async def _retry(self, call: Callable[[], Awaitable[T]], model: str | None = None) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
         The call is retried up to ``settings.max_retries`` attempts. Errors that
         are not retryable (see :func:`_is_retryable`) are raised immediately.
         """
         max_attempts = max(1, int(self.settings.max_retries))
+        model_name = model or self.settings.model
 
         if _TENACITY_AVAILABLE:
+            # Use tenacity with custom retry logging
+            attempt_count = 0
+
+            def retry_callback(retry_state):
+                nonlocal attempt_count
+                attempt_count += 1
+                if retry_state.outcome and retry_state.outcome.exception():
+                    self._log_retry(attempt_count, max_attempts, retry_state.outcome.exception(), model_name)
+
             async for attempt_manager in AsyncRetrying(
                 stop=stop_after_attempt(max_attempts),
                 wait=wait_exponential(multiplier=1, min=1, max=20),
                 retry=retry_if_exception(_is_retryable),
                 reraise=True,
+                before_sleep=retry_callback,
             ):
                 with attempt_manager:
                     return await call()
@@ -334,6 +400,7 @@ class LLMClient:
                 return await call()
             except Exception as exc:
                 last_exc = exc
+                self._log_retry(attempt_index + 1, max_attempts, exc, model_name)
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
@@ -356,7 +423,7 @@ class LLMClient:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
 
-        return await self._retry(call)
+        return await self._retry(call, model=model)
 
     async def chat(
         self,

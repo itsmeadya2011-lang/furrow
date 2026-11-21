@@ -199,6 +199,21 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        """Detect the test command for the project.
+
+        Returns a list of command arguments, or None if no test runner is detected.
+        If a custom test_command is configured in settings, it takes precedence.
+        """
+        # Check for custom test command first
+        custom_cmd = getattr(self.settings, "test_command", None)
+        if custom_cmd:
+            if isinstance(custom_cmd, str):
+                import shlex
+                return shlex.split(custom_cmd)
+            if isinstance(custom_cmd, list):
+                return list(custom_cmd)
+            return None
+
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()

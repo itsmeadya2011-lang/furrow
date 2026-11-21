@@ -12,6 +12,7 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.webhook import WebhookClient, create_webhook_client
 
 _UNSET = object()
 
@@ -50,6 +51,10 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+
+        # Initialize webhook client if configured
+        self._webhook = create_webhook_client(self.settings)
+
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -162,6 +167,15 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    async def _send_webhook(self, event: Event) -> None:
+        """Send an event to the webhook if configured."""
+        if self._webhook is not None:
+            try:
+                await self._webhook.send(event)
+            except Exception:
+                # Webhook errors must never break the run
+                pass
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
@@ -177,7 +191,9 @@ class Orchestrator:
                 break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
-            self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
+            cycle_started = Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles})
+            self.event_bus.emit(cycle_started)
+            await self._send_webhook(cycle_started)
             try:
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
@@ -188,8 +204,10 @@ class Orchestrator:
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
-            self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
-                                    data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
+            plan_created = Event(type=EventType.PLAN_CREATED,
+                                data={"rationale": plan.rationale, "tasks": len(plan.tasks)})
+            self.event_bus.emit(plan_created)
+            await self._send_webhook(plan_created)
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
@@ -210,7 +228,9 @@ class Orchestrator:
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
-            self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+            test_started = Event(type=EventType.TEST_STARTED, data={})
+            self.event_bus.emit(test_started)
+            await self._send_webhook(test_started)
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
@@ -224,12 +244,12 @@ class Orchestrator:
             skipped = bool(getattr(test_result, "skipped", False))
             if not skipped:
                 self._tests_run += 1
-            self.event_bus.emit(
-                Event(
-                    type=EventType.TEST_FINISHED,
-                    data={"passed": test_result.passed, "summary": test_result.summary},
-                )
+            test_finished = Event(
+                type=EventType.TEST_FINISHED,
+                data={"passed": test_result.passed, "summary": test_result.summary},
             )
+            self.event_bus.emit(test_finished)
+            await self._send_webhook(test_finished)
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
                 self._say(f"[green]Tests passed: {summary}[/green]")
@@ -262,7 +282,9 @@ class Orchestrator:
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
             ))
-            self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
+            cycle_finished = Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles})
+            self.event_bus.emit(cycle_finished)
+            await self._send_webhook(cycle_finished)
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
@@ -300,8 +322,10 @@ class Orchestrator:
                          message=f"could not save state to {self.state_store.path}: {e}")
                 )
             else:
-                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                        data={"path": str(self.state_store.path)}))
+                state_saved = Event(type=EventType.STATE_SAVED,
+                                    data={"path": str(self.state_store.path)})
+                self.event_bus.emit(state_saved)
+                await self._send_webhook(state_saved)
             if guard_tripped:
                 break
 
@@ -322,7 +346,7 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
-        return RunResult(
+        result = RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
             tasks_completed=completed,
@@ -335,6 +359,23 @@ class Orchestrator:
             usage=self._usage,
             files_changed=files_changed,
         )
+        # Send final run completion webhook
+        run_finished = Event(
+            type=EventType.LOG,  # Use LOG type for run completion
+            message=f"Run finished: {self._stopped_reason}",
+            data={
+                "passed": result.passed,
+                "cycles": result.cycles,
+                "tasks_completed": result.tasks_completed,
+                "tasks_failed": result.tasks_failed,
+                "tasks_blocked": result.tasks_blocked,
+                "tests_run": result.tests_run,
+                "stopped_reason": result.stopped_reason,
+                "skipped": result.skipped,
+            },
+        )
+        await self._send_webhook(run_finished)
+        return result
 
     def _context(self) -> str:
         if self._feedback:
@@ -424,7 +465,9 @@ class Orchestrator:
             async with sem:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
-                self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                task_started = Event(type=EventType.TASK_STARTED, data={"task": task.id})
+                self.event_bus.emit(task_started)
+                await self._send_webhook(task_started)
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -437,24 +480,24 @@ class Orchestrator:
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()
                     task.status = "pending" if task.attempts <= max_retries else "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.ERROR,
-                            message=f"task {task.id} raised: {task.error}",
-                            data={"task": task.id, "error": task.error,
-                                  "attempts": task.attempts},
-                        )
+                    error_event = Event(
+                        type=EventType.ERROR,
+                        message=f"task {task.id} raised: {task.error}",
+                        data={"task": task.id, "error": task.error,
+                              "attempts": task.attempts},
                     )
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": False,
-                                "summary": str(task.error or ""),
-                            },
-                        )
+                    self.event_bus.emit(error_event)
+                    await self._send_webhook(error_event)
+                    task_finished = Event(
+                        type=EventType.TASK_FINISHED,
+                        data={
+                            "task": task.id,
+                            "success": False,
+                            "summary": str(task.error or ""),
+                        },
                     )
+                    self.event_bus.emit(task_finished)
+                    await self._send_webhook(task_finished)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":
@@ -481,16 +524,16 @@ class Orchestrator:
                         task.status = "pending"
                     else:
                         task.status = "failed"
-                    self.event_bus.emit(
-                        Event(
-                            type=EventType.TASK_FINISHED,
-                            data={
-                                "task": task.id,
-                                "success": task.status == "completed",
-                                "summary": str(task.result or ""),
-                            },
-                        )
+                    task_finished = Event(
+                        type=EventType.TASK_FINISHED,
+                        data={
+                            "task": task.id,
+                            "success": task.status == "completed",
+                            "summary": str(task.result or ""),
+                        },
                     )
+                    self.event_bus.emit(task_finished)
+                    await self._send_webhook(task_finished)
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error or "unknown error"))
                     if task.status == "completed":

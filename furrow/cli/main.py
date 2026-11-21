@@ -50,6 +50,14 @@ def _run_settings(
     return Settings.model_validate(merged)
 
 
+def _configure_logging_for_cli(
+    log_level: str = "INFO",
+    json_logs: bool = False,
+) -> None:
+    """Configure logging for CLI commands."""
+    configure_logging(level=log_level, json_output=json_logs)
+
+
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
     """Return the (verdict, colour) of the one-line result of a run."""
     if skipped:
@@ -63,6 +71,60 @@ def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[st
 
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
+    # Try to use rich for better formatting if available
+    try:
+        from rich.console import Console
+
+        console = Console()
+        _print_summary_rich(console, result)
+    except ImportError:
+        _print_summary_plain(result)
+
+
+def _print_summary_rich(console, result: RunResult) -> None:
+    """Print the summary using rich formatting."""
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Value", style="white")
+
+    table.add_row("Cycles", str(result.cycles))
+    table.add_row("Tasks completed", str(result.tasks_completed))
+    table.add_row("Tasks failed", str(result.tasks_failed))
+    blocked = getattr(result, "tasks_blocked", 0) or 0
+    table.add_row("Tasks blocked:", str(blocked))
+    table.add_row("Stopped reason", result.stopped_reason)
+
+    skipped = bool(getattr(result, "skipped", False))
+    tests_run = getattr(result, "tests_run", 0) or 0
+    text, colour = _result_line(result.passed, skipped, tests_run)
+    table.add_row("Result", Text(text, style=colour))
+
+    usage = getattr(result, "usage", None)
+    if usage is not None and usage.calls > 0:
+        table.add_row(
+            "LLM usage:",
+            f"{usage.calls} calls, {usage.total_tokens} tokens (in {usage.input_tokens} / out {usage.output_tokens})",
+        )
+        cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+        if cost > 0:
+            table.add_row("LLM cost:", f"${cost:.6f}")
+
+    files_changed = getattr(result, "files_changed", None) or []
+    if files_changed:
+        table.add_row("Files changed:", ", ".join(files_changed))
+
+    if result.summary:
+        table.add_row("Summary", result.summary)
+
+    console.print(Panel(table, title="[bold]Run Summary[/bold]", border_style="blue"))
+
+
+def _print_summary_plain(result: RunResult) -> None:
+    """Print the summary using plain text (fallback)."""
     click.echo("Run summary")
     click.echo(f"  Cycles:          {result.cycles}")
     click.echo(f"  Tasks completed: {result.tasks_completed}")
@@ -92,6 +154,69 @@ def _print_summary(result: RunResult) -> None:
 
 def _print_state(state: RunState) -> None:
     """Print the persisted run state."""
+    try:
+        from rich.console import Console
+
+        console = Console()
+        _print_state_rich(console, state)
+    except ImportError:
+        _print_state_plain(state)
+
+
+def _print_state_rich(console, state: RunState) -> None:
+    """Print the state using rich formatting."""
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
+    table = Table(show_header=False, box=None, padding=(0, 2))
+    table.add_column("Key", style="cyan", no_wrap=True)
+    table.add_column("Value", style="white")
+
+    table.add_row("Original goal", state.original_goal)
+    table.add_row("Current goal", state.goal)
+    table.add_row("Cycles", str(state.cycles))
+    table.add_row("Updated", state.updated_at)
+
+    tests_run = getattr(state, "tests_run", 0) or 0
+    skipped = bool(getattr(state, "last_skipped", False))
+    passed = getattr(state, "last_passed", None)
+    text, colour = _result_line(passed=passed, skipped=skipped, tests_run=tests_run)
+    table.add_row("Tests run", str(tests_run))
+    table.add_row("Result", Text(text, style=colour))
+
+    usage = getattr(state, "usage", None)
+    if usage is not None and usage.calls > 0:
+        table.add_row("LLM usage:", f"{usage.calls} calls, {usage.total_tokens} tokens")
+        cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
+        if cost > 0:
+            table.add_row("LLM cost:", f"${cost:.6f}")
+
+    console.print(Panel(table, title="[bold]Furrow Run Status[/bold]", border_style="blue"))
+
+    if state.tasks:
+        task_table = Table(title="Tasks", show_header=True, header_style="bold cyan")
+        task_table.add_column("ID", style="dim")
+        task_table.add_column("Status")
+        task_table.add_column("Description")
+        task_table.add_column("Files Changed", style="dim")
+
+        for task in state.tasks:
+            files_changed = getattr(task, "files_changed", None) or []
+            status_style = _get_status_style(task.status)
+            task_table.add_row(
+                task.id,
+                Text(task.status, style=status_style),
+                task.description,
+                ", ".join(files_changed) if files_changed else "-",
+            )
+        console.print(task_table)
+    else:
+        console.print("[dim]Tasks: (none)[/dim]")
+
+
+def _print_state_plain(state: RunState) -> None:
+    """Print the state using plain text (fallback)."""
     click.echo("Furrow run status")
     click.echo(f"  Original goal: {state.original_goal}")
     click.echo(f"  Current goal:  {state.goal}")
@@ -119,6 +244,19 @@ def _print_state(state: RunState) -> None:
             click.echo(line)
     else:
         click.echo("Tasks:  (none)")
+
+
+def _get_status_style(status: str) -> str:
+    """Return rich style for a task status."""
+    styles = {
+        "pending": "yellow",
+        "running": "blue",
+        "completed": "green",
+        "failed": "red",
+        "blocked": "orange3",
+        "skipped": "dim",
+    }
+    return styles.get(status.lower(), "white")
 
 
 async def _release_client(client: Any) -> None:
@@ -179,9 +317,22 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
-def main() -> None:
+@click.option(
+    "--log-level",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
+    default=None,
+    help="Set the log level (overrides FURROW_LOG_LEVEL env var).",
+)
+@click.option(
+    "--json-logs/--no-json-logs",
+    default=False,
+    help="Output logs in JSON format.",
+)
+def main(log_level: str | None, json_logs: bool) -> None:
     """Furrow - an autonomous coding agent."""
-    configure_logging(settings.log_level)
+    # Use CLI-provided log level or fall back to settings
+    effective_log_level = log_level or settings.log_level
+    _configure_logging_for_cli(effective_log_level, json_logs)
 
 
 @main.command()
@@ -216,8 +367,20 @@ def start(
     default=None,
     help=WORKSPACE_HELP,
 )
-def status(workspace: Path | None) -> None:
+@click.option(
+    "--log-level",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
+    default=None,
+    help="Set the log level for this command.",
+)
+@click.option(
+    "--json-logs/--no-json-logs",
+    default=False,
+    help="Output logs in JSON format.",
+)
+def status(workspace: Path | None, log_level: str | None, json_logs: bool) -> None:
     """Show the state of the persisted Furrow run."""
+    _configure_logging_for_cli(log_level or settings.log_level, json_logs)
     run_settings = _run_settings(workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
@@ -235,8 +398,22 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option(
+    "--log-level",
+    type=click.Choice(["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], case_sensitive=False),
+    default=None,
+    help="Set the log level for this command.",
+)
+@click.option(
+    "--json-logs/--no-json-logs",
+    default=False,
+    help="Output logs in JSON format.",
+)
+def resume(
+    workspace: Path | None, max_cycles: int | None, log_level: str | None, json_logs: bool
+) -> None:
     """Resume the persisted Furrow run."""
+    _configure_logging_for_cli(log_level or settings.log_level, json_logs)
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
