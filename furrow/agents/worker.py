@@ -665,6 +665,13 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "edit_file":
+            return await self._edit_file(
+                str(args.get("path", "")),
+                str(args.get("old_string", "")),
+                str(args.get("new_string", "")),
+                bool(args.get("replace_all", False)),
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -713,6 +720,45 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _edit_file(self, path: str, old_string: str, new_string: str,
+                         replace_all: bool = False) -> str:
+        """Edit a file by replacing old_string with new_string.
+
+        Returns a status message. When old_string is absent or appears more
+        than once without replace_all, the edit is rejected as ambiguous and
+        the file is left untouched.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if old_string == "":
+            return "error: old_string must not be empty"
+        count = content.count(old_string)
+        if count == 0:
+            return f"error: old_string not found in {path}"
+        if count > 1 and not replace_all:
+            return (
+                f"error: old_string appears {count} times in {path}; "
+                "use replace_all=true or make old_string more specific"
+            )
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        replaced = count if replace_all else 1
+        return f"edited {path} ({replaced} replacement(s))"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from furrow.agents.parsing import parse_plan
 from furrow.agents.prompts import PLANNER_PROMPT, PLANNER_SYSTEM
 from furrow.config import Plan, Settings
@@ -8,12 +10,31 @@ from furrow.llm import LLMClient
 
 
 class PlannerAgent:
-    def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:
+    def __init__(
+        self,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        workspace: Path | None = None,
+    ) -> None:
         self.settings = settings if settings is not None else global_settings
         self.client = client if client is not None else LLMClient(settings=self.settings)
+        self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+
+    def _workspace_files(self) -> str:
+        """Return a sorted, newline-separated list of files in the workspace."""
+        try:
+            files = self.client.list_files(self.workspace)
+        except Exception:
+            return ""
+        if not files:
+            return ""
+        return "Files in the workspace:\n" + "\n".join(files)
 
     async def plan(self, goal: str, context: str = "") -> Plan:
         prompt = PLANNER_PROMPT + "\n\nGoal: " + goal
+        files = self._workspace_files()
+        if files:
+            prompt += "\n\n" + files
         if context:
             prompt += "\n\nContext:\n" + context
 

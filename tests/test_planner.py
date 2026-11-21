@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 
 from furrow.agents.planner import PlannerAgent
 from furrow.config import Plan, Settings
 
 
 class FakeLLMClient:
-    def __init__(self, response="", raises=None):
+    def __init__(self, response="", raises=None, files=None):
         self.response = response
         self.raises = raises
         self.prompts = []
         self.models = []
+        self.files = files or []
 
     async def complete(self, prompt, system="", model=None):
         self.prompts.append(prompt)
@@ -19,6 +21,9 @@ class FakeLLMClient:
         if self.raises:
             raise self.raises
         return self.response
+
+    def list_files(self, directory):
+        return list(self.files)
 
 
 def run(coro):
@@ -79,3 +84,55 @@ def test_uses_planner_model():
     agent = PlannerAgent(client=client, settings=s)
     run(agent.plan("g"))
     assert client.models[0] == "my-model"
+
+
+def test_workspace_files_included_in_prompt():
+    client = FakeLLMClient(
+        response='{"tasks":[],"rationale":""}',
+        files=["src/main.py", "tests/test_main.py", "README.md"],
+    )
+    agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
+    run(agent.plan("g"))
+    assert "src/main.py" in client.prompts[0]
+    assert "tests/test_main.py" in client.prompts[0]
+    assert "README.md" in client.prompts[0]
+    assert "Files in the workspace:" in client.prompts[0]
+
+
+def test_workspace_files_absent_when_client_lacks_list_files():
+    class NoListClient:
+        def __init__(self):
+            self.prompts = []
+
+        async def complete(self, prompt, system="", model=None):
+            self.prompts.append(prompt)
+            return '{"tasks":[],"rationale":""}'
+
+    client = NoListClient()
+    agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
+    run(agent.plan("g"))
+    assert "Files in the workspace:" not in client.prompts[0]
+
+
+def test_workspace_files_empty_when_no_files():
+    client = FakeLLMClient(
+        response='{"tasks":[],"rationale":""}',
+        files=[],
+    )
+    agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
+    run(agent.plan("g"))
+    assert "Files in the workspace:" not in client.prompts[0]
+
+
+def test_workspace_files_survives_retry_prompt():
+    client = FakeLLMClient(
+        response="not json",
+        files=["src/main.py"],
+    )
+    agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
+    with contextlib.suppress(ValueError):
+        run(agent.plan("g"))
+    # Both the original and the stricter retry prompt include file context.
+    for prompt in client.prompts:
+        assert "src/main.py" in prompt
+        assert "Files in the workspace:" in prompt

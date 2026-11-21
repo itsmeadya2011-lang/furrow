@@ -20,6 +20,10 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
+You are given the list of files that already exist in the workspace. Reference
+existing files when you can (e.g. extend src/auth.py rather than creating a new
+file), and only create new files when no existing file is appropriate.
+
 If the goal is too large for one cycle, say so in rationale and break it
 into the most critical first slice."""
 
@@ -86,6 +90,26 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"command": {"type": "string"}},
             "required": ["command"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "Edit a file by replacing an exact old_string with new_string. "
+                       "Use this for targeted changes instead of rewriting whole files. "
+                       "If old_string appears more than once, set replace_all=true "
+                       "to replace every occurrence; otherwise the edit is rejected "
+                       "as ambiguous.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file to edit."},
+                "old_string": {"type": "string", "description": "The exact text to replace."},
+                "new_string": {"type": "string", "description": "The replacement text."},
+                "replace_all": {"type": "boolean",
+                                "description": "Replace all occurrences instead of "
+                                               "just the first (default false)."}
+            },
+            "required": ["path", "old_string", "new_string"],
         },
     },
 ]
