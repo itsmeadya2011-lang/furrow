@@ -509,7 +509,7 @@ def test_index_script_knows_every_status_and_falls_back_to_unknown(
         assert re.search(rf"\b{status}\s*:", body), f"{status} is missing from the status map"
 
     assert re.search(r"\bunknown\s*:", body), "the status map has no unknown entry"
-    assert "return 'unknown';" in script, "statusClass() has no unknown fallback"
+    assert re.search(r"\|\|\s*'unknown'", script), "statusClass() has no unknown fallback"
 
 
 def test_index_script_surfaces_cost_in_render_status(client: TestClient) -> None:

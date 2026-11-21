@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -18,6 +19,9 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -75,6 +79,31 @@ class LLMResponse:
     usage: Usage = field(default_factory=Usage)
 
 
+class LLMError(Exception):
+    """Base exception for LLM-related errors."""
+
+    def __init__(self, message: str, provider: str | None = None, model: str | None = None, retryable: bool = False):
+        super().__init__(message)
+        self.provider = provider
+        self.model = model
+        self.retryable = retryable
+
+
+class LLMTimeoutError(LLMError):
+    """Raised when an LLM request times out."""
+    pass
+
+
+class LLMRateLimitError(LLMError):
+    """Raised when an LLM request is rate limited."""
+    pass
+
+
+class LLMProviderError(LLMError):
+    """Raised when an LLM provider returns an error."""
+    pass
+
+
 def _is_retryable(exc: BaseException) -> bool:
     """Return True if *exc* is a transient provider error worth retrying."""
     if isinstance(exc, asyncio.TimeoutError):
@@ -96,6 +125,32 @@ def _is_retryable(exc: BaseException) -> bool:
     if status_code is None:
         status_code = getattr(exc, "status_code", None)
     return status_code in RETRYABLE_STATUS_CODES
+
+
+def _classify_error(exc: BaseException) -> LLMError:
+    """Classify an exception into a specific LLM error type."""
+    if isinstance(exc, asyncio.TimeoutError):
+        return LLMTimeoutError("Request timed out", retryable=True)
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return LLMProviderError(f"Network error: {exc}", retryable=True)
+    if isinstance(exc, (AnthropicAPIConnectionError, OpenAIAPIConnectionError)):
+        return LLMProviderError(f"Provider connection error: {exc}", retryable=True)
+    
+    status_code = None
+    response = getattr(exc, "response", None)
+    if response is not None:
+        status_code = getattr(response, "status_code", None)
+    if status_code is None:
+        status_code = getattr(exc, "status_code", None)
+    
+    if status_code == 429:
+        return LLMRateLimitError("Rate limited by provider", retryable=True)
+    if status_code in {500, 502, 503, 504}:
+        return LLMProviderError(f"Provider server error ({status_code})", retryable=True)
+    if status_code in {400, 401, 403}:
+        return LLMProviderError(f"Provider client error ({status_code}): {exc}")
+    
+    return LLMError(str(exc), retryable=_is_retryable(exc))
 
 
 def _extract_anthropic_usage(response: Any) -> Usage:
@@ -256,37 +311,60 @@ class LLMClient:
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
 
+    def _get_provider_config(self, provider: Provider) -> ProviderConfig:
+        """Get the configuration for a specific provider."""
+        return self.settings.get_provider_config(provider)
+
+    def _create_anthropic_client(self) -> AsyncAnthropic:
+        """Create an Anthropic client with the configured settings."""
+        config = self._get_provider_config(Provider.ANTHROPIC)
+        api_key = config.api_key or os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            raise ValueError("ANTHROPIC_API_KEY is not set")
+        return AsyncAnthropic(
+            api_key=api_key,
+            timeout=config.timeout,
+            default_headers=config.extra_headers or None,
+        )
+
+    def _create_openai_client(self, provider: Provider) -> AsyncOpenAI:
+        """Create an OpenAI-compatible client with the configured settings."""
+        config = self._get_provider_config(provider)
+        api_key = config.api_key or os.getenv("OPENAI_API_KEY") if provider == Provider.OPENAI else config.api_key
+        if provider == Provider.OPENAI and not api_key:
+            raise ValueError("OPENAI_API_KEY is not set")
+        base_url = config.base_url
+        if provider == Provider.OLLAMA:
+            if base_url:
+                base_url = base_url.rstrip("/")
+                if not base_url.endswith("/v1"):
+                    base_url = base_url + "/v1"
+            else:
+                base_url = "http://localhost:11434/v1"
+            api_key = api_key or "ollama"
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=config.timeout,
+            default_headers=config.extra_headers or None,
+        )
+
     @property
     def anthropic(self) -> AsyncAnthropic:
         if self._anthropic is None:
-            api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
+            self._anthropic = self._create_anthropic_client()
         return self._anthropic
 
     @property
     def openai(self) -> AsyncOpenAI:
         if self._openai is None:
-            api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
+            self._openai = self._create_openai_client(Provider.OPENAI)
         return self._openai
 
     @property
     def ollama(self) -> AsyncOpenAI:
         if self._ollama is None:
-            base_url = self.settings.ollama_base_url.rstrip("/")
-            if not base_url.endswith("/v1"):
-                base_url = base_url + "/v1"
-            self._ollama = AsyncOpenAI(
-                api_key="ollama", base_url=base_url, timeout=self.settings.request_timeout
-            )
+            self._ollama = self._create_openai_client(Provider.OLLAMA)
         return self._ollama
 
     async def aclose(self) -> None:
@@ -334,8 +412,34 @@ class LLMClient:
                 return await call()
             except Exception as exc:
                 last_exc = exc
-                if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
+                llm_error = _classify_error(exc)
+                if attempt_index + 1 >= max_attempts or not llm_error.retryable:
+                    logger.error(
+                        "LLM request failed after %d attempt(s): %s",
+                        attempt_index + 1,
+                        llm_error,
+                        extra={
+                            "provider": self.settings.provider.value,
+                            "model": self.settings.model,
+                            "attempt": attempt_index + 1,
+                            "max_attempts": max_attempts,
+                            "retryable": llm_error.retryable,
+                        }
+                    )
                     raise
+                logger.warning(
+                    "LLM request failed (attempt %d/%d), retrying: %s",
+                    attempt_index + 1,
+                    max_attempts,
+                    llm_error,
+                    extra={
+                        "provider": self.settings.provider.value,
+                        "model": self.settings.model,
+                        "attempt": attempt_index + 1,
+                        "max_attempts": max_attempts,
+                        "retryable": llm_error.retryable,
+                    }
+                )
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
         if last_exc is not None:
             raise last_exc
@@ -344,6 +448,16 @@ class LLMClient:
     async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
         model = model or self.settings.model
         provider = self.settings.provider
+
+        logger.debug(
+            "LLM complete request",
+            extra={
+                "provider": provider.value,
+                "model": model,
+                "prompt_length": len(prompt),
+                "has_system": bool(system),
+            }
+        )
 
         async def call() -> str:
             if provider == Provider.ANTHROPIC:
@@ -356,7 +470,16 @@ class LLMClient:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        logger.debug(
+            "LLM complete response",
+            extra={
+                "provider": provider.value,
+                "model": model,
+                "response_length": len(result),
+            }
+        )
+        return result
 
     async def chat(
         self,
@@ -367,6 +490,17 @@ class LLMClient:
     ) -> LLMResponse:
         model = model or self.settings.model
         provider = self.settings.provider
+
+        logger.debug(
+            "LLM chat request",
+            extra={
+                "provider": provider.value,
+                "model": model,
+                "message_count": len(messages),
+                "tool_count": len(tools) if tools else 0,
+                "has_system": bool(system),
+            }
+        )
 
         async def call() -> LLMResponse:
             if provider == Provider.ANTHROPIC:
@@ -381,7 +515,23 @@ class LLMClient:
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
-        return await self._retry(call)
+        result = await self._retry(call)
+        logger.debug(
+            "LLM chat response",
+            extra={
+                "provider": provider.value,
+                "model": model,
+                "text_length": len(result.text),
+                "tool_calls": len(result.tool_calls),
+                "stop_reason": result.stop_reason,
+                "usage": {
+                    "input_tokens": result.usage.input_tokens,
+                    "output_tokens": result.usage.output_tokens,
+                    "cost_usd": result.usage.cost_usd,
+                },
+            }
+        )
+        return result
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(

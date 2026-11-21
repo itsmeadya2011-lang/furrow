@@ -1,13 +1,7 @@
-"""Web layer for Furrow.
+"""Main web server for Furrow.
 
-The server exposes a tiny JSON API plus a websocket that streams every
-orchestrator event to the browser:
-
-    GET  /            single page UI (inline HTML/CSS/JS)
-    GET  /api/state  persisted run state
-    GET  /api/status status of the currently active run
-    POST /api/start  start a background run
-    WS   /ws         run a goal and stream its events
+This module sets up the FastAPI application with all routes and the WebSocket
+endpoint, and provides the ``run`` function to start the server.
 """
 
 from __future__ import annotations
@@ -30,24 +24,7 @@ from furrow.core.state import StateStore
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Furrow")
-
 POLL_INTERVAL = 0.05
-
-DEFAULT_CURRENT: dict[str, Any] = {
-    "running": False,
-    "orchestrator": None,
-    "result": None,
-    "task": None,
-    "error": None,
-}
-
-# Registry of the run that is currently active (or of the last one that ran).
-_CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
-
-# Strong references to background tasks so they are never garbage collected
-# while they are still pending.
-_TASKS: set[asyncio.Task[RunResult]] = set()
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -56,90 +33,197 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Furrow</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { 
+    color-scheme: dark; 
+    --bg-primary: #10131a;
+    --bg-secondary: #171b23;
+    --bg-tertiary: #1d2430;
+    --border-color: #2b3240;
+    --text-primary: #d7dae0;
+    --text-secondary: #8a93a5;
+    --text-muted: #5c6b80;
+    --accent-blue: #4c8dff;
+    --accent-green: #57d38c;
+    --accent-yellow: #f0b367;
+    --accent-red: #e0685f;
+    --accent-purple: #c084fc;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg-primary: #f8f9fa;
+      --bg-secondary: #ffffff;
+      --bg-tertiary: #f1f3f5;
+      --border-color: #dee2e6;
+      --text-primary: #212529;
+      --text-secondary: #6c757d;
+      --text-muted: #adb5bd;
+      --accent-blue: #0d6efd;
+      --accent-green: #198754;
+      --accent-yellow: #fd7e14;
+      --accent-red: #dc3545;
+      --accent-purple: #6f42c1;
+    }
+  }
   body {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    margin: 0; padding: 1.25rem; background: #10131a; color: #d7dae0;
+    margin: 0; padding: 1.25rem; background: var(--bg-primary); color: var(--text-primary);
+    transition: background-color 0.2s, color 0.2s;
   }
   h1 {
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
-    margin: 0 0 1rem; color: #f0f2f5;
+    margin: 0 0 1rem; color: var(--text-primary);
+    display: flex; align-items: center; gap: 0.75rem;
   }
+  .theme-toggle {
+    background: var(--bg-tertiary); border: 1px solid var(--border-color);
+    border-radius: 6px; padding: 0.35rem 0.7rem; font-size: 0.85rem;
+    color: var(--text-primary); cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--accent-blue); }
   .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .bar > * { flex: 1 1 20rem; }
   input {
-    flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
-    border: 1px solid #2b3240; border-radius: 6px; font: inherit;
+    padding: .55rem .7rem; background: var(--bg-secondary); color: inherit;
+    border: 1px solid var(--border-color); border-radius: 6px; font: inherit;
+    min-width: 0;
   }
+  input:focus { outline: none; border-color: var(--accent-blue); }
   button {
-    padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
-    background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid var(--border-color);
+    background: var(--bg-tertiary); color: inherit; font: inherit; cursor: pointer;
+    white-space: nowrap;
   }
-  button:hover { border-color: #4c8dff; }
+  button:hover { border-color: var(--accent-blue); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   #log {
-    background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
+    background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: 0.85rem; line-height: 1.5;
   }
   .header {
-    border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
-    margin-bottom: 1rem; background: #171b23;
+    border: 1px solid var(--border-color); border-radius: 8px; padding: .75rem 1rem;
+    margin-bottom: 1rem; background: var(--bg-secondary);
   }
   .header .goal {
-    font-size: 1.1rem; font-weight: 700; color: #f0f2f5;
-    word-break: break-word;
+    font-size: 1.1rem; font-weight: 700; color: var(--text-primary);
+    word-break: break-word; margin-bottom: 0.5rem;
   }
   .header .meta {
     display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .5rem;
-    font-size: .9rem; color: #8a93a5;
+    font-size: .9rem; color: var(--text-secondary);
   }
-  .header .meta b { color: #d7dae0; }
-  .header .reason { color: #f0b367; }
+  .header .meta b { color: var(--text-primary); }
+  .header .reason { color: var(--accent-yellow); }
+  .progress-bar {
+    height: 6px; background: var(--bg-tertiary); border-radius: 3px;
+    overflow: hidden; margin-top: 0.5rem;
+  }
+  .progress-bar-inner {
+    height: 100%; background: var(--accent-blue); border-radius: 3px;
+    transition: width 0.3s ease; width: 0%;
+  }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
-    border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
-    background: #171b23;
+    border: 1px solid var(--border-color); border-radius: 8px; padding: .6rem .8rem;
+    background: var(--bg-secondary);
+    transition: border-color 0.2s;
   }
+  .panel:hover { border-color: var(--accent-blue); }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
+    flex-wrap: wrap;
   }
-  .panel-id { font-size: .85rem; color: #8a93a5; }
+  .panel-id { font-size: .85rem; color: var(--text-secondary); }
   .panel-status {
-    font-size: .8rem; font-weight: 700; text-transform: uppercase;
+    font-size: .75rem; font-weight: 700; text-transform: uppercase;
     padding: .05rem .4rem; border-radius: 3px;
+    display: inline-flex; align-items: center; gap: 0.25rem;
+  }
+  .panel-status::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor;
   }
   .panel-desc {
-    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
+    margin: 0 0 .4rem; font-size: .95rem; color: var(--text-primary);
     word-break: break-word;
   }
   .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    display: flex; gap: .8rem; font-size: .8rem; color: var(--text-secondary);
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    display: flex; flex-wrap: wrap; gap: 0.25rem; margin: 0.25rem 0;
+    font-size: 0.75rem;
+  }
+  .panel-file {
+    background: var(--bg-tertiary); padding: 0.1rem 0.4rem;
+    border-radius: 3px; color: var(--accent-purple);
+    font-family: inherit;
+  }
   .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
-    white-space: pre-wrap;
+    margin: 0 0 .3rem; font-size: .85rem; color: var(--accent-green);
+    white-space: pre-wrap; max-height: 100px; overflow: auto;
   }
   .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+    margin: 0; font-size: .85rem; color: var(--accent-red); white-space: pre-wrap;
+    max-height: 100px; overflow: auto;
   }
   .panel-empty {
-    color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
+    color: var(--text-secondary); font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { color: var(--text-secondary); }
+  .status-running { color: var(--accent-blue); }
+  .status-completed { color: var(--accent-green); }
+  .status-failed { color: var(--accent-red); }
+  .status-blocked { color: var(--accent-yellow); }
+  .status-skipped { color: var(--text-secondary); }
+  .status-unknown { color: var(--text-secondary); }
+  .log-controls {
+    display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap;
+    font-size: 0.8rem;
+  }
+  .log-controls label {
+    display: flex; align-items: center; gap: 0.25rem; cursor: pointer;
+    color: var(--text-secondary);
+  }
+  .log-controls input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent-blue); }
+  .copy-btn {
+    font-size: 0.7rem; padding: 0.15rem 0.4rem;
+    background: transparent; border: 1px solid var(--border-color);
+  }
+  .copy-btn:hover { background: var(--accent-blue); color: white; border-color: var(--accent-blue); }
+  .task-dependencies {
+    font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;
+  }
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 0.5rem; margin-top: 0.5rem; padding-top: 0.5rem;
+    border-top: 1px solid var(--border-color);
+  }
+  .stat-item {
+    background: var(--bg-tertiary); padding: 0.5rem; border-radius: 6px;
+    text-align: center;
+  }
+  .stat-value { font-size: 1.25rem; font-weight: 700; color: var(--text-primary); }
+  .stat-label { font-size: 0.7rem; color: var(--text-secondary); text-transform: uppercase; }
+  .shortcut-hint {
+    font-size: 0.7rem; color: var(--text-muted); margin-left: auto;
+    display: flex; gap: 1rem; align-items: center;
+  }
+  .shortcut-hint kbd {
+    background: var(--bg-tertiary); border: 1px solid var(--border-color);
+    padding: 0.1rem 0.3rem; border-radius: 3px; font-family: inherit;
+  }
 </style>
 </head>
 <body>
-<h1>Furrow</h1>
+<h1>Furrow <span class="shortcut-hint"><kbd>Ctrl</kbd>+<kbd>Enter</kbd> Start | <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> Resume</span></h1>
 <div class="bar">
   <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
-  <button id="resume">Resume</button>
+  <button id="start" title="Start new run (Ctrl+Enter)">Start</button>
+  <button id="resume" title="Resume previous run (Ctrl+Shift+Enter)">Resume</button>
+  <button id="theme-toggle" class="theme-toggle" title="Toggle theme">🌙</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -149,9 +233,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
   </div>
+  <div class="progress-bar" id="progress-bar" style="display: none;">
+    <div class="progress-bar-inner" id="progress-bar-inner"></div>
+  </div>
+</div>
+<div class="log-controls">
+  <label><input type="checkbox" id="log-filter-errors" /> Errors only</label>
+  <label><input type="checkbox" id="log-filter-tasks" /> Tasks only</label>
+  <label><input type="checkbox" id="log-filter-tests" /> Tests only</label>
+  <button id="log-clear" style="margin-left: auto; font-size: 0.75rem;">Clear</button>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="stats-grid" id="stats-grid" style="display: none;">
+  <div class="stat-item"><div class="stat-value" id="stat-cycles">0</div><div class="stat-label">Cycles</div></div>
+  <div class="stat-item"><div class="stat-value" id="stat-completed">0</div><div class="stat-label">Completed</div></div>
+  <div class="stat-item"><div class="stat-value" id="stat-failed">0</div><div class="stat-label">Failed</div></div>
+  <div class="stat-item"><div class="stat-value" id="stat-blocked">0</div><div class="stat-label">Blocked</div></div>
+  <div class="stat-item"><div class="stat-value" id="stat-cost">$0.00</div><div class="stat-label">Cost</div></div>
+  <div class="stat-item"><div class="stat-value" id="stat-duration">0s</div><div class="stat-label">Duration</div></div>
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -161,55 +262,127 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const progressBar = document.getElementById('progress-bar');
+  const progressBarInner = document.getElementById('progress-bar-inner');
+  const statsGrid = document.getElementById('stats-grid');
+  const statCycles = document.getElementById('stat-cycles');
+  const statCompleted = document.getElementById('stat-completed');
+  const statFailed = document.getElementById('stat-failed');
+  const statBlocked = document.getElementById('stat-blocked');
+  const statCost = document.getElementById('stat-cost');
+  const statDuration = document.getElementById('stat-duration');
   let socket = null;
   let lastSummary = null;
+  let runStartTime = null;
+  let durationInterval = null;
+  const logFilters = {
+    errors: document.getElementById('log-filter-errors'),
+    tasks: document.getElementById('log-filter-tasks'),
+    tests: document.getElementById('log-filter-tests'),
+  };
 
-  function append(line) {
-    logEl.textContent += line + '\n';
+  function append(line, type = 'log') {
+    const span = document.createElement('span');
+    span.dataset.type = type;
+    span.textContent = line + '\n';
+    logEl.appendChild(span);
     logEl.scrollTop = logEl.scrollHeight;
+    applyLogFilters();
+  }
+
+  function applyLogFilters() {
+    const showErrors = logFilters.errors.checked;
+    const showTasks = logFilters.tasks.checked;
+    const showTests = logFilters.tests.checked;
+    const anyFilter = showErrors || showTasks || showTests;
+    
+    logEl.querySelectorAll('span[data-type]').forEach(span => {
+      const type = span.dataset.type;
+      let visible = true;
+      if (anyFilter) {
+        visible = false;
+        if (showErrors && type === 'error') visible = true;
+        if (showTasks && (type === 'task_started' || type === 'task_finished')) visible = true;
+        if (showTests && (type === 'test_started' || type === 'test_finished')) visible = true;
+      }
+      span.style.display = visible ? '' : 'none';
+    });
   }
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
-    pending: 'pending',
-    running: 'running',
-    completed: 'completed',
-    failed: 'failed',
-    blocked: 'blocked',
-    skipped: 'skipped',
-    unknown: 'unknown'
+    pending: 'pending', running: 'running', completed: 'completed',
+    failed: 'failed', blocked: 'blocked', skipped: 'skipped', unknown: 'unknown'
   };
 
   function statusClass(status) {
     const key = text(status).trim().toLowerCase();
-    if (Object.prototype.hasOwnProperty.call(SAFE_STATUSES, key)) {
-      return SAFE_STATUSES[key];
+    return SAFE_STATUSES[key] || 'unknown';
+  }
+
+  function formatDuration(seconds) {
+    if (seconds < 60) return seconds + 's';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    if (mins < 60) return mins + 'm ' + secs + 's';
+    const hours = Math.floor(mins / 60);
+    return hours + 'h ' + (mins % 60) + 'm';
+  }
+
+  function updateDuration() {
+    if (runStartTime) {
+      const elapsed = Math.floor((Date.now() - runStartTime) / 1000);
+      statDuration.textContent = formatDuration(elapsed);
     }
-    return 'unknown';
+  }
+
+  function startDurationTimer() {
+    if (durationInterval) clearInterval(durationInterval);
+    durationInterval = setInterval(updateDuration, 1000);
+    updateDuration();
+  }
+
+  function stopDurationTimer() {
+    if (durationInterval) clearInterval(durationInterval);
+    durationInterval = null;
   }
 
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
-    cycleEl.textContent =
-      text(status && status.cycles !== undefined ? status.cycles : '\u2014');
+    cycleEl.textContent = text(status && status.cycles !== undefined ? status.cycles : '\u2014');
     stateEl.textContent = running ? 'running' : 'stopped';
-    const reason =
-      text(status && status.stopped_reason) ||
-      text(result && result.stopped_reason) || '';
+    const reason = text(status && status.stopped_reason) || text(result && result.stopped_reason) || '';
     stoppedReasonEl.textContent = reason;
     stoppedReasonEl.style.display = reason ? '' : 'none';
     const usage = (status && status.usage) || (result && result.usage) || {};
     const calls = Number(usage.calls) || 0;
-    const total = (Number(usage.input_tokens) || 0) +
-      (Number(usage.output_tokens) || 0);
+    const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
-      (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens' + (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    
+    // Update stats grid
+    if (status || result) {
+      statsGrid.style.display = 'grid';
+      statCycles.textContent = text(status && status.cycles) || text(result && result.cycles) || '0';
+      statCompleted.textContent = text(result && result.tasks_completed) || '0';
+      statFailed.textContent = text(result && result.tasks_failed) || '0';
+      statBlocked.textContent = text(result && result.tasks_blocked) || '0';
+      statCost.textContent = '$' + (Number(usage.cost_usd) || 0).toFixed(4);
+    }
+    
+    // Progress bar
+    if (running && status && status.cycles) {
+      progressBar.style.display = 'block';
+      // We don't know max cycles, so just show activity
+      progressBarInner.style.width = '100%';
+      progressBarInner.style.background = 'linear-gradient(90deg, var(--accent-blue), var(--accent-purple))';
+    } else {
+      progressBar.style.display = 'none';
+      progressBarInner.style.width = '0%';
+    }
   }
 
   function renderTasks(tasks) {
@@ -251,6 +424,36 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      
+      // Files changed
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'panel-files';
+        filesChanged.forEach(function(file) {
+          const fileEl = document.createElement('span');
+          fileEl.className = 'panel-file';
+          fileEl.textContent = file;
+          fileEl.title = 'Click to copy path';
+          fileEl.onclick = function() {
+            navigator.clipboard.writeText(file);
+            const original = fileEl.textContent;
+            fileEl.textContent = 'Copied!';
+            setTimeout(() => fileEl.textContent = original, 1000);
+          };
+          filesDiv.appendChild(fileEl);
+        });
+        panel.appendChild(filesDiv);
+      }
+
+      // Dependencies
+      const deps = task.dependencies || [];
+      if (deps.length > 0) {
+        const depsDiv = document.createElement('div');
+        depsDiv.className = 'task-dependencies';
+        depsDiv.textContent = 'depends on: ' + deps.join(', ');
+        panel.appendChild(depsDiv);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -312,9 +515,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
+      runStartTime = Date.now();
+      startDurationTimer();
       socket.send(JSON.stringify(payload));
     };
     function truncate(value, max) {
@@ -335,23 +538,29 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const time = eventTime(msg);
       let line = '';
       let color = '#8a93a5';
+      let logType = 'log';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
+        logType = 'cycle';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        logType = 'plan';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+        logType = 'task_started';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
-        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
-          truncate(data.summary, 200);
+        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') + truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+        logType = 'task_finished';
       } else if (type === 'test_started') {
         line = 'running tests...';
+        logType = 'test_started';
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+        logType = 'test_finished';
       } else if (type === 'state_saved') {
         line = 'state saved';
       } else if (type === 'log') {
@@ -359,18 +568,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
         color = '#e0685f';
+        logType = 'error';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
         color = '#57d38c';
+        logType = 'done';
+        stopDurationTimer();
+        progressBar.style.display = 'none';
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
       const span = document.createElement('span');
       span.style.color = color;
+      span.dataset.type = logType;
       span.textContent = time + ' ' + line;
       logEl.appendChild(span);
       logEl.appendChild(document.createTextNode('\n'));
       logEl.scrollTop = logEl.scrollHeight;
+      applyLogFilters();
       return line;
     }
 
@@ -393,6 +608,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket.onclose = function () {
       append('-- closed');
       socket = null;
+      stopDurationTimer();
       loadStatus();
     };
     socket.onerror = function () {
@@ -405,6 +621,37 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('log-clear').onclick = function () {
+    logEl.textContent = '';
+  };
+  
+  // Log filter handlers
+  Object.values(logFilters).forEach(cb => {
+    cb.onchange = applyLogFilters;
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function(e) {
+    if (e.ctrlKey && e.key === 'Enter') {
+      if (e.shiftKey) {
+        document.getElementById('resume').click();
+      } else {
+        document.getElementById('start').click();
+      }
+      e.preventDefault();
+    }
+  });
+
+  // Theme toggle
+  const themeToggle = document.getElementById('theme-toggle');
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  let isDark = prefersDark;
+  themeToggle.textContent = isDark ? '☀️' : '🌙';
+  themeToggle.onclick = function() {
+    isDark = !isDark;
+    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+    themeToggle.textContent = isDark ? '☀️' : '🌙';
   };
 
   loadState();
@@ -429,6 +676,22 @@ class SocketRequest(BaseModel):
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
+
+
+DEFAULT_CURRENT: dict[str, Any] = {
+    "running": False,
+    "orchestrator": None,
+    "result": None,
+    "task": None,
+    "error": None,
+}
+
+# Registry of the run that is currently active (or of the last one that ran).
+_CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
+
+# Strong references to background tasks so they are never garbage collected
+# while they are still pending.
+_TASKS: set[asyncio.Task[RunResult]] = set()
 
 
 def _reset_registry() -> None:
@@ -487,26 +750,6 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
     _CURRENT["result"] = task.result()
 
 
-def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
-    """Clear the "running" flag when ``task`` is the run that owns the registry."""
-    if _CURRENT.get("task") is task:
-        _CURRENT["running"] = False
-
-
-def _cancel_run(task: asyncio.Task[RunResult]) -> None:
-    """Cancel a run and make sure the server does not stay stuck in "running"."""
-    task.cancel()
-    if _CURRENT.get("task") is task:
-        _CURRENT["running"] = False
-        _CURRENT["error"] = "run cancelled"
-
-
-async def _drain(queue: asyncio.Queue[Event]) -> None:
-    """Consume events so a background run does not fill its queue forever."""
-    while True:
-        await queue.get()
-
-
 async def _release_client(client: Any) -> None:
     """Release the HTTP resources of an LLM client, when it supports closing.
 
@@ -552,6 +795,12 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
         bus.unsubscribe(queue)
 
 
+async def _drain(queue: asyncio.Queue[Event]) -> None:
+    """Consume events so a background run does not fill its queue forever."""
+    while True:
+        await queue.get()
+
+
 def _build_orchestrator(
     goal: str, resume: bool, max_cycles: int | None, bus: EventBus
 ) -> Orchestrator:
@@ -570,6 +819,23 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
     """Send an error frame to the client and close the connection."""
     await websocket.send_json({"type": "error", "message": message, "data": {}})
     await websocket.close(code=1008)
+
+
+async def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
+    """Clear the "running" flag when ``task`` is the run that owns the registry."""
+    if _CURRENT.get("task") is task:
+        _CURRENT["running"] = False
+
+
+async def _cancel_run(task: asyncio.Task[RunResult]) -> None:
+    """Cancel a run and make sure the server does not stay stuck in "running"."""
+    task.cancel()
+    if _CURRENT.get("task") is task:
+        _CURRENT["running"] = False
+        _CURRENT["error"] = "run cancelled"
+
+
+app = FastAPI(title="Furrow")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -715,7 +981,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             return
         # The run is over: clear the flag right away instead of waiting for the
         # done-callback to be processed.
-        _clear_running_flag(run_task)
+        await _clear_running_flag(run_task)
         if run_task.cancelled():
             return
         exc = run_task.exception()
@@ -735,11 +1001,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # The client went away (or the server is shutting down): stop the run
         # and make sure the server does not stay stuck in the "running" state.
         if run_task is not None and not run_task.done():
-            _cancel_run(run_task)
+            await _cancel_run(run_task)
         raise
     except (WebSocketDisconnect, RuntimeError):
         if run_task is not None and not run_task.done():
-            _cancel_run(run_task)
+            await _cancel_run(run_task)
     finally:
         bus.unsubscribe(queue)
 

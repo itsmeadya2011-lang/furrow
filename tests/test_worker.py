@@ -6,8 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from furrow.agents.command_policy import is_command_denied, resolve_in_workspace
 from furrow.agents.prompts import WORKER_TOOLS
-from furrow.agents.worker import WorkerAgent, is_command_denied, resolve_in_workspace
+from furrow.agents.worker import WorkerAgent
 from furrow.config import Settings
 from furrow.llm import LLMResponse, ToolCall
 
@@ -639,7 +640,7 @@ def test_is_command_denied_checks_process_substitutions(tmp_path):
 
 def test_extract_command_substitutions_includes_process_substitutions():
     """``_extract_command_substitutions`` returns process substitution text."""
-    from furrow.agents.worker import _extract_command_substitutions
+    from furrow.agents.command_policy import _extract_command_substitutions
 
     substitutions = _extract_command_substitutions("diff <(sort a) >(cat)")
     assert "sort a" in substitutions
