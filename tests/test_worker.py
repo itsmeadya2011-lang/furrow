@@ -1319,3 +1319,76 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_list_files_subdirectory_returns_workspace_relative_paths(tmp_path):
+    """Listings of a subdirectory must be rebased to workspace-relative paths
+    so the worker can reference the listed files with write_file/read_file."""
+    sub = tmp_path / "furrow"
+    sub.mkdir()
+    (sub / "config.py").write_text("x = 1\n")
+    (sub / "worker.py").write_text("def run():\n    pass\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files("furrow")
+
+    assert "furrow/config.py" in out
+    assert "furrow/worker.py" in out
+    # A bare "config.py" (relative to the subdirectory) must not appear.
+    assert "\nconfig.py\n" not in out and not out.startswith("config.py")
+
+
+@pytest.mark.asyncio
+async def test_list_files_absolute_path_returns_workspace_relative_paths(tmp_path):
+    """Listing via an absolute path inside the workspace still rebases to
+    workspace-relative paths."""
+    sub = tmp_path / "src"
+    sub.mkdir()
+    (sub / "mod.py").write_text("x = 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files(str(sub))
+
+    assert "src/mod.py" in out
+
+
+@pytest.mark.asyncio
+async def test_write_file_missing_path(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    target = tmp_path / "keep.py"
+
+    # No path argument at all.
+    out = await agent._execute_tool(
+        ToolCall(id="t1", name="write_file", arguments={"content": "x"})
+    )
+    assert out == "error: missing path"
+    assert not target.exists()
+
+    # Empty path string.
+    out = await agent._execute_tool(
+        ToolCall(id="t1", name="write_file", arguments={"path": "", "content": "x"})
+    )
+    assert out == "error: missing path"
+    assert not target.exists()
+
+    # Non-string path.
+    out = await agent._execute_tool(
+        ToolCall(id="t1", name="write_file", arguments={"path": 123, "content": "x"})
+    )
+    assert out == "error: missing path"
+    assert not target.exists()

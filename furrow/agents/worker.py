@@ -653,12 +653,15 @@ class WorkerAgent:
         if name == "read_file":
             return await self._read_file(str(args.get("path", "")))
         if name == "write_file":
+            path = args.get("path")
+            if not isinstance(path, str) or not path:
+                return "error: missing path"
             if "content" not in args:
                 return "error: missing content"
             content = args["content"]
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
-            return await self._write_file(str(args.get("path", "")), content)
+            return await self._write_file(path, content)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -728,11 +731,18 @@ class WorkerAgent:
         total = len(entries)
         rels = []
         base = self.workspace.resolve()
+        # Entries returned by list_files are relative to *resolved*, so rebase
+        # them to be relative to the workspace root.
+        try:
+            prefix = str(resolved.relative_to(base))
+        except ValueError:
+            prefix = ""
+        if prefix == ".":
+            prefix = ""
+        elif prefix:
+            prefix += "/"
         for e in entries[:MAX_LIST_ENTRIES]:
-            try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
-            except ValueError:
-                rels.append(str(e))
+            rels.append(prefix + e)
         text = "\n".join(rels)
         omitted = total - len(rels)
         if omitted > 0:
