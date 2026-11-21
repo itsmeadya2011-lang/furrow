@@ -378,14 +378,167 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["list_files", "read_file", "run_command", "search_files", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
         assert p["type"] == "object"
         assert "properties" in p
         assert "required" in p
+
+
+@pytest.mark.asyncio
+async def test_search_files_basic(tmp_path):
+    """Basic search finds matching lines in files."""
+    (tmp_path / "a.py").write_text("def hello():\n    print('hi')\n")
+    (tmp_path / "b.py").write_text("def world():\n    print('hello')\n")
+    (tmp_path / "c.txt").write_text("just text\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("print", ".", None)
+    assert "a.py" in out
+    assert "b.py" in out
+    assert "c.txt" not in out  # no match
+    assert "print('hi')" in out or 'print("hi")' in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_with_file_pattern(tmp_path):
+    """Search respects the file_pattern filter."""
+    (tmp_path / "a.py").write_text("def hello():\n    print('hi')\n")
+    (tmp_path / "b.js").write_text("function hello() { console.log('hi'); }\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    # Only search .py files
+    out = await agent._search_files("hello", ".", "*.py")
+    assert "a.py" in out
+    assert "b.js" not in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_regex_pattern(tmp_path):
+    """Search works with regex patterns."""
+    (tmp_path / "a.py").write_text("def func1():\n    pass\n\ndef func2():\n    pass\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    # Search for func followed by digit
+    out = await agent._search_files(r"func\d", ".", None)
+    assert "func1" in out
+    assert "func2" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_invalid_regex(tmp_path):
+    """Invalid regex returns an error."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("[invalid", ".", None)
+    assert out.startswith("error: invalid regex pattern")
+
+
+@pytest.mark.asyncio
+async def test_search_files_empty_pattern(tmp_path):
+    """Empty pattern returns an error."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("", ".", None)
+    assert out.startswith("error: empty pattern")
+
+
+@pytest.mark.asyncio
+async def test_search_files_path_escape(tmp_path):
+    """Search rejects paths that escape the workspace."""
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("test", "../etc", None)
+    assert out == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_search_files_no_matches(tmp_path):
+    """Search returns a friendly message when no matches found."""
+    (tmp_path / "a.py").write_text("def hello():\n    pass\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("nonexistent", ".", None)
+    assert "No matches found" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_context_lines(tmp_path):
+    """Search shows context lines around matches."""
+    (tmp_path / "a.py").write_text("\n".join([f"line {i}" for i in range(20)]))
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("line 10", ".", None)
+    # Should show context around line 10 (3 lines before and after by default)
+    assert "line 10" in out
+    assert "line 7" in out or "line 8" in out or "line 9" in out
+    assert "line 11" in out or "line 12" in out or "line 13" in out
+
+
+@pytest.mark.asyncio
+async def test_search_files_caps_matches(tmp_path):
+    """Search caps the number of matches returned."""
+    # Create many files with matches
+    for i in range(150):
+        (tmp_path / f"f{i}.py").write_text(f"match {i}\n")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="search")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._search_files("match", ".", "*.py")
+    assert "matches shown, search was capped at 100" in out
 
 
 def test_resolve_in_workspace():

@@ -665,6 +665,12 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "search_files":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else ".",
+                str(args.get("file_pattern", "")) if args.get("file_pattern") is not None else None,
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -739,6 +745,87 @@ class WorkerAgent:
             note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
             text = f"{text}\n{note}" if text else note
         return text
+
+    async def _search_files(
+        self, pattern: str, path: str, file_pattern: str | None
+    ) -> str:
+        """Search for a regex pattern in files under the workspace."""
+        if not pattern:
+            return "error: empty pattern"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+
+        # Use the client's list_files to get all files, then filter and search
+        try:
+            entries = await asyncio.to_thread(self.client.list_files, resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+        base = self.workspace.resolve()
+        matches: list[str] = []
+        max_matches = 100
+        max_context_lines = 3
+
+        for entry in entries:
+            try:
+                if Path(entry).is_absolute():
+                    rel_path = str(Path(entry).relative_to(base))
+                else:
+                    rel_path = entry
+            except ValueError:
+                rel_path = str(entry)
+
+            # Apply file pattern filter if provided
+            if file_pattern:
+                import fnmatch
+                if not fnmatch.fnmatch(rel_path, file_pattern):
+                    continue
+
+            # Skip directories
+            abs_path = Path(entry) if Path(entry).is_absolute() else base / entry
+            if not abs_path.is_file():
+                continue
+
+            # Read and search the file
+            try:
+                content = await self.client.read_file(abs_path)
+            except (OSError, ValueError, RuntimeError):
+                continue
+
+            lines = content.splitlines()
+            for i, line in enumerate(lines):
+                if regex.search(line):
+                    # Get context lines
+                    start = max(0, i - max_context_lines)
+                    end = min(len(lines), i + max_context_lines + 1)
+                    context = lines[start:end]
+                    # Mark the matching line
+                    marked = []
+                    for j, ctx_line in enumerate(context):
+                        prefix = ">" if (start + j) == i else " "
+                        marked.append(f"{prefix} {start + j + 1:4d}: {ctx_line}")
+                    matches.append(f"{rel_path}:\n" + "\n".join(marked))
+                    if len(matches) >= max_matches:
+                        break
+            if len(matches) >= max_matches:
+                break
+
+        if not matches:
+            return f"No matches found for pattern: {pattern}"
+
+        result = "\n\n---\n\n".join(matches)
+        if len(matches) >= max_matches:
+            result += (
+                f"\n\n[... {len(matches)} matches shown, "
+                f"search was capped at {max_matches} ...]"
+            )
+        return result
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

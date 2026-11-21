@@ -88,4 +88,32 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "search_files",
+        "description": (
+            "search for a text pattern in files under the workspace. "
+            "Returns matching file paths and line snippets."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regular expression pattern to search for",
+                },
+                "path": {
+                    "type": "string",
+                    "description": (
+                        "Directory to search in (relative to workspace), "
+                        "defaults to workspace root"
+                    ),
+                },
+                "file_pattern": {
+                    "type": "string",
+                    "description": "Optional glob pattern to filter files (e.g., '*.py')",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
 ]
