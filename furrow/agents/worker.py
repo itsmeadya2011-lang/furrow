@@ -754,12 +754,20 @@ class WorkerAgent:
         except ValueError:
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
-        # On POSIX the command runs in its own session/process group so that a
-        # timeout can kill the whole tree (children and grandchildren included)
-        # instead of leaking orphans. On other platforms we fall back to
-        # killing the direct child only.
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+        env = None
+        # When running bun test, isolate BUN_INSTALL in a temp directory so the
+        # workspace is not polluted.
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            tokens = []
+        if tokens and os.path.basename(tokens[0]) == "bun" and len(tokens) > 1 and tokens[1] == "test":
+            import tempfile
+            bun_install = tempfile.mkdtemp(prefix="bun_install_")
+            env = dict(os.environ)
+            env["BUN_INSTALL"] = bun_install
         try:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
@@ -768,18 +776,23 @@ class WorkerAgent:
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=env,
                     **spawn_kwargs,
                 )
             else:
                 parts = shlex.split(command)
                 if not parts:
                     return "error: empty command"
+                # Use `--` to separate flags from arguments on non-POSIX.
+                if len(parts) > 1 and "--" not in parts:
+                    parts = [parts[0], "--"] + parts[1:]
                 proc = await asyncio.create_subprocess_exec(
                     *parts,
                     cwd=str(self.workspace),
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    env=env,
                     **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
@@ -791,10 +804,13 @@ class WorkerAgent:
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
-        combined = out + "\n[stderr]\n" + err if err.strip() else out
+        # Truncate stderr separately so it cannot dominate the output.
+        if len(err) > 5000:
+            err = err[:5000] + "\n[... stderr truncated ...]"
         cap = 20000
-        if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
+        if len(out) > cap:
+            out = "[... output truncated ...]\n" + out[-cap:]
+        combined = out + "\n[stderr]\n" + err if err.strip() else out
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
@@ -812,10 +828,17 @@ class WorkerAgent:
                     os.killpg(pgid, signal.SIGKILL)
                 except (OSError, AttributeError):
                     pass
-                else:
-                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
-                        await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
+                # Wait for full termination with a short timeout.
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except (asyncio.TimeoutError, ProcessLookupError, OSError):
+                    with contextlib.suppress(ProcessLookupError, OSError):
+                        proc.kill()
+                    with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError, OSError):
+                        await asyncio.wait_for(proc.wait(), timeout=2.0)
+                return
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+        with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError, OSError):
+            await asyncio.wait_for(proc.wait(), timeout=5.0)

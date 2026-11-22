@@ -166,6 +166,23 @@ def test_resume_runs_orchestrator(
     assert "goal complete" in result.output
 
 
+def test_resume_uses_model_override(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(
+        main, ["resume", "--workspace", str(tmp_path), "--model", "gpt-5"]
+    )
+
+    assert result.exit_code == 0
+    kwargs = fake_orchestrator.init_kwargs
+    assert kwargs["resume"] is True
+    assert kwargs["goal"] == "ship it"
+    run_settings = kwargs["settings"]
+    assert run_settings.model == "gpt-5"
+
+
 def test_start_max_cycles_negative_rejected(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
