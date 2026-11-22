@@ -3,9 +3,18 @@ from __future__ import annotations
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:
-- Independent when possible
+- Independent when possible (no dependencies between tasks in the same wave)
 - Completable in 1-3 tool call rounds by a worker
 - Specific enough that a worker can implement it without ambiguity
+- Focused on a single logical change
+
+Available worker tools:
+- read_file: Read a file's contents
+- write_file: Create or overwrite a file entirely
+- edit_file: Apply a unified diff patch for surgical edits (prefer for small changes)
+- list_files: List files in a directory
+- run_command: Run shell commands (tests, linters, builds)
+- grep: Search for patterns in files (use to find existing code patterns)
 
 Return JSON only (no markdown, no explanation) with this shape:
 {
@@ -20,8 +29,13 @@ Return JSON only (no markdown, no explanation) with this shape:
   "rationale": "Brief explanation of the plan"
 }
 
-If the goal is too large for one cycle, say so in rationale and break it
-into the most critical first slice."""
+Task guidelines:
+- Use 'dependencies' to order tasks that must run sequentially
+- Prefer 'edit_file' over 'write_file' for modifications to existing files
+- Include test files in 'files' when the task involves new functionality
+- Keep tasks small: a worker has ~12 iterations per task
+- If the goal is too large for one cycle, say so in rationale and break it
+  into the most critical first slice."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 
@@ -38,12 +52,15 @@ If tests failed, list each failure in the failures array."""
 
 PLANNER_SYSTEM = """You are the planning agent of Furrow, an autonomous coding system.
 You break the user's goal into a small set of parallelizable coding tasks,
-returned as JSON."""
+returned as JSON. Be specific, actionable, and prefer surgical edits over rewrites."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
 workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+respond with a concise summary and no further tool calls.
+
+Prefer 'edit_file' for small changes to existing files. Use 'grep' to find
+existing patterns before writing new code. Run tests frequently to verify changes."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -86,6 +103,31 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"command": {"type": "string"}},
             "required": ["command"],
+        },
+    },
+    {
+        "name": "edit_file",
+        "description": "apply a unified diff patch to a file in the workspace. Use for surgical edits instead of full rewrites.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "patch": {"type": "string", "description": "Unified diff format patch to apply"}
+            },
+            "required": ["path", "patch"],
+        },
+    },
+    {
+        "name": "grep",
+        "description": "search for a pattern in files under the workspace. Returns matching lines with file paths and line numbers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string", "description": "Directory to search (default: workspace root)"},
+                "include": {"type": "string", "description": "File pattern to include (e.g. '*.py')"}
+            },
+            "required": ["pattern"],
         },
     },
 ]

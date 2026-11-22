@@ -131,6 +131,11 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+    # Cost budget: stop the run when estimated cost exceeds this value (USD).
+    # Set to 0 to disable. Useful for preventing runaway costs.
+    max_cost_usd: float = Field(default=0.0, ge=0)
+    # Warn when cost exceeds this fraction of max_cost_usd (0.0 to 1.0).
+    cost_warn_fraction: float = Field(default=0.8, ge=0.0, le=1.0)
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""

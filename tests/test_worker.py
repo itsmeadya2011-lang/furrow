@@ -378,8 +378,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["edit_file", "grep", "list_files", "read_file", "run_command", "write_file"]
+    assert len(WORKER_TOOLS) == 6
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -1319,3 +1319,268 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_edit_file_applies_patch(tmp_path):
+    """edit_file applies a unified diff patch to an existing file."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "example.py").write_text("def foo():\n    return 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    patch = """@@ -1,2 +1,2 @@
+ def foo():
+-    return 1
++    return 2
+"""
+    out = await agent._edit_file("example.py", patch)
+    assert out.startswith("patched ")
+    assert (tmp_path / "example.py").read_text() == "def foo():\n    return 2\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_creates_new_file(tmp_path):
+    """edit_file can create a new file when the patch adds content to an empty file."""
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    patch = """@@ -0,0 +1,2 @@
++def foo():
++    return 42
+"""
+    out = await agent._edit_file("new.py", patch)
+    assert out.startswith("patched ")
+    assert (tmp_path / "new.py").read_text() == "def foo():\n    return 42\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejects_malformed_patch(tmp_path):
+    """edit_file returns an error for a malformed patch."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "example.py").write_text("def foo():\n    return 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._edit_file("example.py", "not a valid patch")
+    assert out.startswith("error:")
+
+
+@pytest.mark.asyncio
+async def test_edit_file_rejects_mismatched_hunk(tmp_path):
+    """edit_file returns an error when the hunk context doesn't match."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "example.py").write_text("def foo():\n    return 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    # Patch expects "return 999" but file has "return 1"
+    patch = """@@ -1,2 +1,2 @@
+ def foo():
+-    return 999
++    return 2
+"""
+    out = await agent._edit_file("example.py", patch)
+    assert out.startswith("error:")
+
+
+@pytest.mark.asyncio
+async def test_edit_file_escapes_workspace(tmp_path):
+    """edit_file rejects paths that escape the workspace."""
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    patch = """@@ -0,0 +1,1 @@
++evil
+"""
+    out = await agent._edit_file("../evil.py", patch)
+    assert out == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_grep_finds_matches(tmp_path):
+    """grep finds pattern matches in files."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def bar():\n    return 2\n")
+    (tmp_path / "c.txt").write_text("hello world\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep("def ", ".")
+    assert "a.py:1:def foo():" in out
+    assert "b.py:1:def bar():" in out
+    assert "c.txt" not in out  # no "def " in c.txt
+
+
+@pytest.mark.asyncio
+async def test_grep_respects_include_pattern(tmp_path):
+    """grep respects the include file pattern."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.js").write_text("function foo() {\n    return 1;\n}")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep("foo", ".", include="*.py")
+    assert "a.py" in out
+    assert "b.js" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_returns_no_matches_message(tmp_path):
+    """grep returns a friendly message when no matches found."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep("nonexistent", ".")
+    assert "No matches found" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_invalid_regex(tmp_path):
+    """grep returns an error for invalid regex patterns."""
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep("[invalid", ".")
+    assert out.startswith("error: invalid regex pattern")
+
+
+@pytest.mark.asyncio
+async def test_grep_escapes_workspace(tmp_path):
+    """grep rejects paths that escape the workspace."""
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep("foo", "../outside")
+    assert out == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_grep_limits_matches(tmp_path):
+    """grep limits the number of matches returned."""
+    from furrow.config import TaskModel
+
+    for i in range(150):
+        (tmp_path / f"f{i}.py").write_text(f"def func{i}():\n    pass\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep("def func", ".")
+    lines = out.splitlines()
+    assert len(lines) == 101  # 100 matches + truncation note
+    assert "truncated at 100 matches" in lines[-1]
+
+
+@pytest.mark.asyncio
+async def test_edit_file_via_tool_call(tmp_path):
+    """edit_file works through the tool call interface."""
+    from furrow.config import TaskModel
+    from furrow.llm import ToolCall, LLMResponse
+
+    (tmp_path / "example.py").write_text("def foo():\n    return 1\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="edit_file",
+                    arguments={"path": "example.py", "patch": "@@ -1,2 +1,2 @@\n def foo():\n-    return 1\n+    return 2\n"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+
+    assert (tmp_path / "example.py").read_text() == "def foo():\n    return 2\n"
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "patched" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_via_tool_call(tmp_path):
+    """grep works through the tool call interface."""
+    from furrow.config import TaskModel
+    from furrow.llm import ToolCall, LLMResponse
+
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep",
+                    arguments={"pattern": "def foo", "path": "."},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "a.py:1:def foo():" in b["content"]
+                    found = True
+    assert found

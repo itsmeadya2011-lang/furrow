@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import difflib
 import json
 import os
 import re
@@ -659,6 +660,15 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "edit_file":
+            if "path" not in args or "patch" not in args:
+                return "error: missing path or patch"
+            return await self._edit_file(str(args.get("path", "")), str(args.get("patch", "")))
+        if name == "grep":
+            pattern = str(args.get("pattern", ""))
+            path = str(args.get("path", ".")) if args.get("path") is not None else "."
+            include = str(args.get("include", "")) if args.get("include") else None
+            return await self._grep(pattern, path, include)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -798,6 +808,179 @@ class WorkerAgent:
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
+
+    async def _edit_file(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not patch or not patch.strip():
+            return "error: empty patch"
+        
+        try:
+            # Read current file content
+            if resolved.exists():
+                original = await self.client.read_file(resolved)
+            else:
+                original = ""
+            
+            # Apply the patch
+            patched = self._apply_patch(original, patch)
+            if patched is None:
+                return "error: patch could not be applied (hunk mismatch or malformed)"
+            
+            # Write the patched content
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, patched)
+            
+            rel = str(resolved.relative_to(self.workspace.resolve()))
+            self.files_changed.add(rel)
+            return f"patched {path} ({len(patched.encode('utf-8'))} bytes)"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+    def _apply_patch(self, original: str, patch: str) -> str | None:
+        """Apply a unified diff patch to the original text. Returns patched text or None on failure."""
+        try:
+            original_lines = original.splitlines(keepends=True)
+            patch_lines = patch.splitlines(keepends=True)
+            
+            # Parse unified diff
+            i = 0
+            # Skip header lines (--- and +++)
+            while i < len(patch_lines) and (patch_lines[i].startswith("---") or patch_lines[i].startswith("+++")):
+                i += 1
+            
+            if i >= len(patch_lines):
+                return None
+            
+            result_lines = list(original_lines)
+            offset = 0  # Track line offset due to previous patches
+            hunks_processed = 0
+            
+            while i < len(patch_lines):
+                line = patch_lines[i]
+                if not line.startswith("@@"):
+                    i += 1
+                    continue
+                
+                # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+                hunk_match = re.match(r"^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@", line)
+                if not hunk_match:
+                    return None
+                
+                old_start_raw = int(hunk_match.group(1))
+                old_start = old_start_raw - 1 if old_start_raw > 0 else 0
+                old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+                new_start_raw = int(hunk_match.group(3))
+                new_start = new_start_raw - 1 if new_start_raw > 0 else 0
+                new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
+                
+                i += 1
+                hunk_lines = []
+                while i < len(patch_lines) and not patch_lines[i].startswith("@@"):
+                    hunk_lines.append(patch_lines[i])
+                    i += 1
+                
+                # Apply hunk
+                result_lines = self._apply_hunk(result_lines, old_start + offset, old_count, hunk_lines)
+                if result_lines is None:
+                    return None
+                
+                hunks_processed += 1
+                # Update offset for next hunk
+                offset += new_count - old_count
+            
+            if hunks_processed == 0:
+                return None
+            
+            return "".join(result_lines)
+        except Exception:
+            return None
+
+    def _apply_hunk(self, lines: list[str], start: int, old_count: int, hunk_lines: list[str]) -> list[str] | None:
+        """Apply a single hunk to the lines. Returns new lines or None on failure."""
+        if start < 0 or start > len(lines):
+            return None
+        
+        # Verify context lines match
+        expected_old = []
+        new_lines = []
+        
+        for hunk_line in hunk_lines:
+            if hunk_line.startswith(" "):
+                expected_old.append(hunk_line[1:])
+                new_lines.append(hunk_line[1:])
+            elif hunk_line.startswith("-"):
+                expected_old.append(hunk_line[1:])
+            elif hunk_line.startswith("+"):
+                new_lines.append(hunk_line[1:])
+            elif hunk_line.startswith("\\"):
+                # "No newline at end of file" marker
+                continue
+            else:
+                # Malformed line
+                return None
+        
+        # Check if the old context matches
+        actual_old = lines[start:start + old_count]
+        if expected_old != actual_old:
+            return None
+        
+        # Replace the old lines with new lines
+        return lines[:start] + new_lines + lines[start + old_count:]
+
+    async def _grep(self, pattern: str, path: str = ".", include: str | None = None) -> str:
+        """Search for a pattern in files under the workspace."""
+        import fnmatch
+        
+        search_path = resolve_in_workspace(self.workspace, path)
+        if search_path is None:
+            return "error: path escapes workspace"
+        if not search_path.exists():
+            return "error: path does not exist"
+        
+        try:
+            regex = re.compile(pattern)
+        except re.error as e:
+            return f"error: invalid regex pattern: {e}"
+        
+        matches = []
+        total_files = 0
+        max_matches = 100
+        
+        for root, dirs, files in os.walk(search_path):
+            # Skip ignored directories
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")]
+            
+            for file in files:
+                if include and not fnmatch.fnmatch(file, include):
+                    continue
+                total_files += 1
+                file_path = Path(root) / file
+                try:
+                    content = await self.client.read_file(file_path)
+                except (OSError, ValueError, RuntimeError, UnicodeDecodeError):
+                    continue
+                
+                for line_num, line in enumerate(content.splitlines(), 1):
+                    if regex.search(line):
+                        rel_path = str(file_path.relative_to(self.workspace.resolve()))
+                        matches.append(f"{rel_path}:{line_num}:{line.rstrip()}")
+                        if len(matches) >= max_matches:
+                            break
+                if len(matches) >= max_matches:
+                    break
+            if len(matches) >= max_matches:
+                break
+        
+        if not matches:
+            return f"No matches found for pattern '{pattern}' in {total_files} files"
+        
+        result = "\n".join(matches)
+        if len(matches) >= max_matches:
+            result += f"\n[... truncated at {max_matches} matches ...]"
+        return result
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

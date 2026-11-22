@@ -65,7 +65,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
     margin: 0 0 1rem; color: #f0f2f5;
   }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
   input {
     flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
     border: 1px solid #2b3240; border-radius: 6px; font: inherit;
@@ -73,12 +73,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
   button {
     padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    transition: border-color .15s, background .15s;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-primary { background: #2a5aa0; border-color: #4c8dff; }
+  .btn-primary:hover { background: #3a6abf; }
+  .btn-danger { background: #7a2a2a; border-color: #e0685f; }
+  .btn-danger:hover { background: #9a3a3a; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.5;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -94,13 +101,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .progress-bar {
+    height: 6px; background: #2b3240; border-radius: 3px; overflow: hidden;
+    margin: .5rem 0;
+  }
+  .progress-bar .fill {
+    height: 100%; background: linear-gradient(90deg, #4c8dff, #57d38c);
+    transition: width .3s ease;
+  }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color .15s;
   }
+  .panel:hover { border-color: #4c8dff; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
+    flex-wrap: wrap;
   }
   .panel-id { font-size: .85rem; color: #8a93a5; }
   .panel-status {
@@ -112,9 +130,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
     word-break: break-word;
   }
   .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    display: flex; gap: .8rem; font-size: .8rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-meta span { display: flex; align-items: center; gap: .2rem; }
+  .panel-files {
+    font-size: .75rem; color: #6a7a9a; margin-top: .3rem;
+    max-height: 4rem; overflow: auto;
+  }
+  .panel-files summary { cursor: pointer; color: #8a93a5; }
+  .panel-files summary:hover { color: #d7dae0; }
+  .panel-files ul { margin: .3rem 0 0 1rem; padding: 0; }
+  .panel-files li { margin: .1rem 0; }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -125,21 +152,68 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { color: #8a93a5; background: #1d2430; }
+  .status-running { color: #4c8dff; background: #1d3a5c; }
+  .status-completed { color: #57d38c; background: #1d3d2a; }
+  .status-failed { color: #e0685f; background: #3d1d1d; }
+  .status-blocked { color: #f0b367; background: #3d321d; }
+  .status-skipped { color: #8a93a5; background: #1d2430; }
+  .status-unknown { color: #8a93a5; background: #1d2430; }
+  .toolbar {
+    display: flex; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap;
+    font-size: .8rem; color: #8a93a5;
+  }
+  .toolbar label { display: flex; align-items: center; gap: .3rem; cursor: pointer; }
+  .toolbar input[type=checkbox] { accent-color: #4c8dff; }
+  .task-filter { display: flex; gap: .3rem; margin-left: auto; }
+  .task-filter button {
+    padding: .25rem .5rem; font-size: .75rem; border-radius: 4px;
+    background: #1d2430; border-color: #2b3240;
+  }
+  .task-filter button.active {
+    background: #2a5aa0; border-color: #4c8dff;
+  }
+  .log-line { display: flex; gap: .5rem; margin: .1rem 0; }
+  .log-time { color: #6a7a9a; flex-shrink: 0; }
+  .log-type-cycle { color: #4c8dff; }
+  .log-type-plan { color: #f0b367; }
+  .log-type-task { color: #57d38c; }
+  .log-type-task-failed { color: #e0685f; }
+  .log-type-test { color: #57d38c; }
+  .log-type-test-failed { color: #e0685f; }
+  .log-type-log { color: #8a93a5; }
+  .log-type-error { color: #e0685f; }
+  .log-type-done { color: #57d38c; font-weight: 700; }
+  .help-modal {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.8); display: none; align-items: center;
+    justify-content: center; z-index: 100;
+  }
+  .help-modal.open { display: flex; }
+  .help-content {
+    background: #171b23; border: 1px solid #2b3240; border-radius: 8px;
+    padding: 1.5rem; max-width: 50rem; width: 90%; max-height: 80vh;
+    overflow: auto;
+  }
+  .help-content h2 { margin-top: 0; color: #f0f2f5; }
+  .help-content table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+  .help-content th, .help-content td {
+    padding: .5rem; text-align: left; border-bottom: 1px solid #2b3240;
+  }
+  .help-content kbd {
+    background: #2b3240; padding: .1rem .4rem; border-radius: 3px;
+    font-family: inherit; font-size: .85em;
+  }
 </style>
 </head>
 <body>
 <h1>Furrow</h1>
 <div class="bar">
   <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
+  <button id="start" class="btn-primary">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" class="btn-danger" disabled>Stop</button>
+  <button id="help" title="Keyboard shortcuts (?)">?</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -149,9 +223,43 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
   </div>
+  <div class="progress-bar" id="progress-bar" style="display:none;">
+    <div class="fill" id="progress-fill" style="width:0%"></div>
+  </div>
+</div>
+<div class="toolbar">
+  <label><input type="checkbox" id="auto-scroll" checked /> Auto-scroll log</label>
+  <label><input type="checkbox" id="show-timestamps" checked /> Timestamps</label>
+  <div class="task-filter" id="task-filter">
+    <button data-filter="all" class="active">All</button>
+    <button data-filter="running">Running</button>
+    <button data-filter="completed">Completed</button>
+    <button data-filter="failed">Failed</button>
+    <button data-filter="blocked">Blocked</button>
+    <button data-filter="pending">Pending</button>
+  </div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="help-modal" id="help-modal">
+  <div class="help-content">
+    <h2>Keyboard Shortcuts</h2>
+    <table>
+      <tr><th>Key</th><th>Action</th></tr>
+      <tr><td><kbd>?</kbd> or <kbd>Shift+/</kbd></td><td>Show this help</td></tr>
+      <tr><td><kbd>Enter</kbd></td><td>Start run (from goal input)</td></tr>
+      <tr><td><kbd>Ctrl+Enter</kbd></td><td>Resume run</td></tr>
+      <tr><td><kbd>Escape</kbd></td><td>Stop current run</td></tr>
+      <tr><td><kbd>Ctrl+L</kbd></td><td>Clear log</td></tr>
+      <tr><td><kbd>Ctrl+S</kbd></td><td>Toggle auto-scroll</td></tr>
+      <tr><td><kbd>Ctrl+T</kbd></td><td>Toggle timestamps</td></tr>
+      <tr><td><kbd>1-6</kbd></td><td>Filter tasks (1=all, 2=running, 3=completed, 4=failed, 5=blocked, 6=pending)</td></tr>
+    </table>
+    <p style="margin-top:1rem; color:#8a93a5; font-size:.9rem;">
+      Click outside or press <kbd>Escape</kbd> to close.
+    </p>
+  </div>
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -161,28 +269,44 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const progressBarEl = document.getElementById('progress-bar');
+  const progressFillEl = document.getElementById('progress-fill');
+  const stopBtn = document.getElementById('stop');
+  const helpBtn = document.getElementById('help');
+  const helpModal = document.getElementById('help-modal');
+  const autoScrollCb = document.getElementById('auto-scroll');
+  const showTimestampsCb = document.getElementById('show-timestamps');
   let socket = null;
   let lastSummary = null;
+  let currentFilter = 'all';
+  let maxCycles = 0;
 
-  function append(line) {
-    logEl.textContent += line + '\n';
-    logEl.scrollTop = logEl.scrollHeight;
+  function append(line, type = 'log') {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    const time = new Date().toLocaleTimeString();
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'log-time';
+    timeSpan.textContent = time;
+    timeSpan.style.display = showTimestampsCb.checked ? 'inline' : 'none';
+    const msgSpan = document.createElement('span');
+    msgSpan.className = 'log-type-' + type;
+    msgSpan.textContent = line;
+    div.appendChild(timeSpan);
+    div.appendChild(msgSpan);
+    logEl.appendChild(div);
+    if (autoScrollCb.checked) {
+      logEl.scrollTop = logEl.scrollHeight;
+    }
   }
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
-    pending: 'pending',
-    running: 'running',
-    completed: 'completed',
-    failed: 'failed',
-    blocked: 'blocked',
-    skipped: 'skipped',
-    unknown: 'unknown'
+    pending: 'pending', running: 'running', completed: 'completed',
+    failed: 'failed', blocked: 'blocked', skipped: 'skipped', unknown: 'unknown'
   };
 
   function statusClass(status) {
@@ -195,21 +319,28 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
-    cycleEl.textContent =
-      text(status && status.cycles !== undefined ? status.cycles : '\u2014');
+    cycleEl.textContent = text(status && status.cycles !== undefined ? status.cycles : '\u2014');
     stateEl.textContent = running ? 'running' : 'stopped';
-    const reason =
-      text(status && status.stopped_reason) ||
-      text(result && result.stopped_reason) || '';
+    const reason = text(status && status.stopped_reason) || text(result && result.stopped_reason) || '';
     stoppedReasonEl.textContent = reason;
     stoppedReasonEl.style.display = reason ? '' : 'none';
     const usage = (status && status.usage) || (result && result.usage) || {};
     const calls = Number(usage.calls) || 0;
-    const total = (Number(usage.input_tokens) || 0) +
-      (Number(usage.output_tokens) || 0);
+    const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
-      (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens' + (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    
+    // Progress bar
+    const cycles = Number(status && status.cycles) || 0;
+    if (maxCycles > 0 && running) {
+      progressBarEl.style.display = 'block';
+      const pct = Math.min(100, (cycles / maxCycles) * 100);
+      progressFillEl.style.width = pct + '%';
+    } else {
+      progressBarEl.style.display = 'none';
+    }
+    
+    stopBtn.disabled = !running;
   }
 
   function renderTasks(tasks) {
@@ -226,6 +357,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
     list.forEach(function (task) {
       const status = text(task.status) || 'pending';
+      if (currentFilter !== 'all' && status !== currentFilter) return;
 
       const panel = document.createElement('div');
       panel.className = 'panel';
@@ -249,12 +381,35 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const meta = document.createElement('div');
       meta.className = 'panel-meta';
       const attempts = document.createElement('span');
-      attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
+      attempts.textContent = '\u21bb ' + (Number(task.attempts) || 0) + ' attempts';
       meta.appendChild(attempts);
+      
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const files = document.createElement('span');
+        files.textContent = '\ud83d\udcc4 ' + filesChanged.length + ' files';
+        meta.appendChild(files);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
+
+      if (filesChanged.length > 0) {
+        const filesEl = document.createElement('details');
+        filesEl.className = 'panel-files';
+        const summary = document.createElement('summary');
+        summary.textContent = 'Files changed (' + filesChanged.length + ')';
+        filesEl.appendChild(summary);
+        const ul = document.createElement('ul');
+        filesChanged.forEach(function(f) {
+          const li = document.createElement('li');
+          li.textContent = f;
+          ul.appendChild(li);
+        });
+        filesEl.appendChild(ul);
+        panel.appendChild(filesEl);
+      }
 
       const result = text(task.result);
       const error = text(task.error);
@@ -281,7 +436,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const body = await res.json();
       if (body.state && body.state.tasks) { renderTasks(body.state.tasks); }
     } catch (err) {
-      append('! could not load state');
+      append('! could not load state', 'error');
     }
   }
 
@@ -297,23 +452,30 @@ INDEX_HTML = r"""<!DOCTYPE html>
       if (body.result) {
         const summary = text(body.result.summary);
         if (summary && summary !== lastSummary) {
-          append('-- ' + summary);
+          append('-- ' + summary, 'done');
           lastSummary = summary;
         }
       }
     } catch (err) {
-      append('! could not load status');
+      append('! could not load status', 'error');
     }
+  }
+
+  function setFilter(filter) {
+    currentFilter = filter;
+    document.querySelectorAll('#task-filter button').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.filter === filter);
+    });
+    loadStatus(); // Re-render with new filter
   }
 
   function connect(payload) {
     if (socket) { socket.close(); }
+    maxCycles = payload.max_cycles || 0;
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
-      append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
+      append('> connected', 'log');
       lastSummary = null;
       socket.send(JSON.stringify(payload));
     };
@@ -334,43 +496,41 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const data = (msg && msg.data) || {};
       const time = eventTime(msg);
       let line = '';
-      let color = '#8a93a5';
+      let logType = 'log';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
+        logType = 'cycle';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        logType = 'plan';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+        logType = 'task';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
-        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
-          truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
+        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') + truncate(data.summary, 200);
+        logType = ok ? 'task' : 'task-failed';
       } else if (type === 'test_started') {
         line = 'running tests...';
+        logType = 'test';
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
+        logType = ok ? 'test' : 'test-failed';
       } else if (type === 'state_saved') {
         line = 'state saved';
       } else if (type === 'log') {
         line = text(msg.message);
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
-        color = '#e0685f';
+        logType = 'error';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
-        color = '#57d38c';
+        logType = 'done';
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
-      logEl.scrollTop = logEl.scrollHeight;
+      append(time + ' ' + line, logType);
       return line;
     }
 
@@ -379,11 +539,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       try {
         msg = JSON.parse(ev.data);
       } catch (err) {
-        append(ev.data);
+        append(ev.data, 'log');
         return;
       }
       renderEvent(msg);
-      if (msg.type === 'task_started' || msg.type === 'task_finished') {
+      if (msg.type === 'task_started' || msg.type === 'task_finished' || msg.type === 'plan_created') {
         loadStatus();
       }
       if (msg.type === 'done') {
@@ -391,21 +551,78 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
     };
     socket.onclose = function () {
-      append('-- closed');
+      append('-- closed', 'log');
       socket = null;
       loadStatus();
     };
     socket.onerror = function () {
-      append('!! websocket error');
+      append('!! websocket error', 'error');
     };
   }
 
   document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+    connect({ goal: goalEl.value, resume: false, max_cycles: 0 });
   };
   document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+    connect({ goal: goalEl.value, resume: true, max_cycles: 0 });
   };
+  stopBtn.onclick = function () {
+    if (socket) {
+      lastSummary = null;
+      socket.send(JSON.stringify({ type: 'cancel' }));
+      append('> sending cancel...', 'log');
+    }
+  };
+  helpBtn.onclick = function () {
+    helpModal.classList.add('open');
+  };
+  helpModal.onclick = function (e) {
+    if (e.target === helpModal) helpModal.classList.remove('open');
+  };
+  autoScrollCb.onchange = function () {
+    if (autoScrollCb.checked) logEl.scrollTop = logEl.scrollHeight;
+  };
+  showTimestampsCb.onchange = function () {
+    document.querySelectorAll('.log-time').forEach(el => {
+      el.style.display = showTimestampsCb.checked ? 'inline' : 'none';
+    });
+  };
+  document.querySelectorAll('#task-filter button').forEach(btn => {
+    btn.onclick = function () { setFilter(btn.dataset.filter); };
+  });
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function (e) {
+    if (e.target.tagName === 'INPUT' && e.target !== goalEl) return;
+    if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+      e.preventDefault();
+      helpModal.classList.toggle('open');
+    } else if (e.key === 'Escape') {
+      if (helpModal.classList.contains('open')) {
+        helpModal.classList.remove('open');
+      } else if (socket && !stopBtn.disabled) {
+        stopBtn.click();
+      }
+    } else if (e.key === 'Enter' && e.target === goalEl && !e.shiftKey && !e.ctrlKey) {
+      e.preventDefault();
+      document.getElementById('start').click();
+    } else if (e.key === 'Enter' && e.ctrlKey && e.target === goalEl) {
+      e.preventDefault();
+      document.getElementById('resume').click();
+    } else if (e.key === 'l' && e.ctrlKey) {
+      e.preventDefault();
+      logEl.textContent = '';
+    } else if (e.key === 's' && e.ctrlKey) {
+      e.preventDefault();
+      autoScrollCb.click();
+    } else if (e.key === 't' && e.ctrlKey) {
+      e.preventDefault();
+      showTimestampsCb.click();
+    } else if (e.key >= '1' && e.key <= '6' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      const filters = ['all', 'running', 'completed', 'failed', 'blocked', 'pending'];
+      setFilter(filters[parseInt(e.key) - 1]);
+    }
+  });
 
   loadState();
   loadStatus();
@@ -649,6 +866,19 @@ async def api_start(request: StartRequest) -> JSONResponse:
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
 
 
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the currently running background run."""
+    task = _CURRENT.get("task")
+    if not task or not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"cancelled": False, "error": "no run in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Run a goal and stream every event it emits to the client."""
@@ -711,6 +941,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             except asyncio.TimeoutError:
                 continue
             await websocket.send_json(event.to_dict())
+            # Check for incoming client messages (e.g., cancel)
+            try:
+                msg = await asyncio.wait_for(websocket.receive_json(), timeout=0.01)
+                if msg.get("type") == "cancel":
+                    _cancel_run(run_task)
+            except (asyncio.TimeoutError, WebSocketDisconnect, RuntimeError):
+                pass
         if run_task is None:  # pragma: no cover - defensive
             return
         # The run is over: clear the flag right away instead of waiting for the

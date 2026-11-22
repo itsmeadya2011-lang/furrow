@@ -27,12 +27,16 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+COST_BUDGET_HELP = "Maximum cost in USD (0 = unlimited)."
+COST_WARN_HELP = "Warn when cost exceeds this fraction of budget (0.0-1.0)."
 
 
 def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    max_cost_usd: float | None = None,
+    cost_warn_fraction: float | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +50,10 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if max_cost_usd is not None:
+        updates["max_cost_usd"] = max_cost_usd
+    if cost_warn_fraction is not None:
+        updates["cost_warn_fraction"] = cost_warn_fraction
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -88,7 +96,6 @@ def _print_summary(result: RunResult) -> None:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
     if result.summary:
         click.echo(f"  Summary: {result.summary}")
-
 
 def _print_state(state: RunState) -> None:
     """Print the persisted run state."""
@@ -188,6 +195,8 @@ def main() -> None:
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
+@click.option("--max-cost", type=click.FloatRange(min=0), default=None, help=COST_BUDGET_HELP)
+@click.option("--cost-warn", type=click.FloatRange(min=0, max=1), default=None, help=COST_WARN_HELP)
 @click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
@@ -199,13 +208,16 @@ def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
+    max_cost: float | None,
+    cost_warn: float | None,
     workspace: Path | None,
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace,
+                                 max_cost_usd=max_cost, cost_warn_fraction=cost_warn)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +247,12 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--max-cost", type=click.FloatRange(min=0), default=None, help=COST_BUDGET_HELP)
+@click.option("--cost-warn", type=click.FloatRange(min=0, max=1), default=None, help=COST_WARN_HELP)
+def resume(workspace: Path | None, max_cycles: int | None, max_cost: float | None, cost_warn: float | None) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace,
+                                 max_cost_usd=max_cost, cost_warn_fraction=cost_warn)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

@@ -11,6 +11,7 @@ import pytest
 
 from furrow.config import Provider, Settings
 from furrow.llm import (
+    CircuitBreaker,
     LLMClient,
     ToolCall,
     _is_retryable,
@@ -1154,4 +1155,92 @@ def test_list_files_returns_sorted_relative_paths(tmp_path):
 def test_list_files_missing_directory_returns_empty(tmp_path):
     client = LLMClient()
     assert client.list_files(tmp_path / "does-not-exist") == []
+
+
+async def test_circuit_breaker_starts_closed():
+    cb = CircuitBreaker()
+    assert cb.is_open is False
+    assert cb.failures == 0
+    assert cb.can_attempt() is True
+
+
+async def test_circuit_breaker_opens_after_threshold():
+    cb = CircuitBreaker(threshold=2, timeout=60.0)
+    cb.record_failure()
+    assert cb.is_open is False
+    cb.record_failure()
+    assert cb.is_open is True
+    assert cb.failures == 2
+    assert cb.can_attempt() is False
+
+
+async def test_circuit_breaker_allows_attempt_after_timeout():
+    cb = CircuitBreaker(threshold=1, timeout=0.0)
+    cb.record_failure()
+    assert cb.is_open is True
+    assert cb.can_attempt() is True
+
+
+async def test_circuit_breaker_success_resets_state():
+    cb = CircuitBreaker(threshold=2, timeout=60.0)
+    cb.record_failure()
+    cb.record_success()
+    assert cb.failures == 0
+    assert cb.is_open is False
+    assert cb.can_attempt() is True
+
+
+async def test_retry_raises_when_circuit_breaker_is_open():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    client._circuit_breakers["openai"].is_open = True
+    with pytest.raises(RuntimeError, match="Circuit breaker open for openai"):
+        await client._retry(lambda: None, provider="openai")
+
+
+async def test_circuit_breaker_opens_after_repeated_failures(monkeypatch, fast_sleep):
+    class _AlwaysFailCompletions:
+        async def create(self, **kwargs):
+            raise _FakeStatusError(503)
+
+    class _Chat:
+        def __init__(self) -> None:
+            self.completions = _AlwaysFailCompletions()
+
+    class _Client:
+        def __init__(self) -> None:
+            self.chat = _Chat()
+
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=1))
+    client._openai = _Client()
+    client._circuit_breakers["openai"] = CircuitBreaker(threshold=2, timeout=60.0)
+
+    with pytest.raises(_FakeStatusError):
+        await client.complete("hi")
+    with pytest.raises(_FakeStatusError):
+        await client.complete("hi")
+
+    cb = client._circuit_breakers["openai"]
+    assert cb.is_open is True
+    with pytest.raises(RuntimeError, match="Circuit breaker open for openai"):
+        await client.complete("hi")
+
+
+async def test_circuit_breaker_success_resets_failures():
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=1))
+    cb = CircuitBreaker(threshold=3, timeout=60.0)
+    client._circuit_breakers["openai"] = cb
+
+    async def boom():
+        raise _FakeStatusError(503)
+
+    async def ok():
+        return "fine"
+
+    with pytest.raises(_FakeStatusError):
+        await client._retry(boom, provider="openai")
+    assert cb.failures == 1
+
+    assert await client._retry(ok, provider="openai") == "fine"
+    assert cb.failures == 0
+    assert cb.is_open is False
 

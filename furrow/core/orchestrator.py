@@ -179,7 +179,12 @@ class Orchestrator:
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
-                plan = await self.planner.plan(self.goal, context=self._context())
+                plan = await self.planner.plan(
+                    self.goal,
+                    context=self._context(),
+                    history=[h.model_dump() for h in self.history],
+                    existing_files=[t.id for t in self.tasks],
+                )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -255,6 +260,17 @@ class Orchestrator:
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
             cycle_usage = self._accumulate_usage()
+            
+            # Check cost budget
+            if self.settings.max_cost_usd > 0:
+                total_cost = self._usage.cost_usd
+                if total_cost >= self.settings.max_cost_usd:
+                    self._stopped_reason = f"cost budget exceeded: ${total_cost:.6f} >= ${self.settings.max_cost_usd:.6f}"
+                    self.event_bus.emit(Event(type=EventType.LOG, message=f"Cost budget exceeded: ${total_cost:.6f}"))
+                    guard_tripped = True
+                elif total_cost >= self.settings.max_cost_usd * self.settings.cost_warn_fraction:
+                    self.event_bus.emit(Event(type=EventType.LOG, message=f"Cost warning: ${total_cost:.6f} ({total_cost/self.settings.max_cost_usd*100:.0f}% of budget)"))
+            
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
                 task_summaries=[t.id for t in self.tasks],

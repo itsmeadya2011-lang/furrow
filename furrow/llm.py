@@ -28,6 +28,47 @@ except ImportError:  # pragma: no cover - tenacity is a declared dependency
 
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504, 529}
 
+# Circuit breaker configuration
+CIRCUIT_BREAKER_THRESHOLD = 5  # Number of failures before opening circuit
+CIRCUIT_BREAKER_TIMEOUT = 60.0  # Seconds before attempting to close circuit
+
+
+class CircuitBreaker:
+    """Simple circuit breaker to prevent cascading failures."""
+    
+    def __init__(self, threshold: int = CIRCUIT_BREAKER_THRESHOLD, timeout: float = CIRCUIT_BREAKER_TIMEOUT):
+        self.threshold = threshold
+        self.timeout = timeout
+        self.failures = 0
+        self.last_failure_time: float | None = None
+        self.is_open = False
+    
+    def record_success(self) -> None:
+        self.failures = 0
+        self.is_open = False
+    
+    def record_failure(self) -> None:
+        self.failures += 1
+        self.last_failure_time = asyncio.get_event_loop().time()
+        if self.failures >= self.threshold:
+            self.is_open = True
+    
+    def can_attempt(self) -> bool:
+        if not self.is_open:
+            return True
+        # Check if timeout has passed to allow a test request
+        if self.last_failure_time is not None:
+            elapsed = asyncio.get_event_loop().time() - self.last_failure_time
+            if elapsed >= self.timeout:
+                return True
+        return False
+    
+    def reset(self) -> None:
+        self.failures = 0
+        self.is_open = False
+        self.last_failure_time = None
+
+
 #: Directories that never hold first-party source and would only flood a
 #: listing: version-control internals, caches, virtualenvs, dependency
 #: installs, build output and editor metadata. ``node_modules`` or ``.git``
@@ -255,6 +296,12 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        # Circuit breakers per provider
+        self._circuit_breakers: dict[str, CircuitBreaker] = {
+            "anthropic": CircuitBreaker(),
+            "openai": CircuitBreaker(),
+            "ollama": CircuitBreaker(),
+        }
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -310,12 +357,18 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
-    async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
+    async def _retry(self, call: Callable[[], Awaitable[T]], provider: str | None = None) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
         The call is retried up to ``settings.max_retries`` attempts. Errors that
         are not retryable (see :func:`_is_retryable`) are raised immediately.
         """
+        # Check circuit breaker
+        if provider and provider in self._circuit_breakers:
+            cb = self._circuit_breakers[provider]
+            if not cb.can_attempt():
+                raise RuntimeError(f"Circuit breaker open for {provider} - too many failures")
+        
         max_attempts = max(1, int(self.settings.max_retries))
 
         if _TENACITY_AVAILABLE:
@@ -326,14 +379,27 @@ class LLMClient:
                 reraise=True,
             ):
                 with attempt_manager:
-                    return await call()
+                    try:
+                        result = await call()
+                        if provider and provider in self._circuit_breakers:
+                            self._circuit_breakers[provider].record_success()
+                        return result
+                    except Exception as exc:
+                        if provider and provider in self._circuit_breakers:
+                            self._circuit_breakers[provider].record_failure()
+                        raise
 
         last_exc: Exception | None = None
         for attempt_index in range(max_attempts):
             try:
-                return await call()
+                result = await call()
+                if provider and provider in self._circuit_breakers:
+                    self._circuit_breakers[provider].record_success()
+                return result
             except Exception as exc:
                 last_exc = exc
+                if provider and provider in self._circuit_breakers:
+                    self._circuit_breakers[provider].record_failure()
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
@@ -356,7 +422,7 @@ class LLMClient:
                 raise ValueError(f"Unsupported provider: {provider}")
             return response.text
 
-        return await self._retry(call)
+        return await self._retry(call, provider.value)
 
     async def chat(
         self,
@@ -381,7 +447,7 @@ class LLMClient:
                 )
             raise ValueError(f"Unsupported provider: {provider}")
 
-        return await self._retry(call)
+        return await self._retry(call, provider.value)
 
     async def _complete_anthropic(self, prompt: str, system: str, model: str) -> LLMResponse:
         response = await self.anthropic.messages.create(
