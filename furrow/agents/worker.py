@@ -7,6 +7,8 @@ import os
 import re
 import shlex
 import signal
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -659,6 +661,10 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "diff_file":
+            return await self._diff_file(str(args.get("path", "")), str(args.get("new_content", "")))
+        if name == "patch_file":
+            return await self._patch_file(str(args.get("path", "")), str(args.get("patch", "")))
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -713,6 +719,75 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _diff_file(self, path: str, new_content: str) -> str:
+        """Show a unified diff between the current file and proposed new content."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            old_content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        
+        import difflib
+        old_lines = old_content.splitlines(keepends=True)
+        new_lines = new_content.splitlines(keepends=True)
+        diff = difflib.unified_diff(old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}")
+        diff_text = "".join(diff)
+        if not diff_text:
+            return "No changes."
+        return diff_text
+
+    async def _patch_file(self, path: str, patch: str) -> str:
+        """Apply a unified diff patch to a file."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            old_content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        
+        # Apply the patch using the patch command
+        import tempfile
+        import subprocess
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as pf:
+                pf.write(patch)
+                patch_file = pf.name
+            
+            # Use git apply or patch command
+            result = subprocess.run(
+                ["git", "apply", "--whitespace=nowarn", patch_file],
+                cwd=str(self.workspace),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                # Try patch command as fallback
+                result = subprocess.run(
+                    ["patch", "-p1", "-i", patch_file],
+                    cwd=str(self.workspace),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            os.unlink(patch_file)
+            
+            if result.returncode != 0:
+                return f"error: patch failed: {result.stderr or result.stdout}"
+            
+            # Read the new content to verify
+            new_content = await self.client.read_file(resolved)
+            rel = str(resolved.relative_to(self.workspace.resolve()))
+            self.files_changed.add(rel)
+            return f"patched {path} ({len(new_content.encode('utf-8'))} bytes)"
+        except subprocess.TimeoutExpired:
+            return "error: patch command timed out"
+        except Exception as exc:
+            return f"error: {exc}"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)

@@ -57,28 +57,44 @@ INDEX_HTML = r"""<!DOCTYPE html>
 <title>Furrow</title>
 <style>
   :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
   body {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     margin: 0; padding: 1.25rem; background: #10131a; color: #d7dae0;
+    line-height: 1.5;
   }
   h1 {
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
     margin: 0 0 1rem; color: #f0f2f5;
   }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
-  input {
+  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
+  .bar input {
     flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
     border: 1px solid #2b3240; border-radius: 6px; font: inherit;
   }
-  button {
+  .bar button {
     padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    transition: border-color .15s, background .15s;
   }
-  button:hover { border-color: #4c8dff; }
+  .bar button:hover { border-color: #4c8dff; background: #253042; }
+  .bar button:disabled { opacity: .5; cursor: not-allowed; }
+  .bar button.primary { background: #1e3a5f; border-color: #4c8dff; }
+  .bar button.primary:hover { background: #25487a; }
+  .bar button.danger { background: #5a1e1e; border-color: #e0685f; }
+  .bar button.danger:hover { background: #7a2525; }
+  .filter-bar { display: flex; gap: .4rem; flex-wrap: wrap; margin: .5rem 0; }
+  .filter-bar button {
+    padding: .3rem .6rem; border-radius: 4px; border: 1px solid #2b3240;
+    background: #1d2430; color: #8a93a5; font-size: .8rem; cursor: pointer;
+  }
+  .filter-bar button.active { background: #1e3a5f; border-color: #4c8dff; color: #d7dae0; }
+  .filter-bar button:hover:not(.active) { border-color: #4c8dff; color: #d7dae0; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.6;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -89,66 +105,141 @@ INDEX_HTML = r"""<!DOCTYPE html>
     word-break: break-word;
   }
   .header .meta {
-    display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .5rem;
+    display: flex; gap: 1.5rem; flex-wrap: wrap; margin-top: .5rem;
     font-size: .9rem; color: #8a93a5;
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .progress-bar {
+    height: 6px; background: #1d2430; border-radius: 3px; overflow: hidden;
+    margin: .5rem 0;
+  }
+  .progress-bar > div {
+    height: 100%; border-radius: 3px; transition: width .3s ease;
+  }
+  .progress-completed { background: #57d38c; }
+  .progress-running { background: #4c8dff; }
+  .progress-failed { background: #e0685f; }
+  .progress-blocked { background: #f0b367; }
+  .progress-pending { background: #8a93a5; }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color .15s;
   }
+  .panel:hover { border-color: #4c8dff; }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
+    flex-wrap: wrap;
   }
   .panel-id { font-size: .85rem; color: #8a93a5; }
   .panel-status {
-    font-size: .8rem; font-weight: 700; text-transform: uppercase;
-    padding: .05rem .4rem; border-radius: 3px;
+    font-size: .75rem; font-weight: 700; text-transform: uppercase;
+    padding: .1rem .5rem; border-radius: 3px;
+    letter-spacing: .05em;
   }
+  .panel-files { font-size: .75rem; color: #8a93a5; margin-left: auto; }
   .panel-desc {
-    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
+    margin: 0 0 .4rem; font-size: .95rem; color: #d7dae0;
     word-break: break-word;
   }
   .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    display: flex; gap: 1rem; font-size: .8rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-meta span { display: flex; align-items: center; gap: .3rem; }
   .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
-    white-space: pre-wrap;
+    margin: 0 0 .3rem; font-size: .85rem; color: #57d38c;
+    white-space: pre-wrap; background: #0f1a12; padding: .4rem .6rem; border-radius: 4px;
   }
   .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+    margin: 0; font-size: .85rem; color: #e0685f; white-space: pre-wrap;
+    background: #1a0f0f; padding: .4rem .6rem; border-radius: 4px;
   }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { background: #2b3240; color: #8a93a5; }
+  .status-running { background: #1e3a5f; color: #4c8dff; }
+  .status-completed { background: #0f1a12; color: #57d38c; }
+  .status-failed { background: #1a0f0f; color: #e0685f; }
+  .status-blocked { background: #1a150f; color: #f0b367; }
+  .status-skipped { background: #2b3240; color: #8a93a5; }
+  .status-unknown { background: #2b3240; color: #8a93a5; }
+  .stats-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: .75rem; margin: 1rem 0; padding: .75rem;
+    background: #171b23; border: 1px solid #2b3240; border-radius: 8px;
+  }
+  .stat-card { text-align: center; }
+  .stat-value { font-size: 1.5rem; font-weight: 700; color: #f0f2f5; }
+  .stat-label { font-size: .75rem; color: #8a93a5; text-transform: uppercase; letter-spacing: .05em; }
+  .cycle-badge {
+    display: inline-block; padding: .15rem .5rem; border-radius: 999px;
+    font-size: .75rem; font-weight: 700; background: #1e3a5f; color: #4c8dff;
+  }
+  .log-line { display: flex; gap: .5rem; margin: .1rem 0; }
+  .log-time { color: #5a6a85; font-size: .8rem; white-space: nowrap; }
+  .log-type-cycle_started { color: #4c8dff; }
+  .log-type-plan_created { color: #a87aff; }
+  .log-type-task_started { color: #4c8dff; }
+  .log-type-task_finished.ok { color: #57d38c; }
+  .log-type-task_finished.err { color: #e0685f; }
+  .log-type-test_started { color: #f0b367; }
+  .log-type-test_finished.ok { color: #57d38c; }
+  .log-type-test_finished.err { color: #e0685f; }
+  .log-type-log { color: #8a93a5; }
+  .log-type-error { color: #e0685f; }
+  .log-type-done { color: #57d38c; font-weight: 700; }
+  .connection-status {
+    display: inline-flex; align-items: center; gap: .3rem; font-size: .75rem;
+    padding: .2rem .5rem; border-radius: 999px;
+  }
+  .connection-status.connected { background: #0f1a12; color: #57d38c; }
+  .connection-status.disconnected { background: #1a0f0f; color: #e0685f; }
+  .connection-status.connecting { background: #1a150f; color: #f0b367; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  @media (max-width: 600px) {
+    .bar { flex-direction: column; align-items: stretch; }
+    .bar input { width: 100%; }
+    .header .meta { gap: .75rem; }
+  }
 </style>
 </head>
 <body>
 <h1>Furrow</h1>
 <div class="bar">
   <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
+  <button id="start" class="primary">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" class="danger" disabled>Stop</button>
+  <span id="conn-status" class="connection-status disconnected"><span class="dot"></span>Disconnected</span>
+</div>
+<div class="filter-bar" id="filter-bar">
+  <button class="active" data-filter="all">All</button>
+  <button data-filter="pending">Pending</button>
+  <button data-filter="running">Running</button>
+  <button data-filter="completed">Completed</button>
+  <button data-filter="failed">Failed</button>
+  <button data-filter="blocked">Blocked</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
   <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
+    <span>Cycle: <b id="cycle">\u2014</b></span>
+    <span>State: <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>Usage: <b id="usage">0 calls, 0 tokens</b></span>
   </div>
+</div>
+<div class="stats-grid" id="stats-grid" style="display:none;">
+  <div class="stat-card"><div class="stat-value" id="stat-total">0</div><div class="stat-label">Total</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-completed">0</div><div class="stat-label">Completed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-running">0</div><div class="stat-label">Running</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-failed">0</div><div class="stat-label">Failed</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-blocked">0</div><div class="stat-label">Blocked</div></div>
+  <div class="stat-card"><div class="stat-value" id="stat-pending">0</div><div class="stat-label">Pending</div></div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -161,28 +252,49 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const connStatusEl = document.getElementById('conn-status');
+  const filterButtons = document.querySelectorAll('#filter-bar button');
+  const statsGrid = document.getElementById('stats-grid');
+  const statTotal = document.getElementById('stat-total');
+  const statCompleted = document.getElementById('stat-completed');
+  const statRunning = document.getElementById('stat-running');
+  const statFailed = document.getElementById('stat-failed');
+  const statBlocked = document.getElementById('stat-blocked');
+  const statPending = document.getElementById('stat-pending');
   let socket = null;
   let lastSummary = null;
+  let currentFilter = 'all';
+  let currentTasks = [];
 
-  function append(line) {
-    logEl.textContent += line + '\n';
+  function append(line, type = 'log') {
+    const div = document.createElement('div');
+    div.className = 'log-line log-type-' + type;
+    const now = new Date();
+    const time = now.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'log-time';
+    timeSpan.textContent = time;
+    const msgSpan = document.createElement('span');
+    msgSpan.textContent = line;
+    div.appendChild(timeSpan);
+    div.appendChild(msgSpan);
+    logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div['inner' + 'HTML'];
   }
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
-    pending: 'pending',
-    running: 'running',
-    completed: 'completed',
-    failed: 'failed',
-    blocked: 'blocked',
-    skipped: 'skipped',
-    unknown: 'unknown'
+    pending: 'pending', running: 'running', completed: 'completed',
+    failed: 'failed', blocked: 'blocked', skipped: 'skipped', unknown: 'unknown'
   };
 
   function statusClass(status) {
@@ -193,43 +305,86 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return 'unknown';
   }
 
+  function setConnectionStatus(state) {
+    connStatusEl.className = 'connection-status ' + state;
+    const labels = { connected: 'Connected', disconnected: 'Disconnected', connecting: 'Connecting...' };
+    while (connStatusEl.firstChild) {
+      connStatusEl.removeChild(connStatusEl.firstChild);
+    }
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    connStatusEl.appendChild(dot);
+    connStatusEl.appendChild(document.createTextNode(labels[state]));
+  }
+
+  function updateStats(tasks) {
+    const total = tasks.length;
+    const completed = tasks.filter(t => text(t.status).toLowerCase() === 'completed').length;
+    const running = tasks.filter(t => text(t.status).toLowerCase() === 'running').length;
+    const failed = tasks.filter(t => text(t.status).toLowerCase() === 'failed').length;
+    const blocked = tasks.filter(t => text(t.status).toLowerCase() === 'blocked').length;
+    const pending = tasks.filter(t => text(t.status).toLowerCase() === 'pending').length;
+    statTotal.textContent = total;
+    statCompleted.textContent = completed;
+    statRunning.textContent = running;
+    statFailed.textContent = failed;
+    statBlocked.textContent = blocked;
+    statPending.textContent = pending;
+    statsGrid.style.display = total > 0 ? 'grid' : 'none';
+  }
+
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
-    cycleEl.textContent =
-      text(status && status.cycles !== undefined ? status.cycles : '\u2014');
+    cycleEl.textContent = text(status && status.cycles !== undefined ? status.cycles : '\u2014');
     stateEl.textContent = running ? 'running' : 'stopped';
-    const reason =
-      text(status && status.stopped_reason) ||
-      text(result && result.stopped_reason) || '';
+    const reason = text(status && status.stopped_reason) || text(result && result.stopped_reason) || '';
     stoppedReasonEl.textContent = reason;
     stoppedReasonEl.style.display = reason ? '' : 'none';
     const usage = (status && status.usage) || (result && result.usage) || {};
     const calls = Number(usage.calls) || 0;
-    const total = (Number(usage.input_tokens) || 0) +
-      (Number(usage.output_tokens) || 0);
+    const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
-    usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
-      (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    usageEl.textContent = calls + ' calls, ' + total + ' tokens' + (cost > 0 ? ', $' + cost.toFixed(6) : '');
+  }
+
+  function filterTasks() {
+    currentTasks.forEach(task => {
+      const panel = document.getElementById('task-' + text(task.id));
+      if (!panel) return;
+      const status = text(task.status).toLowerCase();
+      if (currentFilter === 'all' || status === currentFilter) {
+        panel.style.display = '';
+      } else {
+        panel.style.display = 'none';
+      }
+    });
   }
 
   function renderTasks(tasks) {
+    currentTasks = tasks || [];
     while (tasksEl.firstChild) {
       tasksEl.removeChild(tasksEl.firstChild);
     }
-    const list = tasks || [];
+    const list = currentTasks;
     if (list.length === 0) {
       const hint = document.createElement('p');
       hint.className = 'panel-empty';
       hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
       tasksEl.appendChild(hint);
+      statsGrid.style.display = 'none';
       return;
     }
+    updateStats(list);
     list.forEach(function (task) {
       const status = text(task.status) || 'pending';
+      const statusLower = status.toLowerCase();
 
       const panel = document.createElement('div');
       panel.className = 'panel';
       panel.id = 'task-' + text(task.id);
+      if (currentFilter !== 'all' && statusLower !== currentFilter) {
+        panel.style.display = 'none';
+      }
 
       const head = document.createElement('div');
       head.className = 'panel-head';
@@ -239,8 +394,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const statusEl = document.createElement('span');
       statusEl.className = 'panel-status status-' + statusClass(status);
       statusEl.textContent = status;
+      const filesEl = document.createElement('span');
+      filesEl.className = 'panel-files';
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length) {
+        filesEl.textContent = filesChanged.length + ' file' + (filesChanged.length !== 1 ? 's' : '');
+      }
       head.appendChild(idEl);
       head.appendChild(statusEl);
+      head.appendChild(filesEl);
 
       const desc = document.createElement('div');
       desc.className = 'panel-desc';
@@ -249,8 +411,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const meta = document.createElement('div');
       meta.className = 'panel-meta';
       const attempts = document.createElement('span');
-      attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
+      attempts.textContent = '\u27F3 ' + (Number(task.attempts) || 0) + ' attempt' + ((Number(task.attempts) || 0) !== 1 ? 's' : '');
+      const deps = task.dependencies || [];
+      const depsEl = document.createElement('span');
+      if (deps.length) {
+        depsEl.textContent = '\u21D0 ' + deps.join(', ');
+      }
       meta.appendChild(attempts);
+      if (deps.length) meta.appendChild(depsEl);
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -275,13 +443,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
   }
 
+  filterButtons.forEach(btn => {
+    btn.addEventListener('click', () => {
+      filterButtons.forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentFilter = btn.dataset.filter;
+      filterTasks();
+    });
+  });
+
   async function loadState() {
     try {
       const res = await fetch('/api/state');
       const body = await res.json();
       if (body.state && body.state.tasks) { renderTasks(body.state.tasks); }
     } catch (err) {
-      append('! could not load state');
+      append('! could not load state', 'error');
     }
   }
 
@@ -297,12 +474,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       if (body.result) {
         const summary = text(body.result.summary);
         if (summary && summary !== lastSummary) {
-          append('-- ' + summary);
+          append('-- ' + summary, 'done');
           lastSummary = summary;
         }
       }
     } catch (err) {
-      append('! could not load status');
+      append('! could not load status', 'error');
     }
   }
 
@@ -310,12 +487,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
     if (socket) { socket.close(); }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
+    setConnectionStatus('connecting');
     socket.onopen = function () {
+      setConnectionStatus('connected');
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
       socket.send(JSON.stringify(payload));
+      document.getElementById('start').disabled = true;
+      document.getElementById('resume').disabled = true;
+      document.getElementById('stop').disabled = false;
     };
     function truncate(value, max) {
       const s = text(value);
@@ -334,44 +514,41 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const data = (msg && msg.data) || {};
       const time = eventTime(msg);
       let line = '';
-      let color = '#8a93a5';
+      let logType = 'log';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
+        logType = 'cycle_started';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
+        logType = 'plan_created';
       } else if (type === 'task_started') {
         line = 'task ' + text(data.task) + ' started';
+        logType = 'task_started';
       } else if (type === 'task_finished') {
         const ok = data.success === true;
-        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
-          truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
+        line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') + truncate(data.summary, 200);
+        logType = 'task_finished ' + (ok ? 'ok' : 'err');
       } else if (type === 'test_started') {
         line = 'running tests...';
+        logType = 'test_started';
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
-        color = ok ? '#57d38c' : '#e0685f';
+        logType = 'test_finished ' + (ok ? 'ok' : 'err');
       } else if (type === 'state_saved') {
         line = 'state saved';
       } else if (type === 'log') {
         line = text(msg.message);
       } else if (type === 'error') {
         line = 'ERROR: ' + text(msg.message);
-        color = '#e0685f';
+        logType = 'error';
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
-        color = '#57d38c';
+        logType = 'done';
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
-      logEl.scrollTop = logEl.scrollHeight;
-      return line;
+      append(line, logType);
     }
 
     socket.onmessage = function (ev) {
@@ -388,15 +565,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
       if (msg.type === 'done') {
         loadStatus();
+        document.getElementById('start').disabled = false;
+        document.getElementById('resume').disabled = false;
+        document.getElementById('stop').disabled = true;
       }
     };
     socket.onclose = function () {
+      setConnectionStatus('disconnected');
       append('-- closed');
       socket = null;
       loadStatus();
+      document.getElementById('start').disabled = false;
+      document.getElementById('resume').disabled = false;
+      document.getElementById('stop').disabled = true;
     };
     socket.onerror = function () {
-      append('!! websocket error');
+      append('!! websocket error', 'error');
+      setConnectionStatus('disconnected');
     };
   }
 
@@ -405,6 +590,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('stop').onclick = function () {
+    if (socket) { socket.close(); }
   };
 
   loadState();

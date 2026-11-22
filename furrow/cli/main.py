@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+from pydantic import ValidationError
 
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
@@ -47,7 +48,18 @@ def _run_settings(
     if workspace is not None:
         updates["workspace"] = Path(workspace)
     merged = {**settings.model_dump(), **updates}
-    return Settings.model_validate(merged)
+    try:
+        return Settings.model_validate(merged)
+    except ValidationError as e:
+        errors = []
+        for err in e.errors():
+            loc = ".".join(str(x) for x in err.get("loc", ()))
+            msg = err.get("msg", "validation error")
+            errors.append(f"  {loc}: {msg}")
+        click.secho("Configuration error:", fg="red")
+        for err in errors:
+            click.secho(err, fg="red")
+        sys.exit(1)
 
 
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:

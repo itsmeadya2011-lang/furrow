@@ -71,6 +71,30 @@ WORKER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "diff_file",
+        "description": "show a unified diff between the current file content and the proposed new content. Use this to preview changes before writing.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "new_content": {"type": "string"},
+            },
+            "required": ["path", "new_content"],
+        },
+    },
+    {
+        "name": "patch_file",
+        "description": "apply a unified diff patch to a file. More precise than write_file for targeted changes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "patch": {"type": "string"},
+            },
+            "required": ["path", "patch"],
+        },
+    },
+    {
         "name": "list_files",
         "description": "list files under a workspace directory (relative paths).",
         "parameters": {

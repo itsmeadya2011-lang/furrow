@@ -262,6 +262,10 @@ class Orchestrator:
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,
             ))
+            # Prune history to prevent unbounded growth
+            max_history = self.settings.max_history_entries
+            if len(self.history) > max_history:
+                self.history = self.history[-max_history:]
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
             sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
             # A skipped run (no test runner) reports passed=True but gives the

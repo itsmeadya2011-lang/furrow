@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from furrow.costs import ModelPricing
@@ -130,7 +130,37 @@ class Settings(BaseSettings):
     test_timeout: float = Field(default=600.0, gt=0)
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
+    max_history_entries: int = Field(default=50, ge=1)
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _validate_log_level(cls, v: Any) -> str:
+        if not isinstance(v, str):
+            return "INFO"
+        level = v.upper()
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if level not in valid:
+            raise ValueError(f"log_level must be one of {sorted(valid)}, got '{v}'")
+        return level
+
+    @field_validator("ollama_base_url", mode="before")
+    @classmethod
+    def _validate_ollama_url(cls, v: Any) -> str:
+        if not isinstance(v, str) or not v.strip():
+            return "http://localhost:11434"
+        url = v.strip().rstrip("/")
+        if not (url.startswith("http://") or url.startswith("https://")):
+            raise ValueError(f"ollama_base_url must start with http:// or https://, got '{v}'")
+        return url
+
+    @model_validator(mode="after")
+    def _validate_provider_keys(self) -> "Settings":
+        if self.provider == Provider.ANTHROPIC and not (self.anthropic_api_key or __import__("os").getenv("ANTHROPIC_API_KEY")):
+            raise ValueError("ANTHROPIC_API_KEY is required when provider is 'anthropic'")
+        if self.provider == Provider.OPENAI and not (self.openai_api_key or __import__("os").getenv("OPENAI_API_KEY")):
+            raise ValueError("OPENAI_API_KEY is required when provider is 'openai'")
+        return self
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
