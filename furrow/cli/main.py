@@ -33,6 +33,9 @@ def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    test_parallel: bool | None = None,
+    test_patterns: list[str] | None = None,
+    test_exclude_patterns: list[str] | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +49,12 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if test_parallel is not None:
+        updates["test_parallel"] = test_parallel
+    if test_patterns is not None:
+        updates["test_patterns"] = test_patterns
+    if test_exclude_patterns is not None:
+        updates["test_exclude_patterns"] = test_exclude_patterns
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -195,17 +204,30 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option("--test-parallel/--no-test-parallel", default=None, help="Run tests in parallel (pytest-xdist).")
+@click.option("--test-pattern", "test_patterns", multiple=True, help="Test pattern to include (pytest -k).")
+@click.option("--test-exclude", "test_exclude_patterns", multiple=True, help="Test pattern to exclude (pytest --deselect).")
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    test_parallel: bool | None,
+    test_patterns: tuple[str, ...],
+    test_exclude_patterns: tuple[str, ...],
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        max_cycles=max_cycles,
+        workspace=workspace,
+        test_parallel=test_parallel,
+        test_patterns=list(test_patterns) if test_patterns else None,
+        test_exclude_patterns=list(test_exclude_patterns) if test_exclude_patterns else None,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +257,24 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--test-parallel/--no-test-parallel", default=None, help="Run tests in parallel (pytest-xdist).")
+@click.option("--test-pattern", "test_patterns", multiple=True, help="Test pattern to include (pytest -k).")
+@click.option("--test-exclude", "test_exclude_patterns", multiple=True, help="Test pattern to exclude (pytest --deselect).")
+def resume(
+    workspace: Path | None,
+    max_cycles: int | None,
+    test_parallel: bool | None,
+    test_patterns: tuple[str, ...],
+    test_exclude_patterns: tuple[str, ...],
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        workspace=workspace,
+        test_parallel=test_parallel,
+        test_patterns=list(test_patterns) if test_patterns else None,
+        test_exclude_patterns=list(test_exclude_patterns) if test_exclude_patterns else None,
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

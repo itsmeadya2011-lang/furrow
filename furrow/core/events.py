@@ -27,6 +27,8 @@ class EventType(str, Enum):
     TASK_FINISHED = "task_finished"
     TEST_STARTED = "test_started"
     TEST_FINISHED = "test_finished"
+    CODE_REVIEW_STARTED = "code_review_started"
+    CODE_REVIEW_FINISHED = "code_review_finished"
     STATE_SAVED = "state_saved"
     LOG = "log"
     ERROR = "error"

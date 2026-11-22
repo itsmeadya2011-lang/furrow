@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from furrow.agents.custom_tools import get_custom_tools
+
 PLANNER_PROMPT = """You are a planning agent for an autonomous coding system called Furrow.
 
 Break the user's goal into 1-5 parallelizable tasks. Each task must be:
@@ -42,50 +44,125 @@ returned as JSON."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
-workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+workspace using the available tools. You have access to git tools for version
+control: git_status, git_diff, git_log, git_branch, git_commit, and git_checkout.
+Make minimal, targeted changes. When done, respond with a concise summary and no further tool calls."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
 
-WORKER_TOOLS: list[dict] = [
-    {
-        "name": "read_file",
-        "description": "read a UTF-8 text file from the workspace.",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": ["path"],
-        },
-    },
-    {
-        "name": "write_file",
-        "description": "create or overwrite a file in the workspace.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
+
+def get_worker_tools() -> list[dict]:
+    """Get the list of worker tools including custom tools."""
+    tools = [
+        {
+            "name": "read_file",
+            "description": "read a UTF-8 text file from the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"],
             },
-            "required": ["path", "content"],
         },
-    },
-    {
-        "name": "list_files",
-        "description": "list files under a workspace directory (relative paths).",
-        "parameters": {
-            "type": "object",
-            "properties": {"path": {"type": "string"}},
-            "required": [],
+        {
+            "name": "write_file",
+            "description": "create or overwrite a file in the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+                "required": ["path", "content"],
+            },
         },
-    },
-    {
-        "name": "run_command",
-        "description": "run a shell command in the workspace and return its output.",
-        "parameters": {
-            "type": "object",
-            "properties": {"command": {"type": "string"}},
-            "required": ["command"],
+        {
+            "name": "list_files",
+            "description": "list files under a workspace directory (relative paths).",
+            "parameters": {
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": [],
+            },
         },
-    },
-]
+        {
+            "name": "run_command",
+            "description": "run a shell command in the workspace and return its output.",
+            "parameters": {
+                "type": "object",
+                "properties": {"command": {"type": "string"}},
+                "required": ["command"],
+            },
+        },
+        {
+            "name": "git_status",
+            "description": "show the working tree status (modified, staged, untracked files).",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "git_diff",
+            "description": "show changes between commits, commit and working tree, etc.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "staged": {"type": "boolean", "description": "show staged changes only"},
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "git_log",
+            "description": "show commit logs.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_count": {"type": "integer", "description": "maximum number of commits to show"},
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "git_branch",
+            "description": "show the current branch name.",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+        {
+            "name": "git_commit",
+            "description": "commit staged changes with a message.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {"type": "string", "description": "commit message"},
+                    "add_all": {"type": "boolean", "description": "stage all changes before committing"},
+                },
+                "required": ["message"],
+            },
+        },
+        {
+            "name": "git_checkout",
+            "description": "switch branches or create a new branch.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "branch": {"type": "string", "description": "branch name"},
+                    "create": {"type": "boolean", "description": "create new branch"},
+                },
+                "required": ["branch"],
+            },
+        },
+    ]
+    # Add custom tools
+    tools.extend(get_custom_tools())
+    return tools
+
+
+# For backward compatibility
+WORKER_TOOLS = get_worker_tools()

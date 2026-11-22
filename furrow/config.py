@@ -107,6 +107,14 @@ class RunResult(BaseModel):
     files_changed: list[str] = Field(default_factory=list)
 
 
+class CodeReviewResult(BaseModel):
+    """Result of a code review."""
+    __test__ = False
+    passed: bool
+    summary: str
+    issues: list[str] = Field(default_factory=list)
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
@@ -115,6 +123,7 @@ class Settings(BaseSettings):
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
+    reviewer_model: str = "claude-3-5-sonnet-20241022"
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
@@ -128,6 +137,9 @@ class Settings(BaseSettings):
     request_timeout: float = Field(default=120.0, gt=0)
     command_timeout: float = Field(default=300.0, gt=0)
     test_timeout: float = Field(default=600.0, gt=0)
+    test_parallel: bool = Field(default=False, description="Run tests in parallel")
+    test_patterns: list[str] = Field(default_factory=list, description="Test file patterns to include")
+    test_exclude_patterns: list[str] = Field(default_factory=list, description="Test file patterns to exclude")
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)

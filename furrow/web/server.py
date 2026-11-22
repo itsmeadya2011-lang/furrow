@@ -352,6 +352,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
+      } else if (type === 'code_review_started') {
+        line = 'running code review...';
+      } else if (type === 'code_review_finished') {
+        const ok = data.passed === true;
+        line = (ok ? 'code review passed: ' : 'code review failed: ') + truncate(data.summary, 200);
+        color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'state_saved') {
         line = 'state saved';
       } else if (type === 'log') {
@@ -421,6 +427,9 @@ class StartRequest(BaseModel):
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
+    test_parallel: bool | None = None
+    test_patterns: list[str] = Field(default_factory=list)
+    test_exclude_patterns: list[str] = Field(default_factory=list)
 
 
 class SocketRequest(BaseModel):
@@ -429,6 +438,9 @@ class SocketRequest(BaseModel):
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
     resume: bool = False
+    test_parallel: bool | None = None
+    test_patterns: list[str] = Field(default_factory=list)
+    test_exclude_patterns: list[str] = Field(default_factory=list)
 
 
 def _reset_registry() -> None:
@@ -442,17 +454,31 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override.
+def _run_settings(
+    max_cycles: int | None = None,
+    test_parallel: bool | None = None,
+    test_patterns: list[str] | None = None,
+    test_exclude_patterns: list[str] | None = None,
+) -> Settings:
+    """Settings for a run, with optional overrides.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
     pydantic validation and would happily build a ``Settings`` object with an
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    updates: dict[str, Any] = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if test_parallel is not None:
+        updates["test_parallel"] = test_parallel
+    if test_patterns is not None:
+        updates["test_patterns"] = test_patterns
+    if test_exclude_patterns is not None:
+        updates["test_exclude_patterns"] = test_exclude_patterns
+    if not updates:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -553,10 +579,13 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, bus: EventBus,
+    test_parallel: bool | None = None,
+    test_patterns: list[str] | None = None,
+    test_exclude_patterns: list[str] | None = None,
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
-    run_settings = _run_settings(max_cycles)
+    run_settings = _run_settings(max_cycles, test_parallel, test_patterns, test_exclude_patterns)
     return Orchestrator(
         goal=goal,
         settings=run_settings,
@@ -626,7 +655,15 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(
+            goal,
+            request.resume,
+            request.max_cycles,
+            bus,
+            request.test_parallel,
+            request.test_patterns,
+            request.test_exclude_patterns,
+        )
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -685,7 +722,15 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(
+                goal,
+                resume,
+                request.max_cycles,
+                bus,
+                request.test_parallel,
+                request.test_patterns,
+                request.test_exclude_patterns,
+            )
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

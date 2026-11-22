@@ -7,10 +7,12 @@ from typing import Any
 from furrow.agents.planner import PlannerAgent
 from furrow.agents.tester import TesterAgent
 from furrow.agents.worker import WorkerAgent
+from furrow.agents.code_review import CodeReviewAgent
 from furrow.config import Plan, RunResult, Settings, TaskModel, Usage
 from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
+from furrow.errors import FurrowError, format_error, handle_error
 from furrow.llm import LLMClient
 
 _UNSET = object()
@@ -33,6 +35,7 @@ class Orchestrator:
             state_store if state_store is not None else StateStore(self.settings.state_path())
         )
         self.planner = PlannerAgent(client=self.client, settings=self.settings)
+        self.reviewer = CodeReviewAgent(client=self.client, settings=self.settings)
         self.tester = TesterAgent(client=self.client, settings=self.settings,
                                  workspace=self.settings.workspace)
         self.history: list[HistoryEntry] = []
@@ -162,6 +165,13 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    def _handle_error(self, error: Exception, context: str) -> None:
+        """Handle an error consistently across the orchestrator."""
+        from furrow.errors import handle_error
+        handle_error(error)  # Logs the error
+        self.event_bus.emit(Event(type=EventType.ERROR, message=str(error)))
+        self._stopped_reason = f"{context}: {error}"
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
@@ -183,8 +193,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"planner failed: {e}"
+                self._handle_error(e, "planner failed")
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
@@ -205,11 +214,66 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
-                self._stopped_reason = f"execute failed: {e}"
+                self._handle_error(e, "execute failed")
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
+# Code review step
+            files_changed = sorted(
+                {f for t in self.tasks if t.id in self._active_ids for f in (getattr(t, "files_changed", None) or [])}
+            )
+            if files_changed:
+                self.event_bus.emit(Event(type=EventType.CODE_REVIEW_STARTED, data={}))
+                try:
+                    review_result = await self.reviewer.review(
+                        goal=self.original_goal,
+                        files_changed=files_changed,
+                        workspace=str(self.settings.workspace),
+                    )
+                    self.event_bus.emit(Event(
+                        type=EventType.CODE_REVIEW_FINISHED,
+                        data={"passed": review_result.passed, "summary": review_result.summary},
+                    ))
+                    if not review_result.passed:
+                        issues = review_result.issues
+                        if issues:
+                            self._feedback = "\n".join(issues)
+                            self.goal = (f"{self.original_goal}\n\n"
+                                         "Code review found issues:\n"
+                                         f"{self._feedback}")
+                            self.event_bus.emit(Event(type=EventType.LOG, message=f"code review failed: {review_result.summary}"))
+                            self._say(f"[yellow]Code review found issues: {self._escape(self._one_line(review_result.summary))}[/yellow]")
+                            cycle_usage = self._accumulate_usage()
+                            self.history.append(HistoryEntry(
+                                cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
+                                task_summaries=[t.id for t in self.tasks],
+                                tests_passed=False, test_summary=f"Code review: {review_result.summary}",
+                                timestamp=datetime.now(timezone.utc).isoformat(),
+                                usage=cycle_usage,
+                            ))
+                            state = RunState(goal=self.goal, original_goal=self.original_goal,
+                                             cycles=self.cycles, tasks=self.tasks, history=self.history,
+                                             usage=self._usage, no_progress=self._no_progress,
+                                             prev_sig=self._prev_sig, tests_run=self._tests_run,
+                                             last_passed=False, last_skipped=False,
+                                             last_summary=f"Code review: {review_result.summary}")
+                            try:
+                                self.state_store.save(state)
+                            except asyncio.CancelledError:
+                                raise
+                            except Exception as e:
+                                self.event_bus.emit(
+                                    Event(type=EventType.ERROR,
+                                         message=f"could not save state to {self.state_store.path}: {e}")
+                                )
+                            else:
+                                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
+                                                        data={"path": str(self.state_store.path)}))
+                            continue  # Skip tests and go to next cycle
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    self.event_bus.emit(Event(type=EventType.ERROR, message=f"code review failed: {e}"))
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)

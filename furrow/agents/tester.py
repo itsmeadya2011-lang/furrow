@@ -211,7 +211,22 @@ class TesterAgent:
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
-            return [sys.executable, "-m", "pytest", "-q"]
+            cmd = [sys.executable, "-m", "pytest", "-q"]
+            # Add parallel execution if enabled
+            if getattr(self.settings, "test_parallel", False):
+                cmd.append("-n")
+                cmd.append("auto")
+            # Add test file patterns if configured
+            patterns = getattr(self.settings, "test_patterns", None)
+            if patterns:
+                for pattern in patterns:
+                    cmd.extend(["-k", pattern])
+            # Add exclude patterns if configured
+            exclude_patterns = getattr(self.settings, "test_exclude_patterns", None)
+            if exclude_patterns:
+                for pattern in exclude_patterns:
+                    cmd.extend(["--deselect", pattern])
+            return cmd
 
         # Check for Node.js test runners
         if has_package:
@@ -251,7 +266,12 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
-            return [sys.executable, "-m", "pytest", "-q"]
+            cmd = [sys.executable, "-m", "pytest", "-q"]
+            # Add parallel execution if enabled
+            if getattr(self.settings, "test_parallel", False):
+                cmd.append("-n")
+                cmd.append("auto")
+            return cmd
 
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
