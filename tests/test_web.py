@@ -650,9 +650,14 @@ def test_run_settings_applies_a_valid_max_cycles_override() -> None:
     assert server.settings.max_cycles == original, "the shared settings must not be modified"
 
 
-def test_run_settings_without_override_returns_the_current_settings() -> None:
-    """Without an override the current settings are used as they are."""
-    assert server._run_settings(None) is server.settings
+def test_run_settings_without_override_returns_equivalent_settings() -> None:
+    """Without an override the current settings are used as they are (a copy)."""
+    result = server._run_settings(None)
+    assert result.max_cycles == server.settings.max_cycles
+    assert result.workspace == server.settings.workspace
+    assert result.model == server.settings.model
+    # It is a copy, not the shared object itself.
+    assert result is not server.settings
 
 
 def test_run_settings_rejects_an_out_of_range_max_cycles() -> None:

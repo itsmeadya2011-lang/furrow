@@ -50,6 +50,12 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        # Per-agent lifecycle state for the web UI and status API.
+        self._agents: dict[str, dict[str, Any]] = {
+            "planner": {"status": "idle", "detail": "", "updated_at": ""},
+            "worker": {"status": "idle", "detail": "", "updated_at": ""},
+            "tester": {"status": "idle", "detail": "", "updated_at": ""},
+        }
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -117,6 +123,17 @@ class Orchestrator:
             "stopped_reason": self._stopped_reason,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
+            "agents": self._agents,
+        }
+
+    def _set_agent(self, name: str, status: str, detail: str = "") -> None:
+        """Update the lifecycle state of an agent for the web UI."""
+        from datetime import datetime, timezone
+
+        self._agents[name] = {
+            "status": status,
+            "detail": detail,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def _console(self) -> Any:
@@ -179,15 +196,25 @@ class Orchestrator:
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
+                self.event_bus.emit(Event(type=EventType.PLANNER_STARTED, data={}))
+                self._set_agent("planner", "running", "planning tasks")
                 plan = await self.planner.plan(self.goal, context=self._context())
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                self.event_bus.emit(
+                    Event(type=EventType.PLANNER_FINISHED, data={"error": str(e)})
+                )
+                self._set_agent("planner", "failed", str(e))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
+            self.event_bus.emit(
+                Event(type=EventType.PLANNER_FINISHED, data={"tasks": len(plan.tasks)})
+            )
+            self._set_agent("planner", "idle", f"{len(plan.tasks)} tasks planned")
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
@@ -211,16 +238,28 @@ class Orchestrator:
                 self._accumulate_usage()
                 break
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
+            self.event_bus.emit(Event(type=EventType.TESTER_STARTED, data={}))
+            self._set_agent("tester", "running", "running test suite")
             try:
                 test_result = await self.tester.run(self.original_goal, self.tasks)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
+                self.event_bus.emit(
+                    Event(type=EventType.TESTER_FINISHED, data={"error": str(e)})
+                )
+                self._set_agent("tester", "failed", str(e))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
                 break
+            self.event_bus.emit(
+                Event(type=EventType.TESTER_FINISHED,
+                      data={"passed": test_result.passed})
+            )
+            self._set_agent("tester", "idle",
+                            "passed" if test_result.passed else "failed")
             skipped = bool(getattr(test_result, "skipped", False))
             if not skipped:
                 self._tests_run += 1
@@ -425,6 +464,8 @@ class Orchestrator:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                self.event_bus.emit(Event(type=EventType.WORKER_STARTED, data={"task": task.id}))
+                self._set_agent("worker", "running", task.id)
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -455,6 +496,11 @@ class Orchestrator:
                             },
                         )
                     )
+                    self.event_bus.emit(
+                        Event(type=EventType.WORKER_FINISHED,
+                              data={"task": task.id, "success": False})
+                    )
+                    self._set_agent("worker", "failed", task.error or "unknown error")
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":
@@ -490,6 +536,15 @@ class Orchestrator:
                                 "summary": str(task.result or ""),
                             },
                         )
+                    )
+                    self.event_bus.emit(
+                        Event(type=EventType.WORKER_FINISHED,
+                              data={"task": task.id, "success": task.status == "completed"})
+                    )
+                    self._set_agent(
+                        "worker",
+                        "completed" if task.status == "completed" else "failed",
+                        task.error or task.result or "",
                     )
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error or "unknown error"))
@@ -529,6 +584,11 @@ class Orchestrator:
                             },
                         )
                     )
+                    self.event_bus.emit(
+                        Event(type=EventType.WORKER_FINISHED,
+                              data={"task": task.id, "success": False})
+                    )
+                    self._set_agent("worker", "failed", task.error or "unknown error")
                     task_id = self._escape(task.id)
                     detail = self._escape(self._one_line(task.error))
                     if task.status == "pending":

@@ -75,6 +75,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #cancel { background: #4a2a2a; border-color: #6b4a4a; }
+  #cancel:hover:not(:disabled) { border-color: #e0685f; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -132,6 +135,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .agents { display: flex; gap: .5rem; margin-top: 1rem; flex-wrap: wrap; }
+  .agent-panel {
+    flex: 1 1 20rem;
+    border: 1px solid #2b3240;
+    border-radius: 8px;
+    padding: .6rem .8rem;
+    background: #171b23;
+  }
+  .agent-head { display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem; }
+  .agent-name { font-size: .85rem; color: #8a93a5; font-weight: 700; text-transform: uppercase; }
+  .agent-status {
+    font-size: .8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    padding: .05rem .4rem;
+    border-radius: 3px;
+    margin-left: auto;
+  }
+  .agent-detail { font-size: .9rem; color: #d7dae0; word-break: break-word; margin: 0 0 .4rem; }
+  .agent-meta { font-size: .85rem; color: #8a93a5; }
 </style>
 </head>
 <body>
@@ -140,6 +163,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="cancel" disabled>Cancel</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -151,6 +175,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 <pre id="log"></pre>
+<div class="agents" id="agents"></div>
 <div class="panels" id="tasks"></div>
 <script>
   const logEl = document.getElementById('log');
@@ -161,6 +186,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const agentsEl = document.getElementById('agents');
+  const cancelEl = document.getElementById('cancel');
   let socket = null;
   let lastSummary = null;
 
@@ -210,6 +237,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    updateCancelButton(running);
   }
 
   function renderTasks(tasks) {
@@ -275,6 +303,47 @@ INDEX_HTML = r"""<!DOCTYPE html>
     });
   }
 
+  function renderAgents(agents) {
+    while (agentsEl.firstChild) {
+      agentsEl.removeChild(agentsEl.firstChild);
+    }
+    const list = agents || {};
+    const order = ["planner", "worker", "tester"];
+    order.forEach(function (name) {
+      const a = list[name];
+      if (!a) return;
+
+      const panel = document.createElement('div');
+      panel.className = 'agent-panel';
+      panel.id = 'agent-' + name;
+
+      const head = document.createElement('div');
+      head.className = 'agent-head';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'agent-name';
+      nameEl.textContent = name;
+      const statusEl = document.createElement('span');
+      const cls = statusClass(a.status);
+      statusEl.className = 'agent-status status-' + cls;
+      statusEl.textContent = a.status;
+      head.appendChild(nameEl);
+      head.appendChild(statusEl);
+
+      const detail = document.createElement('div');
+      detail.className = 'agent-detail';
+      detail.textContent = text(a.detail);
+      panel.appendChild(head);
+      panel.appendChild(detail);
+
+      const meta = document.createElement('div');
+      meta.className = 'agent-meta';
+      meta.textContent = 'updated: ' + text(a.updated_at);
+      panel.appendChild(meta);
+
+      agentsEl.appendChild(panel);
+    });
+  }
+
   async function loadState() {
     try {
       const res = await fetch('/api/state');
@@ -294,6 +363,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const result = body.result || null;
       renderStatus(status, result, running);
       if (status && status.tasks) { renderTasks(status.tasks); }
+      if (status && status.agents) { renderAgents(status.agents); }
       if (body.result) {
         const summary = text(body.result.summary);
         if (summary && summary !== lastSummary) {
@@ -337,6 +407,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       let color = '#8a93a5';
       if (type === 'cycle_started') {
         line = 'cycle ' + text(data.cycle) + ' started';
+      } else if (type === 'planner_started') {
+        line = 'planner started';
+        color = '#4c8dff';
+      } else if (type === 'planner_finished') {
+        line = 'planner finished: ' + text(data.tasks) + ' tasks';
+        color = '#57d38c';
       } else if (type === 'plan_created') {
         line = 'plan: ' + truncate(data.rationale, 200) + ' (' + text(data.tasks) + ' tasks)';
       } else if (type === 'task_started') {
@@ -351,6 +427,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
       } else if (type === 'test_finished') {
         const ok = data.passed === true;
         line = (ok ? 'tests passed: ' : 'tests failed: ') + truncate(data.summary, 200);
+        color = ok ? '#57d38c' : '#e0685f';
+      } else if (type === 'worker_started') {
+        line = 'worker started: ' + text(data.task);
+        color = '#4c8dff';
+      } else if (type === 'worker_finished') {
+        const ok = data.success === true;
+        line = 'worker ' + (ok ? 'completed' : 'failed') + ': ' + text(data.task);
+        color = ok ? '#57d38c' : '#e0685f';
+      } else if (type === 'tester_started') {
+        line = 'tester started';
+        color = '#4c8dff';
+      } else if (type === 'tester_finished') {
+        const ok = data.passed === true;
+        line = 'tester ' + (ok ? 'passed' : 'failed');
         color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'state_saved') {
         line = 'state saved';
@@ -383,7 +473,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
         return;
       }
       renderEvent(msg);
-      if (msg.type === 'task_started' || msg.type === 'task_finished') {
+      if (msg.type === 'task_started' || msg.type === 'task_finished' ||
+          msg.type === 'planner_started' || msg.type === 'planner_finished' ||
+          msg.type === 'worker_started' || msg.type === 'worker_finished' ||
+          msg.type === 'tester_started' || msg.type === 'tester_finished') {
         loadStatus();
       }
       if (msg.type === 'done') {
@@ -406,6 +499,23 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('cancel').onclick = async function () {
+    try {
+      const res = await fetch('/api/cancel', { method: 'POST' });
+      const body = await res.json();
+      if (body.cancelled) {
+        append('> cancel requested');
+      } else {
+        append('! could not cancel: ' + (body.error || 'unknown'));
+      }
+    } catch (err) {
+      append('! cancel request failed');
+    }
+  };
+
+  function updateCancelButton(running) {
+    cancelEl.disabled = !running;
+  }
 
   loadState();
   loadStatus();
@@ -449,10 +559,13 @@ def _run_settings(max_cycles: int | None) -> Settings:
     pydantic validation and would happily build a ``Settings`` object with an
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
+    Always returns a fresh, validated copy so a run cannot accidentally mutate
+    the shared settings.
     """
-    if max_cycles is None:
-        return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    merged = {**settings.model_dump()}
+    if max_cycles is not None:
+        merged["max_cycles"] = max_cycles
+    return Settings.model_validate(merged)
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -647,6 +760,24 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the currently running run."""
+    task = _CURRENT.get("task")
+    if task is None:
+        return JSONResponse(
+            status_code=400,
+            content={"cancelled": False, "error": "no run in progress"},
+        )
+    if task.done():
+        return JSONResponse(
+            status_code=400,
+            content={"cancelled": False, "error": "run is not running"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
 
 
 @app.websocket("/ws")
