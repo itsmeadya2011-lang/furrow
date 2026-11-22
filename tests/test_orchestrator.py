@@ -275,7 +275,7 @@ async def test_console_output_does_not_break_the_run(tmp_path, monkeypatch):
     result = await orch.run()
     assert isinstance(result, RunResult)
     assert result.cycles == 1
-    assert result.stopped_reason == "max_cycles reached"
+    assert result.stopped_reason == "goal complete"
 
 
 @pytest.mark.asyncio
@@ -291,7 +291,7 @@ async def test_status_snapshot(tmp_path, monkeypatch):
     assert set(status) >= {"goal", "original_goal", "cycles", "stopped_reason", "tasks"}
     assert status["original_goal"] == "g"
     assert status["cycles"] == 1
-    assert status["stopped_reason"] == "max_cycles reached"
+    assert status["stopped_reason"] == "goal complete"
     assert isinstance(status["tasks"], list)
     assert status["tasks"]
     assert all(isinstance(task, dict) for task in status["tasks"])
@@ -314,7 +314,7 @@ async def test_console_reports_progress(tmp_path, monkeypatch):
     assert "Plan: r (1 task)" in printed
     assert "Task t1 completed" in printed
     assert "Tests passed: s" in printed
-    assert "Stopped: max_cycles reached" in printed
+    assert "Stopped: goal complete" in printed
 
 
 @pytest.mark.asyncio

@@ -304,6 +304,13 @@ class Orchestrator:
                                         data={"path": str(self.state_store.path)}))
             if guard_tripped:
                 break
+            if test_result.passed and not skipped:
+                # Goal achieved: the tests passed and the result is not a skip
+                # (a skipped run has no verification signal). Stop the loop
+                # instead of re-planning the same completed work forever, which
+                # with max_cycles == 0 (unlimited) would otherwise loop endlessly.
+                self._stopped_reason = "goal complete"
+                break
 
         if not self._stopped_reason:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
