@@ -273,6 +273,56 @@ def test_start_uses_max_cycles_and_workspace(
     assert global_settings.workspace == workspace_before
 
 
+def test_start_uses_max_task_retries(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    result = runner.invoke(
+        main,
+        ["start", "build a thing", "--max-task-retries", "5", "--workspace", str(tmp_path)],
+    )
+
+    assert result.exit_code == 0
+    kwargs = fake_orchestrator.init_kwargs
+    run_settings = kwargs["settings"]
+    assert run_settings.max_task_retries == 5
+
+
+def test_start_max_task_retries_negative_rejected(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(main, ["start", "build a thing", "--max-task-retries", "-1"])
+
+    assert result.exit_code != 0
+
+
+def test_resume_uses_max_task_retries(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(
+        main,
+        ["resume", "--workspace", str(tmp_path), "--max-task-retries", "3"],
+    )
+
+    assert result.exit_code == 0
+    kwargs = fake_orchestrator.init_kwargs
+    run_settings = kwargs["settings"]
+    assert run_settings.max_task_retries == 3
+
+
+def test_resume_max_task_retries_negative_rejected(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(
+        main, ["resume", "--workspace", str(tmp_path), "--max-task-retries", "-1"]
+    )
+
+    assert result.exit_code != 0
+
+
 def test_start_stops_gracefully_on_keyboard_interrupt(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
