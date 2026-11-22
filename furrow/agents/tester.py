@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import os
 import re
-import signal
 import sys
 from pathlib import Path
 from typing import Any
@@ -14,6 +12,7 @@ from furrow.agents.parsing import parse_test_result
 from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
+from furrow.core.process import kill_process_tree
 from furrow.llm import LLMClient
 from furrow.logging import get_logger
 
@@ -183,21 +182,6 @@ class TesterAgent:
         self.client = client if client is not None else LLMClient(settings=self.settings)
         self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
 
-    @staticmethod
-    async def _kill_process_tree(proc: asyncio.subprocess.Process) -> None:
-        """Kill the test command and any grandchildren it spawned."""
-        if os.name == "posix":
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (OSError, AttributeError):
-                with contextlib.suppress(ProcessLookupError):
-                    proc.kill()
-        else:  # pragma: no cover - non-POSIX fallback
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-        with contextlib.suppress(Exception):
-            await proc.wait()
-
     async def detect_command(self) -> list[str] | None:
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
@@ -207,10 +191,16 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
-        if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
-        ):
+        # Python projects with tests/ dir always use pytest, even if package.json exists.
+        # A tests/ directory that actually contains test files is sufficient evidence;
+        # config markers (pyproject.toml, pytest.ini, ...) are a bonus, not a requirement.
+        has_test_files = False
+        if has_tests_dir:
+            for pattern in ("test_*.py", "*_test.py"):
+                if any((self.workspace / "tests").glob(pattern)):
+                    has_test_files = True
+                    break
+        if has_tests_dir and (has_test_files or has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements):
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -391,7 +381,7 @@ class TesterAgent:
                 try:
                     stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    await self._kill_process_tree(proc)
+                    await kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
                     stdout = b""
