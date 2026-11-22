@@ -378,8 +378,14 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == [
+        "list_files",
+        "read_file",
+        "replace_in_file",
+        "run_command",
+        "write_file",
+    ]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -1319,3 +1325,198 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_all_occurrences(tmp_path):
+    """replaces every occurrence when no count is given."""
+    from furrow.config import TaskModel
+
+    target = tmp_path / "mod.py"
+    target.write_text("x = 1\ny = x\nz = x\n")
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="x"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    tc = ToolCall(
+        id="t1",
+        name="replace_in_file",
+        arguments={"path": "mod.py", "old": "x", "new": "y"},
+    )
+    out = await agent._execute_tool(tc)
+    assert out.startswith("replaced 3 occurrence(s)")
+    assert target.read_text() == "y = 1\ny = y\nz = y\n"
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_with_count(tmp_path):
+    """a non-negative count limits the number of replacements."""
+    from furrow.config import TaskModel
+
+    target = tmp_path / "mod.py"
+    target.write_text("a a a a\n")
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="x"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    tc = ToolCall(
+        id="t1",
+        name="replace_in_file",
+        arguments={"path": "mod.py", "old": "a", "new": "b", "count": 2},
+    )
+    out = await agent._execute_tool(tc)
+    assert "replaced 2 occurrence(s)" in out
+    assert target.read_text() == "b b a a\n"
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_missing_old(tmp_path):
+    """old text that is not present is an error."""
+    from furrow.config import TaskModel
+
+    target = tmp_path / "mod.py"
+    target.write_text("hello\n")
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="x"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    tc = ToolCall(
+        id="t1",
+        name="replace_in_file",
+        arguments={"path": "mod.py", "old": "absent", "new": "x"},
+    )
+    out = await agent._execute_tool(tc)
+    assert out == "error: old text not found in file"
+    assert target.read_text() == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_empty_old(tmp_path):
+    """an empty old text is rejected."""
+    from furrow.config import TaskModel
+
+    target = tmp_path / "mod.py"
+    target.write_text("hello\n")
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="x"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    tc = ToolCall(
+        id="t1",
+        name="replace_in_file",
+        arguments={"path": "mod.py", "old": "", "new": "x"},
+    )
+    out = await agent._execute_tool(tc)
+    assert "empty" in out
+    assert target.read_text() == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_non_string_args(tmp_path):
+    """non-string old/new are rejected."""
+    from furrow.config import TaskModel
+
+    target = tmp_path / "mod.py"
+    target.write_text("hello\n")
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="x"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    tc = ToolCall(
+        id="t1",
+        name="replace_in_file",
+        arguments={"path": "mod.py", "old": 123, "new": "x"},
+    )
+    out = await agent._execute_tool(tc)
+    assert out.startswith("error: ")
+    assert "strings" in out
+    assert target.read_text() == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_escape(tmp_path):
+    """a path escaping the workspace is rejected."""
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="x"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    tc = ToolCall(
+        id="t1",
+        name="replace_in_file",
+        arguments={"path": "../evil.py", "old": "a", "new": "b"},
+    )
+    out = await agent._execute_tool(tc)
+    assert "escapes workspace" in out
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_tracks_files_changed(tmp_path):
+    """a successful replacement records the file in files_changed."""
+    from furrow.config import TaskModel
+
+    target = tmp_path / "mod.py"
+    target.write_text("x = 1\n")
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="x"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    tc = ToolCall(
+        id="t1",
+        name="replace_in_file",
+        arguments={"path": "mod.py", "old": "x", "new": "y"},
+    )
+    await agent._execute_tool(tc)
+    assert agent.files_changed == {"mod.py"}
+
+
+@pytest.mark.asyncio
+async def test_replace_in_file_then_finish(tmp_path):
+    """Full loop: replace_in_file followed by a no-tool finish."""
+    from furrow.config import TaskModel
+
+    target = tmp_path / "mod.py"
+    target.write_text("answer = 42\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="replace_in_file",
+                    arguments={"path": "mod.py", "old": "42", "new": "41"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == ["mod.py"]
+    assert target.read_text() == "answer = 41\n"

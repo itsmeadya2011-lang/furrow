@@ -42,8 +42,10 @@ returned as JSON."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
-workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+workspace using the available tools. Prefer `replace_in_file` for targeted
+edits to existing files instead of rewriting them with `write_file`. Make
+minimal, targeted changes. When done, respond with a concise summary and no
+further tool calls."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -77,6 +79,28 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": [],
+        },
+    },
+    {
+        "name": "replace_in_file",
+        "description": (
+            "replace an exact substring in a file. Use this for targeted edits "
+            "instead of rewriting a whole file with write_file. The old text "
+            "must match exactly, including whitespace and newlines. Use all "
+            "occurrences by default, or set count to replace only the first N."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "old": {"type": "string"},
+                "new": {"type": "string"},
+                "count": {
+                    "type": "integer",
+                    "description": "max replacements (default: all)",
+                },
+            },
+            "required": ["path", "old", "new"],
         },
     },
     {

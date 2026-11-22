@@ -659,6 +659,13 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "replace_in_file":
+            return await self._replace_in_file(
+                str(args.get("path", "")),
+                args.get("old"),
+                args.get("new"),
+                args.get("count"),
+            )
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -713,6 +720,52 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _replace_in_file(
+        self, path: str, old: Any, new: Any, count: Any
+    ) -> str:
+        """Replace an exact substring in a file.
+
+        ``old`` must match exactly (whitespace and newlines included). By
+        default every occurrence is replaced; a non-negative ``count`` limits
+        the number of replacements. An ``old`` that does not appear in the file
+        is an error so the worker can correct its request instead of silently
+        reporting success.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not isinstance(old, str) or not isinstance(new, str):
+            return "error: old and new must be strings"
+        if not old:
+            return "error: old text must not be empty"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        occurrences = content.count(old)
+        if occurrences == 0:
+            return "error: old text not found in file"
+        limit = count if isinstance(count, int) and not isinstance(count, bool) else -1
+        if limit < 0:
+            replaced = occurrences
+            new_content = content.replace(old, new)
+        else:
+            replaced = min(limit, occurrences)
+            new_content = content.replace(old, new, replaced)
+        if replaced == 0:
+            return "error: old text not found in file"
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return (
+            f"replaced {replaced} occurrence(s) in {path} "
+            f"({len(new_content.encode('utf-8'))} bytes)"
+        )
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
