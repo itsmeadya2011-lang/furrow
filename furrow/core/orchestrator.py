@@ -44,6 +44,7 @@ class Orchestrator:
         self._resume = resume
         self._last_test_passed: bool | None = None
         self._tests_skipped: bool = False
+        self._last_test_summary: str = ""
         self._console_obj: Any = _UNSET
         self._resume_state_missing = False
         self._usage: Usage = Usage()
@@ -187,6 +188,7 @@ class Orchestrator:
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
+                self._save_state()
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
@@ -198,6 +200,7 @@ class Orchestrator:
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
                 self._stopped_reason = "goal complete"
+                self._save_state()
                 break
             self._merge_plan(plan)
             try:
@@ -209,6 +212,7 @@ class Orchestrator:
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
+                self._save_state()
                 break
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             try:
@@ -220,6 +224,7 @@ class Orchestrator:
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
                 self._accumulate_usage()
+                self._save_state()
                 break
             skipped = bool(getattr(test_result, "skipped", False))
             if not skipped:
@@ -281,27 +286,8 @@ class Orchestrator:
                     self._no_progress = 0
                 self._prev_sig = sig
 
-            state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
-            try:
-                self.state_store.save(state)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # The state was NOT written: report the failure (including the
-                # path that could not be written) and do NOT emit STATE_SAVED,
-                # which would tell consumers the state was saved when it was not.
-                self.event_bus.emit(
-                    Event(type=EventType.ERROR,
-                         message=f"could not save state to {self.state_store.path}: {e}")
-                )
-            else:
-                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                        data={"path": str(self.state_store.path)}))
+            self._last_test_summary = test_result.summary
+            self._save_state()
             if guard_tripped:
                 break
 
@@ -340,6 +326,36 @@ class Orchestrator:
         if self._feedback:
             return self._feedback
         return ""
+
+    def _save_state(self) -> None:
+        """Persist the current run state atomically.
+
+        Emits STATE_SAVED on success or an ERROR event (with the path) on
+        failure. The state file is never left partially written: the atomic
+        write in StateStore guarantees that a consumer either sees the previous
+        state or the new one, never a torn write.
+        """
+        state = RunState(goal=self.goal, original_goal=self.original_goal,
+                         cycles=self.cycles, tasks=self.tasks, history=self.history,
+                         usage=self._usage, no_progress=self._no_progress,
+                         prev_sig=self._prev_sig, tests_run=self._tests_run,
+                         last_passed=self._last_test_passed, last_skipped=self._tests_skipped,
+                         last_summary=self._last_test_summary)
+        try:
+            self.state_store.save(state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # The state was NOT written: report the failure (including the
+            # path that could not be written) and do NOT emit STATE_SAVED,
+            # which would tell consumers the state was saved when it was not.
+            self.event_bus.emit(
+                Event(type=EventType.ERROR,
+                     message=f"could not save state to {self.state_store.path}: {e}")
+            )
+        else:
+            self.event_bus.emit(Event(type=EventType.STATE_SAVED,
+                                    data={"path": str(self.state_store.path)}))
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()

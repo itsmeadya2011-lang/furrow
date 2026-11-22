@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import logging
 import sys
+from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Any
 
@@ -179,6 +180,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
+@click.version_option(version=_package_version("furrow"), prog_name="furrow")
 def main() -> None:
     """Furrow - an autonomous coding agent."""
     configure_logging(settings.log_level)
@@ -225,6 +227,31 @@ def status(workspace: Path | None) -> None:
         click.echo("No furrow run state found.")
         return
     _print_state(state)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def init(workspace: Path | None) -> None:
+    """Initialize a Furrow workspace (create the .furrow state directory)."""
+    target = Path(workspace) if workspace is not None else Path.cwd()
+    furrow_dir = target / ".furrow"
+    already_exists = furrow_dir.is_dir()
+    try:
+        furrow_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        click.secho(f"Could not create {furrow_dir}: {exc}", fg="red")
+        sys.exit(1)
+    if already_exists:
+        click.echo(f"Furrow workspace already initialized at {target}")
+    else:
+        click.echo(f"Initialized Furrow workspace at {target}")
+    click.echo(f"  State directory: {furrow_dir}")
+    click.echo("Run `furrow start '<goal>'` to begin.")
 
 
 @main.command()
