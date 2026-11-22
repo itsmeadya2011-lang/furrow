@@ -81,11 +81,9 @@ class Usage(BaseModel):
 
     @property
     def total_tokens(self) -> int:
-        """Total tokens (input + output) across the counted calls."""
         return self.input_tokens + self.output_tokens
 
     def add(self, other: Usage) -> Usage:
-        """Accumulate *other* into this usage and return self."""
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.calls += other.calls
@@ -110,35 +108,51 @@ class RunResult(BaseModel):
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
+    # Provider and model selection
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
     tester_model: str = "claude-3-5-sonnet-20241022"
+
+    # API keys
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
+
+    # Execution limits
     max_parallel_tasks: int = Field(default=5, ge=1)
     max_cycles: int = Field(default=0, ge=0)
-    workspace: Path = Field(default_factory=Path.cwd)
-    log_level: str = "INFO"
     max_worker_iterations: int = Field(default=12, ge=1)
     max_retries: int = Field(default=3, ge=0)
     max_task_retries: int = Field(default=1, ge=0)
+
+    # Timeouts (seconds)
     request_timeout: float = Field(default=120.0, gt=0)
     command_timeout: float = Field(default=300.0, gt=0)
     test_timeout: float = Field(default=600.0, gt=0)
+
+    # Token limits
     max_tokens: int = Field(default=4096, ge=1)
+
+    # Workspace and state
+    workspace: Path = Field(default_factory=Path.cwd)
+    log_level: str = "INFO"
     state_file: Path = Path(".furrow/state.json")
+
+    # Cost tracking
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
+    # Feature flags
+    enable_web_ui: bool = True
+    enable_cost_tracking: bool = True
+    enable_state_persistence: bool = True
+
     def state_path(self, workspace: Path | None = None) -> Path:
-        """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
         base = Path(workspace) if workspace is not None else Path(self.workspace)
         return base / Path(self.state_file)
 
     def pricing_overrides(self) -> dict[str, ModelPricing]:
-        """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
 
 

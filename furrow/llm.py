@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger, log_llm_call
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -255,6 +257,7 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        self._logger = get_logger(__name__)
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -290,11 +293,7 @@ class LLMClient:
         return self._ollama
 
     async def aclose(self) -> None:
-        """Release any lazily-created provider clients.
-
-        Reusable: cached references are reset to ``None`` so a later request
-        creates a fresh client. Never raises.
-        """
+        """Release any lazily-created provider clients."""
         for attr in ("_anthropic", "_openai", "_ollama"):
             client = getattr(self, attr)
             if client is None:
@@ -310,12 +309,9 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
-    async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
-        """Run ``call`` and retry it while the error looks transient.
 
-        The call is retried up to ``settings.max_retries`` attempts. Errors that
-        are not retryable (see :func:`_is_retryable`) are raised immediately.
-        """
+    async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
+        """Run ``call`` and retry it while the error looks transient."""
         max_attempts = max(1, int(self.settings.max_retries))
 
         if _TENACITY_AVAILABLE:
@@ -346,6 +342,7 @@ class LLMClient:
         provider = self.settings.provider
 
         async def call() -> str:
+            start = time.monotonic()
             if provider == Provider.ANTHROPIC:
                 response = await self._complete_anthropic(prompt, system, model)
             elif provider == Provider.OPENAI:
@@ -354,6 +351,16 @@ class LLMClient:
                 response = await self._complete_openai(self.ollama, prompt, system, model)
             else:
                 raise ValueError(f"Unsupported provider: {provider}")
+
+            latency_ms = (time.monotonic() - start) * 1000
+            log_llm_call(
+                self._logger,
+                model=model,
+                prompt_tokens=response.usage.input_tokens,
+                completion_tokens=response.usage.output_tokens,
+                cost=response.usage.cost_usd,
+                latency_ms=latency_ms,
+            )
             return response.text
 
         return await self._retry(call)
@@ -369,17 +376,30 @@ class LLMClient:
         provider = self.settings.provider
 
         async def call() -> LLMResponse:
+            start = time.monotonic()
             if provider == Provider.ANTHROPIC:
-                return await self._chat_anthropic(messages, tools, system, model)
+                response = await self._chat_anthropic(messages, tools, system, model)
             elif provider == Provider.OPENAI:
-                return await self._chat_openai_compatible(
+                response = await self._chat_openai_compatible(
                     self.openai, messages, tools, system, model
                 )
             elif provider == Provider.OLLAMA:
-                return await self._chat_openai_compatible(
+                response = await self._chat_openai_compatible(
                     self.ollama, messages, tools, system, model
                 )
-            raise ValueError(f"Unsupported provider: {provider}")
+            else:
+                raise ValueError(f"Unsupported provider: {provider}")
+
+            latency_ms = (time.monotonic() - start) * 1000
+            log_llm_call(
+                self._logger,
+                model=model,
+                prompt_tokens=response.usage.input_tokens,
+                completion_tokens=response.usage.output_tokens,
+                cost=response.usage.cost_usd,
+                latency_ms=latency_ms,
+            )
+            return response
 
         return await self._retry(call)
 
@@ -478,9 +498,7 @@ class LLMClient:
                 args = getattr(block, "input", None)
                 if not isinstance(args, dict):
                     args = {}
-                tool_calls.append(
-                    ToolCall(id=tid, name=name, arguments=args)
-                )
+                tool_calls.append(ToolCall(id=tid, name=name, arguments=args))
         usage = _extract_anthropic_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
@@ -566,20 +584,12 @@ class LLMClient:
             await f.write(content)
 
     def list_files(self, directory: str | Path) -> list[str]:
-        """List files under *directory*, as paths relative to it.
-
-        Version-control internals, caches, virtualenvs, dependency installs,
-        build output and editor metadata are skipped (see
-        :data:`IGNORED_DIRECTORIES`): they are not first-party source and
-        would otherwise bury the real files. A ``*.egg-info`` directory is
-        skipped too. The result is sorted so the listing is deterministic.
-        """
+        """List files under *directory*, as paths relative to it."""
         p = Path(directory)
         if not p.exists():
             return []
         results: list[str] = []
         for root, dirs, files in os.walk(p):
-            # Prune ignored directories in place so os.walk never descends.
             dirs[:] = [
                 d
                 for d in dirs

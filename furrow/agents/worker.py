@@ -14,6 +14,9 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -82,16 +85,12 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Targets that discard output rather than write a real file.
 _SPECIAL_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
 
+# Programs that write to path arguments rather than via shell redirections.
+_WRITE_PATH_PROGRAMS = frozenset({"tee"})
+
 
 def _normalize_command(command: str) -> str:
-    """Normalize a command so that it can be matched.
-
-    The command is lower-cased, runs of whitespace are collapsed into a
-    single space, the quotes around the whole command are removed and every
-    spelling of the HOME variable (``$HOME``, ``${HOME}``, ``"$HOME"``,
-    ``'$HOME'``, ``$home``, ``${home}``) is canonicalised to the single
-    token ``$home``.
-    """
+    """Normalize a command so that it can be matched."""
     if not command:
         return ""
     cmd = command.strip()
@@ -102,25 +101,20 @@ def _normalize_command(command: str) -> str:
     # Canonicalize every spelling of the HOME variable to "$home".
     cmd = _HOME_VAR_RE.sub("$home", cmd)
     # Collapse runs of whitespace to single space
-    cmd = re.sub(r'\s+', ' ', cmd)
+    cmd = re.sub(r"\s+", " ", cmd)
     return cmd
 
 
 def _split_command_segments(command: str) -> list[str]:
-    """Split a command into segments on the shell separators ``;``, ``&&``,
-    ``||``, ``|``, ``&`` (background) and newlines."""
+    """Split a command into segments on the shell separators."""
     if not command:
         return []
     segments = _SEGMENT_SPLIT_RE.split(command)
-    return [s for s in segments if s.strip()]  # Remove empty segments
+    return [s for s in segments if s.strip()]
 
 
 def _shell_tokens(segment: str) -> list[str]:
-    """Split a segment into shell tokens.
-
-    A segment that cannot be parsed (unbalanced quotes, for example) falls
-    back to a plain whitespace split.
-    """
+    """Split a segment into shell tokens."""
     try:
         return shlex.split(segment)
     except ValueError:
@@ -136,16 +130,11 @@ def _get_program_basename(segment: str) -> str | None:
 
 
 def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
-    """Split a segment into the effective program and its argument tokens.
-
-    Leading variable assignments (``FOO=1``) and wrapper program names
-    (``sudo``, ``env``, ``nohup``, ...) are skipped so that the real program
-    that runs is reported, together with the remaining argument tokens.
-    Wrapper option flags are skipped too.
-    """
+    """Split a segment into the effective program and its argument tokens."""
     tokens = _shell_tokens(segment.strip())
     if not tokens:
         return None
+
     VALUE_OPTS = {
         "sudo": {"-u", "--user", "-g", "--group", "-p", "--prompt"},
         "doas": {"-u", "--user", "-g", "--group", "-p", "--prompt"},
@@ -187,17 +176,14 @@ def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
                 break
             continue
         break
+
     if i >= len(tokens):
         return None
     return os.path.basename(tokens[i]).lower(), tokens[i + 1 :]
 
 
 def _is_short_flag_cluster(token: str) -> bool:
-    """Report whether a token is a short-flag cluster such as ``-rf``.
-
-    A cluster starts with a single ``-`` (not ``--``) and is followed by at
-    least one letter.
-    """
+    """Report whether a token is a short-flag cluster such as ``-rf``."""
     if len(token) < 2 or not token.startswith("-") or token.startswith("--"):
         return False
     return any(ch.isalpha() for ch in token[1:])
@@ -211,12 +197,7 @@ def _short_cluster_has(token: str, letters: str) -> bool:
 
 
 def _is_dangerous_rm(args: list[str], workspace: Path) -> bool:
-    """Report whether an ``rm`` invocation recursively forces outside the workspace.
-
-    Only a command that is both recursive and forced is dangerous. Each target
-    is denied if it contains a shell expansion (``$`` or a backtick) or resolves
-    outside of the workspace.
-    """
+    """Report whether an ``rm`` invocation recursively forces outside the workspace."""
     recursive = False
     force = False
     targets: list[str] = []
@@ -284,11 +265,7 @@ def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
 
 
 def _extract_command_substitutions(command: str) -> list[str]:
-    """Return the text of every ``$(...)``, `` `...` `` and ``<(...)/>(...)`` substitution.
-
-    The shell runs the substituted text, so it has to be checked with the
-    very same rules as the command itself.
-    """
+    """Return the text of every ``$(...)``, `` `...` `` and ``<(...)/>(...)`` substitution."""
     substitutions: list[str] = []
     index = 0
     length = len(command)
@@ -304,7 +281,6 @@ def _extract_command_substitutions(command: str) -> list[str]:
             index = end + 1
             continue
         if char == "$" and command[index + 1 : index + 2] == "(":
-            # Walk to the matching closing parenthesis, nested ones included.
             depth = 0
             cursor = index + 1
             while cursor < length:
@@ -316,17 +292,13 @@ def _extract_command_substitutions(command: str) -> list[str]:
                         break
                 cursor += 1
             if cursor >= length:
-                break  # unbalanced parentheses
+                break
             text = command[index + 2 : cursor]
             if text.strip():
                 substitutions.append(text)
             index = cursor + 1
             continue
         if char in "<>" and command[index + 1 : index + 2] == "(":
-            # Walk to the matching closing parenthesis of a process
-            # substitution <(...) or >(...), nested ones included. The
-            # `(` of `$(...)` is handled by the `$(` branch above, so it is
-            # never mistaken for a process substitution here.
             depth = 0
             cursor = index + 1
             while cursor < length:
@@ -338,7 +310,7 @@ def _extract_command_substitutions(command: str) -> list[str]:
                         break
                 cursor += 1
             if cursor >= length:
-                break  # unbalanced parentheses
+                break
             text = command[index + 2 : cursor]
             if text.strip():
                 substitutions.append(text)
@@ -355,11 +327,7 @@ def _expand_home(target: str) -> str:
 
 
 def _target_inside_workspace(target: str, workspace: Path) -> bool:
-    """Resolve a redirection target and report whether it stays in the workspace.
-
-    An absolute target is resolved as it is, a relative one against the
-    workspace.
-    """
+    """Resolve a redirection target and report whether it stays in the workspace."""
     base = workspace.resolve()
     path = Path(_expand_home(target))
     resolved = path if path.is_absolute() else base / path
@@ -376,12 +344,8 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
         target = match.group(1).strip().strip("\"'")
         if not target:
             continue
-        # /dev/null, /dev/stdout and /dev/stderr discard output rather than
-        # write a real file, so they are never a policy violation.
         if target in _SPECIAL_WRITE_TARGETS:
             continue
-        # A target that still contains a shell expansion cannot be resolved
-        # statically: the shell expands it before opening the file.
         if "$" in target or "`" in target:
             return True
         if not _target_inside_workspace(target, workspace):
@@ -389,70 +353,8 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
     return False
 
 
-# Programs that write to path arguments rather than via shell redirections.
-_WRITE_PATH_PROGRAMS = frozenset({"tee"})
-
-
-def _git_subcommand(args: list[str]) -> str | None:
-    """Return the git subcommand, skipping global options that take a value."""
-    VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace",
-                  "--exec-path"}
-    i = 0
-    while i < len(args):
-        t = args[i]
-        if t == "--":
-            i += 1
-            continue
-        if t.startswith("--"):
-            if "=" in t:
-                i += 1
-                continue
-            if t in VALUE_OPTS:
-                i += 2
-                continue
-            i += 1
-            continue
-        if t.startswith("-"):
-            if t in VALUE_OPTS or t in ("-C", "-c"):
-                i += 2
-                continue
-            i += 1
-            continue
-        return t
-    return None
-
-
-def _is_force_push(segment: str, normalized: str) -> bool:
-    """Report whether a segment is a git force push."""
-    parsed = _program_and_args(segment)
-    if parsed is None:
-        return False
-    name, args = parsed
-    if name != "git":
-        return False
-    sub = _git_subcommand(args)
-    if sub != "push":
-        return False
-    push_args = args
-    # find push args after subcommand? use all args; flags may appear anywhere
-    # Covers --force, --force-with-lease and --force-with-lease=<ref>.
-    if any(a.lower().startswith("--force") for a in push_args):
-        return True
-    if any(a.lower() == "-f" for a in push_args):
-        return True
-    # A "+" refspec forces the update on the remote
-    return any(a.startswith("+") or ":+" in a for a in push_args)
-
-
 def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
-    """Report whether a segment writes to a path argument outside the workspace.
-
-    This catches programs that write files through arguments rather than shell
-    redirections (e.g. ``tee``). Non-option tokens are treated as path
-    arguments; a path outside the workspace or one that still contains a shell
-    expansion (``$`` or a backtick) is denied. A program with no path argument
-    is allowed.
-    """
+    """Report whether a segment writes to a path argument outside the workspace."""
     parsed = _program_and_args(segment)
     if parsed is None:
         return False
@@ -491,9 +393,7 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
 
-    # DENY dangerous rm/chmod (token-aware, not substring-based). Works even
-    # behind wrapper programs such as sudo/env and inside substitutions.
-    # Also check the resolved program name against DENIED_PROGRAMS and mkfs.*
+    # DENY dangerous rm/chmod (token-aware, not substring-based)
     parsed = _program_and_args(segment)
     if parsed is not None:
         name, args = parsed
@@ -517,15 +417,10 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     """Check a command - or the text of a command substitution - against the policy."""
     normalized = _normalize_command(text)
-    # The whole text is checked against the pattern list as well, so that a
-    # denied pattern cannot hide in an unusual position (inside quotes, in
-    # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
-    # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
         return True
-    # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
             if _text_is_denied(substitution, workspace, depth + 1):
@@ -538,6 +433,53 @@ def is_command_denied(command: str, workspace: Path) -> bool:
     if not command or not command.strip():
         return False
     return _text_is_denied(command, workspace, depth=0)
+
+
+def _git_subcommand(args: list[str]) -> str | None:
+    """Return the git subcommand, skipping global options that take a value."""
+    VALUE_OPTS = {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+    i = 0
+    while i < len(args):
+        t = args[i]
+        if t == "--":
+            i += 1
+            continue
+        if t.startswith("--"):
+            if "=" in t:
+                i += 1
+                continue
+            if t in VALUE_OPTS:
+                i += 2
+                continue
+            i += 1
+            continue
+        if t.startswith("-"):
+            if t in VALUE_OPTS or t in ("-C", "-c"):
+                i += 2
+                continue
+            i += 1
+            continue
+        return t
+    return None
+
+
+def _is_force_push(segment: str, normalized: str) -> bool:
+    """Report whether a segment is a git force push."""
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if name != "git":
+        return False
+    sub = _git_subcommand(args)
+    if sub != "push":
+        return False
+    push_args = args
+    if any(a.lower().startswith("--force") for a in push_args):
+        return True
+    if any(a.lower() == "-f" for a in push_args):
+        return True
+    return any(a.startswith("+") or ":+" in a for a in push_args)
 
 
 def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
@@ -554,117 +496,35 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     return candidate
 
 
-class WorkerAgent:
-    def __init__(
-        self,
-        task: TaskModel,
-        client: LLMClient | None = None,
-        settings: Settings | None = None,
-        workspace: Path | None = None,
-        goal: str = "",
-    ) -> None:
-        self.task = task
-        self.settings = settings if settings is not None else global_settings
-        self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
-        self.client = client if client is not None else LLMClient(settings=self.settings)
-        self.goal = goal
+class ToolExecutor:
+    """Handles execution of worker tools with proper error handling."""
+
+    def __init__(self, worker: "WorkerAgent") -> None:
+        self.worker = worker
+        self.client = worker.client
+        self.workspace = worker.workspace
         self.files_changed: set[str] = set()
 
-    async def run(self) -> WorkerResult:
-        try:
-            return await self._run()
-        except Exception as exc:  # pragma: no cover - defensive
-            return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
-
-    async def _run(self) -> WorkerResult:
-        max_iters = self.settings.max_worker_iterations
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "user",
-                "content": self._initial_text(),
-            }
-        ]
-        iterations = 0
-        for i in range(max_iters):
-            iterations = i + 1
-            response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
-            )
-            if not response.tool_calls:
-                summary = response.text.strip() if response.text.strip() else "Task completed."
-                if response.stop_reason in TRUNCATED_STOP_REASONS:
-                    return WorkerResult(
-                        summary=summary,
-                        success=False,
-                        files_changed=sorted(self.files_changed),
-                        iterations=iterations,
-                        error=f"worker response truncated (stop_reason={response.stop_reason})",
-                    )
-                return WorkerResult(
-                    summary=summary,
-                    success=True,
-                    files_changed=sorted(self.files_changed),
-                    iterations=iterations,
-                )
-            # append assistant turn
-            blocks: list[dict[str, Any]] = []
-            if response.text:
-                blocks.append({"type": "text", "text": response.text})
-            for tc in response.tool_calls:
-                blocks.append(
-                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
-                )
-            messages.append({"role": "assistant", "content": blocks})
-
-            # execute tools
-            result_blocks: list[dict[str, Any]] = []
-            for tc in response.tool_calls:
-                result = await self._execute_tool(tc)
-                result_blocks.append(
-                    {"type": "tool_result", "tool_use_id": tc.id, "content": result}
-                )
-            messages.append({"role": "user", "content": result_blocks})
-
-        # budget exhausted: the worker was truncated, so this is NOT a success.
-        # Reporting success here would make the orchestrator mark the task as
-        # completed instead of retrying it.
-        return WorkerResult(
-            summary="worker iteration budget exhausted",
-            success=False,
-            files_changed=sorted(self.files_changed),
-            iterations=max_iters,
-            error="worker iteration budget exhausted",
-        )
-
-    def _initial_text(self) -> str:
-        parts = []
-        if self.goal:
-            parts.append(f"Overall goal: {self.goal}")
-        parts.append(f"Task: {self.task.description}")
-        parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
-        parts.append(f"Workspace: {self.workspace}")
-        return "\n".join(parts)
-
-    async def _execute_tool(self, tc: ToolCall) -> str:
+    async def execute(self, tc: ToolCall) -> str:
+        """Execute a single tool call and return the result."""
         name = tc.name
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
             return "error: invalid tool arguments"
-        if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
-        if name == "write_file":
-            if "content" not in args:
-                return "error: missing content"
-            content = args["content"]
-            if not isinstance(content, str):
-                return "error: invalid content (expected a string)"
-            return await self._write_file(str(args.get("path", "")), content)
-        if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
-        if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
+
+        try:
+            if name == "read_file":
+                return await self._read_file(str(args.get("path", "")))
+            if name == "write_file":
+                return await self._write_file(str(args.get("path", "")), args.get("content", ""))
+            if name == "list_files":
+                return await self._list_files(str(args.get("path", ".")) if args.get("path") is not None else ".")
+            if name == "run_command":
+                return await self._run_command(str(args.get("command", "")))
+        except Exception as exc:
+            logger.exception("Tool execution failed: %s", name)
+            return f"error: {exc}"
+
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -695,13 +555,12 @@ class WorkerAgent:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         if len(content) > MAX_READ_CHARS:
-            content = (
-                content[:MAX_READ_CHARS]
-                + f"\n[... output truncated ...] ({len(content)} chars total)"
-            )
+            content = content[:MAX_READ_CHARS] + f"\n[... output truncated ...] ({len(content)} chars total)"
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
+        if not isinstance(content, str):
+            return "error: invalid content (expected a string)"
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
             return "error: path escapes workspace"
@@ -712,6 +571,7 @@ class WorkerAgent:
             return f"error: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
+        self.worker.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
 
     async def _list_files(self, path: str) -> str:
@@ -722,9 +582,6 @@ class WorkerAgent:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the
-        # context, and tell the model when entries were left out so it knows
-        # to list a subdirectory instead of assuming it saw everything.
         total = len(entries)
         rels = []
         base = self.workspace.resolve()
@@ -743,27 +600,24 @@ class WorkerAgent:
     async def _run_command(self, command: str) -> str:
         if not command.strip():
             return "error: empty command"
-        # The hardened check subsumes the legacy pattern list: it normalizes
-        # the command, checks every segment against DENIED_COMMANDS and
-        # DENIED_PROGRAMS, and denies force pushes and redirections outside
-        # the workspace.
         if is_command_denied(command, self.workspace):
+            logger.warning("Command denied by security policy: %s", command)
             return "error: command denied"
         try:
             shlex.split(command)
         except ValueError:
             return "error: could not parse command"
-        timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
-        # On POSIX the command runs in its own session/process group so that a
-        # timeout can kill the whole tree (children and grandchildren included)
-        # instead of leaking orphans. On other platforms we fall back to
-        # killing the direct child only.
+
+        timeout = float(getattr(self.worker.settings, "command_timeout", 300.0) or 300.0)
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
+
         try:
             if os.name == "posix":
                 proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
+                    "/bin/sh",
+                    "-c",
+                    command,
                     cwd=str(self.workspace),
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
@@ -784,11 +638,13 @@ class WorkerAgent:
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
+
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
+
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
@@ -801,7 +657,6 @@ class WorkerAgent:
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
-        """Kill a timed-out command together with every process it spawned."""
         if new_session:
             try:
                 pgid = os.getpgid(proc.pid)
@@ -816,6 +671,91 @@ class WorkerAgent:
                     with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
                         await asyncio.wait_for(proc.wait(), timeout=5.0)
                     return
-        # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+
+
+class WorkerAgent:
+    def __ __init__(
+        self,
+        task: TaskModel,
+        client: LLMClient | None = None,
+        settings: Settings | None = None,
+        workspace: Path | None = None,
+        goal: str = "",
+    ) -> None:
+        self.task = task
+        self.settings = settings if settings is not None else global_settings
+        self.workspace = Path(workspace) if workspace is not None else Path(self.settings.workspace)
+        self.client = client if client is not None else LLMClient(settings=self.settings)
+        self.goal = goal
+        self.files_changed: set[str] = set()
+        self._tool_executor = ToolExecutor(self)
+
+    async def run(self) -> WorkerResult:
+        try:
+            return await self._run()
+        except Exception as exc:
+            logger.exception("Worker run failed")
+            return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
+
+    async def _run(self) -> WorkerResult:
+        max_iters = self.settings.max_worker_iterations
+        messages: list[dict[str, Any]] = [{"role": "user", "content": self._initial_text()}]
+        iterations = 0
+
+        for i in range(max_iters):
+            iterations = i + 1
+            response: LLMResponse = await self.client.chat(
+                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+            )
+
+            if not response.tool_calls:
+                summary = response.text.strip() if response.text.strip() else "Task completed."
+                if response.stop_reason in TRUNCATED_STOP_REASONS:
+                    return WorkerResult(
+                        summary=summary,
+                        success=False,
+                        files_changed=sorted(self.files_changed),
+                        iterations=iterations,
+                        error=f"worker response truncated (stop_reason={response.stop_reason})",
+                    )
+                return WorkerResult(
+                    summary=summary,
+                    success=True,
+                    files_changed=sorted(self.files_changed),
+                    iterations=iterations,
+                )
+
+            # Append assistant turn
+            blocks: list[dict[str, Any]] = []
+            if response.text:
+                blocks.append({"type": "text", "text": response.text})
+            for tc in response.tool_calls:
+                blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments})
+            messages.append({"role": "assistant", "content": blocks})
+
+            # Execute tools
+            result_blocks: list[dict[str, Any]] = []
+            for tc in response.tool_calls:
+                result = await self._tool_executor.execute(tc)
+                result_blocks.append({"type": "tool_result", "tool_use_id": tc.id, "content": result})
+            messages.append({"role": "user", "content": result_blocks})
+
+        # Budget exhausted
+        return WorkerResult(
+            summary="worker iteration budget exhausted",
+            success=False,
+            files_changed=sorted(self.files_changed),
+            iterations=max_iters,
+            error="worker iteration budget exhausted",
+        )
+
+    def _initial_text(self) -> str:
+        parts = []
+        if self.goal:
+            parts.append(f"Overall goal: {self.goal}")
+        parts.append(f"Task: {self.task.description}")
+        parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
+        parts.append(f"Workspace: {self.workspace}")
+        return "\n".join(parts)

@@ -38,7 +38,6 @@ def configure_logging(level: str = "INFO") -> None:
     )
 
     if not _STRUCTLOG_AVAILABLE:
-        # Fall back to stdlib logging if structlog is not available
         _configure_stdlib_fallback(level)
         return
 
@@ -64,3 +63,82 @@ def get_logger(name: str) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger(name)
     return logging.getLogger(name)
+
+
+def log_llm_call(
+    logger: Any,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cost: float,
+    latency_ms: float,
+) -> None:
+    """Log an LLM call with structured fields."""
+    logger.info(
+        "llm_call",
+        model=model,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+        cost_usd=cost,
+        latency_ms=latency_ms,
+    )
+
+
+def log_task_event(
+    logger: Any,
+    task_id: str,
+    event: str,
+    status: str = "",
+    attempts: int = 0,
+    duration_ms: float = 0,
+    error: str = "",
+) -> None:
+    """Log a task lifecycle event."""
+    logger.info(
+        "task_event",
+        task_id=task_id,
+        event=event,
+        status=status,
+        attempts=attempts,
+        duration_ms=duration_ms,
+        error=error,
+    )
+
+
+def log_cycle_event(
+    logger: Any,
+    cycle: int,
+    event: str,
+    tasks_planned: int = 0,
+    tasks_completed: int = 0,
+    tests_passed: bool | None = None,
+) -> None:
+    """Log an orchestration cycle event."""
+    logger.info(
+        "cycle_event",
+        cycle=cycle,
+        event=event,
+        tasks_planned=tasks_planned,
+        tasks_completed=tasks_completed,
+        tests_passed=tests_passed,
+    )
+
+
+def log_tool_call(
+    logger: Any,
+    task_id: str,
+    tool_name: str,
+    success: bool,
+    duration_ms: float,
+    error: str = "",
+) -> None:
+    """Log a tool call."""
+    logger.info(
+        "tool_call",
+        task_id=task_id,
+        tool=tool_name,
+        success=success,
+        duration_ms=duration_ms,
+        error=error,
+    )
