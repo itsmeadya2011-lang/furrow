@@ -115,6 +115,8 @@ class Orchestrator:
             "original_goal": self.original_goal,
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
+            "tests_run": self._tests_run,
+            "skipped": self._tests_skipped,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
         }

@@ -5,13 +5,18 @@ Commands:
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
     furrow web             serve the web UI
+    furrow doctor          check the environment and configuration
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import inspect
 import logging
+import os
+import shlex
+import shutil
 import sys
 from pathlib import Path
 from typing import Any
@@ -27,6 +32,33 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+
+# Key third-party packages Furrow depends on, mapped to their import names.
+_REQUIRED_PACKAGES = {
+    "fastapi": "fastapi",
+    "uvicorn": "uvicorn",
+    "pydantic": "pydantic",
+    "pydantic-settings": "pydantic_settings",
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "httpx": "httpx",
+    "click": "click",
+    "rich": "rich",
+    "python-dotenv": "dotenv",
+    "aiofiles": "aiofiles",
+    "tenacity": "tenacity",
+    "structlog": "structlog",
+}
+
+# Test runners the worker/tester can invoke, mapped to the binary to look for.
+_TEST_RUNNERS = {
+    "pytest": ["pytest"],
+    "npm": ["npm"],
+    "pnpm": ["pnpm"],
+    "yarn": ["yarn"],
+    "cargo": ["cargo"],
+    "go": ["go"],
+}
 
 
 def _run_settings(
@@ -265,6 +297,173 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+def _check_package(name: str) -> tuple[str, str | None]:
+    """Return (status, version) for a package: ``("ok", version)`` or ``("missing", None)``.
+
+    ``name`` is the distribution/package name as registered with pip.
+    """
+    try:
+        version = importlib.metadata.version(name)
+        return ("ok", version)
+    except importlib.metadata.PackageNotFoundError:
+        return ("missing", None)
+
+
+def _check_binary(name: str) -> bool:
+    """Return True when *name* resolves to an executable on PATH."""
+    return shutil.which(name) is not None
+
+
+def _check_env_var(name: str) -> tuple[str, str]:
+    """Return (status, value) for an environment variable."""
+    value = os.getenv(name)
+    if value:
+        # Show only the last 4 characters of a secret value.
+        masked = "***" + value[-4:] if len(value) > 4 else "****"
+        return ("set", masked)
+    return ("unset", "")
+
+
+def _doctor_workspace(workspace: Path) -> list[str]:
+    """Return a list of human-readable lines describing the workspace."""
+    lines: list[str] = []
+    if not workspace.exists():
+        lines.append(f"  Workspace: {workspace} (does not exist)")
+        return lines
+    if not workspace.is_dir():
+        lines.append(f"  Workspace: {workspace} (not a directory)")
+        return lines
+    lines.append(f"  Workspace: {workspace}")
+    markers = ["pyproject.toml", "package.json", "Cargo.toml", "go.mod", "requirements.txt",
+               "setup.cfg", "tox.ini", "pytest.ini"]
+    found = [m for m in markers if (workspace / m).is_file()]
+    if found:
+        lines.append(f"  Project markers: {', '.join(found)}")
+    tests_dir = workspace / "tests"
+    if tests_dir.is_dir():
+        test_files = [p.name for p in tests_dir.iterdir() if p.is_file() and p.suffix == ".py"]
+        lines.append(f"  tests/ directory: {len(test_files)} test file(s)")
+    state_path = workspace / ".furrow" / "state.json"
+    if state_path.is_file():
+        lines.append(f"  State file: {state_path} (exists)")
+    else:
+        lines.append(f"  State file: {state_path} (not found)")
+    return lines
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def doctor(workspace: Path | None) -> None:
+    """Check the environment, dependencies, and configuration.
+
+    Reports Python version, installed packages, API keys, provider settings,
+    detected test runners, and workspace state. Exits 0 when everything looks
+    sane, non-zero when a problem is found.
+    """
+    run_settings = _run_settings(workspace=workspace)
+    ws = run_settings.workspace
+    problems: list[str] = []
+
+    click.echo("Furrow doctor")
+    click.echo("=" * 40)
+
+    # Python version
+    py = sys.version.split()[0]
+    click.echo(f"Python: {py}")
+    if sys.version_info < (3, 10):
+        problems.append(f"Python {py} is below the required 3.10")
+
+    # Furrow version
+    try:
+        furrow_version = importlib.metadata.version("furrow")
+        click.echo(f"Furrow: {furrow_version}")
+    except importlib.metadata.PackageNotFoundError:
+        click.echo("Furrow: (not installed via pip)")
+        problems.append("Furrow is not installed as a package")
+
+    click.echo()
+    click.echo("Dependencies:")
+    all_ok = True
+    for name in _REQUIRED_PACKAGES:
+        status, version = _check_package(name)
+        marker = "✓" if status == "ok" else "✗"
+        version_str = version if version else "not installed"
+        click.echo(f"  {marker} {name}: {version_str}")
+        if status != "ok":
+            all_ok = False
+            problems.append(f"Missing dependency: {name}")
+    if not all_ok:
+        click.echo("  Install missing dependencies with: pip install -e \".[dev]\"")
+
+    click.echo()
+    click.echo("LLM provider:")
+    click.echo(f"  Provider: {run_settings.provider.value}")
+    click.echo(f"  Model: {run_settings.model}")
+    click.echo(f"  Planner model: {run_settings.planner_model}")
+    click.echo(f"  Worker model: {run_settings.worker_model}")
+    click.echo(f"  Tester model: {run_settings.tester_model}")
+    if run_settings.provider.value == "anthropic":
+        status, masked = _check_env_var("FURROW_ANTHROPIC_API_KEY")
+        if status == "unset":
+            status, masked = _check_env_var("ANTHROPIC_API_KEY")
+        click.echo(f"  Anthropic API key: {status} ({masked or 'not set'})")
+        if status == "unset":
+            problems.append("No Anthropic API key found (set FURROW_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY)")
+    elif run_settings.provider.value == "openai":
+        status, masked = _check_env_var("FURROW_OPENAI_API_KEY")
+        if status == "unset":
+            status, masked = _check_env_var("OPENAI_API_KEY")
+        click.echo(f"  OpenAI API key: {status} ({masked or 'not set'})")
+        if status == "unset":
+            problems.append("No OpenAI API key found (set FURROW_OPENAI_API_KEY or OPENAI_API_KEY)")
+    elif run_settings.provider.value == "ollama":
+        click.echo(f"  Ollama base URL: {run_settings.ollama_base_url}")
+
+    click.echo()
+    click.echo("Settings:")
+    click.echo(f"  Max parallel tasks: {run_settings.max_parallel_tasks}")
+    click.echo(f"  Max cycles: {run_settings.max_cycles} (0 = unlimited)")
+    click.echo(f"  Max worker iterations: {run_settings.max_worker_iterations}")
+    click.echo(f"  Max task retries: {run_settings.max_task_retries}")
+    click.echo(f"  Max retries (LLM): {run_settings.max_retries}")
+    click.echo(f"  Request timeout: {run_settings.request_timeout}s")
+    click.echo(f"  Command timeout: {run_settings.command_timeout}s")
+    click.echo(f"  Test timeout: {run_settings.test_timeout}s")
+    click.echo(f"  Max tokens: {run_settings.max_tokens}")
+    click.echo(f"  Log level: {run_settings.log_level}")
+    click.echo(f"  State file: {run_settings.state_file}")
+
+    click.echo()
+    click.echo("Test runners:")
+    runner_found = False
+    for name, binaries in _TEST_RUNNERS.items():
+        available = any(_check_binary(b) for b in binaries)
+        marker = "✓" if available else " "
+        click.echo(f"  [{marker}] {name}")
+        if available:
+            runner_found = True
+    if not runner_found:
+        problems.append("No test runner binary found on PATH")
+
+    click.echo()
+    for line in _doctor_workspace(ws):
+        click.echo(line)
+
+    click.echo()
+    if problems:
+        click.secho("Issues found:", fg="yellow")
+        for problem in problems:
+            click.echo(f"  - {problem}")
+        sys.exit(1)
+    else:
+        click.secho("All checks passed.", fg="green")
 
 
 if __name__ == "__main__":
