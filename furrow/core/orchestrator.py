@@ -269,9 +269,10 @@ class Orchestrator:
             # guard as well - otherwise the loop never stops.
             no_signal = (not test_result.passed) or skipped
             guard_tripped = False
+            threshold = max(1, int(getattr(self.settings, "no_progress_threshold", 2) or 2))
             if no_signal and sig == self._prev_sig:
                 self._no_progress += 1
-                if self._no_progress >= 2:
+                if self._no_progress >= threshold:
                     self._stopped_reason = (
                         "no test runner detected" if skipped else "no progress"
                     )

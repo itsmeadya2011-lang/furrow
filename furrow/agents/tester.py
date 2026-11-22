@@ -215,33 +215,80 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
+            # Read package.json to detect test framework and scripts
+            pkg_data = {}
             try:
                 with open(self.workspace / "package.json", encoding="utf-8") as fh:
                     pkg_data = json.load(fh)
-                scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
             except (OSError, UnicodeError, ValueError) as exc:
                 logger.warning("Could not read package.json: %s", exc)
-            # Fallback: npm test if package.json exists (Python case handled above)
+
+            scripts = pkg_data.get("scripts", {})
+            dev_deps = {**pkg_data.get("devDependencies", {}), **pkg_data.get("dependencies", {})}
+
+            # Detect package manager
+            pkg_manager = "npm"
             if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+                pkg_manager = "pnpm"
+            elif (self.workspace / "yarn.lock").is_file():
+                pkg_manager = "yarn"
+            elif (self.workspace / "package-lock.json").is_file():
+                pkg_manager = "npm"
+
+            # Check for explicit test runner configs first
+            # Vitest
+            vitest_configs = [
+                "vitest.config.js", "vitest.config.ts", "vitest.config.mjs",
+                "vitest.config.cjs", "vitest.workspace.ts", "vitest.workspace.js"
+            ]
+            if any((self.workspace / f).is_file() for f in vitest_configs):
+                return [pkg_manager, "vitest", "run", "--reporter=verbose"]
+            # Jest
+            jest_configs = [
+                "jest.config.js", "jest.config.ts", "jest.config.mjs",
+                "jest.config.cjs", "jest.config.json"
+            ]
+            if any((self.workspace / f).is_file() for f in jest_configs):
+                return [pkg_manager, "jest", "--verbose", "--no-coverage"]
+            # Mocha
+            mocha_configs = [".mocharc.js", ".mocharc.json", ".mocharc.yml", "mocha.opts"]
+            if any((self.workspace / f).is_file() for f in mocha_configs):
+                return [pkg_manager, "mocha", "--reporter=spec"]
+            # Cypress (e2e)
+            if (self.workspace / "cypress.config.js").is_file() or (
+                self.workspace / "cypress.config.ts"
+            ).is_file():
+                return [pkg_manager, "cypress", "run"]
+
+            # Check package.json for test script
+            if "test" in scripts:
+                test_script = scripts["test"]
+                # If the test script explicitly calls a runner, use it directly
+                if "vitest" in test_script:
+                    return [pkg_manager, "vitest", "run", "--reporter=verbose"]
+                if "jest" in test_script:
+                    return [pkg_manager, "jest", "--verbose", "--no-coverage"]
+                if "mocha" in test_script:
+                    return [pkg_manager, "mocha", "--reporter=spec"]
+                if "cypress" in test_script:
+                    return [pkg_manager, "cypress", "run"]
+                # Otherwise run the npm test script
+                return [pkg_manager, "test", "--silent"]
+
+            # Infer from dependencies
+            if "vitest" in dev_deps:
+                return [pkg_manager, "vitest", "run", "--reporter=verbose"]
+            if "jest" in dev_deps:
+                return [pkg_manager, "jest", "--verbose", "--no-coverage"]
+            if "mocha" in dev_deps:
+                return [pkg_manager, "mocha", "--reporter=spec"]
+            if "@playwright/test" in dev_deps:
+                return [pkg_manager, "playwright", "test"]
+            if "cypress" in dev_deps:
+                return [pkg_manager, "cypress", "run"]
+
+            # Fallback: try npm test if package.json exists
+            return [pkg_manager, "test", "--silent"]
 
         python_markers = [
             "pyproject.toml",
@@ -257,6 +304,27 @@ class TesterAgent:
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+        # Bun
+        if (self.workspace / "bun.lockb").is_file() or (
+            self.workspace / "bun.lock"
+        ).is_file():
+            return ["bun", "test"]
+        # Deno
+        if (self.workspace / "deno.json").is_file() or (
+            self.workspace / "deno.jsonc"
+        ).is_file():
+            return ["deno", "test", "--allow-all"]
+        # Maven
+        if (self.workspace / "pom.xml").is_file():
+            return ["mvn", "test", "-q"]
+        # Gradle
+        if (self.workspace / "build.gradle").is_file() or (
+            self.workspace / "build.gradle.kts"
+        ).is_file():
+            return ["./gradlew", "test", "--quiet"]
+        # Makefile
+        if (self.workspace / "Makefile").is_file() or (self.workspace / "makefile").is_file():
+            return ["make", "test"]
 
         return None
 

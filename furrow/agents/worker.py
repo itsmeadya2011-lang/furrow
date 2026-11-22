@@ -13,7 +13,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.llm import IGNORED_DIRECTORIES, LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -663,6 +663,12 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "file_search":
+            pattern = str(args.get("pattern", ""))
+            search_path = str(args.get("path", "")) if args.get("path") is not None else "."
+            file_pattern = str(args.get("file_pattern", "")) if args.get("file_pattern") else None
+            max_results = int(args.get("max_results", 50))
+            return await self._file_search(pattern, search_path, file_pattern, max_results)
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -689,11 +695,11 @@ class WorkerAgent:
     async def _read_file(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
-            return "error: path escapes workspace"
+            return f"error: path escapes workspace (path: {path})"
         try:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+            return f"error reading '{path}': {exc}"
         if len(content) > MAX_READ_CHARS:
             content = (
                 content[:MAX_READ_CHARS]
@@ -704,12 +710,12 @@ class WorkerAgent:
     async def _write_file(self, path: str, content: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
-            return "error: path escapes workspace"
+            return f"error: path escapes workspace (path: {path})"
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+            return f"error writing '{path}': {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
@@ -717,11 +723,11 @@ class WorkerAgent:
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
-            return "error: path escapes workspace"
+            return f"error: path escapes workspace (path: {path})"
         try:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+            return f"error listing '{path}': {exc}"
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the
         # context, and tell the model when entries were left out so it knows
         # to list a subdirectory instead of assuming it saw everything.
@@ -739,6 +745,123 @@ class WorkerAgent:
             note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
             text = f"{text}\n{note}" if text else note
         return text
+
+    async def _file_search(
+        self,
+        pattern: str,
+        path: str = ".",
+        file_pattern: str | None = None,
+        max_results: int = 50,
+    ) -> str:
+        """Search for a text pattern in files under the workspace.
+
+        Returns matching file paths with line numbers and context.
+        """
+        if not pattern or not pattern.strip():
+            return "error: pattern cannot be empty"
+
+        search_path = path if path else "."
+        resolved = resolve_in_workspace(self.workspace, search_path)
+        if resolved is None:
+            return f"error: path escapes workspace (path: {search_path})"
+
+        try:
+            # Use ripgrep if available, otherwise fall back to Python search
+            rg_cmd = ["rg", "--line-number", "--no-heading", "--color=never"]
+            if file_pattern:
+                rg_cmd.extend(["-g", file_pattern])
+            rg_cmd.extend(["-m", str(max_results), pattern, str(resolved)])
+
+            proc = await asyncio.create_subprocess_exec(
+                *rg_cmd,
+                cwd=str(self.workspace),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            out = stdout.decode("utf-8", errors="replace")
+            _ = stderr.decode("utf-8", errors="replace")
+
+            # ripgrep exit codes: 0 = found, 1 = no matches, 2 = error
+            if proc.returncode == 0:
+                lines = out.strip().splitlines()
+                if not lines:
+                    return "no matches found"
+                # Format results with context
+                results = []
+                for line in lines:
+                    # rg output format: file:line:content
+                    parts = line.split(":", 2)
+                    if len(parts) >= 3:
+                        file_path, line_num, content = parts
+                        results.append(f"{file_path}:{line_num}: {content.strip()}")
+                    else:
+                        results.append(line)
+                return "\n".join(results)
+            elif proc.returncode == 1:
+                return "no matches found"
+            else:
+                # Fall back to Python search if rg fails
+                return await self._file_search_python(pattern, resolved, file_pattern, max_results)
+        except FileNotFoundError:
+            # ripgrep not installed, use Python fallback
+            return await self._file_search_python(pattern, resolved, file_pattern, max_results)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error searching in '{search_path}': {exc}"
+
+    async def _file_search_python(
+        self,
+        pattern: str,
+        directory: Path,
+        file_pattern: str | None,
+        max_results: int,
+    ) -> str:
+        """Python fallback for file search when ripgrep is not available."""
+        import fnmatch
+        import re
+
+        results = []
+        try:
+            regex = re.compile(pattern)
+        except re.error as e:
+            return f"error: invalid regex pattern '{pattern}': {e}"
+
+        try:
+            for root, dirs, files in os.walk(directory):
+                # Prune ignored directories
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+                ]
+                for name in files:
+                    if file_pattern and not fnmatch.fnmatch(name, file_pattern):
+                        continue
+                    file_path = Path(root) / name
+                    try:
+                        rel_path = file_path.relative_to(self.workspace.resolve())
+                    except ValueError:
+                        continue
+                    try:
+                        content = file_path.read_text(encoding="utf-8", errors="replace")
+                    except (OSError, UnicodeError):
+                        continue
+                    for i, line in enumerate(content.splitlines(), 1):
+                        if regex.search(line):
+                            results.append(f"{rel_path}:{i}: {line.strip()}")
+                            if len(results) >= max_results:
+                                break
+                    if len(results) >= max_results:
+                        break
+                if len(results) >= max_results:
+                    break
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error searching in '{directory}': {exc}"
+
+        if not results:
+            return "no matches found"
+        return "\n".join(results)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

@@ -75,6 +75,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  #stop { border-color: #e0685f; }
+  #stop:hover { border-color: #ff6b6b; background: #2a1818; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -115,6 +118,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    display: flex; gap: .4rem; flex-wrap: wrap; margin: .4rem 0;
+    font-size: .8rem; color: #4c8dff;
+  }
+  .panel-file {
+    background: #1d2430; padding: .1rem .4rem; border-radius: 3px;
+    border: 1px solid #2b3240;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -132,6 +143,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .pulse { animation: pulse 1.5s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 </style>
 </head>
 <body>
@@ -140,6 +153,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -161,8 +175,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
+  const stopBtn = document.getElementById('stop');
   let socket = null;
   let lastSummary = null;
+  let statusPollInterval = null;
+  let isRunning = false;
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -173,8 +192,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
     pending: 'pending',
     running: 'running',
@@ -194,10 +211,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   function renderStatus(status, result, running) {
+    isRunning = running;
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
       text(status && status.cycles !== undefined ? status.cycles : '\u2014');
-    stateEl.textContent = running ? 'running' : 'stopped';
+    const stateText = running ? 'running' : 'stopped';
+    stateEl.textContent = stateText;
+    stateEl.className = running ? 'status-running pulse' : '';
     const reason =
       text(status && status.stopped_reason) ||
       text(result && result.stopped_reason) || '';
@@ -210,6 +230,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    // Update button states
+    startBtn.disabled = running;
+    resumeBtn.disabled = running;
+    stopBtn.disabled = !running;
   }
 
   function renderTasks(tasks) {
@@ -251,6 +275,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      // Show files changed
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const filesDiv = document.createElement('div');
+        filesDiv.className = 'panel-files';
+        filesChanged.forEach(function (file) {
+          const fileSpan = document.createElement('span');
+          fileSpan.className = 'panel-file';
+          fileSpan.textContent = file;
+          filesDiv.appendChild(fileSpan);
+        });
+        panel.appendChild(filesDiv);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -301,8 +339,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
           lastSummary = summary;
         }
       }
+      // If run is no longer running, stop polling
+      if (!running && statusPollInterval) {
+        clearInterval(statusPollInterval);
+        statusPollInterval = null;
+      }
     } catch (err) {
       append('! could not load status');
+    }
+  }
+
+  function startPolling() {
+    if (statusPollInterval) { return; }
+    statusPollInterval = setInterval(loadStatus, 1000);
+    loadStatus(); // immediate
+  }
+
+  function stopPolling() {
+    if (statusPollInterval) {
+      clearInterval(statusPollInterval);
+      statusPollInterval = null;
     }
   }
 
@@ -312,10 +368,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
       socket.send(JSON.stringify(payload));
+      startPolling();
     };
     function truncate(value, max) {
       const s = text(value);
@@ -393,6 +448,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket.onclose = function () {
       append('-- closed');
       socket = null;
+      stopPolling();
       loadStatus();
     };
     socket.onerror = function () {
@@ -400,11 +456,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
     };
   }
 
+  function disconnect() {
+    if (socket) {
+      socket.close();
+      socket = null;
+    }
+    stopPolling();
+  }
+
   document.getElementById('start').onclick = function () {
     connect({ goal: goalEl.value, resume: false });
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('stop').onclick = function () {
+    if (socket) {
+      // Send a cancellation by closing the websocket
+      // The server will cancel the run
+      socket.close();
+    }
   };
 
   loadState();

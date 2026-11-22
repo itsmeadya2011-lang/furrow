@@ -43,7 +43,16 @@ returned as JSON."""
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
 workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+respond with a concise summary and no further tool calls.
+
+Available tools:
+- read_file: Read a UTF-8 text file from the workspace
+- write_file: Create or overwrite a file in the workspace
+- list_files: List files under a workspace directory (relative paths)
+- file_search: Search for a text pattern in files under the workspace.
+  Returns matching file paths with line numbers and context.
+  Supports regex patterns and file glob patterns.
+- run_command: Run a shell command in the workspace and return its output"""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -77,6 +86,21 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": [],
+        },
+    },
+    {
+        "name": "file_search",
+        "description": "search for a text pattern in files under the workspace. "
+        "Returns matching file paths with line numbers and context.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string"},
+                "path": {"type": "string"},
+                "file_pattern": {"type": "string"},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 100}
+            },
+            "required": ["pattern"],
         },
     },
     {

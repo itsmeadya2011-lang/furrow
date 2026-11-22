@@ -125,6 +125,7 @@ class Settings(BaseSettings):
     max_worker_iterations: int = Field(default=12, ge=1)
     max_retries: int = Field(default=3, ge=0)
     max_task_retries: int = Field(default=1, ge=0)
+    no_progress_threshold: int = Field(default=2, ge=1)
     request_timeout: float = Field(default=120.0, gt=0)
     command_timeout: float = Field(default=300.0, gt=0)
     test_timeout: float = Field(default=600.0, gt=0)

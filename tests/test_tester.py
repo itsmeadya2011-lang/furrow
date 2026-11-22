@@ -73,12 +73,13 @@ def test_detect_command_unreadable_package_json_falls_back(tmp_path):
 
 
 def test_detect_command_valid_package_json_with_test_script(tmp_path):
-    """A valid package.json with a test script returns the npm fallback."""
+    """A valid package.json with a test script returns the detected runner."""
     (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None
-    assert cmd == ["npm", "test", "--silent"]
+    # Now detects vitest explicitly instead of falling back to npm test
+    assert cmd == ["npm", "vitest", "run", "--reporter=verbose"]
 
 
 def test_detect_cargo(tmp_path):
