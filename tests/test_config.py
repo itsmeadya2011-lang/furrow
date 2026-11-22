@@ -279,3 +279,41 @@ def test_pricing_overrides_returns_a_copy():
     overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
     assert s.model_pricing["my-model"].input_per_million == 1.0
 
+
+def test_settings_agent_provider_defaults_to_none():
+    s = Settings(_env_file=None)
+    assert s.planner_provider is None
+    assert s.worker_provider is None
+    assert s.tester_provider is None
+
+
+def test_settings_provider_for_falls_back_to_global_provider():
+    s = Settings(_env_file=None, provider=Provider.OPENAI)
+    assert s.provider_for("planner") == Provider.OPENAI
+    assert s.provider_for("worker") == Provider.OPENAI
+    assert s.provider_for("tester") == Provider.OPENAI
+
+
+def test_settings_provider_for_uses_role_override():
+    s = Settings(
+        _env_file=None,
+        provider=Provider.ANTHROPIC,
+        planner_provider=Provider.OLLAMA,
+        worker_provider=Provider.OPENAI,
+    )
+    assert s.provider_for("planner") == Provider.OLLAMA
+    assert s.provider_for("worker") == Provider.OPENAI
+    assert s.provider_for("tester") == Provider.ANTHROPIC
+
+
+def test_settings_provider_for_rejects_unknown_role():
+    s = Settings(_env_file=None)
+    with pytest.raises(ValueError):
+        s.provider_for("bogus")
+
+
+def test_settings_agent_provider_from_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FURROW_WORKER_PROVIDER", "openai")
+    s = Settings(_env_file=None)
+    assert s.worker_provider == Provider.OPENAI
+

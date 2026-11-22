@@ -1155,3 +1155,50 @@ def test_list_files_missing_directory_returns_empty(tmp_path):
     client = LLMClient()
     assert client.list_files(tmp_path / "does-not-exist") == []
 
+
+async def test_complete_uses_provider_override():
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._openai = _FakeOpenAI("from openai")
+    assert await client.complete("hi", provider="openai") == "from openai"
+
+
+async def test_chat_uses_provider_override():
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    client._openai = _FakeOpenAI("from openai")
+    response = await client.chat(
+        [{"role": "user", "content": "hi"}], provider=Provider.OPENAI
+    )
+    assert response.text == "from openai"
+
+
+async def test_complete_rejects_unknown_provider():
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    with pytest.raises(ValueError):
+        await client.complete("hi", provider="bogus")
+
+
+async def test_aclose_closes_clients_for_multiple_providers():
+    client = LLMClient(settings=Settings(provider=Provider.ANTHROPIC))
+    closed = {"openai": 0, "ollama": 0}
+
+    openai_client = _FakeOpenAI("ok")
+
+    async def close_openai() -> None:
+        closed["openai"] += 1
+
+    openai_client.aclose = close_openai
+    ollama_client = _FakeOpenAI("ok")
+
+    async def close_ollama() -> None:
+        closed["ollama"] += 1
+
+    ollama_client.aclose = close_ollama
+    client._openai = openai_client
+    client._ollama = ollama_client
+
+    await client.aclose()
+
+    assert closed == {"openai": 1, "ollama": 1}
+    assert client._openai is None
+    assert client._ollama is None
+

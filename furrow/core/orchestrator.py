@@ -358,6 +358,10 @@ class Orchestrator:
                         pt.status = "completed"
                         self._skip_ids.add(pt.id)
                     else:
+                        # A re-planned task (different description or files) is new
+                        # work, so discard the old version's changed-file record;
+                        # retries of the same task still accumulate across attempts.
+                        old.files_changed = []
                         pt.status = "pending"
                 elif old.status == "failed":
                     if old.attempts <= max_retries:

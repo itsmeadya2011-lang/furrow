@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
 
     provider: Provider = Provider.ANTHROPIC
+    planner_provider: Provider | None = None
+    worker_provider: Provider | None = None
+    tester_provider: Provider | None = None
     model: str = "claude-sonnet-4-20250514"
     planner_model: str = "claude-3-5-haiku-20241022"
     worker_model: str = "claude-3-5-sonnet-20241022"
@@ -140,6 +143,24 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def provider_for(self, role: str) -> Provider:
+        """Return the provider configured for an agent role.
+
+        Each role may override the global ``provider`` (for example, running
+        the planner on a local Ollama model while the worker uses a hosted
+        model). ``role`` is one of ``"planner"``, ``"worker"`` or ``"tester"``.
+        """
+        overrides = {
+            "planner": self.planner_provider,
+            "worker": self.worker_provider,
+            "tester": self.tester_provider,
+        }
+        try:
+            override = overrides[role]
+        except KeyError:
+            raise ValueError(f"Unknown agent role: {role}") from None
+        return override if override is not None else self.provider
 
 
 settings = Settings()

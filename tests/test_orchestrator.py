@@ -792,6 +792,30 @@ async def test_completed_task_is_executed_again_when_the_description_changed(tmp
 
 
 @pytest.mark.asyncio
+async def test_replanned_task_does_not_inherit_old_files_changed(tmp_path, monkeypatch):
+    class FileWorker(FakeWorker):
+        async def run(self):
+            changed = ["old.py"] if self.task.description == "old" else ["new.py"]
+            return WorkerResult(
+                summary=f"did {self.task.id}", success=True, files_changed=changed
+            )
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FileWorker)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="old")])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()  # cycle 1
+
+    orch.planner = FakePlanner([TaskModel(id="t1", description="new")])
+    await orch.run()  # cycle 2: the task is re-planned as new work
+
+    assert orch.tasks[0].status == "completed"
+    assert orch.tasks[0].files_changed == ["new.py"]
+
+
+@pytest.mark.asyncio
 async def test_failed_task_with_an_exhausted_budget_stays_failed(tmp_path, monkeypatch):
     calls = []
 

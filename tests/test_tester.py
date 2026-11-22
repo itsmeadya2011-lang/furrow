@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
-from furrow.config import Settings, TestResult
+from furrow.config import Provider, Settings, TestResult
 
 
 class FakeLLMClient:
@@ -12,8 +12,10 @@ class FakeLLMClient:
         self.raises = raises
         self.prompts = []
         self.models = []
+        self.providers = []
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, provider=None):
+        self.providers.append(provider)
         self.prompts.append(prompt)
         self.models.append(model)
         if self.raises:
@@ -50,6 +52,20 @@ def test_detect_pyproject(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None and "pytest" in cmd
+
+
+def test_tester_passes_configured_provider(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    client = FakeLLMClient(response='{"passed": true, "summary": "ok", "failures": []}')
+    s = Settings(
+        _env_file=None,
+        workspace=tmp_path,
+        request_timeout=30,
+        tester_provider=Provider.OPENAI,
+    )
+    agent = TesterAgent(client=client, settings=s, workspace=tmp_path)
+    run(agent.run("goal", []))
+    assert client.providers == [Provider.OPENAI]
 
 
 def test_detect_packagejson(tmp_path):

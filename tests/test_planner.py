@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from furrow.agents.planner import PlannerAgent
-from furrow.config import Plan, Settings
+from furrow.config import Plan, Provider, Settings
 
 
 class FakeLLMClient:
@@ -12,8 +12,10 @@ class FakeLLMClient:
         self.raises = raises
         self.prompts = []
         self.models = []
+        self.providers = []
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, provider=None):
+        self.providers.append(provider)
         self.prompts.append(prompt)
         self.models.append(model)
         if self.raises:
@@ -79,3 +81,11 @@ def test_uses_planner_model():
     agent = PlannerAgent(client=client, settings=s)
     run(agent.plan("g"))
     assert client.models[0] == "my-model"
+
+
+def test_planner_passes_configured_provider():
+    client = FakeLLMClient(response='{"tasks":[],"rationale":"x"}')
+    s = Settings(_env_file=None, planner_provider=Provider.OPENAI)
+    agent = PlannerAgent(client=client, settings=s)
+    run(agent.plan("g"))
+    assert client.providers == [Provider.OPENAI]

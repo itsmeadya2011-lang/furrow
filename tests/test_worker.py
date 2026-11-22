@@ -8,7 +8,7 @@ import pytest
 
 from furrow.agents.prompts import WORKER_TOOLS
 from furrow.agents.worker import WorkerAgent, is_command_denied, resolve_in_workspace
-from furrow.config import Settings
+from furrow.config import Provider, Settings, TaskModel
 from furrow.llm import LLMResponse, ToolCall
 
 
@@ -17,14 +17,22 @@ class FakeLLMClient:
         self.responses = list(responses)
         self.calls = []
 
-    async def chat(self, messages, tools=None, system="", model=None):
-        self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
+    async def chat(self, messages, tools=None, system="", model=None, provider=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "system": system,
+                "model": model,
+                "provider": provider,
+            }
+        )
         item = self.responses.pop(0)
         if isinstance(item, Exception):
             raise item
         return item
 
-    async def complete(self, prompt, system="", model=None):
+    async def complete(self, prompt, system="", model=None, provider=None):
         return ""
 
     async def read_file(self, path):
@@ -45,8 +53,16 @@ class LoopingLLMClient(FakeLLMClient):
         super().__init__([response])
         self.response = response
 
-    async def chat(self, messages, tools=None, system="", model=None):
-        self.calls.append({"messages": messages, "tools": tools, "system": system, "model": model})
+    async def chat(self, messages, tools=None, system="", model=None, provider=None):
+        self.calls.append(
+            {
+                "messages": messages,
+                "tools": tools,
+                "system": system,
+                "model": model,
+                "provider": provider,
+            }
+        )
         return self.response
 
 
@@ -79,6 +95,18 @@ async def test_write_file_then_finish(tmp_path):
     assert result.success is True
     assert result.files_changed == ["hello.py"]
     assert (tmp_path / "hello.py").read_text() == "print('hi')"
+
+
+@pytest.mark.asyncio
+async def test_worker_passes_configured_provider(tmp_path):
+    client = FakeLLMClient([LLMResponse(text="done")])
+    s = Settings(
+        workspace=tmp_path, max_worker_iterations=1, worker_provider=Provider.OPENAI
+    )
+    task = TaskModel(id="t1", description="do it")
+    agent = WorkerAgent(task=task, client=client, settings=s, workspace=tmp_path)
+    await agent.run()
+    assert client.calls[0]["provider"] == Provider.OPENAI
 
 
 @pytest.mark.asyncio

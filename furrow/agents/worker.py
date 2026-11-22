@@ -578,6 +578,7 @@ class WorkerAgent:
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
+        provider = self.settings.provider_for("worker")
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -588,7 +589,11 @@ class WorkerAgent:
         for i in range(max_iters):
             iterations = i + 1
             response: LLMResponse = await self.client.chat(
-                messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
+                messages,
+                tools=WORKER_TOOLS,
+                system=WORKER_SYSTEM,
+                model=self.settings.worker_model,
+                provider=provider,
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."

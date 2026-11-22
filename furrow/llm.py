@@ -341,19 +341,36 @@ class LLMClient:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 
-    async def complete(self, prompt: str, system: str = "", model: str | None = None) -> str:
+    def _resolve_provider(self, provider: Provider | str | None) -> Provider:
+        """Resolve a per-call provider override, falling back to the configured one."""
+        if provider is None:
+            return self.settings.provider
+        if isinstance(provider, Provider):
+            return provider
+        try:
+            return Provider(str(provider).strip().lower())
+        except ValueError as exc:
+            raise ValueError(f"Unsupported provider: {provider}") from exc
+
+    async def complete(
+        self,
+        prompt: str,
+        system: str = "",
+        model: str | None = None,
+        provider: Provider | str | None = None,
+    ) -> str:
         model = model or self.settings.model
-        provider = self.settings.provider
+        resolved = self._resolve_provider(provider)
 
         async def call() -> str:
-            if provider == Provider.ANTHROPIC:
+            if resolved == Provider.ANTHROPIC:
                 response = await self._complete_anthropic(prompt, system, model)
-            elif provider == Provider.OPENAI:
+            elif resolved == Provider.OPENAI:
                 response = await self._complete_openai(self.openai, prompt, system, model)
-            elif provider == Provider.OLLAMA:
+            elif resolved == Provider.OLLAMA:
                 response = await self._complete_openai(self.ollama, prompt, system, model)
             else:
-                raise ValueError(f"Unsupported provider: {provider}")
+                raise ValueError(f"Unsupported provider: {resolved}")
             return response.text
 
         return await self._retry(call)
@@ -364,22 +381,23 @@ class LLMClient:
         tools: list[dict] | None = None,
         system: str = "",
         model: str | None = None,
+        provider: Provider | str | None = None,
     ) -> LLMResponse:
         model = model or self.settings.model
-        provider = self.settings.provider
+        resolved = self._resolve_provider(provider)
 
         async def call() -> LLMResponse:
-            if provider == Provider.ANTHROPIC:
+            if resolved == Provider.ANTHROPIC:
                 return await self._chat_anthropic(messages, tools, system, model)
-            elif provider == Provider.OPENAI:
+            elif resolved == Provider.OPENAI:
                 return await self._chat_openai_compatible(
                     self.openai, messages, tools, system, model
                 )
-            elif provider == Provider.OLLAMA:
+            elif resolved == Provider.OLLAMA:
                 return await self._chat_openai_compatible(
                     self.ollama, messages, tools, system, model
                 )
-            raise ValueError(f"Unsupported provider: {provider}")
+            raise ValueError(f"Unsupported provider: {resolved}")
 
         return await self._retry(call)
 
