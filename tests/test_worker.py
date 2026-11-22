@@ -388,6 +388,28 @@ def test_worker_tools():
         assert "required" in p
 
 
+@pytest.mark.asyncio
+async def test_every_advertised_tool_is_dispatched(tmp_path):
+    """Every tool advertised to the model must have a worker handler.
+
+    ``test_worker_tools`` pins the *names* the model may call, but nothing
+    checked that the worker can actually execute each of them. A tool added to
+    ``WORKER_TOOLS`` without a matching branch in ``WorkerAgent._execute_tool``
+    would make the model invoke a tool the worker answers with "unknown tool".
+    Calling each advertised tool with empty arguments must never hit that path.
+    """
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="x")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    for tool in WORKER_TOOLS:
+        tc = ToolCall(id="t", name=tool["name"], arguments={})
+        out = await agent._execute_tool(tc)
+        assert isinstance(out, str)
+        assert out != f"unknown tool: {tool['name']}"
+
+
 def test_resolve_in_workspace():
     ws = Path("/tmp/ws").resolve()
     assert resolve_in_workspace(ws, "../x") is None
