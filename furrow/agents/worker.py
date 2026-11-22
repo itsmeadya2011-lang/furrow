@@ -76,6 +76,17 @@ _MAX_SUBSTITUTION_DEPTH = 3
 # follows them, so a dangerous ``rm``/``chmod`` hides behind them.
 _WRAPPER_PROGRAMS = frozenset({"sudo", "doas", "command", "env", "nohup", "exec"})
 
+# Programs that execute a *command string* supplied as an argument rather than
+# running a fixed program. ``sh -c "cmd"`` and ``bash -lc "cmd"`` run *cmd*,
+# ``eval "cmd"`` runs *cmd*, and ``xargs cmd`` runs *cmd* with extra arguments.
+# The string has to be checked with the same policy as the outer command, or a
+# destructive command hides behind the interpreter.
+_SHELL_PROGRAMS = frozenset({"sh", "bash", "dash", "zsh", "ksh", "ash", "fish"})
+
+# ``xargs`` short options that take a separate value, so the value token is
+# skipped when looking for the command to run.
+_XARGS_VALUE_OPTS = frozenset({"-n", "-P", "-L", "-s", "-d", "-E", "-I", "-a"})
+
 # Regex for a leading variable assignment such as ``FOO=1`` or ``PATH=/bin``.
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -474,7 +485,66 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
     return False
 
 
-def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
+def _nested_command_texts(segment: str) -> list[str]:
+    """Return the command strings that *segment* will execute at run time.
+
+    ``sh -c "cmd"`` and ``bash -lc "cmd"`` run *cmd*, ``eval "cmd"`` runs
+    *cmd*, and ``xargs cmd`` runs *cmd* with extra arguments. Each of those
+    strings is checked with the same policy as the outer command, so a
+    destructive command cannot hide behind an interpreter.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return []
+    name, args = parsed
+
+    if name in _SHELL_PROGRAMS:
+        for index, token in enumerate(args):
+            if token == "--":
+                break
+            if token == "-c":
+                return [args[index + 1]] if index + 1 < len(args) else []
+            if _is_short_flag_cluster(token) and "c" in token[1:]:
+                # A clustered flag such as ``-lc``/``-ec``: the command is
+                # either attached to the flag (``-crc ...``) or the next token.
+                attached = token[token.index("c", 1) + 1 :]
+                if attached:
+                    return [attached]
+                return [args[index + 1]] if index + 1 < len(args) else []
+        return []
+
+    if name == "eval":
+        # ``eval`` concatenates its arguments with spaces and re-parses the
+        # result as a shell command line, so the raw join is what runs.
+        joined = " ".join(arg for arg in args if arg != "--").strip()
+        return [joined] if joined else []
+
+    if name == "xargs":
+        # ``xargs`` appends its arguments to a command; options come first and
+        # the remaining tokens are the command to run. Value-taking options
+        # (``-n 1``) are skipped so the command is not mistaken for a value.
+        # ``shlex.join`` keeps each argument a single token so a command such
+        # as ``sh -c 'rm -rf /'`` is reconstructed with its grouping intact.
+        index = 0
+        while index < len(args):
+            token = args[index]
+            if token == "--":
+                index += 1
+                break
+            if token.startswith("-") and token != "-":
+                if token in _XARGS_VALUE_OPTS and index + 1 < len(args):
+                    index += 2
+                else:
+                    index += 1
+                continue
+            break
+        tail = args[index:]
+        return [shlex.join(tail)] if tail else []
+
+    return []
+
+
+def _is_dangerous_segment(segment: str, workspace: Path, depth: int = 0) -> bool:
     """Report whether a single command segment violates the command policy."""
     normalized = _normalize_command(segment)
     if not normalized:
@@ -508,6 +578,14 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     if _is_force_push(segment, normalized):
         return True
 
+    # DENY a destructive command hidden behind an interpreter that runs a
+    # command string (``sh -c``/``bash -c``, ``eval``, ``xargs``). The string
+    # is checked with the same rules, so ``sh -c 'rm -rf /'`` is denied.
+    if depth < _MAX_SUBSTITUTION_DEPTH:
+        for text in _nested_command_texts(segment):
+            if _text_is_denied(text, workspace, depth + 1):
+                return True
+
     # DENY a redirection or a file-writing argument that escapes the workspace
     if _redirects_outside_workspace(segment, workspace):
         return True
@@ -523,7 +601,10 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
     # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
+    if any(
+        _is_dangerous_segment(segment, workspace, depth)
+        for segment in _split_command_segments(text)
+    ):
         return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:

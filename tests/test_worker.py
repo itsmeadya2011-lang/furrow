@@ -753,6 +753,80 @@ def test_is_command_denied_wrapper_aware_tee_and_force_push(tmp_path):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_is_command_denied_nested_interpreters(tmp_path):
+    """A command string run by a shell, ``eval`` or ``xargs`` is checked too.
+
+    ``sh -c``/``bash -lc`` and ``eval`` execute their argument as a shell
+    command, and ``xargs`` runs the command built from its tail, so a
+    destructive command must not hide behind an interpreter.
+    """
+    denied_commands = [
+        "sh -c 'rm -rf /'",
+        'bash -c "rm -rf /"',
+        "sh -lc 'rm -rf /'",
+        "sh -c'rm -rf /'",
+        "dash -c 'rm -rf /'",
+        "sudo bash -c 'rm -rf /'",
+        "env bash -c 'rm -rf /'",
+        "eval 'rm -rf /'",
+        'eval "chmod -R 777 /"',
+        "eval rm -rf /",
+        "sh -c 'echo hi; rm -rf /'",
+        "bash -c 'echo hacked > /etc/passwd'",
+        "sh -c 'git push --force'",
+        "sh -c 'echo hi | tee /etc/passwd'",
+        "xargs rm -rf /",
+        "echo x | xargs rm -rf /",
+        "xargs -n 1 sh -c 'rm -rf /'",
+        # nesting: the inner shell's command string is inspected as well
+        "sh -c \"sh -c 'rm -rf /'\"",
+    ]
+    allowed_commands = [
+        "sh -c 'echo hi'",
+        "bash -c 'ls -la'",
+        "sh -c 'rm -rf build'",
+        "eval 'echo ok'",
+        "xargs echo hi",
+        "xargs -n 1 echo hi",
+        "sh -c 'echo hi > out.txt'",
+        "bash -c 'cd sub && ls'",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+@pytest.mark.asyncio
+async def test_nested_shell_command_denied_end_to_end(tmp_path):
+    """The worker refuses a destructive command hidden behind ``sh -c``."""
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(id="t1", name="run_command", arguments={"command": "sh -c 'rm -rf /'"})
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    contents = [
+        b["content"]
+        for m in second_call
+        if isinstance(m.get("content"), list)
+        for b in m["content"]
+        if b.get("type") == "tool_result"
+    ]
+    assert contents == ["error: command denied"]
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel
