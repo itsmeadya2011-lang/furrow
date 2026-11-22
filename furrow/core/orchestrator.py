@@ -359,6 +359,10 @@ class Orchestrator:
                         self._skip_ids.add(pt.id)
                     else:
                         pt.status = "pending"
+                        # Re-planning a completed task with different description
+                        # or files counts as new work: reset the attempt counter
+                        # so it gets a fresh retry budget.
+                        old.attempts = 0
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"

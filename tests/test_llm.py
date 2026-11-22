@@ -753,7 +753,7 @@ async def test_retry_retries_a_retryable_error_the_expected_number_of_times(
     client = LLMClient(settings=Settings(provider=Provider.OPENAI, max_retries=3))
     with pytest.raises(_FakeStatusError):
         await client._retry(call)
-    assert len(calls) == 3  # max_retries attempts
+    assert len(calls) == 4  # 1 initial attempt + max_retries(3) retries
 
 
 @pytest.mark.parametrize("tenacity_available", [True, False])

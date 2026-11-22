@@ -1319,3 +1319,107 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_output_truncation(tmp_path):
+    """A command producing more than 20000 chars of output is truncated at the tail."""
+    from furrow.config import TaskModel
+
+    command = "yes x | head -c 30000"
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="big output")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+
+    out = await agent._run_command(command)
+
+    assert "[... output truncated ...]" in out
+    # The tail is capped: the prefix note plus the last 20000 chars of output,
+    # plus a possible exit-status line.
+    assert len(out) <= len("[... output truncated ...]\n") + 20000 + 30
+    # The output should contain many x characters from the generator.
+    assert out.count("x") > 1000
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_returns_error_and_continues(tmp_path):
+    """An unknown tool name returns an error result but does not fail the worker."""
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[ToolCall(id="t1", name="no_such_tool", arguments={})],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="unknown tool")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    result = await agent.run()
+
+    assert result.success is True
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result" and "unknown tool" in str(b.get("content", "")):
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_write_file_overwrites_existing(tmp_path):
+    """write_file can overwrite a file that already exists in the workspace."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "existing.txt").write_text("old content")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="write_file",
+                    arguments={"path": "existing.txt", "content": "new content"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="overwrite")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    result = await agent.run()
+
+    assert result.success is True
+    assert (tmp_path / "existing.txt").read_text() == "new content"
+    assert "existing.txt" in result.files_changed
+
+
+@pytest.mark.asyncio
+async def test_list_files_with_subdirectory_path(tmp_path):
+    """list_files with a path argument lists that subdirectory, not the workspace root."""
+    from furrow.config import TaskModel
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "a.txt").write_text("x")
+    (sub / "b.txt").write_text("y")
+    (tmp_path / "root.txt").write_text("z")
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list subdir")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files("sub")
+
+    assert "a.txt" in out
+    assert "b.txt" in out
+    assert "root.txt" not in out

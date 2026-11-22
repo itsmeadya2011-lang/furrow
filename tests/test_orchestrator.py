@@ -788,7 +788,10 @@ async def test_completed_task_is_executed_again_when_the_description_changed(tmp
     orch.planner = FakePlanner([TaskModel(id="t1", description="do t1 differently")])
     await orch.run()  # cycle 2
     assert len(calls) == 2
-    assert orch.tasks[0].attempts == 2
+    # The attempt counter is reset when a completed task is re-planned with
+    # different description/files (it counts as new work), so cycle 2 starts
+    # from zero and ends at 1.
+    assert orch.tasks[0].attempts == 1
 
 
 @pytest.mark.asyncio
@@ -1033,6 +1036,49 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     assert result.usage.cost_usd == 0.123456
     st = store.load()
     assert st.usage.cost_usd == 0.123456
+
+
+@pytest.mark.asyncio
+async def test_replanned_task_resets_attempts(tmp_path, monkeypatch):
+    """A completed task re-planned with different description/files counts as new
+    work: its attempt counter is reset so it gets a fresh retry budget."""
+
+    class ChangingPlanner:
+        def __init__(self):
+            self.calls = 0
+
+        async def plan(self, goal, context=""):
+            self.calls += 1
+            if self.calls == 1:
+                return Plan(
+                    tasks=[TaskModel(id="t1", description="do t1", files=["a.py"])],
+                    rationale="r",
+                )
+            return Plan(
+                tasks=[TaskModel(id="t1", description="do t1 v2", files=["b.py"])],
+                rationale="r2",
+            )
+
+    class CountingWorker:
+        def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+            self.task = task
+
+        async def run(self):
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CountingWorker)
+    settings = make_settings(tmp_path, max_cycles=2, max_task_retries=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = ChangingPlanner()
+    orch.tester = FakeTester(passed=False)  # keep the loop going to cycle 2
+    await orch.run()
+    task = orch.tasks[0]
+    assert task.status == "completed"
+    # One attempt in cycle 2 (the counter was reset at the start of cycle 2
+    # because the task counts as new work), so attempts == 1.
+    assert task.attempts == 1
+
 
 @pytest.mark.asyncio
 async def test_dependents_of_a_blocked_task_are_blocked(tmp_path, monkeypatch):

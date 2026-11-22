@@ -316,7 +316,9 @@ class LLMClient:
         The call is retried up to ``settings.max_retries`` attempts. Errors that
         are not retryable (see :func:`_is_retryable`) are raised immediately.
         """
-        max_attempts = max(1, int(self.settings.max_retries))
+        # ``max_retries`` is the number of *retries* after the first attempt
+        # (documented in the README), so a setting of 3 means 4 total calls.
+        max_attempts = max(1, int(self.settings.max_retries)) + 1
 
         if _TENACITY_AVAILABLE:
             async for attempt_manager in AsyncRetrying(
