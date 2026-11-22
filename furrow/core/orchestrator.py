@@ -175,6 +175,16 @@ class Orchestrator:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
                 break
+            # Check cost budget
+            if (
+                self.settings.cost_budget_usd > 0
+                and self._usage.cost_usd >= self.settings.cost_budget_usd
+            ):
+                self._stopped_reason = (
+                    f"cost budget exceeded (${self._usage.cost_usd:.6f} "
+                    f">= ${self.settings.cost_budget_usd:.6f})"
+                )
+                break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))

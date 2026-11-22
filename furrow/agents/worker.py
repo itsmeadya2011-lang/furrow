@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,11 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+# Security audit logger
+audit_logger = get_logger("furrow.security.audit")
+
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -81,6 +87,10 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Targets that discard output rather than write a real file.
 _SPECIAL_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+# Rate limiting for command execution (max commands per minute)
+_MAX_COMMANDS_PER_MINUTE = 60
+_command_timestamps: list[float] = []
 
 
 def _normalize_command(command: str) -> str:
@@ -554,6 +564,18 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     return candidate
 
 
+def _check_rate_limit() -> bool:
+    """Check if we're within the command rate limit. Returns True if allowed."""
+    global _command_timestamps
+    now = time.time()
+    # Remove timestamps older than 1 minute
+    _command_timestamps = [ts for ts in _command_timestamps if now - ts < 60]
+    if len(_command_timestamps) >= _MAX_COMMANDS_PER_MINUTE:
+        return False
+    _command_timestamps.append(now)
+    return True
+
+
 class WorkerAgent:
     def __init__(
         self,
@@ -689,6 +711,13 @@ class WorkerAgent:
     async def _read_file(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            audit_logger.warning(
+                "path_traversal_attempt",
+                task_id=self.task.id,
+                operation="read_file",
+                requested_path=path,
+                workspace=str(self.workspace),
+            )
             return "error: path escapes workspace"
         try:
             content = await self.client.read_file(resolved)
@@ -699,24 +728,56 @@ class WorkerAgent:
                 content[:MAX_READ_CHARS]
                 + f"\n[... output truncated ...] ({len(content)} chars total)"
             )
+        audit_logger.info(
+            "file_read",
+            task_id=self.task.id,
+            path=path,
+            size=len(content),
+        )
         return content
 
     async def _write_file(self, path: str, content: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            audit_logger.warning(
+                "path_traversal_attempt",
+                task_id=self.task.id,
+                operation="write_file",
+                requested_path=path,
+                workspace=str(self.workspace),
+            )
             return "error: path escapes workspace"
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             await self.client.write_file(resolved, content)
         except (OSError, ValueError, RuntimeError) as exc:
+            audit_logger.warning(
+                "file_write_error",
+                task_id=self.task.id,
+                path=path,
+                error=str(exc),
+            )
             return f"error: {exc}"
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
+        audit_logger.info(
+            "file_written",
+            task_id=self.task.id,
+            path=path,
+            size=len(content.encode("utf-8")),
+        )
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
+            audit_logger.warning(
+                "path_traversal_attempt",
+                task_id=self.task.id,
+                operation="list_files",
+                requested_path=path,
+                workspace=str(self.workspace),
+            )
             return "error: path escapes workspace"
         try:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
@@ -743,15 +804,34 @@ class WorkerAgent:
     async def _run_command(self, command: str) -> str:
         if not command.strip():
             return "error: empty command"
+        # Rate limiting
+        if not _check_rate_limit():
+            audit_logger.warning(
+                "command_rate_limit_exceeded",
+                task_id=self.task.id,
+                command=command[:100],
+            )
+            return "error: command rate limit exceeded (max 60 commands/minute)"
         # The hardened check subsumes the legacy pattern list: it normalizes
         # the command, checks every segment against DENIED_COMMANDS and
         # DENIED_PROGRAMS, and denies force pushes and redirections outside
         # the workspace.
         if is_command_denied(command, self.workspace):
+            audit_logger.warning(
+                "command_denied",
+                task_id=self.task.id,
+                command=command[:200],
+                workspace=str(self.workspace),
+            )
             return "error: command denied"
         try:
             shlex.split(command)
         except ValueError:
+            audit_logger.warning(
+                "command_parse_error",
+                task_id=self.task.id,
+                command=command[:200],
+            )
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
         # On POSIX the command runs in its own session/process group so that a
@@ -783,11 +863,23 @@ class WorkerAgent:
                     **spawn_kwargs,
                 )
         except (OSError, ValueError, RuntimeError) as exc:
+            audit_logger.warning(
+                "command_spawn_failed",
+                task_id=self.task.id,
+                command=command[:200],
+                error=str(exc),
+            )
             return f"error: {exc}"
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
+            audit_logger.warning(
+                "command_timeout",
+                task_id=self.task.id,
+                command=command[:200],
+                timeout=timeout,
+            )
             return "command timed out"
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
@@ -797,6 +889,13 @@ class WorkerAgent:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
+        audit_logger.info(
+            "command_executed",
+            task_id=self.task.id,
+            command=command[:200],
+            returncode=proc.returncode,
+            output_length=len(combined),
+        )
         return combined
 
     @staticmethod

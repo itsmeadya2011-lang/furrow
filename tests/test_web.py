@@ -672,10 +672,10 @@ def test_build_orchestrator_uses_run_settings_for_the_state_store(
     """The state store path comes from the run settings, not the module-global settings."""
     custom_workspace = tmp_path / "custom"
     run_settings = server.settings.model_copy(update={"workspace": custom_workspace})
-    monkeypatch.setattr(server, "_run_settings", lambda _: run_settings)
+    monkeypatch.setattr(server, "_run_settings", lambda _, __: run_settings)
 
     bus = server.EventBus()
-    server._build_orchestrator("g", False, None, bus)
+    server._build_orchestrator("g", False, None, None, bus)
 
     assert fake_orchestrator.instances, "orchestrator must be instantiated"
     kwargs = fake_orchestrator.init_kwargs

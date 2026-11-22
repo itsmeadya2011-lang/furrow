@@ -13,6 +13,8 @@ import asyncio
 import inspect
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +29,46 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+COST_BUDGET_HELP = "Maximum cost in USD (0 = unlimited)."
+
+
+class ProgressSpinner:
+    """Simple progress spinner for CLI output."""
+    
+    def __init__(self, message: str = "Running..."):
+        self.message = message
+        self._running = False
+        self._thread: threading.Thread | None = None
+        self._spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+        self._idx = 0
+    
+    def start(self) -> None:
+        self._running = True
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+    
+    def stop(self, final_message: str | None = None) -> None:
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=0.5)
+        if final_message:
+            click.echo(f"\r{final_message}")
+        else:
+            click.echo("\r" + " " * (len(self.message) + 10) + "\r", nl=False)
+    
+    def _spin(self) -> None:
+        while self._running:
+            char = self._spinner_chars[self._idx % len(self._spinner_chars)]
+            click.echo(f"\r{char} {self.message}", nl=False)
+            self._idx += 1
+            time.sleep(0.1)
 
 
 def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    cost_budget: float | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +82,8 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if cost_budget is not None:
+        updates["cost_budget_usd"] = cost_budget
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -152,6 +190,19 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
+async def _run_with_progress(orchestrator: Orchestrator) -> RunResult:
+    """Run the orchestrator with a progress spinner."""
+    spinner = ProgressSpinner("Furrow is running...")
+    spinner.start()
+    try:
+        result = await _run_and_release(orchestrator)
+        spinner.stop("✓ Run completed")
+        return result
+    except Exception as e:
+        spinner.stop(f"✗ Run failed: {e}")
+        raise
+
+
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
@@ -162,9 +213,9 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         resume=resume,
     )
     try:
-        result = asyncio.run(_run_and_release(orchestrator))
+        result = asyncio.run(_run_with_progress(orchestrator))
     except KeyboardInterrupt:
-        click.echo("Furrow stopped by user.")
+        click.echo("\nFurrow stopped by user.")
         sys.exit(0)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
@@ -188,6 +239,7 @@ def main() -> None:
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
+@click.option("--cost-budget", type=click.FloatRange(min=0), default=None, help=COST_BUDGET_HELP)
 @click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
@@ -199,13 +251,19 @@ def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
+    cost_budget: float | None,
     workspace: Path | None,
     resume: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        max_cycles=max_cycles,
+        workspace=workspace,
+        cost_budget=cost_budget,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +293,14 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--cost-budget", type=click.FloatRange(min=0), default=None, help=COST_BUDGET_HELP)
+def resume(workspace: Path | None, max_cycles: int | None, cost_budget: float | None) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        workspace=workspace,
+        cost_budget=cost_budget,
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:

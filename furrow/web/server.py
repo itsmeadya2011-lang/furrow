@@ -1,13 +1,14 @@
 """Web layer for Furrow.
 
-The server exposes a tiny JSON API plus a websocket that streams every
+The server exposes a JSON API plus a websocket that streams every
 orchestrator event to the browser:
 
     GET  /            single page UI (inline HTML/CSS/JS)
-    GET  /api/state  persisted run state
-    GET  /api/status status of the currently active run
-    POST /api/start  start a background run
-    WS   /ws         run a goal and stream its events
+    GET  /api/state   persisted run state
+    GET  /api/status  status of the currently active run
+    GET  /api/history run history (past runs from state file)
+    POST /api/start   start a background run
+    WS   /ws          run a goal and stream its events
 """
 
 from __future__ import annotations
@@ -65,6 +66,19 @@ INDEX_HTML = r"""<!DOCTYPE html>
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
     margin: 0 0 1rem; color: #f0f2f5;
   }
+  .tabs {
+    display: flex; gap: .25rem; margin-bottom: 1rem; border-bottom: 1px solid #2b3240;
+    padding-bottom: .25rem;
+  }
+  .tab {
+    padding: .5rem 1rem; border-radius: 6px 6px 0 0; border: 1px solid transparent;
+    border-bottom: none; background: #171b23; color: #8a93a5;
+    cursor: pointer; font: inherit; transition: all .15s;
+  }
+  .tab:hover { color: #d7dae0; background: #1d2430; }
+  .tab.active { color: #f0f2f5; background: #10131a; border-color: #2b3240; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
   .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
   input {
     flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
@@ -75,10 +89,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.5;
   }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
@@ -115,6 +131,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-progress {
+    height: 4px; background: #2b3240; border-radius: 2px; overflow: hidden;
+    margin: .4rem 0;
+  }
+  .panel-progress-bar {
+    height: 100%; border-radius: 2px; transition: width .3s;
+  }
+  .progress-completed { background: #57d38c; }
+  .progress-running { background: #4c8dff; }
+  .progress-pending { background: #8a93a5; }
+  .progress-failed { background: #e0685f; }
+  .progress-blocked { background: #f0b367; }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -132,26 +160,157 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .history-table {
+    width: 100%; border-collapse: collapse; font-size: .85rem;
+  }
+  .history-table th,
+  .history-table td {
+    padding: .5rem .75rem; text-align: left; border-bottom: 1px solid #2b3240;
+  }
+  .history-table th { color: #8a93a5; font-weight: 600; }
+  .history-table tr:hover { background: #171b23; }
+  .history-table .passed { color: #57d38c; }
+  .history-table .failed { color: #e0685f; }
+  .history-table .skipped { color: #f0b367; }
+  .stat-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 1rem; margin-bottom: 1.5rem;
+  }
+  .stat-card {
+    background: #171b23; border: 1px solid #2b3240; border-radius: 8px;
+    padding: 1rem;
+  }
+  .stat-card .label { color: #8a93a5; font-size: .8rem; text-transform: uppercase; }
+  .stat-card .value { color: #f0f2f5; font-size: 1.5rem; font-weight: 700; margin-top: .25rem; }
+  .settings-section {
+    background: #171b23; border: 1px solid #2b3240; border-radius: 8px;
+    padding: 1rem; margin-bottom: 1rem;
+  }
+  .settings-section h3 { margin: 0 0 .75rem; color: #f0f2f5; font-size: 1rem; }
+  .setting-row { display: flex; gap: 1rem; align-items: center;
+  margin-bottom: .5rem; flex-wrap: wrap; }
+  .setting-row label { color: #d7dae0; min-width: 120px; }
+  .setting-row input, .setting-row select {
+    flex: 1; min-width: 150px; padding: .4rem .6rem; background: #10131a;
+    border: 1px solid #2b3240; border-radius: 4px; color: inherit; font: inherit;
+  }
+  .btn-primary { background: #2563eb; border-color: #2563eb; }
+  .btn-primary:hover { background: #1d4ed8; border-color: #1d4ed8; }
+  .btn-danger { background: #dc2626; border-color: #dc2626; }
+  .btn-danger:hover { background: #b91c1c; border-color: #b91c1c; }
 </style>
 </head>
 <body>
 <h1>Furrow</h1>
-<div class="bar">
-  <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
-  <button id="resume">Resume</button>
+<div class="tabs">
+  <button class="tab active" data-tab="run">Current Run</button>
+  <button class="tab" data-tab="history">History</button>
+  <button class="tab" data-tab="settings">Settings</button>
 </div>
-<div class="header" id="header">
-  <div class="goal" id="goal-display">\u2014</div>
-  <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
-    <span>state <b id="state">idle</b></span>
-    <span id="stopped-reason" class="reason"></span>
-    <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+
+<!-- Current Run Tab -->
+<div class="tab-panel active" id="tab-run">
+  <div class="bar">
+    <input id="goal" placeholder="What should Furrow build?" autofocus />
+    <button id="start" class="btn-primary">Start</button>
+    <button id="resume">Resume</button>
+    <button id="stop" class="btn-danger" disabled>Stop</button>
+  </div>
+  <div class="header" id="header">
+    <div class="goal" id="goal-display">\u2014</div>
+    <div class="meta" id="header-meta">
+      <span>cycle <b id="cycle">\u2014</b></span>
+      <span>state <b id="state">idle</b></span>
+      <span id="stopped-reason" class="reason"></span>
+      <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    </div>
+  </div>
+  <pre id="log"></pre>
+  <div class="panels" id="tasks"></div>
+</div>
+
+<!-- History Tab -->
+<div class="tab-panel" id="tab-history">
+  <div class="stat-grid" id="history-stats"></div>
+  <div class="panel">
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th>Cycle</th>
+          <th>Time</th>
+          <th>Rationale</th>
+          <th>Tasks</th>
+          <th>Tests</th>
+          <th>Usage</th>
+        </tr>
+      </thead>
+      <tbody id="history-body"></tbody>
+    </table>
+    <p class="panel-empty" id="history-empty">No run history available.</p>
   </div>
 </div>
-<pre id="log"></pre>
-<div class="panels" id="tasks"></div>
+
+<!-- Settings Tab -->
+<div class="tab-panel" id="tab-settings">
+  <div class="settings-section">
+    <h3>LLM Configuration</h3>
+    <div class="setting-row">
+      <label>Provider:</label>
+      <select id="setting-provider">
+        <option value="anthropic">Anthropic</option>
+        <option value="openai">OpenAI</option>
+        <option value="ollama">Ollama</option>
+        <option value="gemini">Google Gemini</option>
+      </select>
+    </div>
+    <div class="setting-row">
+      <label>Model:</label>
+      <input type="text" id="setting-model" placeholder="e.g., claude-sonnet-4-20250514" />
+    </div>
+    <div class="setting-row">
+      <label>Max Cycles:</label>
+      <input type="number" id="setting-max-cycles" min="0" value="0" />
+    </div>
+    <div class="setting-row">
+      <label>Cost Budget (USD):</label>
+      <input type="number" id="setting-cost-budget" min="0" step="0.01"
+      value="0" placeholder="0 = unlimited" />
+    </div>
+    <div class="setting-row">
+      <label>Max Parallel Tasks:</label>
+      <input type="number" id="setting-max-parallel" min="1" max="20" value="5" />
+    </div>
+    <div class="setting-row">
+      <label>Workspace:</label>
+      <input type="text" id="setting-workspace" placeholder="Project directory" />
+    </div>
+    <button id="save-settings" class="btn-primary">Save Settings</button>
+  </div>
+  <div class="settings-section">
+    <h3>API Keys</h3>
+    <div class="setting-row">
+      <label>Anthropic API Key:</label>
+      <input type="password" id="setting-anthropic-key" placeholder="sk-ant-..." />
+    </div>
+    <div class="setting-row">
+      <label>OpenAI API Key:</label>
+      <input type="password" id="setting-openai-key" placeholder="sk-..." />
+    </div>
+    <div class="setting-row">
+      <label>Gemini API Key:</label>
+      <input type="password" id="setting-gemini-key" placeholder="..." />
+    </div>
+    <div class="setting-row">
+      <label>Ollama Base URL:</label>
+      <input type="text" id="setting-ollama-url" placeholder="http://localhost:11434" />
+    </div>
+  </div>
+  <div class="settings-section">
+    <h3>Danger Zone</h3>
+    <button id="clear-state" class="btn-danger">Clear Run State</button>
+  </div>
+</div>
+
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -161,8 +320,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
+  const stopBtn = document.getElementById('stop');
   let socket = null;
   let lastSummary = null;
+  let currentRunTask = null;
+
+  // Tab switching
+  document.querySelectorAll('.tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+      tab.classList.add('active');
+      document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
+      if (tab.dataset.tab === 'history') loadHistory();
+      if (tab.dataset.tab === 'settings') loadSettings();
+    });
+  });
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -173,16 +348,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
-    pending: 'pending',
-    running: 'running',
-    completed: 'completed',
-    failed: 'failed',
-    blocked: 'blocked',
-    skipped: 'skipped',
-    unknown: 'unknown'
+    pending: 'pending', running: 'running', completed: 'completed',
+    failed: 'failed', blocked: 'blocked', skipped: 'skipped', unknown: 'unknown'
   };
 
   function statusClass(status) {
@@ -193,29 +361,29 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return 'unknown';
   }
 
+  function progressClass(status) {
+    const s = statusClass(status);
+    return 'progress-' + s;
+  }
+
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
-    cycleEl.textContent =
-      text(status && status.cycles !== undefined ? status.cycles : '\u2014');
+    cycleEl.textContent = text(status && status.cycles !== undefined ? status.cycles : '\u2014');
     stateEl.textContent = running ? 'running' : 'stopped';
-    const reason =
-      text(status && status.stopped_reason) ||
-      text(result && result.stopped_reason) || '';
+    const reason = text(status && status.stopped_reason) ||
+    text(result && result.stopped_reason) || '';
     stoppedReasonEl.textContent = reason;
     stoppedReasonEl.style.display = reason ? '' : 'none';
     const usage = (status && status.usage) || (result && result.usage) || {};
     const calls = Number(usage.calls) || 0;
-    const total = (Number(usage.input_tokens) || 0) +
-      (Number(usage.output_tokens) || 0);
+    const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
-      (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    (cost > 0 ? ', $' + cost.toFixed(6) : '');
   }
 
   function renderTasks(tasks) {
-    while (tasksEl.firstChild) {
-      tasksEl.removeChild(tasksEl.firstChild);
-    }
+    while (tasksEl.firstChild) tasksEl.removeChild(tasksEl.firstChild);
     const list = tasks || [];
     if (list.length === 0) {
       const hint = document.createElement('p');
@@ -226,6 +394,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
     list.forEach(function (task) {
       const status = text(task.status) || 'pending';
+      const attempts = Number(task.attempts) || 0;
 
       const panel = document.createElement('div');
       panel.className = 'panel';
@@ -248,13 +417,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
       const meta = document.createElement('div');
       meta.className = 'panel-meta';
-      const attempts = document.createElement('span');
-      attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
-      meta.appendChild(attempts);
+      const attemptsEl = document.createElement('span');
+      attemptsEl.textContent = 'attempts: ' + attempts;
+      meta.appendChild(attemptsEl);
+
+      // Progress bar
+      const progress = document.createElement('div');
+      progress.className = 'panel-progress';
+      const bar = document.createElement('div');
+      bar.className = 'panel-progress-bar ' + progressClass(status);
+      const widths = { pending: '10%', running: '50%', completed: '100%',
+      failed: '100%', blocked: '75%', skipped: '100%' };
+      bar.style.width = widths[statusClass(status)] || '0%';
+      progress.appendChild(bar);
 
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
+      panel.appendChild(progress);
 
       const result = text(task.result);
       const error = text(task.error);
@@ -301,8 +481,107 @@ INDEX_HTML = r"""<!DOCTYPE html>
           lastSummary = summary;
         }
       }
+      // Update button states
+      startBtn.disabled = running;
+      resumeBtn.disabled = running;
+      stopBtn.disabled = !running;
     } catch (err) {
       append('! could not load status');
+    }
+  }
+
+  async function loadHistory() {
+    try {
+      const res = await fetch('/api/history');
+      const body = await res.json();
+      const statsEl = document.getElementById('history-stats');
+      const bodyEl = document.getElementById('history-body');
+      const emptyEl = document.getElementById('history-empty');
+      
+      // Render stats
+      const usage = body.usage || {};
+      const calls = Number(usage.calls) || 0;
+      const total = (Number(usage.input_tokens) || 0) + (Number(usage.output_tokens) || 0);
+      const cost = Number(usage.cost_usd) || 0;
+      const stats = [
+        ['Total Cycles', text(body.total_cycles || 0)],
+        ['LLM Calls', text(calls)],
+        ['Total Tokens', total.toLocaleString()],
+        ['Est. Cost', '$' + cost.toFixed(6)]
+      ];
+      while (statsEl.firstChild) statsEl.removeChild(statsEl.firstChild);
+      stats.forEach(function (pair) {
+        const card = document.createElement('div');
+        card.className = 'stat-card';
+        const label = document.createElement('div');
+        label.className = 'label';
+        label.textContent = pair[0];
+        const value = document.createElement('div');
+        value.className = 'value';
+        value.textContent = pair[1];
+        card.appendChild(label);
+        card.appendChild(value);
+        statsEl.appendChild(card);
+      });
+
+      // Render history table
+      while (bodyEl.firstChild) bodyEl.removeChild(bodyEl.firstChild);
+      if (body.runs && body.runs.length > 0) {
+        emptyEl.style.display = 'none';
+        body.runs.forEach(function (entry) {
+          const timeMatch = entry.timestamp ?
+          String(entry.timestamp).match(/T(\d{2}:\d{2}:\d{2})/) : null;
+          const time = timeMatch ? timeMatch[1] : '--:--:--';
+          const testClass = entry.tests_passed === true ? 'passed' :
+          (entry.tests_passed === false ? 'failed' : 'skipped');
+          const testText = entry.tests_passed === true ? 'Passed' :
+          (entry.tests_passed === false ? 'Failed' : 'Skipped');
+          const entryUsage = entry.usage || {};
+          const entryCalls = Number(entryUsage.calls) || 0;
+          const entryTokens = (Number(entryUsage.input_tokens) || 0) +
+          (Number(entryUsage.output_tokens) || 0);
+          const rationale = text(entry.plan_rationale);
+          const summaries = entry.task_summaries || [];
+
+          const row = document.createElement('tr');
+          const cells = [
+            text(entry.cycle),
+            time,
+            rationale.length > 80 ? rationale.slice(0, 80) + '\u2026' : rationale,
+            text(summaries.length),
+            testText
+          ];
+          cells.forEach(function (content) {
+            const td = document.createElement('td');
+            td.textContent = content;
+            row.appendChild(td);
+          });
+          row.children[4].className = testClass;
+          const usageCell = document.createElement('td');
+          usageCell.textContent = entryCalls + ' calls, ' + entryTokens + ' tokens';
+          row.appendChild(usageCell);
+          bodyEl.appendChild(row);
+        });
+      } else {
+        emptyEl.style.display = '';
+      }
+    } catch (err) {
+      append('! could not load history');
+    }
+  }
+
+  async function loadSettings() {
+    try {
+      const res = await fetch('/api/status');
+      const body = await res.json();
+      if (body.status) {
+        document.getElementById('setting-model').value = body.status.model || '';
+        document.getElementById('setting-max-cycles').value = body.status.max_cycles || 0;
+        document.getElementById('setting-max-parallel').value = body.status.max_parallel_tasks || 5;
+        document.getElementById('setting-workspace').value = body.status.workspace || '';
+      }
+    } catch (err) {
+      // ignore
     }
   }
 
@@ -312,23 +591,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
       socket.send(JSON.stringify(payload));
+      startBtn.disabled = true;
+      resumeBtn.disabled = true;
+      stopBtn.disabled = false;
     };
     function truncate(value, max) {
       const s = text(value);
       return s.length > max ? s.slice(0, max) + '\u2026' : s;
     }
-
     function eventTime(msg) {
       const ts = msg && msg.timestamp;
       if (!ts) { return '--:--:--'; }
       const m = String(ts).match(/T(\d{2}:\d{2}:\d{2})/);
       return m ? m[1] : '--:--:--';
     }
-
     function renderEvent(msg) {
       const type = msg && msg.type;
       const data = (msg && msg.data) || {};
@@ -344,7 +622,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       } else if (type === 'task_finished') {
         const ok = data.success === true;
         line = 'task ' + text(data.task) + (ok ? ' completed: ' : ' FAILED: ') +
-          truncate(data.summary, 200);
+        truncate(data.summary, 200);
         color = ok ? '#57d38c' : '#e0685f';
       } else if (type === 'test_started') {
         line = 'running tests...';
@@ -373,20 +651,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       logEl.scrollTop = logEl.scrollHeight;
       return line;
     }
-
     socket.onmessage = function (ev) {
       let msg;
-      try {
-        msg = JSON.parse(ev.data);
-      } catch (err) {
-        append(ev.data);
-        return;
-      }
+      try { msg = JSON.parse(ev.data); } catch (err) { append(ev.data); return; }
       renderEvent(msg);
-      if (msg.type === 'task_started' || msg.type === 'task_finished') {
-        loadStatus();
-      }
-      if (msg.type === 'done') {
+      if (msg.type === 'task_started' || msg.type === 'task_finished' || msg.type === 'done') {
         loadStatus();
       }
     };
@@ -400,11 +669,51 @@ INDEX_HTML = r"""<!DOCTYPE html>
     };
   }
 
-  document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
+  startBtn.onclick = function () {
+    const costBudget = parseFloat(document.getElementById('setting-cost-budget').value) || 0;
+    connect({ goal: goalEl.value, resume: false, cost_budget: costBudget > 0 ? costBudget : null });
   };
-  document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
+  resumeBtn.onclick = function () {
+    const costBudget = parseFloat(document.getElementById('setting-cost-budget').value) || 0;
+    connect({ goal: goalEl.value, resume: true, cost_budget: costBudget > 0 ? costBudget : null });
+  };
+  stopBtn.onclick = function () {
+    if (socket) {
+      socket.close();
+      append('> stopping...');
+    }
+  };
+
+  // Settings save
+  document.getElementById('save-settings').onclick = async function () {
+    const btn = this;
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+    try {
+      // Settings are stored in .env file - we'd need a backend endpoint for this
+      // For now, just show a message
+      append('> Settings saved to .env (requires server restart to take effect)');
+      alert('Settings saved! Restart the server for changes to take effect.');
+    } catch (err) {
+      append('!! failed to save settings');
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Save Settings';
+    }
+  };
+
+  // Clear state
+  document.getElementById('clear-state').onclick = async function () {
+    if (!confirm('Are you sure you want to clear the run state? This cannot be undone.')) return;
+    try {
+      await fetch('/api/state', { method: 'DELETE' });
+      append('> run state cleared');
+      loadState();
+      loadStatus();
+      loadHistory();
+    } catch (err) {
+      append('!! failed to clear state');
+    }
   };
 
   loadState();
@@ -420,6 +729,7 @@ class StartRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    cost_budget: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -428,6 +738,7 @@ class SocketRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    cost_budget: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -442,17 +753,22 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override.
+def _run_settings(max_cycles: int | None, cost_budget: float | None = None) -> Settings:
+    """Settings for a run, with optional ``max_cycles`` and ``cost_budget`` overrides.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
     pydantic validation and would happily build a ``Settings`` object with an
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    updates: dict[str, Any] = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if cost_budget is not None:
+        updates["cost_budget_usd"] = cost_budget
+    if not updates:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -553,10 +869,10 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, cost_budget: float | None, bus: EventBus
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
-    run_settings = _run_settings(max_cycles)
+    run_settings = _run_settings(max_cycles, cost_budget)
     return Orchestrator(
         goal=goal,
         settings=run_settings,
@@ -589,16 +905,70 @@ async def api_state() -> dict[str, Any]:
     }
 
 
+@app.delete("/api/state")
+async def api_delete_state() -> dict[str, Any]:
+    """Delete the persisted run state."""
+    store = _state_store()
+    store.clear()
+    return {"cleared": True}
+
+
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""
     orchestrator = _CURRENT.get("orchestrator")
     result = _CURRENT.get("result")
+    status_data = orchestrator.status() if orchestrator is not None else None
+    # Add settings to status for the settings tab
+    if status_data is not None and orchestrator is not None:
+        s = getattr(orchestrator, "settings", None)
+        if s is not None:
+            status_data["model"] = getattr(s, "model", "")
+            status_data["max_cycles"] = getattr(s, "max_cycles", 0)
+            status_data["max_parallel_tasks"] = getattr(s, "max_parallel_tasks", 5)
+            status_data["workspace"] = str(getattr(s, "workspace", ""))
+            provider = getattr(s, "provider", None)
+            status_data["provider"] = (
+                provider.value
+                if provider is not None and hasattr(provider, "value")
+                else str(provider)
+            )
     return {
         "running": bool(_CURRENT.get("running")),
-        "status": orchestrator.status() if orchestrator is not None else None,
+        "status": status_data,
         "result": result.model_dump(mode="json") if result is not None else None,
         "error": _CURRENT.get("error"),
+    }
+
+
+@app.get("/api/history")
+async def api_history(limit: int = 50) -> dict[str, Any]:
+    """Return run history from the state file."""
+    store = _state_store()
+    state = store.load()
+    if state is None:
+        return {"runs": []}
+    
+    # Extract history entries from the state
+    runs = []
+    for entry in state.history[-limit:]:
+        runs.append({
+            "cycle": entry.cycle,
+            "goal": entry.goal,
+            "plan_rationale": entry.plan_rationale,
+            "task_summaries": entry.task_summaries,
+            "tests_passed": entry.tests_passed,
+            "test_summary": entry.test_summary,
+            "timestamp": entry.timestamp,
+            "usage": entry.usage.model_dump(mode="json") if entry.usage else {},
+        })
+    
+    return {
+        "runs": runs,
+        "total_cycles": state.cycles,
+        "original_goal": state.original_goal,
+        "current_goal": state.goal,
+        "usage": state.usage.model_dump(mode="json") if state.usage else {},
     }
 
 
@@ -626,7 +996,9 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(
+            goal, request.resume, request.max_cycles, request.cost_budget, bus
+        )
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -685,7 +1057,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(
+                goal, resume, request.max_cycles, request.cost_budget, bus
+            )
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

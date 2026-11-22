@@ -77,6 +77,12 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "o3": ModelPricing(input_per_million=2.0, output_per_million=8.0),
     "o3-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o4-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    "gemini-1.5-pro": ModelPricing(input_per_million=3.5, output_per_million=10.5),
+    "gemini-1.5-flash": ModelPricing(input_per_million=0.075, output_per_million=0.3),
+    "gemini-2.0-flash": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+    "gemini-2.0-pro": ModelPricing(input_per_million=1.25, output_per_million=5.0),
+    "gemini-2.5-pro": ModelPricing(input_per_million=1.25, output_per_million=10.0),
+    "gemini-2.5-flash": ModelPricing(input_per_million=0.15, output_per_million=0.6),
 }
 
 #: Provider prefixes that are stripped from a model id before it is looked up.
