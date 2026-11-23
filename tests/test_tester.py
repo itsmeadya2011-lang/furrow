@@ -578,3 +578,90 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+def test_detect_pytest_files_in_tests_dir_overrides_package_json(tmp_path):
+    """pytest-style test files in tests/ take precedence over package.json test script."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_python.py").write_text("def test_foo(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_pytest_files_in_root_overrides_package_json(tmp_path):
+    """pytest-style test files in workspace root take precedence over package.json."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "test_python.py").write_text("def test_foo(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_non_test_python_file_in_tests_dir_does_not_override_package_json(tmp_path):
+    """A non-test Python helper file under tests/ does not trigger pytest detection."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "helpers.py").write_text("def helper(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
+def test_detect_pytest_files_with_suffix_test_py(tmp_path):
+    """Files matching *_test.py pattern also trigger pytest detection."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "foo_test.py").write_text("def test_foo(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_pytest_files_root_suffix_test_py(tmp_path):
+    """Files matching *_test.py pattern in root also trigger pytest detection."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}')
+    (tmp_path / "foo_test.py").write_text("def test_foo(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_existing_behavior_empty_workspace_returns_none(tmp_path):
+    """Empty workspace returns None (no test runner detected)."""
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
+def test_existing_behavior_package_json_only_returns_npm(tmp_path):
+    """package.json only returns npm test command."""
+    (tmp_path / "package.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
+def test_existing_behavior_pyproject_returns_pytest(tmp_path):
+    """pyproject.toml returns pytest command."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_existing_behavior_cargo_returns_cargo(tmp_path):
+    """Cargo.toml returns cargo test command."""
+    (tmp_path / "Cargo.toml").write_text("[package]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "cargo" in cmd
+
+
+def test_existing_behavior_go_mod_returns_go(tmp_path):
+    """go.mod returns go test command."""
+    (tmp_path / "go.mod").write_text("module example\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "go" in cmd

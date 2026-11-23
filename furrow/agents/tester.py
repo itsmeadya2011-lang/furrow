@@ -74,6 +74,33 @@ def resolve_test_timeout(settings: Settings) -> float:
     return timeout
 
 
+def _has_pytest_files(workspace: Path) -> bool:
+    """Return True if pytest-style test files exist in workspace root or tests/.
+
+    Checks for ``test_*.py`` and ``*_test.py`` patterns non-recursively in
+    the workspace root and the ``tests/`` directory. Unreadable directories
+    are ignored gracefully.
+    """
+    # Check workspace root
+    try:
+        if any(workspace.glob("test_*.py")) or any(workspace.glob("*_test.py")):
+            return True
+    except OSError:
+        pass
+
+    # Check tests/ directory
+    tests_dir = workspace / "tests"
+    try:
+        if tests_dir.is_dir() and (
+            any(tests_dir.glob("test_*.py")) or any(tests_dir.glob("*_test.py"))
+        ):
+            return True
+    except OSError:
+        pass
+
+    return False
+
+
 def parse_test_output(output: str) -> list[dict]:
     """Parse raw test output and return structured failure information."""
     failures: list[dict] = []
@@ -207,7 +234,11 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
+        # Python projects with pytest-style test files use pytest, even if package.json exists
+        if _has_pytest_files(self.workspace):
+            return [sys.executable, "-m", "pytest", "-q"]
+
+        # Python projects with tests/ dir + marker files use pytest, even if package.json exists
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
