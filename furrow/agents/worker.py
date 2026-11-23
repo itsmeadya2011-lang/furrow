@@ -665,6 +665,8 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "grep_file":
+            return await self._grep_file(str(args.get("path", "")), str(args.get("pattern", "")))
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -700,6 +702,33 @@ class WorkerAgent:
                 + f"\n[... output truncated ...] ({len(content)} chars total)"
             )
         return content
+
+    async def _grep_file(self, path: str, pattern: str) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+        matches = [
+            f"{i}: {line}"
+            for i, line in enumerate(content.splitlines(), 1)
+            if regex.search(line)
+        ]
+        if not matches:
+            return "no matches"
+        text = "\n".join(matches)
+        if len(text) > MAX_READ_CHARS:
+            text = (
+                text[:MAX_READ_CHARS]
+                + f"\n[... output truncated ...] ({len(text)} chars total)"
+            )
+        return text
 
     async def _write_file(self, path: str, content: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
@@ -784,18 +813,62 @@ class WorkerAgent:
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            await self._kill_process_tree(proc, new_session)
-            return "command timed out"
-        out = stdout.decode("utf-8", errors="replace")
-        err = stderr.decode("utf-8", errors="replace")
+        stdout_chunks: list[bytes] = []
+        stderr_chunks: list[bytes] = []
+        timed_out = False
+
+        async def _drain_stream(stream: Any, chunks: list[bytes]) -> None:
+            while True:
+                data = await stream.read(65536)
+                if not data:
+                    break
+                chunks.append(data)
+
+        stdout_stream = getattr(proc, "stdout", None)
+        stderr_stream = getattr(proc, "stderr", None)
+
+        if stdout_stream is not None and stderr_stream is not None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        _drain_stream(proc.stdout, stdout_chunks),
+                        _drain_stream(proc.stderr, stderr_chunks),
+                    ),
+                    timeout=timeout,
+                )
+            except asyncio.TimeoutError:
+                timed_out = True
+                await self._kill_process_tree(proc, new_session)
+                # Drain whatever is still buffered in the pipes after the kill.
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            _drain_stream(proc.stdout, stdout_chunks),
+                            _drain_stream(proc.stderr, stderr_chunks),
+                        ),
+                        timeout=5.0,
+                    )
+            # Streams are closed (or the process was killed): wait for exit.
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+        else:
+            # Fall back to communicate() for subprocess-like objects that do
+            # not expose readable stdout/stderr streams.
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+            stdout_chunks.append(stdout)
+            stderr_chunks.append(stderr)
+
+        out = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+        err = b"".join(stderr_chunks).decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
-        if proc.returncode is not None and proc.returncode != 0:
+        if timed_out:
+            combined += "\n[command timed out]"
+        elif proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
 

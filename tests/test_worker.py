@@ -306,9 +306,181 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
     task = TaskModel(id="1", description="cmd")
     agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
     out = await agent._run_command(command)
-    assert out == "command timed out"
+    assert "[command timed out]" in out
     await asyncio.sleep(1.0)
     assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_grep_file_finds_matches(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\nbeta\ngamma\nalpha\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "a.txt", "pattern": "alpha"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "1: alpha" in b["content"]
+                    assert "4: alpha" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_file_no_matches(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\nbeta\ngamma\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "a.txt", "pattern": "delta"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert b["content"] == "no matches"
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_file_invalid_regex(tmp_path):
+    (tmp_path / "a.txt").write_text("alpha\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "a.txt", "pattern": "[["},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "invalid regex pattern" in b["content"]
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_grep_file_path_escape(tmp_path):
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="grep_file",
+                    arguments={"path": "../evil.txt", "pattern": "x"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "error" in b["content"].lower()
+                    found = True
+    assert found
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_captures_partial_output(tmp_path):
+    """A timed-out command should return whatever output was produced before the kill."""
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo line1 && sleep 5"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 1.0})
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    second_call = client.calls[1]["messages"]
+    found = False
+    for m in second_call:
+        if isinstance(m.get("content"), list):
+            for b in m["content"]:
+                if b.get("type") == "tool_result":
+                    assert "line1" in b["content"]
+                    assert "[command timed out]" in b["content"]
+                    found = True
+    assert found
 
 
 @pytest.mark.asyncio
@@ -378,8 +550,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["grep_file", "list_files", "read_file", "run_command", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
