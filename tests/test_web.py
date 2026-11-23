@@ -287,7 +287,7 @@ def test_api_start_returns_started(
 def test_api_start_rejects_a_second_run(
     client: TestClient, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
-    server._CURRENT["running"] = True
+    server.RUN_MANAGER._running = True
 
     response = client.post("/api/start", json={"goal": "build it"})
 
@@ -310,7 +310,7 @@ def test_api_status(client: TestClient, fake_orchestrator: type[FakeOrchestrator
 
 
 def test_api_status_reports_run_error(client: TestClient) -> None:
-    server._CURRENT["error"] = "boom"
+    server.RUN_MANAGER._error = "boom"
 
     response = client.get("/api/status")
 
@@ -366,7 +366,7 @@ def test_websocket_rejects_a_second_run(
     client: TestClient, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
     # The registry is reset again by the ``isolated_server`` fixture.
-    server._CURRENT["running"] = True
+    server.RUN_MANAGER._running = True
 
     messages: list[dict[str, Any]] = []
     with client.websocket_connect("/ws") as ws:
@@ -380,7 +380,7 @@ def test_websocket_rejects_a_second_run(
     assert messages[0]["type"] == "error"
     assert "already in progress" in messages[0]["message"]
     assert fake_orchestrator.instances == [], "no second run may be started"
-    assert server._CURRENT["running"] is True, "the running run must not be touched"
+    assert server.RUN_MANAGER._running is True, "the running run must not be touched"
 
 
 def test_websocket_rejects_a_negative_max_cycles(
@@ -403,7 +403,7 @@ def test_websocket_rejects_a_negative_max_cycles(
     assert messages[0]["type"] == "error"
     assert "max_cycles" in messages[0]["message"]
     assert fake_orchestrator.instances == [], "no run may be started"
-    assert server._CURRENT.get("running") is False
+    assert server.RUN_MANAGER._running is False
 
 
 def test_websocket_applies_a_valid_max_cycles_override(
@@ -445,7 +445,7 @@ def test_websocket_disconnect_clears_the_running_flag(
 
     with client.websocket_connect("/ws") as ws:
         ws.send_json({"goal": "x"})
-        assert _wait_until(lambda: server._CURRENT.get("running") is True), "the run never started"
+        assert _wait_until(lambda: server.RUN_MANAGER._running is True), "the run never started"
 
     # The client is gone: the run must be cancelled and the flag cleared.
     assert _wait_until(lambda: client.get("/api/status").json()["running"] is False), (
@@ -453,7 +453,7 @@ def test_websocket_disconnect_clears_the_running_flag(
     )
     body = client.get("/api/status").json()
     assert body["running"] is False
-    run_task = server._CURRENT.get("task")
+    run_task = server.RUN_MANAGER._task
     assert run_task is not None
     assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"
 
@@ -637,7 +637,7 @@ def test_api_start_rejects_a_negative_max_cycles_without_starting_a_run(
 
     assert response.status_code == 422
     assert fake_orchestrator.instances == [], "no run may be started"
-    assert server._CURRENT.get("running") is False
+    assert server.RUN_MANAGER._running is False
 
 
 def test_run_settings_applies_a_valid_max_cycles_override() -> None:

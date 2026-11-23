@@ -7,6 +7,7 @@ orchestrator event to the browser:
     GET  /api/state  persisted run state
     GET  /api/status status of the currently active run
     POST /api/start  start a background run
+    POST /api/stop   stop the currently running background run
     WS   /ws         run a goal and stream its events
 """
 
@@ -16,6 +17,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import time
 from typing import Any
 
 import uvicorn
@@ -34,20 +36,136 @@ app = FastAPI(title="Furrow")
 
 POLL_INTERVAL = 0.05
 
-DEFAULT_CURRENT: dict[str, Any] = {
-    "running": False,
-    "orchestrator": None,
-    "result": None,
-    "task": None,
-    "error": None,
-}
 
-# Registry of the run that is currently active (or of the last one that ran).
-_CURRENT: dict[str, Any] = dict(DEFAULT_CURRENT)
+class RunManager:
+    """Manages the currently running Furrow run.
+
+    This replaces the global _CURRENT dictionary with a proper class that
+    encapsulates the run state and provides thread-safe access.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._running = False
+        self._orchestrator: Orchestrator | None = None
+        self._result: RunResult | None = None
+        self._task: asyncio.Task[RunResult] | None = None
+        self._error: str | None = None
+        self._start_time: float | None = None
+
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @property
+    def orchestrator(self) -> Orchestrator | None:
+        return self._orchestrator
+
+    @property
+    def result(self) -> RunResult | None:
+        return self._result
+
+    @property
+    def task(self) -> asyncio.Task[RunResult] | None:
+        return self._task
+
+    @property
+    def error(self) -> str | None:
+        return self._error
+
+    async def start_run(
+        self,
+        orchestrator: Orchestrator,
+        run_task: asyncio.Task[RunResult],
+    ) -> bool:
+        """Start tracking a new run. Returns False if a run is already in progress."""
+        async with self._lock:
+            if self._running:
+                logger.warning("Attempted to start run while another is in progress")
+                return False
+            self._running = True
+            self._orchestrator = orchestrator
+            self._result = None
+            self._task = run_task
+            self._error = None
+            self._start_time = time.monotonic()
+            logger.info("Started new Furrow run: goal=%s", orchestrator.goal[:100])
+            return True
+
+    async def stop_run(self) -> bool:
+        """Stop the currently running run. Returns True if a run was stopped."""
+        async with self._lock:
+            if not self._running or self._task is None:
+                logger.warning("Attempted to stop run but none is running")
+                return False
+            self._task.cancel()
+            self._running = False
+            self._error = "run cancelled"
+            elapsed = time.monotonic() - self._start_time if self._start_time else 0
+            logger.info("Stopped Furrow run after %.1fs", elapsed)
+            return True
+
+    async def on_run_done(self, task: asyncio.Task[RunResult]) -> None:
+        """Called when a run task completes."""
+        async with self._lock:
+            if self._task is not task:
+                # Another run owns the registry: update running flag but don't clobber
+                current = self._task
+                self._running = bool(current is not None and not current.done())
+                return
+            self._running = False
+            elapsed = time.monotonic() - self._start_time if self._start_time else 0
+            if task.cancelled():
+                self._error = "run cancelled"
+                logger.info("Furrow run cancelled after %.1fs", elapsed)
+                return
+            exc = task.exception()
+            if exc is not None:
+                logger.error("Furrow run failed after %.1fs: %s", elapsed, exc)
+                self._error = str(exc)
+                return
+            self._result = task.result()
+            logger.info(
+                "Furrow run completed after %.1fs: cycles=%d passed=%s",
+                elapsed,
+                self._result.cycles,
+                self._result.passed,
+            )
+
+    async def clear_running_flag(self, task: asyncio.Task[RunResult]) -> None:
+        """Clear the running flag when the task completes."""
+        async with self._lock:
+            if self._task is task:
+                self._running = False
+
+    def reset(self) -> None:
+        """Forget the active run (used by the tests)."""
+        self._running = False
+        self._orchestrator = None
+        self._result = None
+        self._task = None
+        self._error = None
+
+    def get_status(self) -> dict[str, Any]:
+        """Get a snapshot of the current run status."""
+        elapsed = None
+        if self._start_time is not None:
+            elapsed = time.monotonic() - self._start_time
+        return {
+            "running": self._running,
+            "elapsed_seconds": elapsed,
+            "status": self._orchestrator.status() if self._orchestrator is not None else None,
+            "result": self._result.model_dump(mode="json") if self._result is not None else None,
+            "error": self._error,
+        }
+
+
+# Global run manager instance
+RUN_MANAGER = RunManager()
 
 # Strong references to background tasks so they are never garbage collected
 # while they are still pending.
-_TASKS: set[asyncio.Task[RunResult]] = set()
+_TASKS: set[asyncio.Task[Any]] = set()
 
 INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -140,6 +258,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -198,6 +317,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     cycleEl.textContent =
       text(status && status.cycles !== undefined ? status.cycles : '\u2014');
     stateEl.textContent = running ? 'running' : 'stopped';
+    const stopBtn = document.getElementById('stop');
+    if (stopBtn) {
+      stopBtn.disabled = !running;
+      stopBtn.textContent = running ? 'Stop' : 'Stop';
+    }
     const reason =
       text(status && status.stopped_reason) ||
       text(result && result.stopped_reason) || '';
@@ -406,6 +530,22 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('stop').onclick = async function () {
+    const btn = document.getElementById('stop');
+    btn.disabled = true;
+    btn.textContent = 'Stopping...';
+    try {
+      const res = await fetch('/api/stop', { method: 'POST' });
+      const data = await res.json();
+      if (data.stopped) {
+        append('> stop requested');
+      } else {
+        append('! stop failed: ' + (data.error || 'unknown'));
+      }
+    } catch (err) {
+      append('! stop request failed: ' + err);
+    }
+  };
 
   loadState();
   loadStatus();
@@ -433,8 +573,7 @@ class SocketRequest(BaseModel):
 
 def _reset_registry() -> None:
     """Forget the active run (used by the tests)."""
-    _CURRENT.clear()
-    _CURRENT.update(DEFAULT_CURRENT)
+    RUN_MANAGER.reset()
 
 
 def _state_store() -> StateStore:
@@ -469,36 +608,22 @@ def _describe_validation_error(exc: ValidationError) -> str:
 def _on_run_done(task: asyncio.Task[RunResult]) -> None:
     """Finalise the registry when a run ends."""
     _TASKS.discard(task)
-    if _CURRENT.get("task") is not task:
-        # Another run owns the registry: never clobber its data, but keep the
-        # "running" flag in sync with the run that is actually in flight.
-        current = _CURRENT.get("task")
-        _CURRENT["running"] = bool(current is not None and not current.done())
-        return
-    _CURRENT["running"] = False
-    if task.cancelled():
-        _CURRENT["error"] = "run cancelled"
-        return
-    exc = task.exception()
-    if exc is not None:
-        logger.error("Furrow run failed: %s", exc)
-        _CURRENT["error"] = str(exc)
-        return
-    _CURRENT["result"] = task.result()
+    # Schedule the async cleanup
+    cleanup = asyncio.create_task(RUN_MANAGER.on_run_done(task))
+    _TASKS.add(cleanup)
 
 
 def _clear_running_flag(task: asyncio.Task[RunResult]) -> None:
     """Clear the "running" flag when ``task`` is the run that owns the registry."""
-    if _CURRENT.get("task") is task:
-        _CURRENT["running"] = False
+    flag = asyncio.create_task(RUN_MANAGER.clear_running_flag(task))
+    _TASKS.add(flag)
 
 
 def _cancel_run(task: asyncio.Task[RunResult]) -> None:
     """Cancel a run and make sure the server does not stay stuck in "running"."""
     task.cancel()
-    if _CURRENT.get("task") is task:
-        _CURRENT["running"] = False
-        _CURRENT["error"] = "run cancelled"
+    stop = asyncio.create_task(RUN_MANAGER.stop_run())
+    _TASKS.add(stop)
 
 
 async def _drain(queue: asyncio.Queue[Event]) -> None:
@@ -592,26 +717,21 @@ async def api_state() -> dict[str, Any]:
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""
-    orchestrator = _CURRENT.get("orchestrator")
-    result = _CURRENT.get("result")
-    return {
-        "running": bool(_CURRENT.get("running")),
-        "status": orchestrator.status() if orchestrator is not None else None,
-        "result": result.model_dump(mode="json") if result is not None else None,
-        "error": _CURRENT.get("error"),
-    }
+    return RUN_MANAGER.get_status()
 
 
 @app.post("/api/start")
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
-    if _CURRENT.get("running"):
+    if RUN_MANAGER.running:
+        logger.warning("POST /api/start rejected: run already in progress")
         return JSONResponse(
             status_code=409,
             content={"started": False, "error": "a run is already in progress"},
         )
     goal = request.goal.strip()
     if not goal and not request.resume:
+        logger.warning("POST /api/start rejected: goal required")
         return JSONResponse(
             status_code=400,
             content={"started": False, "error": "goal is required"},
@@ -620,16 +740,24 @@ async def api_start(request: StartRequest) -> JSONResponse:
         state = _state_store().load()
         goal = state.original_goal if state is not None else ""
         if not goal:
+            logger.warning("POST /api/start rejected: no goal to resume")
             return JSONResponse(
                 status_code=400,
                 content={"started": False, "error": "no goal to resume"},
             )
+    logger.info(
+        "POST /api/start: goal=%s resume=%s max_cycles=%s",
+        goal[:100],
+        request.resume,
+        request.max_cycles,
+    )
     bus = EventBus()
     try:
         orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
+        logger.warning("POST /api/start validation error: %s", validation_error)
         return JSONResponse(
             status_code=400,
             content={"started": False, "error": _describe_validation_error(validation_error)},
@@ -637,21 +765,35 @@ async def api_start(request: StartRequest) -> JSONResponse:
     run_task = asyncio.create_task(_run_and_drain(orchestrator, bus))
     _TASKS.add(run_task)
     run_task.add_done_callback(_on_run_done)
-    _CURRENT.update(
-        {
-            "running": True,
-            "orchestrator": orchestrator,
-            "result": None,
-            "task": run_task,
-            "error": None,
-        }
-    )
+    started = await RUN_MANAGER.start_run(orchestrator, run_task)
+    if not started:
+        run_task.cancel()
+        return JSONResponse(
+            status_code=409,
+            content={"started": False, "error": "a run is already in progress"},
+        )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running background run."""
+    logger.info("POST /api/stop requested")
+    stopped = await RUN_MANAGER.stop_run()
+    if not stopped:
+        logger.warning("POST /api/stop rejected: no run in progress")
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run in progress"},
+        )
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     """Run a goal and stream every event it emits to the client."""
+    client_host = websocket.client.host if websocket.client else "unknown"
+    logger.info("WebSocket connected from %s", client_host)
     await websocket.accept()
     bus = EventBus()
     queue = bus.subscribe()
@@ -660,8 +802,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         try:
             payload = await websocket.receive_json()
         except WebSocketDisconnect:
+            logger.info("WebSocket disconnected before receiving payload")
             return
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError) as e:
+            logger.warning("WebSocket invalid payload from %s: %s", client_host, e)
             await _send_error(websocket, "expected a JSON object with a goal")
             return
         try:
@@ -669,6 +813,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         except ValidationError as validation_error:
             # A rejected payload (an out-of-range ``max_cycles`` for instance)
             # must be answered with an error frame and must never start a run.
+            logger.warning("WebSocket validation error from %s: %s", client_host, validation_error)
             await _send_error(websocket, _describe_validation_error(validation_error))
             return
         except ValueError:
@@ -679,30 +824,30 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if not goal and not resume:
             await _send_error(websocket, "goal is required")
             return
-        if _CURRENT.get("running"):
+        if RUN_MANAGER.running:
             # A run is already in flight: refuse to start a second one instead
             # of overwriting the registry entry of the running one.
+            logger.warning("WebSocket from %s rejected: run already in progress", client_host)
             await _send_error(websocket, "a run is already in progress")
             return
+        logger.info("WebSocket from %s starting run: goal=%s resume=%s max_cycles=%s",
+                    client_host, goal[:100], resume, request.max_cycles)
         try:
             orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.
+            logger.warning("WebSocket orchestrator validation error: %s", validation_error)
             await _send_error(websocket, _describe_validation_error(validation_error))
             return
         run_task = asyncio.create_task(_run_orchestrator(orchestrator))
         _TASKS.add(run_task)
         run_task.add_done_callback(_on_run_done)
-        _CURRENT.update(
-            {
-                "running": True,
-                "orchestrator": orchestrator,
-                "result": None,
-                "task": run_task,
-                "error": None,
-            }
-        )
+        started = await RUN_MANAGER.start_run(orchestrator, run_task)
+        if not started:
+            run_task.cancel()
+            await _send_error(websocket, "a run is already in progress")
+            return
         while True:
             if run_task.done() and queue.empty():
                 break
@@ -717,6 +862,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # done-callback to be processed.
         _clear_running_flag(run_task)
         if run_task.cancelled():
+            logger.info("WebSocket run cancelled")
             return
         exc = run_task.exception()
         if exc is not None:
