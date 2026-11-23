@@ -15,6 +15,8 @@ from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
+__all__ = ["WorkerAgent", "is_command_denied", "resolve_in_workspace"]
+
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
 DENIED_COMMANDS = (

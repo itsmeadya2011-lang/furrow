@@ -19,6 +19,8 @@ from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
 
+__all__ = ["LLMClient", "LLMResponse", "ToolCall", "to_anthropic_tools", "to_openai_tools", "to_anthropic_messages", "to_openai_messages", "parse_tool_arguments"]
+
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
@@ -301,12 +303,13 @@ class LLMClient:
                 continue
             try:
                 close = getattr(client, "aclose", None)
-                if close is None:
+                if not callable(close):
                     close = getattr(client, "close", None)
-                if close is not None:
-                    result = close()
-                    if asyncio.iscoroutine(result):
-                        await result
+                if not callable(close):
+                    continue
+                result = close()
+                if asyncio.iscoroutine(result):
+                    await result
             except Exception:
                 pass
             setattr(self, attr, None)

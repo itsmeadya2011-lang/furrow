@@ -10,6 +10,8 @@ import logging
 import sys
 from typing import Any
 
+__all__ = ["configure_logging", "get_logger"]
+
 
 def _configure_stdlib_fallback(level: str = "INFO") -> None:
     """Configure standard library logging as a fallback."""
@@ -26,6 +28,9 @@ try:
 except ImportError:
     structlog = None  # type: ignore[assignment]
     _STRUCTLOG_AVAILABLE = False
+
+
+__all__ = ["configure_logging", "get_logger"]
 
 
 def configure_logging(level: str = "INFO") -> None:

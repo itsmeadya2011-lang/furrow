@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+__all__ = ["ModelPricing", "DEFAULT_PRICING", "price_for_model", "estimate_cost"]
+
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a circular import
     from furrow.config import Usage
 

@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field, ValidationError
 from furrow.config import TaskModel, Usage
 from furrow.logging import get_logger
 
+__all__ = ["RunState", "HistoryEntry", "StateStore", "STATE_VERSION", "state_path_for", "utcnow"]
+
 logger = get_logger(__name__)
 
 STATE_VERSION = 1

@@ -6,6 +6,8 @@ from furrow.config import Plan, Settings
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
 
+__all__ = ["PlannerAgent"]
+
 
 class PlannerAgent:
     def __init__(self, client: LLMClient | None = None, settings: Settings | None = None) -> None:

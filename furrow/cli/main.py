@@ -67,7 +67,7 @@ def _print_summary(result: RunResult) -> None:
     click.echo(f"  Cycles:          {result.cycles}")
     click.echo(f"  Tasks completed: {result.tasks_completed}")
     click.echo(f"  Tasks failed:    {result.tasks_failed}")
-    blocked = getattr(result, "tasks_blocked", 0) or 0
+    blocked = result.tasks_blocked
     click.echo(f"  Tasks blocked:  {blocked}")
     click.echo(f"  Stopped reason:  {result.stopped_reason}")
     skipped = bool(getattr(result, "skipped", False))

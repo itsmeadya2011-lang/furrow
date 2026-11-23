@@ -17,6 +17,8 @@ from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
 from furrow.logging import get_logger
 
+__all__ = ["TesterAgent", "parse_test_output", "resolve_test_timeout"]
+
 logger = get_logger(__name__)
 
 # Fallback timeout for the test command when ``Settings.test_timeout`` is not
@@ -207,11 +209,14 @@ class TesterAgent:
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
 
-        # Python projects with tests/ dir always use pytest, even if package.json exists
+        # Python projects with tests/ dir always use pytest, even if package.json exists.
+        # But first check if the tests directory actually contains Python test files;
+        # if it only contains JS test files, prefer the Node.js runner.
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
-            return [sys.executable, "-m", "pytest", "-q"]
+            if self._tests_dir_has_python_files():
+                return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
         if has_package:
@@ -259,6 +264,19 @@ class TesterAgent:
             return ["go", "test", "./..."]
 
         return None
+
+    def _tests_dir_has_python_files(self) -> bool:
+        """Return True when the tests/ directory contains at least one Python file."""
+        tests_dir = self.workspace / "tests"
+        if not tests_dir.is_dir():
+            return False
+        try:
+            for entry in tests_dir.rglob("*.py"):
+                if entry.is_file():
+                    return True
+        except OSError:
+            return False
+        return False
 
     def _finalize(
         self,

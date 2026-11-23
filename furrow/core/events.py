@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
+__all__ = ["Event", "EventType", "EventBus", "MAX_QUEUE_SIZE"]
+
 #: Maximum number of events buffered for a single subscriber. A subscriber that
 #: stops draining loses its *oldest* events rather than growing without bound,
 #: so the queue always holds the most recent events. The value is far larger
