@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from furrow.agents.planner import PlannerAgent
@@ -175,6 +176,10 @@ class Orchestrator:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
                 break
+            if self._stop_requested():
+                self._stopped_reason = "stopped"
+                self._clear_stop_file()
+                break
             self.cycles += 1
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
@@ -312,6 +317,19 @@ class Orchestrator:
                 self._stopped_reason = "goal complete"
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=self._stopped_reason,
+                data={
+                    "stopped_reason": self._stopped_reason,
+                    "cycles": self.cycles,
+                    "passed": bool(self._last_test_passed),
+                    "skipped": bool(self._tests_skipped),
+                    "tests_run": int(getattr(self, "_tests_run", 0) or 0),
+                },
+            )
+        )
 
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
@@ -340,6 +358,27 @@ class Orchestrator:
         if self._feedback:
             return self._feedback
         return ""
+
+    @property
+    def _stop_file_path(self) -> Path:
+        """Path of the stop-request flag file next to the state file."""
+        return self.state_store.path.parent / "stop"
+
+    def _stop_requested(self) -> bool:
+        """Return True when a ``furrow stop`` command has created the stop flag."""
+        try:
+            return self._stop_file_path.is_file()
+        except OSError:
+            return False
+
+    def _clear_stop_file(self) -> None:
+        """Remove the stop flag file so a fresh run is not blocked by a stale one."""
+        try:
+            self._stop_file_path.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:  # pragma: no cover - best effort
+            pass
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()

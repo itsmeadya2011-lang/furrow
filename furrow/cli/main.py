@@ -248,6 +248,30 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
 
 
 @main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def stop(workspace: Path | None) -> None:
+    """Request that a running Furrow run stop at the end of its current cycle.
+
+    Creates a stop flag next to the state file. The orchestrator checks for it
+    at the start of each cycle and stops cleanly when it is present.
+    """
+    run_settings = _run_settings(workspace=workspace)
+    stop_file = run_settings.state_path().parent / "stop"
+    try:
+        stop_file.parent.mkdir(parents=True, exist_ok=True)
+        stop_file.touch()
+        click.echo(f"Stop requested: {stop_file}")
+    except OSError as exc:
+        click.secho(f"Could not request stop: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind the web server to.")
 @click.option("--port", type=int, default=8000, help="Port to bind the web server to.")
 def web(host: str, port: int) -> None:

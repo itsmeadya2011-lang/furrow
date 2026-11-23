@@ -714,3 +714,41 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_stop_creates_stop_file(runner: CliRunner, tmp_path: Path) -> None:
+    """The `furrow stop` command creates the stop flag next to the state file."""
+    result = runner.invoke(main, ["stop", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    stop_file = tmp_path / ".furrow" / "stop"
+    assert stop_file.is_file()
+    assert f"Stop requested: {stop_file}" in result.output
+
+
+def test_stop_uses_default_workspace(runner: CliRunner, monkeypatch: pytest.MonkeyPatch,
+                                      tmp_path: Path) -> None:
+    """Without --workspace the stop flag is created next to the default state path."""
+    from furrow.config import settings as global_settings
+    workspace_before = global_settings.workspace
+    monkeypatch.setattr("furrow.cli.main.settings.workspace", tmp_path)
+
+    try:
+        result = runner.invoke(main, ["stop"])
+        assert result.exit_code == 0
+        stop_file = tmp_path / ".furrow" / "stop"
+        assert stop_file.is_file()
+    finally:
+        object.__setattr__(global_settings, "workspace", workspace_before)
+
+
+def test_stop_handles_unwritable_directory(runner: CliRunner, tmp_path: Path,
+                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `furrow stop` command reports an error when the stop file cannot be created."""
+    def boom_touch(self):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(Path, "touch", boom_touch)
+    result = runner.invoke(main, ["stop", "--workspace", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "Could not request stop" in result.output

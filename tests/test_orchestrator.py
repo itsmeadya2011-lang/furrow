@@ -1237,3 +1237,83 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_done_event_is_emitted_when_run_finishes(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    events = drain(q)
+    done = [e for e in events if e.type == EventType.DONE]
+    assert len(done) == 1
+    assert done[0].data["stopped_reason"] == result.stopped_reason
+    assert done[0].data["cycles"] == result.cycles
+
+
+@pytest.mark.asyncio
+async def test_done_event_is_emitted_on_planner_failure(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(raise_valueerror=True)
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    events = drain(q)
+    done = [e for e in events if e.type == EventType.DONE]
+    assert len(done) == 1
+    assert done[0].data["stopped_reason"].startswith("planner failed")
+
+
+@pytest.mark.asyncio
+async def test_stop_file_stops_run_at_next_cycle(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    # Create the stop file before the run so the first cycle sees it.
+    stop_file = orch._stop_file_path
+    stop_file.parent.mkdir(parents=True, exist_ok=True)
+    stop_file.touch()
+    result = await orch.run()
+    events = drain(q)
+    assert result.stopped_reason == "stopped"
+    done = [e for e in events if e.type == EventType.DONE]
+    assert len(done) == 1
+    assert done[0].data["stopped_reason"] == "stopped"
+    # The stop file is consumed when the orchestrator stops due to it.
+    assert not stop_file.is_file()
+
+
+@pytest.mark.asyncio
+async def test_stop_file_created_during_run_stops_after_current_cycle(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=10)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+
+    class StopAfterFirstCycle(FakeTester):
+        async def run(self, goal, tasks):
+            # Create the stop file during the first cycle's test phase so the
+            # second cycle is not started.
+            stop_file = orch._stop_file_path
+            stop_file.parent.mkdir(parents=True, exist_ok=True)
+            stop_file.touch()
+            return TestResult(passed=True, summary="ok", failures=[], skipped=False)
+
+    orch.tester = StopAfterFirstCycle()
+    result = await orch.run()
+    assert result.stopped_reason == "stopped"
+    assert result.cycles == 1
