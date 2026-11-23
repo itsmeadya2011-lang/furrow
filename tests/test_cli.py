@@ -273,6 +273,90 @@ def test_start_uses_max_cycles_and_workspace(
     assert global_settings.workspace == workspace_before
 
 
+def test_start_passes_worker_iteration_options(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """The new --max-worker-iterations, --max-retries and --max-task-retries
+    flags reach the orchestrator settings."""
+    result = runner.invoke(
+        main,
+        [
+            "start",
+            "build a thing",
+            "--max-worker-iterations",
+            "7",
+            "--max-retries",
+            "2",
+            "--max-task-retries",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_worker_iterations == 7
+    assert run_settings.max_retries == 2
+    assert run_settings.max_task_retries == 3
+
+
+def test_start_rejects_negative_max_worker_iterations(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """--max-worker-iterations must be >= 1."""
+    result = runner.invoke(
+        main, ["start", "build a thing", "--max-worker-iterations", "0"]
+    )
+    assert result.exit_code != 0
+
+
+def test_start_rejects_negative_max_retries(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """--max-retries must be >= 0."""
+    result = runner.invoke(
+        main, ["start", "build a thing", "--max-retries", "-1"]
+    )
+    assert result.exit_code != 0
+
+
+def test_start_rejects_negative_max_task_retries(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """--max-task-retries must be >= 0."""
+    result = runner.invoke(
+        main, ["start", "build a thing", "--max-task-retries", "-1"]
+    )
+    assert result.exit_code != 0
+
+
+def test_resume_passes_worker_iteration_options(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    """The new flags also work on ``furrow resume``."""
+    _write_state(tmp_path)
+    result = runner.invoke(
+        main,
+        [
+            "resume",
+            "--workspace",
+            str(tmp_path),
+            "--max-worker-iterations",
+            "5",
+            "--max-retries",
+            "1",
+            "--max-task-retries",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.max_worker_iterations == 5
+    assert run_settings.max_retries == 1
+    assert run_settings.max_task_retries == 2
+    assert fake_orchestrator.init_kwargs["resume"] is True
+
+
 def test_start_stops_gracefully_on_keyboard_interrupt(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

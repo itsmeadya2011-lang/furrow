@@ -215,8 +215,16 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
+            # Vitest: prefer running vitest directly when a vitest config exists.
+            for pattern in ["vitest.config.*"]:
+                if list(self.workspace.glob(pattern)):
+                    if (self.workspace / "pnpm-lock.yaml").is_file():
+                        return ["pnpm", "vitest", "run"]
+                    if (self.workspace / "yarn.lock").is_file():
+                        return ["yarn", "vitest", "run"]
+                    return ["npx", "vitest", "run"]
+            # Check for jest configs
+            for pattern in ["jest.config.*"]:
                 for _f in self.workspace.glob(pattern):
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]

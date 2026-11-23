@@ -81,6 +81,44 @@ def test_detect_command_valid_package_json_with_test_script(tmp_path):
     assert cmd == ["npm", "test", "--silent"]
 
 
+def test_detect_vitest_config_uses_vitest_run(tmp_path):
+    """A vitest config without a lockfile yields npx vitest run."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "vitest.config.ts").write_text("export default {}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npx", "vitest", "run"]
+
+
+def test_detect_vitest_with_pnpm_lock(tmp_path):
+    """A vitest config with pnpm-lock.yaml yields pnpm vitest run."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "pnpm-lock.yaml").write_text("lockfileVersion: 9\n")
+    (tmp_path / "vitest.config.ts").write_text("export default {}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["pnpm", "vitest", "run"]
+
+
+def test_detect_vitest_with_yarn_lock(tmp_path):
+    """A vitest config with yarn.lock yields yarn vitest run."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "yarn.lock").write_text("# yarn lockfile\n")
+    (tmp_path / "vitest.config.ts").write_text("export default {}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["yarn", "vitest", "run"]
+
+
+def test_detect_jest_config_still_uses_package_manager(tmp_path):
+    """A jest config without vitest still falls back to the package manager test command."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "jest.config.js").write_text("module.exports = {}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npm", "test", "--silent"]
+
+
 def test_detect_cargo(tmp_path):
     (tmp_path / "Cargo.toml").write_text("[package]\n")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
