@@ -1319,3 +1319,142 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_tracks_created_file(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo hi > out.txt"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == ["out.txt"]
+    assert (tmp_path / "out.txt").exists()
+
+
+@pytest.mark.asyncio
+async def test_run_command_tracks_modified_file(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "edit.txt").write_text("old")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "printf 'new' > edit.txt"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert "edit.txt" in result.files_changed
+
+
+@pytest.mark.asyncio
+async def test_run_command_no_changes_reports_empty(tmp_path):
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="run_command",
+                    arguments={"command": "echo hi"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == []
+
+
+@pytest.mark.asyncio
+async def test_run_command_timeout_still_records_changes(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "made.txt").write_text("old")
+    settings = make_settings(tmp_path).model_copy(update={"command_timeout": 0.3})
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(
+        task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path
+    )
+    out = await agent._run_command("touch made.txt; sleep 5")
+    assert out == "command timed out"
+    assert "made.txt" in agent.files_changed
+
+
+@pytest.mark.asyncio
+async def test_snapshot_files_prunes_ignored_directories(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "config").write_text("x")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "a.cpython-311.pyc").write_text("x")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / "pkg").write_text("x")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print(1)")
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="snapshot")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    snapshot = agent._snapshot_files()
+
+    base = agent.workspace.resolve()
+    rels = {str(Path(p).relative_to(base)) for p in snapshot}
+    assert "src/main.py" in rels
+    assert ".git/config" not in rels
+    assert "__pycache__/a.cpython-311.pyc" not in rels
+    assert "node_modules/pkg" not in rels
+
+
+@pytest.mark.asyncio
+async def test_record_file_changes_detects_created_and_modified(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "existing.txt").write_text("old")
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="record")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+
+    before = agent._snapshot_files()
+    (tmp_path / "new.txt").write_text("new")
+    (tmp_path / "existing.txt").write_text("new")
+    agent._record_file_changes(before)
+
+    assert "new.txt" in agent.files_changed
+    assert "existing.txt" in agent.files_changed

@@ -18,6 +18,7 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Estimated USD cost per LLM call/cycle/run tracked, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`
 - Robust against malformed model output and pathological inputs: deeply nested JSON is reported as a normal parse error instead of crashing, file I/O is explicitly UTF-8, and the web server reaps its background drain task
 - The worker's `list_files` tool skips generated and vendored directories (`.git`, `__pycache__`, `node_modules`, virtualenvs, build output, editor metadata, and the local `.furrow` state) so a listing is not buried under thousands of non-source files, and it reports when a listing was truncated; `read_file` reports the file's total size when it truncates a large file
+- The worker's `run_command` tool tracks files created or modified by shell commands (e.g. `echo x > out.py`, `sed -i`, `tee`) by diffing a workspace snapshot taken before and after each command, so `files_changed` in task results, run summaries, and persisted state reflects shell-side writes too — not just `write_file` calls
 
 ## Security
 

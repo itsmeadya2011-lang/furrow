@@ -13,7 +13,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.llm import IGNORED_DIRECTORIES, LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -754,6 +754,10 @@ class WorkerAgent:
         except ValueError:
             return "error: could not parse command"
         timeout = float(getattr(self.settings, "command_timeout", 300.0) or 300.0)
+        # Snapshot the workspace right before spawning so that only files the
+        # command actually touches are recorded. Denied or unparseable
+        # commands are never snapshotted.
+        before = self._snapshot_files()
         # On POSIX the command runs in its own session/process group so that a
         # timeout can kill the whole tree (children and grandchildren included)
         # instead of leaking orphans. On other platforms we fall back to
@@ -789,6 +793,11 @@ class WorkerAgent:
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
+        finally:
+            # Record files created or modified by the command, even when it
+            # timed out. Snapshot failures are best-effort and never break the
+            # command result.
+            self._record_file_changes(before)
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
@@ -798,6 +807,64 @@ class WorkerAgent:
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
+
+    def _snapshot_files(self) -> dict[str, tuple[int, int]]:
+        """Snapshot workspace files: absolute path -> (mtime_ns, size).
+
+        Walks the tree with ``os.walk`` and prunes the same ignored
+        directories as :func:`furrow.llm.list_files` (see
+        :data:`furrow.llm.IGNORED_DIRECTORIES`) plus any directory whose name
+        ends with ``.egg-info``. Files that disappear mid-walk are skipped.
+        The result is keyed by absolute path string.
+
+        Best-effort: an :class:`OSError` while walking is swallowed and the
+        snapshot collected so far is returned, so a flaky filesystem entry
+        never breaks a command result.
+        """
+        base = self.workspace.resolve()
+        snapshot: dict[str, tuple[int, int]] = {}
+        try:
+            walker = os.walk(base)
+            for root, dirs, files in walker:
+                # Prune ignored directories in place so os.walk never descends.
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+                ]
+                for name in files:
+                    path = os.path.join(root, name)
+                    try:
+                        st = os.stat(path)
+                    except OSError:
+                        continue
+                    snapshot[path] = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            # The workspace root disappeared or became unreadable mid-walk:
+            # return whatever was collected rather than raising.
+            pass
+        return snapshot
+
+    def _record_file_changes(self, before: dict[str, tuple[int, int]]) -> None:
+        """Diff the after-snapshot against *before* and record changed files.
+
+        Every file that was created or whose (mtime_ns, size) changed is added
+        to :attr:`files_changed` as a workspace-relative path. Best-effort:
+        snapshot failures never propagate and never break a command result.
+        """
+        try:
+            after = self._snapshot_files()
+        except OSError:
+            return
+        base = self.workspace.resolve()
+        for path, after_stat in after.items():
+            before_stat = before.get(path)
+            if before_stat is None or before_stat != after_stat:
+                try:
+                    rel = Path(path).relative_to(base)
+                except ValueError:
+                    continue
+                self.files_changed.add(str(rel))
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:
