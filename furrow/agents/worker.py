@@ -74,7 +74,27 @@ _MAX_SUBSTITUTION_DEPTH = 3
 
 # Leading program names that are only wrappers: they run the command that
 # follows them, so a dangerous ``rm``/``chmod`` hides behind them.
-_WRAPPER_PROGRAMS = frozenset({"sudo", "doas", "command", "env", "nohup", "exec"})
+_WRAPPER_PROGRAMS = frozenset(
+    {
+        "sudo",
+        "doas",
+        "command",
+        "env",
+        "nohup",
+        "exec",
+        "nice",
+        "timeout",
+        "stdbuf",
+        "setsid",
+        "chroot",
+        "unshare",
+    }
+)
+
+# Wrappers that consume one leading positional token before the real command:
+# ``timeout`` takes a DURATION and ``chroot`` a NEWROOT. The count is applied
+# after the wrapper's own options have been skipped.
+_WRAPPER_SKIP_POSITIONALS = {"timeout": 1, "chroot": 1}
 
 # Regex for a leading variable assignment such as ``FOO=1`` or ``PATH=/bin``.
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -141,7 +161,9 @@ def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
     Leading variable assignments (``FOO=1``) and wrapper program names
     (``sudo``, ``env``, ``nohup``, ...) are skipped so that the real program
     that runs is reported, together with the remaining argument tokens.
-    Wrapper option flags are skipped too.
+    Wrapper option flags are skipped too. Wrappers that consume a leading
+    positional token (``timeout``'s DURATION, ``chroot``'s NEWROOT) skip it as
+    well, so the reported program is the one that actually executes.
     """
     tokens = _shell_tokens(segment.strip())
     if not tokens:
@@ -150,6 +172,9 @@ def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
         "sudo": {"-u", "--user", "-g", "--group", "-p", "--prompt"},
         "doas": {"-u", "--user", "-g", "--group", "-p", "--prompt"},
         "env": {"-u", "--unset", "-C", "--chdir"},
+        "nice": {"-n", "--adjustment"},
+        "stdbuf": {"-o", "-e", "-i", "--output", "--error", "--input"},
+        "timeout": {"-s", "--signal", "-k", "--kill-after"},
     }
     i = 0
     while i < len(tokens):
@@ -185,11 +210,64 @@ def _program_and_args(segment: str) -> tuple[str, list[str]] | None:
                     i += 1
                     continue
                 break
+            # Skip a leading positional the wrapper itself consumes (the
+            # DURATION of ``timeout`` or the NEWROOT of ``chroot``).
+            skip = _WRAPPER_SKIP_POSITIONALS.get(base, 0)
+            for _ in range(skip):
+                if i >= len(tokens):
+                    break
+                i += 1
             continue
         break
     if i >= len(tokens):
         return None
     return os.path.basename(tokens[i]).lower(), tokens[i + 1 :]
+
+
+# Shells that execute the string argument that follows ``-c``/``--command``.
+_SHELL_PROGRAMS = frozenset({"bash", "sh", "dash", "zsh", "ksh", "ash"})
+
+
+def _shell_command_payloads(segment: str) -> list[str]:
+    """Return the command text a shell ``-c`` or ``eval`` will execute.
+
+    ``bash``/``sh``/... run the argument that follows ``-c``/``--command``,
+    including combined or attached spellings such as ``-lc`` or ``-c'cmd'``.
+    ``eval`` concatenates all of its arguments with spaces and runs the
+    result. The effective program is resolved through wrapper programs first,
+    so ``sudo bash -c ...`` is inspected too.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return []
+    name, args = parsed
+    if name in _SHELL_PROGRAMS:
+        payloads: list[str] = []
+        i = 0
+        while i < len(args):
+            token = args[i]
+            if token in ("-c", "--command"):
+                if i + 1 < len(args):
+                    payloads.append(args[i + 1])
+                break
+            if token.startswith("--command="):
+                payloads.append(token.split("=", 1)[1])
+                break
+            if _is_short_flag_cluster(token) and "c" in token[1:]:
+                # Combined/attached ``-c``: ``-lc``/``-ec`` take the next
+                # token, ``-c'cmd'`` carries the command in this token.
+                remainder = token[1:].split("c", 1)[1]
+                if remainder:
+                    payloads.append(remainder)
+                elif i + 1 < len(args):
+                    payloads.append(args[i + 1])
+                break
+            i += 1
+        return payloads
+    if name == "eval":
+        joined = " ".join(token for token in args if token != "--")
+        return [joined] if joined.strip() else []
+    return []
 
 
 def _is_short_flag_cluster(token: str) -> bool:
@@ -211,14 +289,13 @@ def _short_cluster_has(token: str, letters: str) -> bool:
 
 
 def _is_dangerous_rm(args: list[str], workspace: Path) -> bool:
-    """Report whether an ``rm`` invocation recursively forces outside the workspace.
+    """Report whether an ``rm`` invocation targets outside the workspace.
 
-    Only a command that is both recursive and forced is dangerous. Each target
-    is denied if it contains a shell expansion (``$`` or a backtick) or resolves
-    outside of the workspace.
+    Every target is denied if it contains a shell expansion (``$`` or a
+    backtick) or resolves outside the workspace, whether or not ``-r``/``-f``
+    is given. The option terminator (``--``) and option clusters are still
+    skipped when collecting targets.
     """
-    recursive = False
-    force = False
     targets: list[str] = []
     options_done = False
     for token in args:
@@ -228,33 +305,19 @@ def _is_dangerous_rm(args: list[str], workspace: Path) -> bool:
         if token == "--":
             options_done = True
             continue
-        if token == "--recursive":
-            recursive = True
-            continue
-        if token == "--force":
-            force = True
-            continue
-        if token.startswith("--"):
-            continue
         if token.startswith("-"):
-            if _short_cluster_has(token, "rR"):
-                recursive = True
-            if _short_cluster_has(token, "f"):
-                force = True
             continue
         targets.append(token)
-    if recursive and force:
-        for target in targets:
-            if "$" in target or "`" in target:
-                return True
-            if not _target_inside_workspace(target, workspace):
-                return True
-    return False
+    return any(_denies_target(target, workspace) for target in targets)
 
 
 def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
-    """Report whether a recursive ``chmod`` targets outside the workspace."""
-    recursive = False
+    """Report whether a ``chmod`` invocation targets outside the workspace.
+
+    Every operand is checked, with or without ``-r``/``-R``. The leading mode
+    token (e.g. ``777``) resolves as a harmless relative path, so it never
+    triggers a denial.
+    """
     targets: list[str] = []
     options_done = False
     for token in args:
@@ -264,23 +327,38 @@ def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
         if token == "--":
             options_done = True
             continue
-        if token == "--recursive":
-            recursive = True
-            continue
-        if token.startswith("--"):
-            continue
         if token.startswith("-"):
-            if _short_cluster_has(token, "rR"):
-                recursive = True
             continue
         targets.append(token)
-    if recursive:
-        for target in targets:
-            if "$" in target or "`" in target:
-                return True
-            if not _target_inside_workspace(target, workspace):
-                return True
-    return False
+    return any(_denies_target(target, workspace) for target in targets)
+
+
+# Filesystem-mutating programs whose path operands are workspace-scoped.
+_FS_MUTATION_PROGRAMS = frozenset({"chown", "touch", "mkdir"})
+
+# Value-taking options of the filesystem-mutating programs. Their value is not
+# a path operand.
+_FS_MUTATION_VALUE_OPTS = {
+    "chown": {"--reference"},
+    "touch": {"-r", "--reference", "-d", "--date", "-t"},
+    "mkdir": {"-m", "--mode"},
+}
+
+
+def _is_dangerous_fs_mutation(segment: str, workspace: Path) -> bool:
+    """Report whether ``chown``/``touch``/``mkdir`` target outside the workspace.
+
+    Wrappers are resolved first, so ``sudo chown root /etc/passwd`` is caught.
+    ``ln`` is handled separately as a destination-aware write.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if name not in _FS_MUTATION_PROGRAMS:
+        return False
+    operands = _positional_operands(name, args, _FS_MUTATION_VALUE_OPTS.get(name))
+    return any(_denies_target(target, workspace) for target in operands)
 
 
 def _extract_command_substitutions(command: str) -> list[str]:
@@ -392,6 +470,241 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
 # Programs that write to path arguments rather than via shell redirections.
 _WRITE_PATH_PROGRAMS = frozenset({"tee"})
 
+# Programs that modify files in place, so their path operands are write
+# targets. ``sed`` only writes when ``-i``/``--in-place`` is present.
+_INPLACE_WRITE_PROGRAMS = frozenset({"shred", "truncate", "sed"})
+
+# Value-taking options of the in-place writers. Their value is not a path.
+_INPLACE_VALUE_OPTS = {
+    "shred": {"-n", "--iterations", "-s", "--size", "--random-source"},
+    "truncate": {"-s", "--size"},
+    "sed": {"-e", "--expression", "-f", "--file"},
+}
+
+# curl/wget options whose value is a write path.
+_CURL_VALUE_OPTS = {"-o", "--output", "--output-dir"}
+_WGET_VALUE_OPTS = {"-O", "--output-document"}
+
+# cp/mv/install/ln options whose value is not a positional operand.
+_DEST_VALUE_OPTS = {
+    "cp": {"-t", "--target-directory", "-S", "--suffix", "--context"},
+    "mv": {"-t", "--target-directory", "-S", "--suffix", "--context"},
+    "install": {
+        "-t",
+        "--target-directory",
+        "-m",
+        "--mode",
+        "-o",
+        "--owner",
+        "-g",
+        "--group",
+        "-S",
+        "--suffix",
+        "--context",
+    },
+    "ln": {"-t", "--target-directory", "-S", "--suffix"},
+}
+_DEST_PROGRAMS = frozenset({"cp", "mv", "install", "ln"})
+
+
+def _positional_operands(
+    name: str, args: list[str], value_opts: set[str] | None = None
+) -> list[str]:
+    """Return the positional (non-option) operands of a program's arguments.
+
+    Options and their values are skipped, so ``-s 0`` contributes no operand
+    and ``--size=0`` is consumed as a single option token. ``value_opts``
+    defaults to the in-place writer options for ``name``.
+    """
+    if value_opts is None:
+        value_opts = _INPLACE_VALUE_OPTS.get(name, set())
+    operands: list[str] = []
+    options_done = False
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if options_done:
+            operands.append(token)
+            i += 1
+            continue
+        if token == "--":
+            options_done = True
+            i += 1
+            continue
+        if token.startswith("--"):
+            if "=" in token or token not in value_opts:
+                i += 1
+            else:
+                i += 2
+            continue
+        if token.startswith("-") and token != "-":
+            i += 2 if token in value_opts else 1
+            continue
+        operands.append(token)
+        i += 1
+    return operands
+
+
+def _sed_in_place(args: list[str]) -> bool:
+    """Report whether a ``sed`` invocation edits files in place (``-i``)."""
+    for token in args:
+        if token == "--":
+            break
+        if token == "--in-place" or token.startswith("--in-place="):
+            return True
+        if _is_short_flag_cluster(token) and "i" in token[1:]:
+            return True
+    return False
+
+
+def _sed_script_via_option(args: list[str]) -> bool:
+    """Report whether a ``sed`` script was given with ``-e``/``-f``.
+
+    When it was, the first positional operand is a file, not the script.
+    """
+    for token in args:
+        if token == "--":
+            break
+        if token.startswith("--"):
+            if token in ("--expression", "--file") or token.startswith(
+                ("--expression=", "--file=")
+            ):
+                return True
+            continue
+        if token.startswith("-") and token != "-" and ("e" in token[1:] or "f" in token[1:]):
+            return True
+    return False
+
+
+def _option_values(value_opts: set[str], args: list[str]) -> list[str]:
+    """Return the values of options that take one, in both ``-o V`` and ``--o=V``."""
+    values: list[str] = []
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "--":
+            break
+        if token.startswith("--"):
+            if "=" in token:
+                if token.split("=", 1)[0] in value_opts:
+                    values.append(token.split("=", 1)[1])
+                i += 1
+                continue
+            if token in value_opts:
+                if i + 1 < len(args):
+                    values.append(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+                continue
+            i += 1
+            continue
+        if token.startswith("-") and token != "-":
+            if token in value_opts:
+                if i + 1 < len(args):
+                    values.append(args[i + 1])
+                    i += 2
+                else:
+                    i += 1
+                continue
+            # attached short-option value, e.g. ``-o/tmp/x`` or ``-O/tmp/x``
+            attached = [
+                opt
+                for opt in value_opts
+                if not opt.startswith("--") and len(token) > len(opt) and token.startswith(opt)
+            ]
+            if attached:
+                opt = max(attached, key=len)
+                values.append(token[len(opt) :])
+                i += 1
+                continue
+            i += 1
+            continue
+        i += 1
+    return values
+
+
+def _destination_target(name: str, args: list[str]) -> str | None:
+    """Return the destination path of a ``cp``/``mv``/``install`` invocation.
+
+    The value of ``-t``/``--target-directory`` wins when present; otherwise the
+    last positional operand is the destination. Option values are skipped so
+    that e.g. ``install -m 644 src dst`` resolves to ``dst``.
+    """
+    value_opts = _DEST_VALUE_OPTS.get(name, set())
+    positionals: list[str] = []
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "--":
+            positionals.extend(args[i + 1 :])
+            break
+        if token.startswith("--"):
+            key = token.split("=", 1)[0]
+            if "=" in token:
+                if key == "--target-directory":
+                    return token.split("=", 1)[1]
+                i += 1
+                continue
+            if token == "--target-directory":
+                return args[i + 1] if i + 1 < len(args) else None
+            i += 2 if token in value_opts else 1
+            continue
+        if token.startswith("-") and token != "-":
+            if token == "-t":
+                return args[i + 1] if i + 1 < len(args) else None
+            if token.startswith("-t") and len(token) > 2:
+                return token[2:]
+            i += 2 if token in value_opts else 1
+            continue
+        positionals.append(token)
+        i += 1
+    if not positionals:
+        return None
+    return positionals[-1]
+
+
+def _denies_target(target: str, workspace: Path) -> bool:
+    """Report whether a write target is denied by the workspace policy.
+
+    Empty targets, ``/dev/null`` and friends are allowed; a target that still
+    contains a shell expansion (``$`` or a backtick) or resolves outside the
+    workspace is denied.
+    """
+    cleaned = target.strip().strip("\"'")
+    if not cleaned or cleaned in _SPECIAL_WRITE_TARGETS:
+        return False
+    if "$" in cleaned or "`" in cleaned:
+        return True
+    return not _target_inside_workspace(cleaned, workspace)
+
+
+def _write_path_targets(name: str, args: list[str]) -> list[str] | None:
+    """Return the path operands a program writes, or ``None`` if it does not.
+
+    ``tee`` writes every operand; ``shred``/``truncate`` write every operand;
+    ``sed`` writes its file operands only with ``-i`` (skipping the script);
+    ``curl``/``wget`` write the value of their output option; and
+    ``cp``/``mv``/``install`` write their destination.
+    """
+    if name in _INPLACE_WRITE_PROGRAMS:
+        if name == "sed":
+            if not _sed_in_place(args):
+                return None
+            operands = _positional_operands(name, args)
+            return operands if _sed_script_via_option(args) else operands[1:]
+        return _positional_operands(name, args)
+    if name in _WRITE_PATH_PROGRAMS:
+        return _positional_operands(name, args)
+    if name == "curl":
+        return _option_values(_CURL_VALUE_OPTS, args)
+    if name == "wget":
+        return _option_values(_WGET_VALUE_OPTS, args)
+    if name in _DEST_PROGRAMS:
+        dest = _destination_target(name, args)
+        return [dest] if dest else []
+    return None
+
 
 def _git_subcommand(args: list[str]) -> str | None:
     """Return the git subcommand, skipping global options that take a value."""
@@ -448,29 +761,106 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
     """Report whether a segment writes to a path argument outside the workspace.
 
     This catches programs that write files through arguments rather than shell
-    redirections (e.g. ``tee``). Non-option tokens are treated as path
-    arguments; a path outside the workspace or one that still contains a shell
-    expansion (``$`` or a backtick) is denied. A program with no path argument
-    is allowed.
+    redirections (``tee``), edit files in place (``shred``/``truncate``/
+    ``sed -i``), write through an output option (``curl``/``wget``), or copy
+    to a destination (``cp``/``mv``/``install``). A path outside the workspace
+    or one that still contains a shell expansion (``$`` or a backtick) is
+    denied. A program with no write path is allowed.
     """
     parsed = _program_and_args(segment)
     if parsed is None:
         return False
     name, args = parsed
-    if name not in _WRITE_PATH_PROGRAMS:
+    targets = _write_path_targets(name, args)
+    if targets is None:
         return False
+    return any(_denies_target(target, workspace) for target in targets)
+
+
+def _is_dangerous_git_clean(segment: str) -> bool:
+    """Report whether a segment is a ``git clean`` that destroys work.
+
+    A force flag (``-f`` in a short cluster, ``--force`` or ``-ff``) without a
+    dry run (``-n``/``--dry-run``) removes untracked and ignored files.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if name != "git":
+        return False
+    if _git_subcommand(args) != "clean":
+        return False
+    force = False
+    dry_run = False
     for token in args:
-        if token.startswith("-"):
+        if token == "--":
+            break
+        lowered = token.lower()
+        if lowered == "--force":
+            force = True
             continue
-        target = token.strip().strip("\"'")
-        if not target:
+        if lowered in ("-n", "--dry-run"):
+            dry_run = True
             continue
-        if target in _SPECIAL_WRITE_TARGETS:
+        if _is_short_flag_cluster(token):
+            if _short_cluster_has(token, "f"):
+                force = True
+            if _short_cluster_has(token, "n"):
+                dry_run = True
+    return force and not dry_run
+
+
+def _find_start_paths(args: list[str]) -> list[str]:
+    """Return the start paths of a ``find`` invocation (default ``.``).
+
+    Leading options (``-H``/``-L``/``-P`` flags, and ``-D``/``-O`` with a
+    separate or attached value) are skipped before the start paths, which are
+    the non-option tokens up to the first expression token.
+    """
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "--":
+            i += 1
+            break
+        if token in ("-H", "-L", "-P"):
+            i += 1
             continue
-        if "$" in target or "`" in target:
-            return True
-        if not _target_inside_workspace(target, workspace):
-            return True
+        if token in ("-D", "-O"):
+            i += 2
+            continue
+        if token.startswith(("-D", "-O")):
+            # attached option value, e.g. ``-O3`` or ``-Dexec``
+            i += 1
+            continue
+        break
+    paths: list[str] = []
+    while i < len(args) and not args[i].startswith("-"):
+        paths.append(args[i])
+        i += 1
+    return paths or ["."]
+
+
+def _is_dangerous_find(segment: str, workspace: Path) -> bool:
+    """Report whether a ``find`` invocation runs commands or deletes broadly.
+
+    ``-exec``/``-execdir``/``-ok``/``-okdir`` run an arbitrary command and are
+    always denied. ``-delete`` is denied when a start path resolves outside the
+    workspace (or still contains a shell expansion).
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return False
+    name, args = parsed
+    if name != "find":
+        return False
+    if any(token in ("-exec", "-execdir", "-ok", "-okdir") for token in args):
+        return True
+    if "-delete" in args:
+        for path in _find_start_paths(args):
+            if _denies_target(path, workspace):
+                return True
     return False
 
 
@@ -504,8 +894,16 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
         if name == "chmod" and _is_dangerous_chmod(args, workspace):
             return True
 
-    # DENY a force push
-    if _is_force_push(segment, normalized):
+    # DENY a force push or a destructive ``git clean``
+    if _is_force_push(segment, normalized) or _is_dangerous_git_clean(segment):
+        return True
+
+    # DENY ``find`` that runs commands or deletes outside the workspace
+    if _is_dangerous_find(segment, workspace):
+        return True
+
+    # DENY ``chown``/``touch``/``mkdir`` that target outside the workspace
+    if _is_dangerous_fs_mutation(segment, workspace):
         return True
 
     # DENY a redirection or a file-writing argument that escapes the workspace
@@ -523,13 +921,19 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
     # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
+    segments = _split_command_segments(text)
+    if any(_is_dangerous_segment(segment, workspace) for segment in segments):
         return True
-    # The shell runs the substituted text, so it is checked as well.
+    # The shell runs substituted text and shell ``-c``/``eval`` payloads, so
+    # they are checked with the same rules, up to the recursion limit.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
             if _text_is_denied(substitution, workspace, depth + 1):
                 return True
+        for segment in segments:
+            for payload in _shell_command_payloads(segment):
+                if _text_is_denied(payload, workspace, depth + 1):
+                    return True
     return False
 
 

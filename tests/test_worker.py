@@ -753,6 +753,166 @@ def test_is_command_denied_wrapper_aware_tee_and_force_push(tmp_path):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_new_command_guard_bypasses_2(tmp_path):
+    """Guard-level tests for the latest round of command-guard bypasses.
+
+    Covers shell ``-c``/``eval`` payloads, the additional wrapper programs,
+    in-place writers, ``git clean``, ``find`` execution/deletion, and the
+    output/destination paths of ``curl``/``wget`` and ``cp``/``mv``/``install``.
+    """
+    denied_commands = [
+        # shell -c / eval payloads
+        "bash -c 'rm -rf /'",
+        "sh -c 'chmod -R 777 /'",
+        "eval 'rm -rf /'",
+        "eval rm -rf /",
+        "bash -lc 'rm -rf /'",
+        "sh -ec 'chmod -R 777 /'",
+        "bash -c'rm -rf /'",
+        "bash -c 'echo hi > /etc/passwd'",
+        # additional wrapper programs
+        "timeout 300 rm -rf /",
+        "nice rm -rf /",
+        "stdbuf -oL rm -rf /",
+        "setsid rm -rf /",
+        "chroot / rm -rf /",
+        "unshare rm -rf /",
+        # in-place / destructive writers
+        "shred /etc/passwd",
+        "truncate -s 0 /etc/passwd",
+        "sed -i 's/a/b/' /etc/passwd",
+        "sudo sed -i 's/a/b/' /etc/passwd",
+        "sed -i -e 's/a/b/' /etc/passwd",
+        # git clean with force, not a dry run
+        "git clean -fdx",
+        "git clean -fd",
+        "git clean --force",
+        # find that executes or deletes
+        "find / -delete",
+        "find -O3 / -delete",
+        "find / -exec rm -rf {} \\;",
+        "find . -exec rm -rf {} \\;",
+        "find . -okdir rm {} \\;",
+        # curl/wget output paths
+        "curl -o /etc/passwd http://x",
+        "curl -o/etc/passwd http://x",
+        "wget -O /etc/passwd http://x",
+        "wget -O/etc/passwd http://x",
+        # destination-aware writes
+        "cp /etc/passwd /tmp/x",
+        "mv x /etc/passwd",
+        "install -m 644 /dev/null /etc/passwd",
+        "cp --target-directory=/tmp a.py",
+    ]
+    allowed_commands = [
+        # shell payloads that stay inside the workspace
+        "bash -c 'echo hi > out.txt'",
+        "sh -c 'echo hi'",
+        "eval 'echo hi'",
+        "eval echo hi",
+        "bash -lc 'pytest -q'",
+        "bash -c'pytest -q'",
+        "sh -c 'echo hi > out.txt'",
+        # wrappers resolving to an allowed program
+        "timeout 300 pytest -q",
+        "chroot /tmp/root pytest",
+        # in-place writers inside the workspace
+        "shred out.txt",
+        "sed 's/a/b/' out.txt",
+        "sed -i 's/a/b/' out.txt",
+        "sed -i -e 's/a/b/' out.txt",
+        # git clean dry runs
+        "git clean -n",
+        "git clean --dry-run",
+        # find inside the workspace
+        "find . -delete",
+        "find -O3 . -delete",
+        # output paths inside the workspace
+        "curl -o out.txt http://x",
+        "curl -oout.txt http://x",
+        "wget -O out.txt http://x",
+        # destinations inside the workspace
+        "cp a.py b.py",
+        "mv a.py sub/",
+        "install -m 644 a.py ./bin/x",
+        "cp -S .bak a b",
+        "ls -la",
+    ]
+
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_fs_mutation_guard(tmp_path):
+    """Filesystem-mutating commands are workspace-scoped, recursive or not.
+
+    ``rm``/``chmod`` deny any outside target, ``chown``/``touch``/``mkdir``
+    check their path operands, and ``ln`` checks its destination. A symlink
+    inside the workspace that resolves back inside is an allowed ``ln``
+    destination.
+    """
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "target").write_text("x")
+    inner_link = tmp_path / "workspace-link"
+    inner_link.symlink_to(tmp_path / "sub")
+
+    denied_commands = [
+        # rm: any outside target, not only recursive+forced
+        "rm /etc/passwd",
+        "rm -f /etc/passwd",
+        "rm -rf /",
+        "rm -rf /*",
+        "rm -rf ~",
+        'rm -rf "$HOME"',
+        "rm /tmp/other/file",
+        # chmod: any outside target, recursive or not
+        "chmod 777 /etc/passwd",
+        "chmod 644 /etc/passwd",
+        "chmod 777 -R /",
+        "sudo chmod 777 /etc/passwd",
+        # chown / touch / mkdir
+        "chown root /etc/passwd",
+        "chown -R nobody /",
+        "sudo chown root /etc/passwd",
+        "touch /etc/passwd",
+        "mkdir -p /etc/cron.d/x",
+        # ln: destination outside the workspace
+        "ln -s a /etc/x",
+        "ln -s /etc/passwd /etc/x",
+    ]
+    allowed_commands = [
+        # rm inside the workspace
+        "rm build",
+        "rm -f build",
+        "rm -rf build",
+        f"rm -rf {tmp_path}/build",
+        "rm -rf --",
+        "rm",
+        # chmod inside the workspace
+        "chmod 644 file.txt",
+        "chmod -R 755 ./sub",
+        "chmod -R 777 ./sub",
+        # chown / touch / mkdir inside the workspace
+        "chown user file.txt",
+        "chown nobody ./sub",
+        "touch file.txt",
+        "touch -d '2020-01-01' file.txt",
+        "mkdir -p build",
+        "mkdir -m 755 build",
+        # ln: destination inside the workspace; the symlink target is a string
+        "ln -s a b",
+        "ln -s /etc/passwd link",
+        f"ln -s a {inner_link}",
+    ]
+
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel
