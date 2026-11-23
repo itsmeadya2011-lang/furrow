@@ -377,9 +377,9 @@ async def test_assistant_turn_blocks(tmp_path):
 
 
 def test_worker_tools():
-    names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    names = sorted(t["name"] for t in WORKER_TOOLS)
+    assert names == ["list_files", "read_file", "run_command", "str_replace", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -1319,3 +1319,192 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_str_replace_unique_match(tmp_path):
+    """Replacing a string that appears exactly once edits the file in place."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "edit.py").write_text("x = 1\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="str_replace",
+                    arguments={
+                        "path": "edit.py",
+                        "old_str": "x = 1\n",
+                        "new_str": "x = 2\n",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == ["edit.py"]
+    assert (tmp_path / "edit.py").read_text() == "x = 2\n"
+
+
+@pytest.mark.asyncio
+async def test_str_replace_not_found(tmp_path):
+    """An old_str that does not appear is an error and the file is unchanged."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "edit.py").write_text("x = 1\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="str_replace",
+                    arguments={
+                        "path": "edit.py",
+                        "old_str": "nope\n",
+                        "new_str": "y = 2\n",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == []
+    assert (tmp_path / "edit.py").read_text() == "x = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_str_replace_ambiguous_match(tmp_path):
+    """An old_str that appears more than once is an error (no silent edit)."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "edit.py").write_text("x = 1\nx = 1\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="str_replace",
+                    arguments={
+                        "path": "edit.py",
+                        "old_str": "x = 1\n",
+                        "new_str": "x = 2\n",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == []
+    assert (tmp_path / "edit.py").read_text() == "x = 1\nx = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_str_replace_empty_old_str_rejected(tmp_path):
+    """An empty old_str is rejected to avoid inserting everywhere."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "edit.py").write_text("x = 1\n")
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="str_replace",
+                    arguments={"path": "edit.py", "old_str": "", "new_str": "y\n"},
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == []
+    assert (tmp_path / "edit.py").read_text() == "x = 1\n"
+
+
+@pytest.mark.asyncio
+async def test_str_replace_path_escape_rejected(tmp_path):
+    """A str_replace whose path escapes the workspace is rejected."""
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="str_replace",
+                    arguments={
+                        "path": "../evil.py",
+                        "old_str": "x",
+                        "new_str": "y",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    await agent.run()
+    assert not (tmp_path.parent / "evil.py").exists()
+
+
+@pytest.mark.asyncio
+async def test_str_replace_nonexistent_file(tmp_path):
+    """A str_replace on a missing file returns an error and changes nothing."""
+    from furrow.config import TaskModel
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(
+                    id="t1",
+                    name="str_replace",
+                    arguments={
+                        "path": "missing.py",
+                        "old_str": "x",
+                        "new_str": "y",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="edit")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    result = await agent.run()
+    assert result.success is True
+    assert result.files_changed == []

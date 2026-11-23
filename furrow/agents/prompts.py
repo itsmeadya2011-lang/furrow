@@ -88,4 +88,29 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "str_replace",
+        "description": (
+            "Replace a unique string in a workspace file with another string. "
+            "Use this for targeted edits instead of rewriting a whole file. "
+            "The old_str must appear exactly once in the file."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Path to the file relative to the workspace root.",
+                },
+                "old_str": {
+                    "type": "string",
+                    "description": (
+                        "The exact string to replace. Must appear exactly once."
+                    ),
+                },
+                "new_str": {"type": "string", "description": "The string to replace it with."},
+            },
+            "required": ["path", "old_str", "new_str"],
+        },
+    },
 ]

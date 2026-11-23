@@ -659,6 +659,13 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "str_replace":
+            path = args.get("path", "")
+            old_str = args.get("old_str")
+            new_str = args.get("new_str")
+            if not isinstance(old_str, str) or not isinstance(new_str, str):
+                return "error: invalid str_replace arguments (old_str and new_str must be strings)"
+            return await self._str_replace(str(path), old_str, new_str)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -713,6 +720,41 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _str_replace(self, path: str, old_str: str, new_str: str) -> str:
+        """Replace *old_str* with *new_str* in *path*.
+
+        The string must appear exactly once in the file; zero matches or
+        multiple matches are both reported as errors so that ambiguous edits
+        are never applied silently. The resolved path must stay inside the
+        workspace.
+        """
+        if old_str == "":
+            return "error: old_str must not be empty"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        count = content.count(old_str)
+        if count == 0:
+            return f"error: old_str not found in {path}"
+        if count > 1:
+            return (
+                f"error: old_str appears {count} times in {path}; "
+                "provide more context to make it unique"
+            )
+        new_content = content.replace(old_str, new_str, 1)
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"replaced {path} ({len(new_str)} bytes in, {len(new_content)} bytes total)"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
