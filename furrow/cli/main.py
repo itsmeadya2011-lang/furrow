@@ -68,7 +68,7 @@ def _print_summary(result: RunResult) -> None:
     click.echo(f"  Tasks completed: {result.tasks_completed}")
     click.echo(f"  Tasks failed:    {result.tasks_failed}")
     blocked = getattr(result, "tasks_blocked", 0) or 0
-    click.echo(f"  Tasks blocked:  {blocked}")
+    click.echo(f"  Tasks blocked: {blocked}")
     click.echo(f"  Stopped reason:  {result.stopped_reason}")
     skipped = bool(getattr(result, "skipped", False))
     tests_run = getattr(result, "tests_run", 0) or 0
@@ -235,9 +235,10 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--model", default=None, help="Override the LLM model.")
+def resume(workspace: Path | None, max_cycles: int | None, model: str | None) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(max_cycles=max_cycles, model=model, workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
