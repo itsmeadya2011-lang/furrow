@@ -322,7 +322,7 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
-        return RunResult(
+        result = RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
             tasks_completed=completed,
@@ -335,6 +335,14 @@ class Orchestrator:
             usage=self._usage,
             files_changed=files_changed,
         )
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=result.summary,
+                data=result.model_dump(mode="json"),
+            )
+        )
+        return result
 
     def _context(self) -> str:
         if self._feedback:

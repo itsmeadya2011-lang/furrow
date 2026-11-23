@@ -410,7 +410,14 @@ class TesterAgent:
             llm_result: TestResult | None = None
             if not spawn_failed:
                 # A runner that never started has no output worth summarising.
-                prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+                prompt = TESTER_PROMPT + "\n\nGoal: " + goal
+                if tasks:
+                    task_lines = []
+                    for t in tasks:
+                        files = ", ".join(t.files) if t.files else "any"
+                        task_lines.append(f"- {t.id}: {t.description} (files: {files})")
+                    prompt += "\n\nTasks completed:\n" + "\n".join(task_lines)
+                prompt += "\n\nTest output:\n" + combined
                 try:
                     response = await self.client.complete(
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
