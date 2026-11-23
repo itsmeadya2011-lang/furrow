@@ -251,6 +251,12 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      const filesChanged = Array.isArray(task.files_changed) ? task.files_changed : [];
+      if (filesChanged.length > 0) {
+        const files = document.createElement('span');
+        files.textContent = ' files: ' + filesChanged.join(', ');
+        meta.appendChild(files);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -647,6 +653,19 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Cancel the currently running run, if any."""
+    run_task = _CURRENT.get("task")
+    if run_task is None or run_task.done():
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run is in progress"},
+        )
+    _cancel_run(run_task)
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.websocket("/ws")

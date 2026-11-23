@@ -115,6 +115,7 @@ class Orchestrator:
             "original_goal": self.original_goal,
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
+            "tests_run": self._tests_run,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
         }
@@ -358,7 +359,13 @@ class Orchestrator:
                         pt.status = "completed"
                         self._skip_ids.add(pt.id)
                     else:
+                        # The description or files changed: this is new work.
+                        # Reset the attempt counter so the task gets a fresh
+                        # retry budget in the new cycle (the retry budget is
+                        # enforced within a cycle, not across cycles).
                         pt.status = "pending"
+                        pt.attempts = 0
+                        old.attempts = 0
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"

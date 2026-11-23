@@ -57,6 +57,7 @@ class FakeOrchestrator:
             "original_goal": goal,
             "cycles": 0,
             "stopped_reason": "",
+            "tests_run": 0,
             "tasks": [],
         }
 
@@ -227,6 +228,13 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
         )
 
 
+def test_index_task_panel_shows_files_changed(client: TestClient) -> None:
+    """Task panels render the list of changed files from the task model."""
+    html = client.get("/").text
+    assert "filesChanged" in html
+    assert "files: " in html
+
+
 def test_index_script_resets_summary_when_a_run_starts(client: TestClient) -> None:
     """Starting a run resets the summary tracker so every run logs its summary.
 
@@ -307,6 +315,46 @@ def test_api_status(client: TestClient, fake_orchestrator: type[FakeOrchestrator
     assert "running" in body
     assert "status" in body
     assert "result" in body
+
+
+def test_api_status_includes_tests_run(client: TestClient, fake_orchestrator: type[FakeOrchestrator]) -> None:
+    """The status response includes ``tests_run`` from the orchestrator."""
+    client.post("/api/start", json={"goal": "build it"})
+
+    response = client.get("/api/status")
+
+    assert response.status_code == 200
+    body = response.json()
+    status = body["status"]
+    assert status is not None
+    assert "tests_run" in status
+
+
+def test_api_stop_cancels_running_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stopping a running run cancels it and clears the running flag."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+    client.post("/api/start", json={"goal": "build it"})
+    assert _wait_until(lambda: server._CURRENT.get("running") is True), "the run never started"
+
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stopped"] is True
+    assert server._CURRENT.get("running") is False
+    assert server._CURRENT.get("error") == "run cancelled"
+
+
+def test_api_stop_no_run_in_progress(client: TestClient) -> None:
+    """Stopping when no run is running returns an error."""
+    response = client.post("/api/stop")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["stopped"] is False
+    assert "no run is in progress" in body["error"]
 
 
 def test_api_status_reports_run_error(client: TestClient) -> None:

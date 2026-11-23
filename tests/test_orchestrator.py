@@ -788,7 +788,9 @@ async def test_completed_task_is_executed_again_when_the_description_changed(tmp
     orch.planner = FakePlanner([TaskModel(id="t1", description="do t1 differently")])
     await orch.run()  # cycle 2
     assert len(calls) == 2
-    assert orch.tasks[0].attempts == 2
+    # A re-planned task (changed description/files) is new work: its attempt
+    # counter is reset so it gets a fresh retry budget in the new cycle.
+    assert orch.tasks[0].attempts == 1
 
 
 @pytest.mark.asyncio
