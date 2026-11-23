@@ -56,6 +56,11 @@ MAX_READ_CHARS = 20000
 # so the command on each side is checked as its own segment.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|(?<!>)\||\n|\r)+")
 
+# Split a command into pipeline segments on ``|`` only. ``&&``, ``;`` and
+# background ``&`` keep the segments together: downloading to a file and then
+# running it in a separate step is a different, out-of-scope case.
+_PIPE_SPLIT_RE = re.compile(r"(?<!>)\|")
+
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
 _HOME_VAR = r"\$\{?home\}?(?![A-Za-z0-9_])"
@@ -75,6 +80,16 @@ _MAX_SUBSTITUTION_DEPTH = 3
 # Leading program names that are only wrappers: they run the command that
 # follows them, so a dangerous ``rm``/``chmod`` hides behind them.
 _WRAPPER_PROGRAMS = frozenset({"sudo", "doas", "command", "env", "nohup", "exec"})
+
+# Downloader programs: fetching a remote script and piping it into a shell or
+# interpreter executes code from the network, so that pair is denied here.
+_DOWNLOADER_PROGRAMS = frozenset({"curl", "wget", "http", "httpie", "fetch"})
+
+# Shells and interpreters: running one of these on a downloader's output
+# executes downloaded code.
+_SHELL_PROGRAMS = frozenset(
+    {"sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby", "node"}
+)
 
 # Regex for a leading variable assignment such as ``FOO=1`` or ``PATH=/bin``.
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -514,6 +529,37 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     return bool(_writes_outside_workspace(segment, workspace))
 
 
+def _effective_program(segment: str) -> str | None:
+    """Return the effective program basename of a segment.
+
+    Leading variable assignments and wrapper programs (``sudo``, ``env``,
+    ``nohup``, ...) are skipped so the real program that runs is reported.
+    Returns ``None`` when the segment has no program.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return None
+    return parsed[0]
+
+
+def _is_download_into_shell(text: str) -> bool:
+    """Report whether a downloader is piped into a shell/interpreter.
+
+    ``curl ... | sh`` downloads a remote script and executes it; neither
+    segment is denied on its own, so the pair has to be caught here. Only a
+    real pipe ``|`` joins the segments - ``&&`` and ``;`` (download to a file,
+    then run it later) are out of scope.
+    """
+    segments = [s for s in _PIPE_SPLIT_RE.split(text) if s.strip()]
+    programs = [_effective_program(segment) for segment in segments]
+    for index, program in enumerate(programs):
+        if program in _DOWNLOADER_PROGRAMS and any(
+            later in _SHELL_PROGRAMS for later in programs[index + 1 :]
+        ):
+            return True
+    return False
+
+
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     """Check a command - or the text of a command substitution - against the policy."""
     normalized = _normalize_command(text)
@@ -524,6 +570,10 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
         return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
+        return True
+    # DENY a downloader piped into a shell/interpreter (``curl ... | sh``).
+    # Neither segment is denied alone, so the pair is caught here.
+    if _is_download_into_shell(text):
         return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:

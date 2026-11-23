@@ -48,6 +48,26 @@ class FakePlanner:
         )
 
 
+class ChangingFilesPlanner:
+    """Planner that keeps one task description but changes its ``files`` after cycle 1.
+
+    Cycle 1 plans the task with ``files=[]``; every later cycle plans it with
+    ``files=["a.py"]``. The description stays identical so only the signature
+    (which includes ``files``) changes between cycles.
+    """
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def plan(self, goal, context=""):
+        self.calls += 1
+        files = [] if self.calls == 1 else ["a.py"]
+        return Plan(
+            tasks=[TaskModel(id="t1", description="do t1", files=files, dependencies=[])],
+            rationale="r",
+        )
+
+
 class FakeTester:
     def __init__(self, passed=False, skipped=False):
         self.passed = passed
@@ -202,6 +222,24 @@ async def test_no_progress_guard(tmp_path, monkeypatch):
     orch.tester = FakeTester(passed=False)
     result = await orch.run()
     assert result.stopped_reason == "no progress"
+
+
+@pytest.mark.asyncio
+async def test_files_change_changes_signature_so_no_progress_guard_does_not_trip(
+    tmp_path, monkeypatch
+):
+    """Re-planning with the same description but different ``files`` changes the
+    plan signature, so the run must not trip the no-progress guard."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = ChangingFilesPlanner()
+    orch.tester = FakeTester(passed=False)
+    result = await orch.run()
+    assert result.stopped_reason == "max_cycles reached"
+    assert result.stopped_reason != "no progress"
+    assert orch._no_progress < 2
 
 
 @pytest.mark.asyncio

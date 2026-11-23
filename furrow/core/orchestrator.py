@@ -115,6 +115,7 @@ class Orchestrator:
             "original_goal": self.original_goal,
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
+            "tests_run": int(getattr(self, "_tests_run", 0) or 0),
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
         }
@@ -263,7 +264,10 @@ class Orchestrator:
                 usage=cycle_usage,
             ))
             self.event_bus.emit(Event(type=EventType.CYCLE_FINISHED, data={"cycle": self.cycles}))
-            sig = "|".join(f"{t.id}:{t.description}" for t in plan.tasks)
+            sig = "|".join(
+                f"{t.id}:{t.description}:" + ",".join(t.files) + ":" + ",".join(t.dependencies)
+                for t in plan.tasks
+            )
             # A skipped run (no test runner) reports passed=True but gives the
             # loop no verification signal, so it must trip the no-progress
             # guard as well - otherwise the loop never stops.
@@ -286,7 +290,8 @@ class Orchestrator:
                              usage=self._usage, no_progress=self._no_progress,
                              prev_sig=self._prev_sig, tests_run=self._tests_run,
                              last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
+                             last_summary=test_result.summary,
+                             stopped_reason=self._stopped_reason)
             try:
                 self.state_store.save(state)
             except asyncio.CancelledError:
@@ -337,8 +342,9 @@ class Orchestrator:
         )
 
     def _context(self) -> str:
-        if self._feedback:
-            return self._feedback
+        # Failures already reach the planner through the amended goal (see the
+        # goal amendment on test failure), so returning them here too would
+        # duplicate them. Return "" and let the amended goal carry the signal.
         return ""
 
     def _merge_plan(self, plan: Plan) -> None:

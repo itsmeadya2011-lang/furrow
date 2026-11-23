@@ -97,6 +97,8 @@ def _print_state(state: RunState) -> None:
     click.echo(f"  Current goal:  {state.goal}")
     click.echo(f"  Cycles:        {state.cycles}")
     click.echo(f"  Updated:       {state.updated_at}")
+    if state.stopped_reason:
+        click.echo(f"  Stopped reason:  {state.stopped_reason}")
     tests_run = getattr(state, "tests_run", 0) or 0
     skipped = bool(getattr(state, "last_skipped", False))
     passed = getattr(state, "last_passed", None)

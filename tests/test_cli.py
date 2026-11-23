@@ -631,6 +631,24 @@ def test_status_omits_cost_when_persisted_cost_usd_is_zero(
     assert "LLM cost:" not in result.output
 
 
+def test_status_prints_persisted_stopped_reason(runner: CliRunner, tmp_path: Path) -> None:
+    """The status command prints the persisted stopped reason when there is one."""
+    state = RunState(
+        goal="ship it",
+        original_goal="ship it",
+        cycles=2,
+        stopped_reason="no progress",
+        tasks=[TaskModel(id="t1", description="do the thing", status="completed")],
+    )
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "ship it" in result.output
+    assert "Stopped reason:  no progress" in result.output
+
+
 class RecordingClient:
     """Fake LLM client that records whether it was closed."""
 

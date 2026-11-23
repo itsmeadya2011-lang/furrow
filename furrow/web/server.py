@@ -148,6 +148,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
+    <span>tests <b id="tests-run">\u2014</b></span>
   </div>
 </div>
 <pre id="log"></pre>
@@ -161,6 +162,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const testsRunEl = document.getElementById('tests-run');
   let socket = null;
   let lastSummary = null;
 
@@ -203,6 +205,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
       text(result && result.stopped_reason) || '';
     stoppedReasonEl.textContent = reason;
     stoppedReasonEl.style.display = reason ? '' : 'none';
+    testsRunEl.textContent = text(
+      status && status.tests_run !== undefined
+        ? status.tests_run
+        : result && result.tests_run !== undefined
+          ? result.tests_run
+          : '\u2014'
+    );
     const usage = (status && status.usage) || (result && result.usage) || {};
     const calls = Number(usage.calls) || 0;
     const total = (Number(usage.input_tokens) || 0) +

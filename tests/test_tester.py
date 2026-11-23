@@ -578,3 +578,26 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+def test_detect_tox_when_available(tmp_path, monkeypatch):
+    (tmp_path / "tox.ini").write_text("[tox]\n")
+    monkeypatch.setattr("furrow.agents.tester.shutil.which", lambda name: "/usr/bin/tox")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["tox"]
+
+
+def test_detect_tox_falls_back_when_missing_binary(tmp_path, monkeypatch):
+    (tmp_path / "tox.ini").write_text("[tox]\n")
+    monkeypatch.setattr("furrow.agents.tester.shutil.which", lambda name: None)
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_pyproject_only_returns_pytest(tmp_path):
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd

@@ -198,6 +198,32 @@ def test_legacy_state_without_tests_run_loads_with_the_default_zero(tmp_path: Pa
     assert loaded.tests_run == 0
 
 
+def test_stopped_reason_round_trips_through_save_and_load(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "s.json")
+    state = RunState(goal="g", stopped_reason="no progress")
+    store.save(state)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.stopped_reason == "no progress"
+
+
+def test_legacy_state_without_stopped_reason_loads_with_empty_default(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.json"
+    legacy = {
+        "version": 1,
+        "goal": "g",
+        "original_goal": "g",
+        "cycles": 0,
+        "tasks": [],
+        "history": [],
+        "updated_at": "2026-01-01T00:00:00+00:00",
+        "usage": {"input_tokens": 0, "output_tokens": 0, "calls": 0},
+    }
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    loaded = RunState.model_validate_json(path.read_text(encoding="utf-8"))
+    assert loaded.stopped_reason == ""
+
+
 def test_load_returns_none_for_valid_json_of_the_wrong_shape(tmp_path: Path) -> None:
     path = tmp_path / "s.json"
     path.write_text("[]", encoding="utf-8")

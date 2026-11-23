@@ -211,6 +211,7 @@ def parse_test_result(text: str) -> TestResult:
         lower = s.lower()
 
         passed = True
+        not_verified = False
         m = re.search(r'"passed"\s*:\s*(true|false)', lower)
         if m:
             passed = m.group(1) == "true"
@@ -229,13 +230,32 @@ def parse_test_result(text: str) -> TestResult:
                 if m_success:
                     passed = True
                 else:
-                    m_fail = re.search(
-                        r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+                    # Non-verdict / could-not-run signals. A run that could not
+                    # be verified is not a pass: mark it failed rather than
+                    # guessing from generic failure keywords (or from their
+                    # absence). Explicit signals above take precedence.
+                    m_not_verified = re.search(
+                        r"\b(could not|couldn't|cannot|can't|unable to|"
+                        r"not run|did not run|no test runner|still running)\b",
                         lower,
                     )
-                    passed = not m_fail
+                    if m_not_verified:
+                        passed = False
+                        not_verified = True
+                    else:
+                        m_fail = re.search(
+                            r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+                            lower,
+                        )
+                        passed = not m_fail
 
         summary = s.strip()[:500]
+        if not_verified:
+            reason = summary or "no details provided"
+            summary = (
+                "Tests did not run or could not be verified. "
+                f"Original output: {reason}"
+            )[:500]
 
         failure_words = re.compile(
             r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",

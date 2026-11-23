@@ -182,6 +182,7 @@ def test_index_contains_ui_hooks(client: TestClient) -> None:
         'id="cycle"',
         'id="state"',
         'id="stopped-reason"',
+        'id="tests-run"',
         'id="usage"',
     ):
         assert hook in html, f"missing hook {hook}"
@@ -221,7 +222,7 @@ def test_index_status_header_elements_bound_in_script(client: TestClient) -> Non
     html = client.get("/").text
     script = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
 
-    for element_id in ("goal-display", "cycle", "state", "stopped-reason", "usage"):
+    for element_id in ("goal-display", "cycle", "state", "stopped-reason", "tests-run", "usage"):
         assert f"getElementById('{element_id}')" in script, (
             f"script does not bind to #{element_id}"
         )
@@ -267,6 +268,19 @@ def test_api_state_with_state(client: TestClient, tmp_path: Path) -> None:
     body = response.json()
     assert body["exists"] is True
     assert body["state"]["original_goal"] == "ship it"
+
+
+def test_api_state_includes_stopped_reason(client: TestClient, tmp_path: Path) -> None:
+    store = StateStore(tmp_path / ".furrow" / "state.json")
+    store.save(RunState(goal="ship it", original_goal="ship it", cycles=1,
+                        stopped_reason="no progress"))
+
+    response = client.get("/api/state")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["exists"] is True
+    assert body["state"]["stopped_reason"] == "no progress"
 
 
 def test_api_start_returns_started(

@@ -173,3 +173,24 @@ def test_parse_test_result_falls_back_on_recursionerror(monkeypatch):
     monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
     r = parsing.parse_test_result("[[1]]")
     assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_heuristic_could_not_reach_runner():
+    r = parsing.parse_test_result("I could not reach the test runner")
+    assert r.passed is False
+    assert "did not run" in r.summary.lower() or "could not be verified" in r.summary.lower()
+
+
+def test_parse_test_result_heuristic_still_running():
+    r = parsing.parse_test_result("the tests are still running")
+    assert r.passed is False
+    assert "did not run" in r.summary.lower() or "could not be verified" in r.summary.lower()
+
+
+def test_parse_test_result_explicit_signals_take_precedence():
+    # An explicit pass keyword wins even when non-verdict words are present.
+    r = parsing.parse_test_result("All tests passed, could not be more sure")
+    assert r.passed is True
+    # An explicit JSON verdict wins over non-verdict phrasing.
+    r = parsing.parse_test_result('{"passed": false, "summary": "2 failed"}')
+    assert r.passed is False

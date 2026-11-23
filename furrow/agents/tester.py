@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -242,6 +243,9 @@ class TesterAgent:
             if (self.workspace / "yarn.lock").is_file():
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
+
+        if (self.workspace / "tox.ini").is_file() and shutil.which("tox") is not None:
+            return ["tox"]
 
         python_markers = [
             "pyproject.toml",

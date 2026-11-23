@@ -54,6 +54,10 @@ IGNORED_DIRECTORIES = frozenset(
     }
 )
 
+#: OS metadata files that are never first-party source and only pollute a
+#: listing: Finder metadata, Windows thumbnail cache, Windows folder hints.
+IGNORED_FILES = frozenset({".DS_Store", "Thumbs.db", "desktop.ini"})
+
 #: Result type of a single LLM request (a plain string for `complete`, an
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
@@ -572,7 +576,9 @@ class LLMClient:
         build output and editor metadata are skipped (see
         :data:`IGNORED_DIRECTORIES`): they are not first-party source and
         would otherwise bury the real files. A ``*.egg-info`` directory is
-        skipped too. The result is sorted so the listing is deterministic.
+        skipped too. OS metadata files such as ``.DS_Store``, ``Thumbs.db``
+        and ``desktop.ini`` are also skipped (see :data:`IGNORED_FILES`).
+        The result is sorted so the listing is deterministic.
         """
         p = Path(directory)
         if not p.exists():
@@ -586,6 +592,8 @@ class LLMClient:
                 if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
             ]
             for name in files:
+                if name in IGNORED_FILES:
+                    continue
                 results.append(os.path.relpath(os.path.join(root, name), p))
         results.sort()
         return results

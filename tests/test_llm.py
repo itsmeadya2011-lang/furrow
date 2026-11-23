@@ -1155,3 +1155,16 @@ def test_list_files_missing_directory_returns_empty(tmp_path):
     client = LLMClient()
     assert client.list_files(tmp_path / "does-not-exist") == []
 
+
+def test_list_files_skips_os_metadata_files(tmp_path):
+    """OS metadata files (.DS_Store, Thumbs.db, desktop.ini) are skipped."""
+    client = LLMClient()
+    (tmp_path / "main.py").write_text("x")
+    (tmp_path / ".DS_Store").write_text("x")
+    (tmp_path / "Thumbs.db").write_text("x")
+    (tmp_path / "desktop.ini").write_text("x")
+
+    files = client.list_files(tmp_path)
+
+    assert files == ["main.py"]
+
