@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -173,6 +174,23 @@ def parse_test_output(output: str) -> list[dict]:
 class TesterAgent:
     __test__ = False  # not a pytest test class
 
+    def _python_lockfile_command(self) -> list[str] | None:
+        """Return the test command for a Python project based on its lockfile.
+
+        Checks for modern Python project runners in order of preference:
+        uv, poetry, pdm, pipenv. Returns None if no lockfile is present
+        or the corresponding tool is not installed.
+        """
+        if (self.workspace / "uv.lock").is_file() and shutil.which("uv"):
+            return ["uv", "run", "pytest", "-q"]
+        if (self.workspace / "poetry.lock").is_file() and shutil.which("poetry"):
+            return ["poetry", "run", "pytest", "-q"]
+        if (self.workspace / "pdm.lock").is_file() and shutil.which("pdm"):
+            return ["pdm", "run", "pytest", "-q"]
+        if (self.workspace / "Pipfile.lock").is_file() and shutil.which("pipenv"):
+            return ["pipenv", "run", "pytest", "-q"]
+        return None
+
     def __init__(
         self,
         client: LLMClient | None = None,
@@ -211,6 +229,8 @@ class TesterAgent:
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            if lockfile_cmd := self._python_lockfile_command():
+                return lockfile_cmd
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -251,6 +271,8 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
+            if lockfile_cmd := self._python_lockfile_command():
+                return lockfile_cmd
             return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():

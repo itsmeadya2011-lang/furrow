@@ -336,10 +336,42 @@ class Orchestrator:
             files_changed=files_changed,
         )
 
+    def _workspace_listing(self) -> str:
+        """Return a bounded, sorted listing of workspace files, or empty string on any error."""
+        lister = getattr(self.client, "list_files", None)
+        if not callable(lister):
+            return ""
+        try:
+            paths = lister(self.settings.workspace)
+        except Exception:
+            return ""
+        if not paths:
+            return ""
+        seen: set[str] = set()
+        unique: list[str] = []
+        for p in paths:
+            s = str(p).strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            unique.append(s)
+        unique.sort()
+        if len(unique) > 200:
+            truncated = unique[:200]
+            note = f"[... {len(unique) - 200} more files not shown ...]"
+            truncated.append(note)
+            unique = truncated
+        workspace = str(self.settings.workspace)
+        return "Workspace files (relative to {}):\n{}".format(workspace, "\n".join(unique))
+
     def _context(self) -> str:
+        parts: list[str] = []
         if self._feedback:
-            return self._feedback
-        return ""
+            parts.append(self._feedback)
+        listing = self._workspace_listing()
+        if listing:
+            parts.append(listing)
+        return "\n\n".join(parts) if parts else ""
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()

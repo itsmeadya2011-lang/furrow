@@ -705,3 +705,45 @@ def test_api_start_resume_without_state_returns_400(
     assert body["started"] is False
     assert body["error"] == "no goal to resume"
     assert fake_orchestrator.instances == [], "no run may be started"
+
+
+def test_api_stop_no_run(client: TestClient) -> None:
+    """Stopping when nothing runs is a no-op returning was_running false."""
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    assert response.json() == {"stopped": False, "was_running": False}
+
+
+def test_api_stop_stops_running_run(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Stopping a running run cancels it and clears the running flag."""
+    monkeypatch.setattr("furrow.web.server.Orchestrator", HangingOrchestrator)
+
+    client.post("/api/start", json={"goal": "build it"})
+    assert _wait_until(lambda: server._CURRENT.get("running") is True), (
+        "the run never started"
+    )
+
+    response = client.post("/api/stop")
+    assert response.status_code == 200
+    assert response.json() == {"stopped": True, "was_running": True}
+
+    assert _wait_until(
+        lambda: client.get("/api/status").json()["running"] is False
+    ), "the running flag stayed stuck"
+    run_task = server._CURRENT.get("task")
+    assert run_task is not None
+    assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"
+
+
+def test_index_contains_stop_button(client: TestClient) -> None:
+    """The served page exposes a Stop button bound in the inline script."""
+    html = client.get("/").text
+    assert 'id="stop"' in html
+    script = _inline_script(client)
+    assert "getElementById('stop')" in script
+    assert "files_changed" in script
+    assert "panel-files" in script
+    assert "innerHTML" not in script

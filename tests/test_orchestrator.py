@@ -1237,3 +1237,121 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+class ClientWithListFiles:
+    def list_files(self, directory):
+        return ["furrow/config.py", "furrow/llm.py"]
+
+
+class ClientWithListFilesRaises:
+    def list_files(self, directory):
+        raise RuntimeError("listing failed")
+
+
+class ClientWithoutListFiles:
+    pass
+
+
+@pytest.mark.asyncio
+async def test_context_includes_workspace_listing(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(
+        goal="g", settings=settings, state_store=store, client=ClientWithListFiles()
+    )
+    ctx = orch._context()
+    assert "Workspace files (relative to" in ctx
+    assert "furrow/config.py" in ctx
+    assert "furrow/llm.py" in ctx
+    assert str(tmp_path) in ctx
+
+
+@pytest.mark.asyncio
+async def test_context_feedback_and_listing_combined(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(
+        goal="g", settings=settings, state_store=store, client=ClientWithListFiles()
+    )
+    orch._feedback = "previous failure"
+    ctx = orch._context()
+    assert "previous failure" in ctx
+    assert "furrow/config.py" in ctx
+    assert "furrow/llm.py" in ctx
+    # Feedback and listing separated by blank line
+    assert "previous failure\n\nWorkspace files" in ctx
+
+
+@pytest.mark.asyncio
+async def test_context_no_list_files_attribute(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(
+        goal="g", settings=settings, state_store=store, client=ClientWithoutListFiles()
+    )
+    ctx = orch._context()
+    assert ctx == ""
+
+
+@pytest.mark.asyncio
+async def test_context_list_files_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(
+        goal="g", settings=settings, state_store=store, client=ClientWithListFilesRaises()
+    )
+    ctx = orch._context()
+    assert ctx == ""
+
+
+@pytest.mark.asyncio
+async def test_workspace_listing_capped_at_200(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+
+    class ClientManyFiles:
+        def list_files(self, directory):
+            return [f"file_{i:03d}.py" for i in range(250)]
+
+    settings = make_settings(tmp_path)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=ClientManyFiles())
+    ctx = orch._context()
+    # Should contain first 200 files (after zero-padded sort: file_000.py through file_199.py)
+    assert "file_000.py" in ctx
+    assert "file_199.py" in ctx
+    # Should not contain file_200.py (201st file after sorting)
+    assert "file_200.py" not in ctx
+    # Should contain the truncation note
+    assert "[... 50 more files not shown ...]" in ctx
+    # Total lines: header + 200 files + note = 202 lines
+    lines = ctx.split("\n")
+    assert len(lines) == 202
+
+
+@pytest.mark.asyncio
+async def test_workspace_listing_deduplicates_and_sorts(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+
+    class ClientUnsorted:
+        def list_files(self, directory):
+            return ["z.py", "a.py", "a.py", "m.py", "", "  ", "z.py"]
+
+    settings = make_settings(tmp_path)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=ClientUnsorted())
+    ctx = orch._context()
+    # Should be sorted, deduplicated, empty entries removed
+    assert "a.py" in ctx
+    assert "m.py" in ctx
+    assert "z.py" in ctx
+    lines = ctx.split("\n")
+    # header + 3 files = 4 lines
+    assert len(lines) == 4
+    assert lines[1] == "a.py"
+    assert lines[2] == "m.py"
+    assert lines[3] == "z.py"

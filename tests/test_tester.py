@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
+import sys
 
 from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
 from furrow.config import Settings, TestResult
@@ -578,3 +580,74 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+def test_detect_uv_lockfile_with_uv_installed(tmp_path, monkeypatch):
+    """uv.lock present and uv installed -> use uv run pytest."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("")
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/uv" if cmd == "uv" else None)
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["uv", "run", "pytest", "-q"]
+
+
+def test_detect_uv_lockfile_without_uv_falls_back(tmp_path, monkeypatch):
+    """uv.lock present but uv not installed -> fall back to python -m pytest."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "uv.lock").write_text("")
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert "pytest" in cmd
+    assert cmd[0] == sys.executable
+    assert "-m" in cmd
+
+
+def test_detect_poetry_lockfile_with_poetry_installed(tmp_path, monkeypatch):
+    """poetry.lock present and poetry installed -> use poetry run pytest."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "poetry.lock").write_text("")
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/poetry" if cmd == "poetry" else None)
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["poetry", "run", "pytest", "-q"]
+
+
+def test_detect_pdm_lockfile_with_pdm_installed(tmp_path, monkeypatch):
+    """pdm.lock present and pdm installed -> use pdm run pytest."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "pdm.lock").write_text("")
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/pdm" if cmd == "pdm" else None)
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["pdm", "run", "pytest", "-q"]
+
+
+def test_detect_pipenv_lockfile_with_pipenv_installed(tmp_path, monkeypatch):
+    """Pipfile.lock present and pipenv installed -> use pipenv run pytest."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "Pipfile.lock").write_text("")
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/pipenv" if cmd == "pipenv" else None)
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["pipenv", "run", "pytest", "-q"]
+
+
+def test_detect_plain_pyproject_no_lockfile(tmp_path, monkeypatch):
+    """Plain pyproject.toml with no lockfile -> python -m pytest."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert "pytest" in cmd
+    assert cmd[0] == sys.executable
+    assert "-m" in cmd

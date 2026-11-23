@@ -21,7 +21,10 @@ Return JSON only (no markdown, no explanation) with this shape:
 }
 
 If the goal is too large for one cycle, say so in rationale and break it
-into the most critical first slice."""
+into the most critical first slice.
+
+The context may include a workspace file listing. Planned `files` should reference
+files that exist in the listing or clearly identify new files to create."""
 
 TESTER_PROMPT = """You are a tester agent in an autonomous coding system called Furrow.
 

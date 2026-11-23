@@ -122,6 +122,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-error {
     margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
   }
+  .panel-files {
+    margin: 0 0 .3rem; font-size: .85rem; color: #8a93a5; white-space: pre-wrap;
+  }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
@@ -140,6 +143,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop">Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -161,6 +165,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const stopBtn = document.getElementById('stop');
   let socket = null;
   let lastSummary = null;
 
@@ -194,6 +199,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   function renderStatus(status, result, running) {
+    stopBtn.disabled = !running;
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
       text(status && status.cycles !== undefined ? status.cycles : '\u2014');
@@ -255,6 +261,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
+
+      const filesChanged = task.files_changed || [];
+      if (filesChanged.length > 0) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        filesEl.textContent = 'files: ' + filesChanged.join(', ');
+        panel.appendChild(filesEl);
+      }
 
       const result = text(task.result);
       const error = text(task.error);
@@ -405,6 +419,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
   };
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
+  };
+  document.getElementById('stop').onclick = async function () {
+    try {
+      await fetch('/api/stop', { method: 'POST' });
+    } catch (err) {
+      append('! could not stop the run');
+    }
+    loadStatus();
   };
 
   loadState();
@@ -647,6 +669,24 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the run that is currently active, if any.
+
+    A no-op (and never an error) when there is no run in progress.
+    """
+    task = _CURRENT.get("task")
+    running = _CURRENT.get("running") is True
+    if running and isinstance(task, asyncio.Task) and not task.done():
+        _cancel_run(task)
+        return JSONResponse(
+            status_code=200, content={"stopped": True, "was_running": True}
+        )
+    return JSONResponse(
+        status_code=200, content={"stopped": False, "was_running": False}
+    )
 
 
 @app.websocket("/ws")
