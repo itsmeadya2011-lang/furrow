@@ -70,6 +70,16 @@ furrow resume --workspace /path/to/project --max-cycles 5
 
 The exit codes are the same as for `furrow start`: `1` when the resumed run ends `FAILED`, `0` for `PASSED`, `SKIPPED` and `NOT RUN`.
 
+### `furrow test`
+Run the project's test command directly, without the agent loop.
+
+```bash
+furrow test
+furrow test --workspace /path/to/project
+```
+
+Furrow detects the test runner for the project type (pytest, npm/pnpm/yarn, cargo, go) and runs it. The command exits with status `0` when tests pass or are skipped (no test runner detected), and `1` when they fail.
+
 ### `furrow web`
 Serve the web UI and stream orchestrator events.
 

@@ -4,6 +4,7 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow test            run the project's test command directly
     furrow web             serve the web UI
 """
 
@@ -18,6 +19,7 @@ from typing import Any
 
 import click
 
+from furrow.agents.tester import TesterAgent
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
@@ -245,6 +247,41 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         sys.exit(1)
     goal = state.original_goal or state.goal
     _execute(goal=goal, run_settings=run_settings, resume=True)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def test(workspace: Path | None) -> None:
+    """Run the project's test command directly, without the agent loop.
+
+    Detects the test runner for the project type (pytest, npm/pnpm/yarn,
+    cargo, go) and runs it. Exits 0 when tests pass or are skipped,
+    1 when they fail.
+    """
+    run_settings = _run_settings(workspace=workspace)
+    tester = TesterAgent(settings=run_settings, workspace=run_settings.workspace)
+    try:
+        result = asyncio.run(tester.run("Run the project's test suite", []))
+    except Exception as exc:
+        click.secho(f"Furrow test failed: {exc}", fg="red")
+        sys.exit(1)
+    skipped = bool(getattr(result, "skipped", False))
+    if skipped:
+        click.secho(f"Result: SKIPPED - {result.summary}", fg="yellow")
+    elif result.passed:
+        click.secho(f"Result: PASSED - {result.summary}", fg="green")
+    else:
+        click.secho(f"Result: FAILED - {result.summary}", fg="red")
+    if result.failures:
+        click.echo("Failures:")
+        for failure in result.failures:
+            click.echo(f"  - {failure}")
+    sys.exit(0 if (result.passed or skipped) else 1)
 
 
 @main.command()

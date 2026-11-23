@@ -359,15 +359,18 @@ class Orchestrator:
                         self._skip_ids.add(pt.id)
                     else:
                         pt.status = "pending"
+                        old.attempts = 0  # fresh start for a re-run
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"
+                        old.attempts = 0  # fresh start for a retried task
                     else:
                         pt.status = "failed"
                 elif old.status == "blocked":
                     pt.status = "blocked"
                 else:
                     pt.status = "pending"
+                    old.attempts = 0  # fresh start
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
