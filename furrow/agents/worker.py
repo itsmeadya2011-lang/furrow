@@ -13,7 +13,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.llm import LLMClient, LLMResponse, ToolCall, IGNORED_DIRECTORIES
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -665,6 +665,17 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "search":
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", ".")) if args.get("path") is not None else ".",
+            )
+        if name == "str_replace":
+            return await self._str_replace_file(
+                str(args.get("path", "")),
+                str(args.get("old_string", "")),
+                str(args.get("new_string", "")),
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -798,6 +809,82 @@ class WorkerAgent:
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
+
+    async def _search_files(self, pattern: str, path: str) -> str:
+        """Search for *pattern* in files under *path* within the workspace.
+
+        Returns matching lines as ``path:line_number: content`` entries,
+        capped at MAX_LIST_ENTRIES. The pattern is treated as literal text
+        (regex metacharacters are escaped) so ordinary text searches work
+        without surprises. The walk runs in a worker thread to avoid blocking
+        the event loop.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not resolved.is_dir():
+            return f"error: {path} is not a directory"
+
+        def _search() -> str:
+            import re as _re
+
+            compiled = _re.compile(_re.escape(pattern))
+            matches: list[str] = []
+            count = 0
+            for root, dirs, files in os.walk(resolved):
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+                ]
+                for name in sorted(files):
+                    file_path = os.path.join(root, name)
+                    try:
+                        with open(file_path, encoding="utf-8", errors="replace") as fh:
+                            for line_no, line in enumerate(fh, start=1):
+                                if compiled.search(line):
+                                    rel = os.path.relpath(file_path, self.workspace.resolve())
+                                    matches.append(f"{rel}:{line_no}: {line.rstrip()}")
+                                    count += 1
+                                    if count >= MAX_LIST_ENTRIES:
+                                        matches.append(
+                                            f"[... {MAX_LIST_ENTRIES} matches reached; narrow the search ...]"
+                                        )
+                                        return "\n".join(matches)
+                    except (OSError, UnicodeError):
+                        continue
+            if not matches:
+                return "no matches found"
+            return "\n".join(matches)
+
+        return await asyncio.to_thread(_search)
+
+    async def _str_replace_file(self, path: str, old_string: str, new_string: str) -> str:
+        """Replace one exact occurrence of *old_string* with *new_string* in *path*.
+
+        Fails when *old_string* does not appear or appears more than once, so
+        edits are never ambiguous. The target must resolve inside the workspace.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        occurrences = content.count(old_string)
+        if occurrences == 0:
+            return f"error: old_string not found in {path}"
+        if occurrences > 1:
+            return f"error: old_string appears {occurrences} times in {path}; use a more specific match"
+        new_content = content.replace(old_string, new_string, 1)
+        try:
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"replaced 1 occurrence in {path}"
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

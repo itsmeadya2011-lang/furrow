@@ -43,7 +43,12 @@ returned as JSON."""
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
 You implement the assigned task by reading, writing, and running code in the
 workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+respond with a concise summary and no further tool calls.
+
+Use the `search` tool to find code by pattern instead of reading files one at a
+time. Use `str_replace` for precise in-place edits instead of rewriting whole
+files — it replaces one exact occurrence of `old_string` with `new_string` and
+refuses when the match is ambiguous (zero or multiple occurrences)."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -86,6 +91,31 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"command": {"type": "string"}},
             "required": ["command"],
+        },
+    },
+    {
+        "name": "search",
+        "description": "search for literal text in files under a workspace directory and return matching lines with file paths and line numbers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "The literal text to search for."},
+                "path": {"type": "string", "description": "Directory to search under (defaults to the workspace root)."},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "str_replace",
+        "description": "replace one exact occurrence of old_string with new_string in a file. Fails if old_string does not appear or appears more than once, so edits are never ambiguous.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Path to the file to edit."},
+                "old_string": {"type": "string", "description": "The exact text to replace."},
+                "new_string": {"type": "string", "description": "The text to replace it with."},
+            },
+            "required": ["path", "old_string", "new_string"],
         },
     },
 ]

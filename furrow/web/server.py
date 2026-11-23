@@ -420,6 +420,8 @@ class StartRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_worker_iterations: int | None = Field(default=None, ge=1)
+    max_task_retries: int | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -428,6 +430,8 @@ class SocketRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_worker_iterations: int | None = Field(default=None, ge=1)
+    max_task_retries: int | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -442,17 +446,28 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override.
+def _run_settings(
+    max_cycles: int | None = None,
+    max_worker_iterations: int | None = None,
+    max_task_retries: int | None = None,
+) -> Settings:
+    """Settings for a run, with optional overrides.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
     pydantic validation and would happily build a ``Settings`` object with an
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    updates: dict[str, Any] = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if max_worker_iterations is not None:
+        updates["max_worker_iterations"] = max_worker_iterations
+    if max_task_retries is not None:
+        updates["max_task_retries"] = max_task_retries
+    if not updates:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -553,10 +568,19 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str,
+    resume: bool,
+    max_cycles: int | None,
+    max_worker_iterations: int | None,
+    max_task_retries: int | None,
+    bus: EventBus,
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
-    run_settings = _run_settings(max_cycles)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        max_worker_iterations=max_worker_iterations,
+        max_task_retries=max_task_retries,
+    )
     return Orchestrator(
         goal=goal,
         settings=run_settings,
@@ -626,7 +650,10 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(
+            goal, request.resume, request.max_cycles,
+            request.max_worker_iterations, request.max_task_retries, bus,
+        )
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -685,7 +712,10 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(
+                goal, resume, request.max_cycles,
+                request.max_worker_iterations, request.max_task_retries, bus,
+            )
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.
