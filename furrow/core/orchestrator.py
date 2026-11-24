@@ -366,6 +366,10 @@ class Orchestrator:
                         pt.status = "failed"
                 elif old.status == "blocked":
                     pt.status = "blocked"
+                elif old.status == "skipped":
+                    # A skipped task (e.g. one whose work is already done) keeps
+                    # its skipped status so it is not re-executed.
+                    pt.status = "skipped"
                 else:
                     pt.status = "pending"
                 old.description = pt.description
@@ -575,6 +579,16 @@ class Orchestrator:
         for wave in waves:
             runnable = []
             for t in wave:
+                if t.status == "skipped":
+                    # A skipped task's work is already done: do not execute it
+                    # again, and do not block its dependents.
+                    self.event_bus.emit(
+                        Event(
+                            type=EventType.LOG,
+                            message=f"task {t.id} already skipped - not running",
+                        )
+                    )
+                    continue
                 if t.status == "failed":
                     # The retry budget was exhausted in an earlier cycle and the
                     # plan kept the task unchanged: it stays failed and is not

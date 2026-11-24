@@ -41,7 +41,12 @@ class FakePlanner:
             raise RuntimeError("boom")
         return Plan(
             tasks=[
-                TaskModel(id=t.id, description=t.description, dependencies=list(t.dependencies))
+                TaskModel(
+                    id=t.id,
+                    description=t.description,
+                    dependencies=list(t.dependencies),
+                    status=t.status,
+                )
                 for t in self.tasks
             ],
             rationale="r",
@@ -1237,3 +1242,116 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+class SkipWorker:
+    called = False
+
+    def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+        self.task = task
+
+    async def run(self):
+        SkipWorker.called = True
+        return WorkerResult(summary="did it", success=True, files_changed=[])
+
+
+@pytest.mark.asyncio
+async def test_skipped_task_is_not_executed(tmp_path, monkeypatch):
+    SkipWorker.called = False
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", SkipWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    class SkippedPlanner:
+        async def plan(self, goal, context=""):
+            return Plan(
+                tasks=[TaskModel(id="t1", description="do t1", status="skipped")],
+                rationale="r",
+            )
+
+    orch.planner = SkippedPlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+
+    assert not SkipWorker.called, "a skipped task must not be executed"
+    assert orch.tasks[0].status == "skipped"
+    assert result.tasks_completed == 0
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_preserves_skipped_status(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    task = orch.tasks[0]
+    task.status = "skipped"
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "skipped"
+
+
+@pytest.mark.asyncio
+async def test_skipped_task_does_not_block_dependents(tmp_path, monkeypatch):
+    calls = []
+
+    class OW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", OW)
+    t1 = TaskModel(id="1", description="one", status="skipped")
+    t2 = TaskModel(id="2", description="two", dependencies=["1"])
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+
+    class StatusPreservingPlanner:
+        async def plan(self, goal, context=""):
+            return Plan(
+                tasks=[
+                    TaskModel(
+                        id=t.id,
+                        description=t.description,
+                        dependencies=list(t.dependencies),
+                        status=t.status,
+                    )
+                    for t in [t1, t2]
+                ],
+                rationale="r",
+            )
+
+    orch.planner = StatusPreservingPlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+
+    by_id = {t.id: t.status for t in orch.tasks}
+    assert by_id["1"] == "skipped"
+    assert by_id["2"] == "completed"
+    assert calls == ["2"]
+
+
+def test_cli_cancelled_error_exits_zero(tmp_path, monkeypatch):
+    from furrow.cli.main import _execute
+    from furrow.config import Settings
+
+    def fake_asyncio_run(coro):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr("furrow.cli.main.asyncio.run", fake_asyncio_run)
+
+    settings = Settings(_env_file=None, workspace=tmp_path, max_cycles=1)
+
+    with pytest.raises(SystemExit) as exc_info:
+        _execute(goal="g", run_settings=settings, resume=False)
+
+    assert exc_info.value.code == 0

@@ -166,6 +166,9 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     except KeyboardInterrupt:
         click.echo("Furrow stopped by user.")
         sys.exit(0)
+    except asyncio.CancelledError:
+        click.echo("Furrow run cancelled.")
+        sys.exit(0)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
