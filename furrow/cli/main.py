@@ -74,6 +74,8 @@ def _print_summary(result: RunResult) -> None:
     tests_run = getattr(result, "tests_run", 0) or 0
     text, colour = _result_line(result.passed, skipped, tests_run)
     click.secho(f"  Result: {text}", fg=colour)
+    if tests_run:
+        click.echo(f"  Tests run:       {tests_run}")
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(
@@ -96,6 +98,8 @@ def _print_state(state: RunState) -> None:
     click.echo(f"  Original goal: {state.original_goal}")
     click.echo(f"  Current goal:  {state.goal}")
     click.echo(f"  Cycles:        {state.cycles}")
+    blocked = sum(1 for t in state.tasks if t.status == "blocked")
+    click.echo(f"  Tasks blocked: {blocked}")
     click.echo(f"  Updated:       {state.updated_at}")
     tests_run = getattr(state, "tests_run", 0) or 0
     skipped = bool(getattr(state, "last_skipped", False))
@@ -245,6 +249,24 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         sys.exit(1)
     goal = state.original_goal or state.goal
     _execute(goal=goal, run_settings=run_settings, resume=True)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def clear(workspace: Path | None) -> None:
+    """Delete the persisted Furrow run state for a workspace."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    store.clear()
+    click.echo(f"Cleared furrow run state at {store.path}")
 
 
 @main.command()
