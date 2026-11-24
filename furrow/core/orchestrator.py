@@ -353,18 +353,39 @@ class Orchestrator:
                 # Preserve terminal states; only retry-eligible failed tasks may
                 # be reset to pending. Blocked tasks must remain blocked so that
                 # retry budgets and dependency outcomes are not lost across cycles.
-                if old.status == "completed":
+                old_status = old.status
+                if old_status == "completed":
                     if old_desc == pt.description and old_files == pt.files:
                         pt.status = "completed"
                         self._skip_ids.add(pt.id)
                     else:
+                        # Same task id, different description or files: new
+                        # work. Reset per-attempt state so the retry budget
+                        # starts fresh in this cycle instead of carrying over
+                        # from the previous one (the budget is enforced within
+                        # a cycle, not across cycles).
                         pt.status = "pending"
-                elif old.status == "failed":
+                        pt.attempts = 0
+                        pt.files_changed = []
+                        pt.started_at = None
+                        pt.finished_at = None
+                        pt.result = None
+                        pt.error = None
+                elif old_status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"
+                        # Retry-eligible: start the new cycle with a clean
+                        # attempt counter. The retry budget is enforced within
+                        # a cycle.
+                        pt.attempts = 0
+                        pt.files_changed = []
+                        pt.started_at = None
+                        pt.finished_at = None
+                        pt.result = None
+                        pt.error = None
                     else:
                         pt.status = "failed"
-                elif old.status == "blocked":
+                elif old_status == "blocked":
                     pt.status = "blocked"
                 else:
                     pt.status = "pending"
@@ -372,6 +393,17 @@ class Orchestrator:
                 old.files = pt.files
                 old.dependencies = pt.dependencies
                 old.status = pt.status
+                # When a task leaves a terminal state (completed/failed) and
+                # becomes pending, its per-attempt state was reset on pt
+                # above; carry those resets over to old so the new cycle
+                # starts clean.
+                if old.status == "pending" and old_status in ("completed", "failed"):
+                    old.attempts = pt.attempts
+                    old.files_changed = list(pt.files_changed)
+                    old.started_at = pt.started_at
+                    old.finished_at = pt.finished_at
+                    old.result = pt.result
+                    old.error = pt.error
                 # A freshly planned task carries result=None and error=None,
                 # so never let that wipe a result or error already recorded by
                 # a previous cycle. Only adopt non-None values from the plan.

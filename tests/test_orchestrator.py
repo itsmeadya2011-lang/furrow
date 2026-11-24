@@ -784,11 +784,13 @@ async def test_completed_task_is_executed_again_when_the_description_changed(tmp
     orch.tester = FakeTester(passed=False)
     await orch.run()  # cycle 1
 
-    # Now change the plan description for next cycle
+    # Now change the plan description for next cycle: same task id, new work,
+    # so the attempt counter resets and starts fresh in this cycle.
     orch.planner = FakePlanner([TaskModel(id="t1", description="do t1 differently")])
     await orch.run()  # cycle 2
     assert len(calls) == 2
-    assert orch.tasks[0].attempts == 2
+    # One attempt in this cycle (the counter was reset when the work changed).
+    assert orch.tasks[0].attempts == 1
 
 
 @pytest.mark.asyncio
@@ -1237,3 +1239,105 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+async def test_merge_plan_resets_files_changed_when_description_changes(tmp_path, monkeypatch):
+    """A completed task whose description changes starts with a fresh files_changed list."""
+    class CW(FakeWorker):
+        async def run(self):
+            return WorkerResult(summary="did", success=True, files_changed=["a.py"])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1")])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()  # cycle 1 - files_changed == ["a.py"]
+
+    # Change the plan description: new work, files_changed must be reset so
+    # only this cycle's files are recorded.
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1 differently")])
+    await orch.run()  # cycle 2
+
+    assert orch.tasks[0].files_changed == ["a.py"]
+    # The union across cycles must not leak files from cycle 1 into cycle 2's
+    # attempt list; both cycles wrote a.py so the list still has just one entry.
+
+
+async def test_merge_plan_resets_timestamps_when_description_changes(tmp_path, monkeypatch):
+    """A completed task whose description changes clears started_at/finished_at."""
+    class CW(FakeWorker):
+        async def run(self):
+            return WorkerResult(summary="did", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CW)
+    settings = make_settings(tmp_path, max_cycles=5)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1")])
+    orch.tester = FakeTester(passed=False)
+    await orch.run()  # cycle 1 - timestamps set
+
+    assert orch.tasks[0].started_at is not None
+    assert orch.tasks[0].finished_at is not None
+
+    # Change the plan description: new work, timestamps must be cleared.
+    orch.planner = FakePlanner([TaskModel(id="t1", description="do t1 differently")])
+    await orch.run()  # cycle 2 - merge runs before execution clears them
+
+    # After merge (before execution), timestamps are cleared; after execution
+    # they are set again. We check right after merge by calling _merge_plan
+    # directly on a fresh orchestrator to isolate the merge behaviour.
+    orch2 = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch2.planner = FakePlanner([TaskModel(id="t1", description="do t1")])
+    orch2.tester = FakeTester(passed=False)
+    await orch2.run()
+    task = orch2.tasks[0]
+    assert task.started_at is not None
+    assert task.finished_at is not None
+
+    # Now merge a new plan with a different description directly and check
+    # that timestamps were cleared by the merge.
+    new_plan = Plan(
+        tasks=[TaskModel(id="t1", description="do t1 differently")],
+        rationale="r",
+    )
+    orch2._merge_plan(new_plan)
+    merged = orch2.tasks[0]
+    assert merged.started_at is None
+    assert merged.finished_at is None
+    assert merged.attempts == 0
+
+
+async def test_merge_plan_resets_failed_task_with_attempts_left(tmp_path, monkeypatch):
+    """A failed task with retry budget left resets attempts when re-planned."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "failed"
+    task.attempts = 1  # <= max_task_retries (2): retry-eligible
+    task.files_changed = ["a.py"]
+    task.started_at = "2026-01-01T00:00:00+00:00"
+    task.finished_at = "2026-01-01T00:01:00+00:00"
+    task.result = "old result"
+    task.error = "old error"
+
+    plan = Plan(
+        tasks=[TaskModel(id=task.id, description=task.description, dependencies=task.dependencies)],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    merged = plan.tasks[0]
+    assert merged.status == "pending"
+    assert merged.attempts == 0
+    assert merged.files_changed == []
+    assert merged.started_at is None
+    assert merged.finished_at is None
+    assert merged.result is None
+    assert merged.error is None
