@@ -55,6 +55,24 @@ _ALL_ZERO_SUMMARY_RE = re.compile(
 )
 
 
+def _tests_dir_has_python_tests(tests_dir: Path) -> bool:
+    """Return True if *tests_dir* contains Python test files.
+
+    Checks for files matching ``test_*.py`` or ``*_test.py`` in the
+    top-level directory (non-recursive). Returns False on OSError or
+    when no such files are found.
+    """
+    try:
+        for entry in tests_dir.iterdir():
+            if entry.is_file() and entry.suffix == ".py":
+                name = entry.name
+                if name.startswith("test_") or name.endswith("_test.py"):
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 def resolve_test_timeout(settings: Settings) -> float:
     """Return the timeout (in seconds) allowed for the test command.
 
@@ -206,11 +224,24 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_setup_py = (self.workspace / "setup.py").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
-            has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
+            has_pyproject
+            or has_pytest_ini
+            or has_setup_cfg
+            or has_tox_ini
+            or has_requirements
+            or has_setup_py
         ):
+            return [sys.executable, "-m", "pytest", "-q"]
+
+        # Python projects with tests/ dir containing Python test files use pytest
+        # even without config markers, but only when no package.json is present
+        # (the marker-based branch above already runs first).
+        tests_path = self.workspace / "tests"
+        if not has_package and has_tests_dir and _tests_dir_has_python_tests(tests_path):
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -249,6 +280,7 @@ class TesterAgent:
             "setup.cfg",
             "tox.ini",
             "requirements.txt",
+            "setup.py",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]

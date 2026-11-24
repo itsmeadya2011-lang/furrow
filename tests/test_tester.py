@@ -578,3 +578,66 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+def test_detect_tests_dir_with_python_files_no_marker(tmp_path):
+    """tests/ dir with Python test files but no config markers -> pytest."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_foo(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_setup_py_marker(tmp_path):
+    """setup.py alone triggers pytest detection."""
+    (tmp_path / "setup.py").write_text("from setuptools import setup\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_python_files_yields_to_package_json(tmp_path):
+    """package.json wins when both package.json and tests/ with Python files exist."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_x.py").write_text("def test_foo(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "npm" in cmd
+
+
+def test_tests_dir_without_python_files_is_not_pytest(tmp_path):
+    """tests/ dir without Python test files does not trigger pytest."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "README.md").write_text("No tests here\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
+def test_tests_dir_helper(tmp_path):
+    """Unit test for _tests_dir_has_python_tests helper."""
+    from furrow.agents.tester import _tests_dir_has_python_tests
+
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+
+    # test_*.py pattern
+    (tests_dir / "test_a.py").write_text("def test_foo(): pass\n")
+    assert _tests_dir_has_python_tests(tests_dir) is True
+
+    # *_test.py pattern
+    tests_dir2 = tmp_path / "tests2"
+    tests_dir2.mkdir()
+    (tests_dir2 / "a_test.py").write_text("def test_bar(): pass\n")
+    assert _tests_dir_has_python_tests(tests_dir2) is True
+
+    # Only non-test files
+    tests_dir3 = tmp_path / "tests3"
+    tests_dir3.mkdir()
+    (tests_dir3 / "notes.txt").write_text("notes\n")
+    assert _tests_dir_has_python_tests(tests_dir3) is False
+
+    # Nonexistent directory
+    assert _tests_dir_has_python_tests(tmp_path / "nonexistent") is False
