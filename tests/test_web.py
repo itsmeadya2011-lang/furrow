@@ -297,6 +297,49 @@ def test_api_start_rejects_a_second_run(
     assert body["error"] == "a run is already in progress"
 
 
+class _CancellableTask:
+    """A minimal stand-in for asyncio.Task used by the stop tests."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+        self._done = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def done(self) -> bool:
+        return self._done
+
+
+def test_api_stop_no_run_returns_409(client: TestClient) -> None:
+    """Stopping when nothing is running returns a 409 conflict."""
+    server._reset_registry()
+
+    response = client.post("/api/stop")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["stopped"] is False
+    assert body["error"] == "no run is in progress"
+
+
+def test_api_stop_cancels_running_run(client: TestClient) -> None:
+    """Stopping a run that is in progress cancels its task and returns 200."""
+    server._reset_registry()
+    task = _CancellableTask()
+    server._CURRENT.update(
+        {"running": True, "task": task, "orchestrator": object(), "result": None, "error": None}
+    )
+
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    assert response.json()["stopped"] is True
+    assert task.cancelled is True
+    assert server._CURRENT["running"] is False
+    assert server._CURRENT["error"] == "run cancelled"
+
+
 def test_api_status(client: TestClient, fake_orchestrator: type[FakeOrchestrator]) -> None:
     client.post("/api/start", json={"goal": "build it"})
 

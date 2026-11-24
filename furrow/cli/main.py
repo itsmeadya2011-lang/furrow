@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import click
+import httpx
 
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
@@ -264,6 +265,38 @@ def web(host: str, port: int) -> None:
         sys.exit(1)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", help="Host the Furrow web server is bound to.")
+@click.option("--port", type=int, default=8000, help="Port the Furrow web server is bound to.")
+def stop(host: str, port: int) -> None:
+    """Stop a running Furrow run via the web API."""
+    url = f"http://{host}:{port}/api/stop"
+    try:
+        response = httpx.post(url, timeout=5.0)
+    except (httpx.ConnectError, httpx.ConnectTimeout, OSError) as exc:
+        click.secho(f"Furrow failed: could not reach the web server at {url}: {exc}", fg="red")
+        sys.exit(1)
+    except httpx.HTTPError as exc:
+        click.secho(f"Furrow failed: request to {url} failed: {exc}", fg="red")
+        sys.exit(1)
+    if response.status_code == 200:
+        click.echo("Furrow run stopped.")
+    elif response.status_code == 409:
+        content_type = response.headers.get("content-type", "")
+        body = (
+            response.json()
+            if content_type.startswith("application/json")
+            else {}
+        )
+        click.secho(f"Furrow failed: {body.get('error', 'no run is in progress')}", fg="red")
+        sys.exit(1)
+    else:
+        click.secho(
+            f"Furrow failed: unexpected response {response.status_code} from {url}", fg="red"
+        )
         sys.exit(1)
 
 

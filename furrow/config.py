@@ -34,6 +34,7 @@ class TaskModel(BaseModel):
     result: str | None = None
     error: str | None = None
     attempts: int = 0
+    iterations: int = 0
     started_at: str | None = None
     finished_at: str | None = None
     files_changed: list[str] = Field(default_factory=list)

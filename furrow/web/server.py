@@ -252,6 +252,17 @@ INDEX_HTML = r"""<!DOCTYPE html>
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
 
+      const iterations = document.createElement('span');
+      iterations.textContent = 'iterations: ' + (Number(task.iterations) || 0);
+      meta.appendChild(iterations);
+
+      const filesChanged = (task.files_changed || []).filter(Boolean);
+      if (filesChanged.length > 0) {
+        const changed = document.createElement('span');
+        changed.textContent = 'changed: ' + filesChanged.join(', ');
+        meta.appendChild(changed);
+      }
+
       panel.appendChild(head);
       panel.appendChild(desc);
       panel.appendChild(meta);
@@ -501,6 +512,18 @@ def _cancel_run(task: asyncio.Task[RunResult]) -> None:
         _CURRENT["error"] = "run cancelled"
 
 
+def _cancel_current_run() -> bool:
+    """Cancel the currently running run, if any.
+
+    Returns True when a run was cancelled, False when none is in progress.
+    """
+    task = _CURRENT.get("task")
+    if task is None or task.done():
+        return False
+    _cancel_run(task)
+    return True
+
+
 async def _drain(queue: asyncio.Queue[Event]) -> None:
     """Consume events so a background run does not fill its queue forever."""
     while True:
@@ -647,6 +670,18 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running run, if any."""
+    cancelled = _cancel_current_run()
+    if cancelled:
+        return JSONResponse(status_code=200, content={"stopped": True})
+    return JSONResponse(
+        status_code=409,
+        content={"stopped": False, "error": "no run is in progress"},
+    )
 
 
 @app.websocket("/ws")

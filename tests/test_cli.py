@@ -714,3 +714,65 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+class _StopResponse:
+    """A fake httpx response for the stop tests."""
+
+    def __init__(self, status_code: int, json_body: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self._json = json_body
+        self.headers = {"content-type": "application/json"}
+
+    def json(self) -> dict[str, Any]:
+        return self._json
+
+
+def test_stop_reports_success_when_server_returns_200(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``furrow stop`` prints a success message when the server accepts the stop."""
+
+    def fake_post(url: str, timeout: float) -> _StopResponse:
+        assert url == "http://127.0.0.1:8000/api/stop"
+        return _StopResponse(200, {"stopped": True})
+
+    monkeypatch.setattr("furrow.cli.main.httpx.post", fake_post)
+
+    result = runner.invoke(main, ["stop"])
+
+    assert result.exit_code == 0
+    assert "Furrow run stopped." in result.output
+
+
+def test_stop_reports_conflict_when_server_returns_409(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``furrow stop`` reports an error when no run is in progress."""
+
+    def fake_post(url: str, timeout: float) -> _StopResponse:
+        return _StopResponse(409, {"stopped": False, "error": "no run is in progress"})
+
+    monkeypatch.setattr("furrow.cli.main.httpx.post", fake_post)
+
+    result = runner.invoke(main, ["stop"])
+
+    assert result.exit_code == 1
+    assert "no run is in progress" in result.output
+
+
+def test_stop_reports_error_when_server_is_unreachable(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``furrow stop`` reports a friendly error when the server cannot be reached."""
+
+    def fake_post(url: str, timeout: float) -> _StopResponse:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr("furrow.cli.main.httpx.post", fake_post)
+
+    result = runner.invoke(main, ["stop", "--host", "127.0.0.1", "--port", "9999"])
+
+    assert result.exit_code == 1
+    assert "could not reach the web server" in result.output
+    assert "http://127.0.0.1:9999/api/stop" in result.output
