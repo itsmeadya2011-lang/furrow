@@ -794,7 +794,7 @@ class WorkerAgent:
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
+            combined = combined[:10000] + "\n[... output truncated ...]\n" + combined[-10000:]
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined

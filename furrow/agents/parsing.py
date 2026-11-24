@@ -166,12 +166,41 @@ def _first_json_mapping(text: str) -> dict[str, Any]:
     raise ValueError("No JSON object or array found in output")
 
 
+def _validate_tasks(tasks: list[TaskModel]) -> None:
+    """Validate the structural integrity of parsed tasks.
+
+    Raises :class:`ValueError` when:
+    - a task id is empty or whitespace-only
+    - a task description is empty or whitespace-only
+    - two tasks share the same id
+    - a task depends on an id that is not present in the plan
+    """
+    seen_ids: set[str] = set()
+    for task in tasks:
+        if not task.id or not task.id.strip():
+            raise ValueError("Task id must not be empty")
+        if not task.description or not task.description.strip():
+            raise ValueError(f"Task {task.id!r} must have a non-empty description")
+        if task.id in seen_ids:
+            raise ValueError(f"Duplicate task id: {task.id!r}")
+        seen_ids.add(task.id)
+
+    for task in tasks:
+        for dep in task.dependencies:
+            if dep not in seen_ids:
+                raise ValueError(
+                    f"Task {task.id!r} depends on unknown task id {dep!r}"
+                )
+
+
 def parse_plan(text: str) -> Plan:
     """Parse a planner response into Plan.
     - parse the JSON
     - if it is not a mapping raise ValueError
     - accept missing 'rationale' (default '') and missing 'tasks' (default [])
     - validate tasks via TaskModel
+    - validate task structure: unique non-empty ids, non-empty descriptions, and
+      dependencies that reference ids present in the plan
     - on any failure raise ValueError whose message includes the underlying reason
       and a short excerpt (first 300 chars) of the original text"""
     try:
@@ -191,6 +220,7 @@ def parse_plan(text: str) -> Plan:
                     raise ValueError("Each task must be an object")
         else:
             raise ValueError("tasks must be a list")
+        _validate_tasks(tasks)
         return Plan(tasks=tasks, rationale=rationale)
     except (ValueError, TypeError) as e:
         excerpt = text[:300] if isinstance(text, str) else str(text)[:300]

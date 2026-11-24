@@ -1304,6 +1304,20 @@ async def test_list_files_no_note_when_under_cap(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_command_output_truncation_keeps_head_and_tail(tmp_path):
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    # produce >20000 chars
+    out = await agent._run_command("python3 -c \"print('A'*10000 + 'B'*10000 + 'C'*10000)\"")
+    assert "A" * 5 in out
+    assert "C" * 5 in out
+    assert "[... output truncated ...]" in out
+
+
+@pytest.mark.asyncio
 async def test_read_file_reports_total_size(tmp_path):
     """A truncated read reports the file's total size, not just the marker."""
     from furrow.config import TaskModel

@@ -1087,6 +1087,30 @@ async def test_dependency_cycle_blocks_tasks_instead_of_hanging(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+async def test_dependency_cycle_emits_error_event(tmp_path, monkeypatch):
+    calls = []
+
+    class FW(FakeWorker):
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary=f"did {self.task.id}", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    t1 = TaskModel(id="t1", description="one", dependencies=["t2"])
+    t2 = TaskModel(id="t2", description="two", dependencies=["t1"])
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[t1, t2])
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    await orch.run()
+    events = drain(q)
+    errors = [e for e in events if e.type == EventType.ERROR]
+    assert errors
+    assert any("dependency cycle detected among tasks" in e.message for e in errors)
+
+@pytest.mark.asyncio
 async def test_failed_task_is_not_executed_again_in_a_later_cycle(tmp_path, monkeypatch):
     calls = []
 

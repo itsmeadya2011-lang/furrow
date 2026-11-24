@@ -215,33 +215,47 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
+            def _lockfile_runner() -> list[str]:
+                """Lockfile-based fallback (npm / pnpm / yarn)."""
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
+
+            # 1. Inspect the package.json ``test`` script for a specific runner.
+            #    When the script names jest or vitest we can invoke it directly
+            #    instead of going through the package manager's ``test`` alias.
+            script_runner: list[str] | None = None
             try:
                 with open(self.workspace / "package.json", encoding="utf-8") as fh:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            except (OSError, UnicodeError, ValueError) as exc:
+                if isinstance(scripts, dict) and "test" in scripts:
+                    script_value = str(scripts.get("test", "")).lower()
+                    if "jest" in script_value:
+                        script_runner = ["npx", "jest"]
+                    elif "vitest" in script_value:
+                        script_runner = ["npx", "vitest", "run"]
+            except (OSError, UnicodeError, ValueError, AttributeError) as exc:
                 logger.warning("Could not read package.json: %s", exc)
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+
+            # 2. Inspect jest / vitest config files. These pick a specific
+            #    runner even when no test script names one.
+            config_runner: list[str] | None = None
+            if any(self.workspace.glob("jest.config.*")):
+                config_runner = ["npx", "jest"]
+            elif any(self.workspace.glob("vitest.config.*")):
+                config_runner = ["npx", "vitest", "run"]
+
+            # Prefer a script-derived runner, then a config-derived runner.
+            if script_runner is not None:
+                return script_runner
+            if config_runner is not None:
+                return config_runner
+
+            # Fallback: npm/pnpm/yarn test (Python case handled above).
+            return _lockfile_runner()
 
         python_markers = [
             "pyproject.toml",

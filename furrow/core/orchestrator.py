@@ -392,6 +392,11 @@ class Orchestrator:
         while remaining:
             wave = [t for t in remaining if all(d in done or d not in ids for d in t.dependencies)]
             if not wave:
+                cycle_ids = [t.id for t in remaining]
+                self.event_bus.emit(
+                    Event(type=EventType.ERROR,
+                          message=f"dependency cycle detected among tasks: {cycle_ids}")
+                )
                 for t in remaining:
                     t.status = "blocked"
                 break

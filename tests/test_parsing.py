@@ -28,7 +28,8 @@ def test_json_surrounded_by_prose_parses():
 
 def test_nested_objects_and_arrays_parse():
     text = (
-        '{"tasks": [{"id": "t1", "description": "x", "files": ["a.py"], "dependencies": ["t0"]}], '
+        '{"tasks": [{"id": "t1", "description": "x", "files": ["a.py"], "dependencies": ["t0"]}, '
+        '{"id": "t0", "description": "y"}], '
         '"rationale": "hi"}'
     )
     plan = parsing.parse_plan(text)
@@ -173,3 +174,36 @@ def test_parse_test_result_falls_back_on_recursionerror(monkeypatch):
     monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
     r = parsing.parse_test_result("[[1]]")
     assert isinstance(r, TestResult)
+
+
+def test_parse_plan_rejects_duplicate_task_ids():
+    text = (
+        '{"tasks": ['
+        '{"id": "t1", "description": "a"}, '
+        '{"id": "t1", "description": "b"}'
+        '], "rationale": "r"}'
+    )
+    with pytest.raises(ValueError, match="Duplicate task id: 't1'"):
+        parsing.parse_plan(text)
+
+
+def test_parse_plan_rejects_missing_dependency():
+    text = (
+        '{"tasks": ['
+        '{"id": "t1", "description": "a", "dependencies": ["t0"]}'
+        '], "rationale": "r"}'
+    )
+    with pytest.raises(ValueError, match="unknown task id 't0'"):
+        parsing.parse_plan(text)
+
+
+def test_parse_plan_rejects_empty_task_id():
+    text = '{"tasks": [{"id": "", "description": "a"}], "rationale": "r"}'
+    with pytest.raises(ValueError, match="id must not be empty"):
+        parsing.parse_plan(text)
+
+
+def test_parse_plan_rejects_empty_task_description():
+    text = '{"tasks": [{"id": "t1", "description": ""}], "rationale": "r"}'
+    with pytest.raises(ValueError, match="non-empty description"):
+        parsing.parse_plan(text)

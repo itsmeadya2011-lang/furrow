@@ -73,12 +73,65 @@ def test_detect_command_unreadable_package_json_falls_back(tmp_path):
 
 
 def test_detect_command_valid_package_json_with_test_script(tmp_path):
-    """A valid package.json with a test script returns the npm fallback."""
+    """A vitest test script is detected and run through vitest directly."""
     (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None
-    assert cmd == ["npm", "test", "--silent"]
+    assert cmd == ["npx", "vitest", "run"]
+
+
+def test_detect_command_jest_test_script(tmp_path):
+    """A jest test script is detected and run through jest directly."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest --watchAll=false"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npx", "jest"]
+
+
+def test_detect_command_vitest_test_script_ignores_lockfile(tmp_path):
+    """A vitest test script wins over the generic lockfile fallback."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest run"}}')
+    (tmp_path / "pnpm-lock.yaml").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npx", "vitest", "run"]
+
+
+def test_detect_command_test_script_without_known_runner_uses_lockfile(tmp_path):
+    """A test script that names no known runner still uses the lockfile fallback."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "node ./run-tests.js"}}')
+    (tmp_path / "yarn.lock").write_text("")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["yarn", "test", "--silent"]
+
+
+def test_detect_command_jest_config_without_test_script(tmp_path):
+    """A jest.config.* file selects jest even without a test script."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "jest.config.js").write_text("module.exports = {};\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npx", "jest"]
+
+
+def test_detect_command_vitest_config_without_test_script(tmp_path):
+    """A vitest.config.* file selects vitest even without a test script."""
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "vitest.config.ts").write_text("export default {};\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npx", "vitest", "run"]
+
+
+def test_detect_command_test_script_beats_config(tmp_path):
+    """A script-named runner takes precedence over a config file."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+    (tmp_path / "jest.config.js").write_text("module.exports = {};\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npx", "vitest", "run"]
 
 
 def test_detect_cargo(tmp_path):
