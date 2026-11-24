@@ -4,6 +4,9 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow stop            stop a running background run (web server)
+    furrow log             show the run history from persisted state
+    furrow cost            show cost breakdown from persisted state
     furrow web             serve the web UI
 """
 
@@ -248,6 +251,127 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
 
 
 @main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option("--host", default="127.0.0.1", help="Web server host.")
+@click.option("--port", type=int, default=8000, help="Web server port.")
+def stop(workspace: Path | None, host: str, port: int) -> None:
+    """Stop a running background run on the web server."""
+    import httpx
+
+    _run_settings(workspace=workspace)
+    url = f"http://{host}:{port}/api/stop"
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            response = client.post(url)
+        if response.status_code == 200:
+            click.echo("Run stopped.")
+        elif response.status_code == 409:
+            click.secho("No run in progress.", fg="yellow")
+        else:
+            click.secho(f"Failed to stop run: {response.text}", fg="red")
+            sys.exit(1)
+    except httpx.ConnectError:
+        click.secho(f"Could not connect to web server at {host}:{port}. Is it running?", fg="red")
+        sys.exit(1)
+    except Exception as exc:
+        click.secho(f"Failed to stop run: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def log(workspace: Path | None) -> None:
+    """Show the run history from the persisted state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+    click.echo(f"Furrow run history for: {state.original_goal}")
+    click.echo(f"Cycles completed: {state.cycles}")
+    click.echo("")
+    if not state.history:
+        click.echo("No history entries.")
+        return
+    for entry in state.history:
+        click.echo(f"  Cycle {entry.cycle}:")
+        goal_preview = entry.goal[:100] + ("..." if len(entry.goal) > 100 else "")
+        click.echo(f"    Goal: {goal_preview}")
+        plan_preview = entry.plan_rationale[:100] + (
+            "..." if len(entry.plan_rationale) > 100 else ""
+        )
+        click.echo(f"    Plan: {plan_preview}")
+        tasks_str = ", ".join(entry.task_summaries) if entry.task_summaries else "(none)"
+        click.echo(f"    Tasks: {tasks_str}")
+        if entry.tests_passed:
+            tests_text = "passed"
+        elif entry.tests_passed is None:
+            tests_text = "skipped"
+        else:
+            tests_text = "failed"
+        click.echo(f"    Tests: {tests_text}")
+        if entry.test_summary:
+            summary_preview = entry.test_summary[:150] + (
+                "..." if len(entry.test_summary) > 150 else ""
+            )
+            click.echo(f"    Summary: {summary_preview}")
+        usage = entry.usage
+        if usage.calls > 0:
+            click.echo(
+                f"    Usage: {usage.calls} calls, {usage.total_tokens} tokens, "
+                f"${usage.cost_usd:.6f}"
+            )
+        click.echo(f"    Time: {entry.timestamp}")
+        click.echo("")
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def cost(workspace: Path | None) -> None:
+    """Show cost breakdown from the persisted state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+    click.echo("Furrow cost breakdown")
+    click.echo(f"  Total cost:     ${state.usage.cost_usd:.6f}")
+    click.echo(f"  Total tokens:   {state.usage.total_tokens:,}")
+    click.echo(f"  Input tokens:   {state.usage.input_tokens:,}")
+    click.echo(f"  Output tokens:  {state.usage.output_tokens:,}")
+    click.echo(f"  Total calls:    {state.usage.calls}")
+    click.echo("")
+    if state.history:
+        click.echo("Per-cycle breakdown:")
+        for entry in state.history:
+            u = entry.usage
+            if u.calls > 0:
+                click.echo(
+                    f"  Cycle {entry.cycle}: ${u.cost_usd:.6f} "
+                    f"({u.calls} calls, {u.total_tokens} tokens)"
+                )
+    else:
+        click.echo("No per-cycle cost data available.")
+
+
+@main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind the web server to.")
 @click.option("--port", type=int, default=8000, help="Port to bind the web server to.")
 def web(host: str, port: int) -> None:
@@ -264,6 +388,69 @@ def web(host: str, port: int) -> None:
         sys.exit(1)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    required=True,
+    help="Output file path for the exported state.",
+)
+def export(workspace: Path | None, output: Path) -> None:
+    """Export the persisted run state to a JSON file."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.secho("No furrow run state found to export.", fg="red")
+        sys.exit(1)
+    try:
+        output.write_text(state.model_dump_json(indent=2), encoding="utf-8")
+        click.echo(f"State exported to {output}")
+    except Exception as exc:
+        click.secho(f"Failed to export state: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option(
+    "--input",
+    "input_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Input file path to import state from.",
+)
+@click.option("--force", is_flag=True, help="Overwrite existing state file.")
+def import_state(workspace: Path | None, input_path: Path, force: bool) -> None:
+    """Import a run state from a JSON file."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if store.exists() and not force:
+        click.secho(
+            "State file already exists. Use --force to overwrite.", fg="red"
+        )
+        sys.exit(1)
+    try:
+        raw = input_path.read_text(encoding="utf-8")
+        state = RunState.model_validate_json(raw)
+        store.save(state)
+        click.echo(f"State imported from {input_path}")
+    except Exception as exc:
+        click.secho(f"Failed to import state: {exc}", fg="red")
         sys.exit(1)
 
 

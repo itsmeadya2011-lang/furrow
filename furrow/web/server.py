@@ -75,6 +75,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-danger { border-color: #e0685f; color: #e0685f; }
+  .btn-danger:hover { background: #3a1515; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -115,6 +118,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files {
+    font-size: .8rem; color: #4c8dff; word-break: break-all;
+  }
   .panel-result {
     margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
     white-space: pre-wrap;
@@ -132,6 +138,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .connection-status {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: .5rem; vertical-align: middle;
+  }
+  .connection-status.connected { background: #57d38c; }
+  .connection-status.disconnected { background: #e0685f; }
+  .connection-status.connecting { background: #f0b367; }
 </style>
 </head>
 <body>
@@ -140,11 +153,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop" class="btn-danger" disabled>Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
   <div class="meta" id="header-meta">
-    <span>cycle <b id="cycle">\u2014</b></span>
+    <span>
+      <span class="connection-status" id="conn-status"></span>
+      cycle <b id="cycle">\u2014</b>
+    </span>
     <span>state <b id="state">idle</b></span>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
@@ -161,8 +178,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const connStatusEl = document.getElementById('conn-status');
+  const stopBtn = document.getElementById('stop');
   let socket = null;
   let lastSummary = null;
+  let reconnectAttempts = 0;
+  const MAX_RECONNECT_ATTEMPTS = 10;
+  const RECONNECT_DELAY_MS = 2000;
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -193,11 +215,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return 'unknown';
   }
 
+  // Connection status is controlled by the client, but we still use a safe map
+  // to avoid any concatenation of raw strings into class names.
+  const SAFE_CONNECTION_STATUSES = {
+    connected: 'connected',
+    disconnected: 'disconnected',
+    connecting: 'connecting'
+  };
+
+  function connectionStatusClass(status) {
+    const key = text(status).trim().toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(SAFE_CONNECTION_STATUSES, key)) {
+      return SAFE_CONNECTION_STATUSES[key];
+    }
+    return 'disconnected';
+  }
+
+  function setConnectionStatus(status) {
+    connStatusEl.className = 'connection-status ' + connectionStatusClass(status);
+  }
+
   function renderStatus(status, result, running) {
     goalDisplayEl.textContent = text(status && status.goal) || '\u2014';
     cycleEl.textContent =
       text(status && status.cycles !== undefined ? status.cycles : '\u2014');
     stateEl.textContent = running ? 'running' : 'stopped';
+    stopBtn.disabled = !running;
     const reason =
       text(status && status.stopped_reason) ||
       text(result && result.stopped_reason) || '';
@@ -251,6 +294,14 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      const files = task.files_changed || [];
+      if (files.length > 0) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        filesEl.textContent = 'files: ' + files.join(', ');
+        meta.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -306,12 +357,29 @@ INDEX_HTML = r"""<!DOCTYPE html>
     }
   }
 
+  async function stopRun() {
+    try {
+      const res = await fetch('/api/stop', { method: 'POST' });
+      if (res.ok) {
+        append('> stop requested');
+      } else {
+        const data = await res.json().catch(() => ({}));
+        append('! stop failed: ' + (data.error || 'unknown error'));
+      }
+    } catch (err) {
+      append('! stop request failed: ' + err);
+    }
+  }
+
   function connect(payload) {
     if (socket) { socket.close(); }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
+    setConnectionStatus('connecting');
     socket.onopen = function () {
       append('> connected');
+      setConnectionStatus('connected');
+      reconnectAttempts = 0;
       // A new run starts: forget the previous summary so this run always
       // contributes its own summary line to the log.
       lastSummary = null;
@@ -392,8 +460,21 @@ INDEX_HTML = r"""<!DOCTYPE html>
     };
     socket.onclose = function () {
       append('-- closed');
+      setConnectionStatus('disconnected');
       socket = null;
       loadStatus();
+      // Attempt reconnection if we were in the middle of a run
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        append('> reconnecting... (attempt ' + reconnectAttempts + ')');
+        setTimeout(function () {
+          if (goalEl.value) {
+            connect({ goal: goalEl.value, resume: true });
+          }
+        }, RECONNECT_DELAY_MS);
+      } else {
+        append('!! max reconnection attempts reached');
+      }
     };
     socket.onerror = function () {
       append('!! websocket error');
@@ -401,10 +482,15 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
 
   document.getElementById('start').onclick = function () {
+    reconnectAttempts = 0;
     connect({ goal: goalEl.value, resume: false });
   };
   document.getElementById('resume').onclick = function () {
+    reconnectAttempts = 0;
     connect({ goal: goalEl.value, resume: true });
+  };
+  stopBtn.onclick = function () {
+    stopRun();
   };
 
   loadState();
@@ -647,6 +733,19 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running background run."""
+    task = _CURRENT.get("task")
+    if not task or not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.websocket("/ws")

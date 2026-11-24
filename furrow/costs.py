@@ -53,6 +53,7 @@ class ModelPricing(BaseModel):
 # Keys are family names so that dated model ids ("claude-sonnet-4-20250514",
 # "gpt-4o-mini-2024-07-18", ...) resolve through a longest-prefix match.
 DEFAULT_PRICING: dict[str, ModelPricing] = {
+    # Anthropic models
     "claude-opus-4": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-opus-4-1": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-sonnet-4": ModelPricing(input_per_million=3.0, output_per_million=15.0),
@@ -64,6 +65,8 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "claude-3-opus": ModelPricing(input_per_million=15.0, output_per_million=75.0),
     "claude-3-sonnet": ModelPricing(input_per_million=3.0, output_per_million=15.0),
     "claude-3-haiku": ModelPricing(input_per_million=0.25, output_per_million=1.25),
+    # OpenAI models
+    "gpt-4.5": ModelPricing(input_per_million=75.0, output_per_million=150.0),
     "gpt-4.1": ModelPricing(input_per_million=2.0, output_per_million=8.0),
     "gpt-4.1-mini": ModelPricing(input_per_million=0.4, output_per_million=1.6),
     "gpt-4.1-nano": ModelPricing(input_per_million=0.1, output_per_million=0.4),
@@ -72,11 +75,26 @@ DEFAULT_PRICING: dict[str, ModelPricing] = {
     "gpt-4": ModelPricing(input_per_million=30.0, output_per_million=60.0),
     "gpt-4-turbo": ModelPricing(input_per_million=10.0, output_per_million=30.0),
     "gpt-3.5-turbo": ModelPricing(input_per_million=0.5, output_per_million=1.5),
+    # OpenAI reasoning models
     "o1": ModelPricing(input_per_million=15.0, output_per_million=60.0),
     "o1-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o3": ModelPricing(input_per_million=2.0, output_per_million=8.0),
     "o3-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
     "o4-mini": ModelPricing(input_per_million=1.1, output_per_million=4.4),
+    # Google models
+    "gemini-1.5-pro": ModelPricing(input_per_million=1.25, output_per_million=5.0),
+    "gemini-1.5-flash": ModelPricing(input_per_million=0.075, output_per_million=0.3),
+    "gemini-2.0-flash": ModelPricing(input_per_million=0.1, output_per_million=0.4),
+    # DeepSeek models
+    "deepseek-chat": ModelPricing(input_per_million=0.14, output_per_million=0.28),
+    "deepseek-reasoner": ModelPricing(input_per_million=0.55, output_per_million=2.19),
+    # Mistral models
+    "mistral-large": ModelPricing(input_per_million=2.0, output_per_million=6.0),
+    "mistral-small": ModelPricing(input_per_million=0.2, output_per_million=0.6),
+    "pixtral-large": ModelPricing(input_per_million=2.0, output_per_million=6.0),
+    # xAI models
+    "grok-2": ModelPricing(input_per_million=2.0, output_per_million=10.0),
+    "grok-2-mini": ModelPricing(input_per_million=0.15, output_per_million=0.6),
 }
 
 #: Provider prefixes that are stripped from a model id before it is looked up.

@@ -14,6 +14,9 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -578,6 +581,8 @@ class WorkerAgent:
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
+        # Warn when approaching the iteration budget (at 80%)
+        warn_threshold = max(1, int(max_iters * 0.8))
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -587,6 +592,13 @@ class WorkerAgent:
         iterations = 0
         for i in range(max_iters):
             iterations = i + 1
+            if iterations == warn_threshold:
+                logger.warning(
+                    "worker_approaching_iteration_budget",
+                    task_id=self.task.id,
+                    iteration=iterations,
+                    max_iterations=max_iters,
+                )
             response: LLMResponse = await self.client.chat(
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
