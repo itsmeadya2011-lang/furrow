@@ -416,8 +416,9 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
-                    llm_result = None
+                except Exception as exc:
+                    logger.warning("Tester LLM call failed; falling back to raw output: %s", exc)
+                     llm_result = None
 
             return self._finalize(
                 llm_result=llm_result,
