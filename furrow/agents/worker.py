@@ -663,6 +663,14 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "grep_files":
+            pattern = str(args.get("pattern", ""))
+            if not pattern:
+                return "error: missing pattern"
+            search_path = str(args.get("path", "")) if args.get("path") is not None else "."
+            include = args.get("include")
+            return await self._grep_files(pattern, search_path,
+                                            str(include) if include is not None else None)
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -738,6 +746,63 @@ class WorkerAgent:
         if omitted > 0:
             note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
             text = f"{text}\n{note}" if text else note
+        return text
+
+    async def _grep_files(self, pattern: str, path: str, include: str | None) -> str:
+        """Search file contents for *pattern* and return matching lines.
+
+        Uses Python's :mod:`re` with the Unicode flag so patterns work across
+        file encodings; binary files are skipped. The result is capped at 200
+        matches to keep the context manageable.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            regex = re.compile(pattern, re.UNICODE)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+        try:
+            entries = await asyncio.to_thread(self.client.list_files, resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if include:
+            try:
+                inc_re = re.compile(include.replace("*", ".*").replace("?", "."))
+            except re.error:
+                inc_re = None
+        else:
+            inc_re = None
+        matches: list[str] = []
+        base = self.workspace.resolve()
+        for entry in entries:
+            if len(matches) >= 200:
+                break
+            try:
+                entry_path = Path(entry)
+                if not entry_path.is_absolute():
+                    entry_path = resolved / entry_path
+                if inc_re is not None and not inc_re.search(entry_path.name):
+                    continue
+                if not entry_path.is_file():
+                    continue
+                try:
+                    content = entry_path.read_text(encoding="utf-8", errors="ignore")
+                except (OSError, UnicodeError):
+                    continue
+                rel = str(entry_path.relative_to(base)) if entry_path.is_absolute() else str(entry_path)
+                for line_no, line in enumerate(content.splitlines(), start=1):
+                    if regex.search(line):
+                        matches.append(f"{rel}:{line_no}:{line.rstrip()}")
+                        if len(matches) >= 200:
+                            break
+            except (OSError, ValueError):
+                continue
+        if not matches:
+            return f"no matches for {pattern!r} in {path}"
+        text = "\n".join(matches)
+        if len(matches) >= 200:
+            text += "\n[... output truncated at 200 matches ...]"
         return text
 
     async def _run_command(self, command: str) -> str:

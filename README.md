@@ -12,6 +12,8 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Retried tasks report the union of files changed across attempts, so files touched by an earlier failed attempt are not lost when a retry succeeds
 - Bounded event queues: a subscriber that stops draining loses its oldest events, never the newest ones
 - Atomic state persistence with resume support
+- Configurable history cap (`FURROW_MAX_HISTORY_ENTRIES`, default 100) bounds the size of persisted cycle history
+- Worker has a `grep_files` tool for searching file contents with regex, glob include filters, and a 200-match cap
 - Fail-safe cycle loop: a planner, execution, tester or state-save failure is reported as an ERROR event instead of crashing the run
 - Hardened provider calls: transient HTTP errors (status codes on the response) and provider connection/timeout errors are retried, and a malformed provider response raises a clear error
 - Offline test suite with no API keys required
@@ -106,6 +108,7 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_LOG_LEVEL` | `INFO` | Logging level used by the CLI (honoured at startup) |
 | `FURROW_REQUEST_TIMEOUT` | `120.0` | Request timeout in seconds |
 | `FURROW_MAX_TOKENS` | `4096` | Max tokens for LLM completions |
+| `FURROW_MAX_HISTORY_ENTRIES` | `100` | Max cycle history entries kept in state (0 = unlimited) |
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 | `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |

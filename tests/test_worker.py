@@ -1304,6 +1304,110 @@ async def test_list_files_no_note_when_under_cap(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_grep_files_finds_matches(tmp_path):
+    """grep_files returns matching lines with file:line:content format."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("x = 1\ny = 2\nfoo = 3\n")
+    (tmp_path / "b.py").write_text("x = 10\nbar = 4\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_files("foo", ".", None)
+    assert "a.py" in out
+    assert "foo = 3" in out
+    assert "b.py" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_files_no_matches(tmp_path):
+    """grep_files reports when nothing matches."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("hello\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_files("nonexistent", ".", None)
+    assert "no matches" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_files_include_filter(tmp_path):
+    """grep_files respects the include glob filter."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("foo\n")
+    (tmp_path / "b.txt").write_text("foo\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_files("foo", ".", "*.py")
+    assert "a.py" in out
+    assert "b.txt" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_files_invalid_regex(tmp_path):
+    """grep_files returns an error for an invalid regex."""
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_files("[", ".", None)
+    assert "invalid regex" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_files_path_escape(tmp_path):
+    """grep_files rejects paths that escape the workspace."""
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_files("foo", "../escape", None)
+    assert "escapes workspace" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_files_caps_at_200(tmp_path):
+    """grep_files caps output at 200 matches."""
+    from furrow.config import TaskModel
+
+    for i in range(250):
+        (tmp_path / f"f{i:04d}.py").write_text(f"match{i}\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_files("match", ".", None)
+    assert "output truncated at 200 matches" in out
+
+
+def test_worker_tools_include_grep():
+    """The WORKER_TOOLS schema includes the new grep_files tool."""
+    names = [t["name"] for t in WORKER_TOOLS]
+    assert "grep_files" in names
+    grep_tool = next(t for t in WORKER_TOOLS if t["name"] == "grep_files")
+    assert "pattern" in grep_tool["parameters"]["properties"]
+    assert "path" in grep_tool["parameters"]["properties"]
+    assert "include" in grep_tool["parameters"]["properties"]
+
+
+@pytest.mark.asyncio
 async def test_read_file_reports_total_size(tmp_path):
     """A truncated read reports the file's total size, not just the marker."""
     from furrow.config import TaskModel

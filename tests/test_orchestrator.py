@@ -81,10 +81,12 @@ class RecordingConsole:
         return "".join(str(part) for part in render(str(text)))
 
 
-def make_settings(tmp_path, max_cycles=3, max_parallel_tasks=2, max_task_retries=1):
+def make_settings(tmp_path, max_cycles=3, max_parallel_tasks=2, max_task_retries=1,
+                  max_history_entries=100):
     return Settings(_env_file=None, workspace=tmp_path, max_cycles=max_cycles,
                     max_parallel_tasks=max_parallel_tasks,
-                    max_task_retries=max_task_retries)
+                    max_task_retries=max_task_retries,
+                    max_history_entries=max_history_entries)
 
 
 @pytest.mark.asyncio
@@ -1237,3 +1239,29 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_history_is_trimmed_to_max_history_entries(tmp_path, monkeypatch):
+    """History is trimmed to max_history_entries when the cap is set."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=5, max_history_entries=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    assert len(orch.history) <= 3
+
+
+@pytest.mark.asyncio
+async def test_history_not_trimmed_when_cap_is_zero(tmp_path, monkeypatch):
+    """A zero cap means unlimited history."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3, max_history_entries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=False)
+    await orch.run()
+    assert len(orch.history) == 3

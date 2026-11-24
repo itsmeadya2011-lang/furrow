@@ -185,6 +185,8 @@ def test_numeric_settings_reject_invalid_values():
         Settings(max_retries=-1)
     with pytest.raises(ValidationError):
         Settings(max_task_retries=-1)
+    with pytest.raises(ValidationError):
+        Settings(max_history_entries=-1)
 
 
 def test_numeric_settings_allow_valid_bounds():
@@ -198,10 +200,12 @@ def test_numeric_settings_allow_valid_bounds():
         request_timeout=0.001,
         command_timeout=0.001,
         test_timeout=0.001,
+        max_history_entries=0,
     )
     assert s.max_cycles == 0
     assert s.max_retries == 0
     assert s.max_task_retries == 0
+    assert s.max_history_entries == 0
 
 
 def test_usage_cost_usd_defaults_to_zero():
