@@ -160,3 +160,35 @@ def test_estimate_cost_never_raises() -> None:
 
     assert estimate_cost("gpt-4o", _Weird()) == 0.0
     assert estimate_cost("gpt-4o", None) == 0.0  # type: ignore[arg-type]
+
+
+def test_malformed_pricing_override_is_skipped_but_logged(caplog) -> None:
+    """A malformed override is dropped, the rest applied, and a warning logged."""
+    import logging
+
+    overrides = {
+        "gpt-4o-mini": "not-a-price",  # malformed -> skipped
+        "my-model": {"input_per_million": 1.0, "output_per_million": 2.0},  # valid
+    }
+    with caplog.at_level(logging.WARNING):
+        price = price_for_model("my-model", overrides)
+    # The valid override still applies.
+    assert price is not None
+    assert price.input_per_million == 1.0
+    # The malformed one is skipped: the built-in table wins for that model.
+    mini = price_for_model("gpt-4o-mini", overrides)
+    assert mini is not None
+    assert mini == price_for_model("gpt-4o-mini")
+    # A warning mentioning the offending key was emitted.
+    assert any("gpt-4o-mini" in record.getMessage() for record in caplog.records)
+
+
+def test_malformed_pricing_override_does_not_raise(caplog) -> None:
+    """Every entry malformed: nothing raises, the defaults remain intact."""
+    import logging
+
+    overrides = {"broken": "not-a-price", "also-broken": 42}
+    with caplog.at_level(logging.WARNING):
+        table_price = price_for_model("gpt-4o", overrides)
+    assert table_price is not None
+    assert table_price == price_for_model("gpt-4o")

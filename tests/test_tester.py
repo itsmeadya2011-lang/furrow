@@ -94,6 +94,45 @@ def test_detect_empty(tmp_path):
     assert cmd is None
 
 
+def test_detect_bare_tests_dir_with_python_tests(tmp_path):
+    """A bare ``tests/`` dir with Python test modules is a pytest project.
+
+    The standard pytest layout (a ``tests/`` directory with no config file)
+    must run under pytest instead of being reported as "no test runner".
+    """
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_something.py").write_text("def test_ok():\n    assert True\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_bare_tests_dir_with_conftest_only(tmp_path):
+    """A ``tests/`` dir whose only Python file is ``conftest.py`` is pytest."""
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "conftest.py").write_text("import pytest\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_tests_dir_without_python_tests_is_not_pytest(tmp_path):
+    """A ``tests/`` dir with no Python test modules is not treated as pytest.
+
+    This avoids hijacking a non-Python project whose ``tests/`` directory holds
+    fixtures or scripts rather than Python tests.
+    """
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "fixture.json").write_text("{}")
+    (tests / "helper.sh").write_text("echo hi\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
 def test_run_no_runner_is_reported_as_skipped(tmp_path):
     """No detected test runner means a skipped run, not a passed one."""
     agent = TesterAgent(

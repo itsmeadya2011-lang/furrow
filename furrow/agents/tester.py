@@ -12,6 +12,7 @@ from typing import Any
 
 from furrow.agents.parsing import parse_test_result
 from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
+from furrow.agents.worker import read_stream_tail
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
@@ -170,6 +171,55 @@ def parse_test_output(output: str) -> list[dict]:
     return failures
 
 
+def _has_python_tests(tests_dir: Path) -> bool:
+    """Report whether *tests_dir* holds at least one Python test module.
+
+    A bare ``tests/`` directory with no ``pyproject.toml``/``pytest.ini``/...
+    is the standard pytest layout, but a ``tests/`` directory can also exist in
+    a non-Python project (holding fixtures or scripts). Only treating it as a
+    pytest project when it actually contains a ``test_*.py`` / ``*_test.py``
+    module (or a ``conftest.py``) avoids hijacking an unrelated test runner.
+    """
+    try:
+        for entry in tests_dir.rglob("*.py"):
+            name = entry.name
+            if name == "conftest.py" or name.startswith("test_") or name.endswith("_test.py"):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+# Upper bound on the bytes of test output kept in memory. ``communicate``
+# buffers a subprocess's entire output, so a test suite that prints hundreds of
+# megabytes can exhaust memory before the result is truncated.
+_MAX_TEST_OUTPUT_BYTES = 20000
+
+
+async def _communicate_bounded(
+    proc: asyncio.subprocess.Process,
+) -> tuple[bytes, bytes, bool]:
+    """Collect a test command's stdout/stderr while bounding buffered memory.
+
+    Real subprocesses expose ``proc.stdout`` / ``proc.stderr`` stream readers;
+    each is drained to EOF through :func:`read_stream_tail`, keeping only the
+    last ``_MAX_TEST_OUTPUT_BYTES`` of each pipe while still draining it so the
+    writer never blocks. Returns ``(stdout, stderr, truncated)``. Stand-ins
+    without stream readers fall back to ``communicate``.
+    """
+    stdout_reader = getattr(proc, "stdout", None)
+    stderr_reader = getattr(proc, "stderr", None)
+    if stdout_reader is None or stderr_reader is None:
+        out, err = await proc.communicate()
+        return out, err, False
+    (out, out_cut), (err, err_cut) = await asyncio.gather(
+        read_stream_tail(stdout_reader, _MAX_TEST_OUTPUT_BYTES),
+        read_stream_tail(stderr_reader, _MAX_TEST_OUTPUT_BYTES),
+    )
+    await proc.wait()
+    return out, err, out_cut or err_cut
+
+
 class TesterAgent:
     __test__ = False  # not a pytest test class
 
@@ -211,6 +261,14 @@ class TesterAgent:
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            return [sys.executable, "-m", "pytest", "-q"]
+
+        # A bare ``tests/`` directory with no config file is the standard pytest
+        # layout: it should still run under pytest instead of being reported as
+        # "no test runner detected" (which would silently SKIP verification).
+        # ``_has_python_tests`` keeps this from hijacking a non-Python project
+        # whose ``tests/`` directory happens to hold no Python test modules.
+        if has_tests_dir and _has_python_tests(self.workspace / "tests"):
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -366,6 +424,7 @@ class TesterAgent:
             spawn_failed = False
             spawn_error = ""
             timed_out = False
+            truncated = False
             try:
                 proc = await asyncio.create_subprocess_exec(
                     *cmd,
@@ -389,7 +448,9 @@ class TesterAgent:
                 stderr = b""
             else:
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    stdout, stderr, truncated = await asyncio.wait_for(
+                        _communicate_bounded(proc), timeout=timeout
+                    )
                 except asyncio.TimeoutError:
                     await self._kill_process_tree(proc)
                     timed_out = True
@@ -404,7 +465,7 @@ class TesterAgent:
                 + "\n"
                 + stderr.decode("utf-8", errors="replace")
             )
-            if len(combined) > 20000:
+            if truncated or len(combined) > 20000:
                 combined = "[... output truncated ...]\n" + combined[-20000:]
 
             llm_result: TestResult | None = None

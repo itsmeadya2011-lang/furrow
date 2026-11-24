@@ -18,6 +18,11 @@ Furrow is an autonomous coding agent that plans, implements, and tests changes t
 - Estimated USD cost per LLM call/cycle/run tracked, displayed by the CLI and web UI, and overridable via `FURROW_MODEL_PRICING`
 - Robust against malformed model output and pathological inputs: deeply nested JSON is reported as a normal parse error instead of crashing, file I/O is explicitly UTF-8, and the web server reaps its background drain task
 - The worker's `list_files` tool skips generated and vendored directories (`.git`, `__pycache__`, `node_modules`, virtualenvs, build output, editor metadata, and the local `.furrow` state) so a listing is not buried under thousands of non-source files, and it reports when a listing was truncated; `read_file` reports the file's total size when it truncates a large file
+- Command and test output is read through a bounded stream drainer that keeps only the last 20,000 bytes of each pipe while still draining it to EOF, so a command or test suite that prints hundreds of megabytes cannot exhaust memory before the result is truncated
+- The tester recognises the standard pytest layout (a bare `tests/` directory containing Python test modules) even without a config file, instead of reporting "no test runner detected"; a `tests/` directory with no Python tests is not misclassified
+- The planner receives a compact summary of recent cycles and current task outcomes in addition to the last test failure, so it can stop re-planning work that already completed or failed
+- A malformed `FURROW_MODEL_PRICING` entry is skipped with a logged warning instead of being silently ignored
+- A planner response that repeats a task id is deduplicated to its first occurrence, so one task can never be scheduled twice in the same wave
 
 ## Security
 

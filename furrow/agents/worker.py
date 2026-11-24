@@ -554,6 +554,37 @@ def resolve_in_workspace(workspace: Path, path: str) -> Path | None:
     return candidate
 
 
+#: Upper bound on the bytes kept from a command's stdout/stderr. ``communicate``
+#: buffers a subprocess's entire output in memory, so a command that prints
+#: hundreds of megabytes can exhaust memory before the result is truncated.
+#: Real subprocesses are read through :func:`read_stream_tail`, which keeps only
+#: the last ``_MAX_COMMAND_OUTPUT_BYTES`` of each stream while still draining the
+#: pipe to EOF (so the process never blocks on a full pipe). Mocked subprocesses
+#: used by the tests expose no streams and keep the ``communicate()`` path.
+_MAX_COMMAND_OUTPUT_BYTES = 20000
+
+
+async def read_stream_tail(reader: asyncio.StreamReader, cap: int) -> tuple[bytes, bool]:
+    """Drain *reader* to EOF, keeping only the last *cap* bytes.
+
+    Returns ``(tail, truncated)``. The pipe is always drained to EOF so the
+    writing process never blocks on a full pipe, but at most *cap* bytes are
+    retained, which bounds memory regardless of how much the command prints.
+    """
+    buf = bytearray()
+    truncated = False
+    while True:
+        chunk = await reader.read(65536)
+        if not chunk:
+            break
+        buf.extend(chunk)
+        if len(buf) > cap:
+            # Keep only the tail; drop the overhang from the front.
+            del buf[: len(buf) - cap]
+            truncated = True
+    return bytes(buf), truncated
+
+
 class WorkerAgent:
     def __init__(
         self,
@@ -785,7 +816,9 @@ class WorkerAgent:
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout, stderr, truncated = await asyncio.wait_for(
+                self._communicate_bounded(proc), timeout=timeout
+            )
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
@@ -793,11 +826,41 @@ class WorkerAgent:
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
-        if len(combined) > cap:
+        if truncated or len(combined) > cap:
             combined = "[... output truncated ...]\n" + combined[-cap:]
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
+
+    @staticmethod
+    async def _communicate_bounded(
+        proc: asyncio.subprocess.Process,
+    ) -> tuple[bytes, bytes, bool]:
+        """Collect a command's stdout/stderr while bounding how much is buffered.
+
+        ``Process.communicate`` buffers a subprocess's *entire* output in memory,
+        so a command that prints hundreds of megabytes can exhaust memory before
+        the caller truncates the result. When the process exposes real pipe
+        readers (``proc.stdout`` / ``proc.stderr``), each stream is drained to
+        EOF through :func:`read_stream_tail`, which keeps only the last
+        ``_MAX_COMMAND_OUTPUT_BYTES`` of each pipe while still draining it so the
+        writer never blocks on a full pipe. Returns ``(stdout, stderr,
+        truncated)``. Processes without stream readers (e.g. the lightweight
+        stand-ins used in tests) fall back to ``communicate``.
+        """
+        stdout_reader = getattr(proc, "stdout", None)
+        stderr_reader = getattr(proc, "stderr", None)
+        if stdout_reader is None or stderr_reader is None:
+            out, err = await proc.communicate()
+            return out, err, False
+        (out, out_cut), (err, err_cut) = await asyncio.gather(
+            read_stream_tail(stdout_reader, _MAX_COMMAND_OUTPUT_BYTES),
+            read_stream_tail(stderr_reader, _MAX_COMMAND_OUTPUT_BYTES),
+        )
+        # Once both pipes are at EOF the process has flushed and is exiting;
+        # reap it explicitly as ``communicate`` would.
+        await proc.wait()
+        return out, err, out_cut or err_cut
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

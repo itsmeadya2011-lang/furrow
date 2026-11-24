@@ -1237,3 +1237,118 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_dedups_duplicate_task_ids(tmp_path, monkeypatch):
+    """A plan that repeats a task id is collapsed to its first occurrence.
+
+    Duplicate ids would otherwise leave two references to the same TaskModel
+    in ``plan.tasks`` and make the executor schedule one id twice in a wave.
+    """
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    plan = Plan(
+        tasks=[
+            TaskModel(id="t1", description="first"),
+            TaskModel(id="t1", description="duplicate"),
+            TaskModel(id="t2", description="second"),
+        ],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    ids = [t.id for t in plan.tasks]
+    assert ids == ["t1", "t2"]
+    # The surviving t1 keeps the first description.
+    assert plan.tasks[0].description == "first"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_task_id_runs_once(tmp_path, monkeypatch):
+    """A plan with a repeated id executes that id exactly once per wave."""
+    calls: list[str] = []
+
+    class CountingWorker:
+        def __init__(self, task, client=None, settings=None, workspace=None, goal=""):
+            self.task = task
+
+        async def run(self):
+            calls.append(self.task.id)
+            return WorkerResult(summary="ok", success=True, files_changed=[])
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", CountingWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(tasks=[
+        TaskModel(id="t1", description="first"),
+        TaskModel(id="t1", description="duplicate"),
+    ])
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    assert calls.count("t1") == 1
+
+
+def test_context_is_empty_on_a_fresh_run(tmp_path):
+    """A fresh orchestrator has no feedback, tasks or history to report."""
+    settings = make_settings(tmp_path, max_cycles=1)
+    orch = Orchestrator(goal="g", settings=settings, state_store=StateStore(tmp_path / "s.json"))
+    assert orch._context() == ""
+
+
+def test_context_includes_feedback(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=1)
+    orch = Orchestrator(goal="g", settings=settings, state_store=StateStore(tmp_path / "s.json"))
+    orch._feedback = "tests failed: boom"
+    assert "tests failed: boom" in orch._context()
+
+
+def test_context_includes_task_outcomes(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=1)
+    orch = Orchestrator(goal="g", settings=settings, state_store=StateStore(tmp_path / "s.json"))
+    orch.tasks = [
+        TaskModel(id="t1", description="done", status="completed", result="implemented"),
+        TaskModel(id="t2", description="bad", status="failed", error="ImportError"),
+        TaskModel(id="t3", description="pending", status="pending"),
+    ]
+    ctx = orch._context()
+    assert "t1 completed" in ctx
+    assert "t2 failed" in ctx
+    assert "ImportError" in ctx
+    # A pending task is not yet a useful signal and must not appear.
+    assert "t3" not in ctx
+
+
+def test_context_includes_recent_history(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=5)
+    orch = Orchestrator(goal="g", settings=settings, state_store=StateStore(tmp_path / "s.json"))
+    from furrow.core.state import HistoryEntry
+
+    orch.history = [
+        HistoryEntry(cycle=1, tests_passed=True, test_summary="all green"),
+        HistoryEntry(cycle=2, tests_passed=False, test_summary="2 failed"),
+    ]
+    ctx = orch._context()
+    assert "Recent cycles:" in ctx
+    assert "cycle 1: tests passed" in ctx
+    assert "cycle 2: tests failed" in ctx
+    assert "2 failed" in ctx
+
+
+def test_context_history_is_bounded_to_the_window(tmp_path):
+    settings = make_settings(tmp_path, max_cycles=50)
+    orch = Orchestrator(goal="g", settings=settings, state_store=StateStore(tmp_path / "s.json"))
+    from furrow.core.state import HistoryEntry
+
+    orch.history = [HistoryEntry(cycle=i, tests_passed=True, test_summary=f"cycle {i}")
+                    for i in range(1, 11)]
+    ctx = orch._context()
+    # Only the most recent _HISTORY_WINDOW (= 3) cycles are summarised.
+    window = orch._HISTORY_WINDOW
+    for recent in range(11 - window, 11):
+        assert f"cycle {recent}:" in ctx
+    # Cycles older than the window are excluded.
+    for old in range(1, 11 - window):
+        assert f"cycle {old}:" not in ctx

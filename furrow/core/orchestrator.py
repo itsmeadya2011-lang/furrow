@@ -336,13 +336,84 @@ class Orchestrator:
             files_changed=files_changed,
         )
 
+    #: How many recent cycles are summarised for the planner. A small window
+    #: keeps the prompt bounded while still letting the planner see that it is
+    #: repeating itself.
+    _HISTORY_WINDOW = 3
+
     def _context(self) -> str:
+        """Build the planner context: the latest test feedback plus recent history.
+
+        The planner used to see only the last test-failure text, so it could
+        re-plan the same work cycle after cycle. A compact summary of recent
+        cycles (did the tests pass, which tasks were involved) and the current
+        per-task outcomes gives it the signal it needs to change course.
+        """
+        parts: list[str] = []
         if self._feedback:
-            return self._feedback
-        return ""
+            parts.append(self._feedback)
+
+        task_outcomes = self._task_outcome_summary()
+        if task_outcomes:
+            parts.append(task_outcomes)
+
+        history = self._recent_history_summary()
+        if history:
+            parts.append(history)
+
+        return "\n\n".join(part for part in parts if part)
+
+    def _task_outcome_summary(self) -> str:
+        """One line per task describing its current terminal / in-progress state."""
+        lines: list[str] = []
+        for task in self.tasks:
+            if task.status in {"completed", "failed", "blocked"}:
+                detail = task.error or task.result or ""
+                detail = self._one_line(detail)
+                if len(detail) > 120:
+                    detail = detail[:119] + "…"
+                suffix = f": {detail}" if detail else ""
+                lines.append(f"- {task.id} {task.status}{suffix}")
+        if not lines:
+            return ""
+        return "Current task outcomes:\n" + "\n".join(lines)
+
+    def _recent_history_summary(self) -> str:
+        """Summarise the most recent cycles so the planner can avoid repeating them."""
+        if not self.history:
+            return ""
+        recent = self.history[-self._HISTORY_WINDOW:]
+        lines = ["Recent cycles:"]
+        for entry in recent:
+            verdict = "passed" if entry.tests_passed else "failed"
+            summary = self._one_line(entry.test_summary or "")
+            if len(summary) > 120:
+                summary = summary[:119] + "…"
+            summary_suffix = f" ({summary})" if summary else ""
+            lines.append(f"- cycle {entry.cycle}: tests {verdict}{summary_suffix}")
+        return "\n".join(lines)
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()
+        # A planner response is untrusted: it may repeat a task id. Merging two
+        # planned tasks with the same id would leave two references to the same
+        # TaskModel in ``plan.tasks`` and make the executor schedule that id more
+        # than once in a single wave, so the same task would run concurrently
+        # against itself (file-write races, double attempts). Keep the first
+        # occurrence of each id and drop the duplicates before merging.
+        deduped: list[TaskModel] = []
+        seen_ids: set[str] = set()
+        for task in plan.tasks:
+            if task.id in seen_ids:
+                self.event_bus.emit(Event(
+                    type=EventType.LOG,
+                    message=f"duplicate task id {task.id!r} in plan - ignoring the duplicate",
+                ))
+                continue
+            seen_ids.add(task.id)
+            deduped.append(task)
+        if len(deduped) != len(plan.tasks):
+            plan.tasks = deduped
         by_id = {t.id: t for t in self.tasks}
         max_retries = max(0, self.settings.max_task_retries)
         for index, pt in enumerate(plan.tasks):

@@ -16,6 +16,7 @@ circular.  Token counts are therefore read by duck typing instead.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
@@ -23,6 +24,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a circular import
     from furrow.config import Usage
+
+logger = logging.getLogger(__name__)
 
 
 class ModelPricing(BaseModel):
@@ -149,7 +152,15 @@ def _merged_pricing(pricing: Mapping[str, ModelPricing] | None) -> dict[str, Mod
         if not isinstance(value, ModelPricing):
             try:
                 value = ModelPricing.model_validate(value)
-            except Exception:
+            except Exception as exc:
+                # A malformed override (e.g. a bad FURROW_MODEL_PRICING entry) is
+                # skipped so cost tracking keeps working, but the operator is
+                # told: silently dropping it would leave cost estimates quietly
+                # wrong. The standard library logger is used directly so the
+                # warning is always capturable and carries no import-cycle risk.
+                logger.warning(
+                    "Ignoring malformed model pricing override for %r: %s", key, exc
+                )
                 continue
         table[str(key)] = value
     return table

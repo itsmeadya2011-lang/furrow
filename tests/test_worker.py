@@ -1017,6 +1017,49 @@ async def test_run_command_exit_status_zero_no_marker(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_command_bounds_large_output(tmp_path):
+    """A command printing far more than the cap still returns promptly.
+
+    The real subprocess path drains each pipe through ``read_stream_tail``, which
+    keeps only the last ``_MAX_COMMAND_OUTPUT_BYTES`` of each stream, so memory
+    stays bounded no matter how much the command prints.
+    """
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="cmd"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    # ~1 MiB of output: far above the 20000-byte cap.
+    out = await agent._run_command("yes ABCDEFGH | head -c 1000000")
+    assert out  # non-empty
+    assert "[... output truncated ...]" in out
+    assert "ABCDEFGH" in out
+    # The retained output stays bounded, well under the produced volume.
+    assert len(out) < 100_000
+
+
+@pytest.mark.asyncio
+async def test_run_command_small_output_is_not_truncated(tmp_path):
+    """A command under the cap is returned verbatim with no truncation marker."""
+    from furrow.config import TaskModel
+
+    settings = make_settings(tmp_path)
+    agent = WorkerAgent(
+        task=TaskModel(id="1", description="cmd"),
+        client=FakeLLMClient([]),
+        settings=settings,
+        workspace=tmp_path,
+    )
+    out = await agent._run_command("echo hello")
+    assert "hello" in out
+    assert "[... output truncated ...]" not in out
+
+
+@pytest.mark.asyncio
 async def test_truncated_response_is_failure(tmp_path):
     from furrow.config import TaskModel
 
