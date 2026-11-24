@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
+from furrow.agents.tester import (
+    TesterAgent,
+    _looks_like_failure,
+    _read_package_json,
+    resolve_test_timeout,
+)
 from furrow.config import Settings, TestResult
 
 
@@ -78,6 +83,25 @@ def test_detect_command_valid_package_json_with_test_script(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None
+    assert cmd == ["npm", "test", "--silent"]
+
+
+def test_detect_packagejson_read_via_to_thread(tmp_path, monkeypatch):
+    """package.json reading must be offloaded to asyncio.to_thread, not blocking."""
+    called = {}
+
+    async def fake_to_thread(func, *args, **kwargs):
+        called["func"] = func
+        called["args"] = args
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", fake_to_thread)
+
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert called["func"] is _read_package_json
+    assert called["args"] == (tmp_path,)
     assert cmd == ["npm", "test", "--silent"]
 
 

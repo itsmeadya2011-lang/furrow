@@ -705,3 +705,39 @@ def test_api_start_resume_without_state_returns_400(
     assert body["started"] is False
     assert body["error"] == "no goal to resume"
     assert fake_orchestrator.instances == [], "no run may be started"
+
+
+def test_run_calls_uvicorn_with_app_and_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``server.run()`` calls ``uvicorn.run`` with the app and default host/port."""
+    called: dict[str, Any] = {}
+
+    def fake_run(app: Any, host: str, port: int) -> None:
+        called["app"] = app
+        called["host"] = host
+        called["port"] = port
+
+    monkeypatch.setattr("furrow.web.server.uvicorn.run", fake_run)
+
+    server.run()
+
+    assert called["app"] is server.app
+    assert called["host"] == "127.0.0.1"
+    assert called["port"] == 8000
+
+
+def test_run_calls_uvicorn_with_custom_host_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``server.run(host, port)`` passes the given host and port to ``uvicorn.run``."""
+    called: dict[str, Any] = {}
+
+    def fake_run(app: Any, host: str, port: int) -> None:
+        called["app"] = app
+        called["host"] = host
+        called["port"] = port
+
+    monkeypatch.setattr("furrow.web.server.uvicorn.run", fake_run)
+
+    server.run("127.0.0.1", 9999)
+
+    assert called["app"] is server.app
+    assert called["host"] == "127.0.0.1"
+    assert called["port"] == 9999

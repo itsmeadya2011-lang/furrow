@@ -170,6 +170,12 @@ def parse_test_output(output: str) -> list[dict]:
     return failures
 
 
+def _read_package_json(workspace: Path) -> dict[str, Any]:
+    """Read package.json off the event loop to avoid blocking I/O."""
+    with open(workspace / "package.json", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 class TesterAgent:
     __test__ = False  # not a pytest test class
 
@@ -225,8 +231,7 @@ class TesterAgent:
                     return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
-                with open(self.workspace / "package.json", encoding="utf-8") as fh:
-                    pkg_data = json.load(fh)
+                pkg_data = await asyncio.to_thread(_read_package_json, self.workspace)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
                     if (self.workspace / "pnpm-lock.yaml").is_file():

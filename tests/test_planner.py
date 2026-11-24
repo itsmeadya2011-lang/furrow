@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from furrow.agents.planner import PlannerAgent
+from furrow.agents.planner import MAX_PLANNER_ATTEMPTS, PlannerAgent
 from furrow.config import Plan, Settings
 
 
@@ -19,6 +19,25 @@ class FakeLLMClient:
         if self.raises:
             raise self.raises
         return self.response
+
+
+class SequenceFakeLLMClient:
+    """Returns a different canned response for each call to ``complete``."""
+
+    def __init__(self, responses, raises=None):
+        self.responses = list(responses)
+        self.raises = raises
+        self.prompts = []
+        self.models = []
+
+    async def complete(self, prompt, system="", model=None):
+        self.prompts.append(prompt)
+        self.models.append(model)
+        if self.raises:
+            raise self.raises
+        if not self.responses:
+            raise AssertionError("no more canned responses")
+        return self.responses.pop(0)
 
 
 def run(coro):
@@ -54,16 +73,44 @@ def test_prose_surrounded():
     assert plan.tasks[0].id == "2"
 
 
-def test_invalid_twice_raises():
+def test_succeeds_after_repeated_failures():
+    """Fails twice, succeeds on the third attempt; verifies result and call count."""
+    responses = [
+        "not json at all",
+        "```json\n{broken```",
+        '{"tasks":[{"id":"3","description":"recovered"}],"rationale":"recovered"}',
+    ]
+    client = SequenceFakeLLMClient(responses)
+    agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
+    plan = run(agent.plan("g"))
+    assert isinstance(plan, Plan)
+    assert len(client.prompts) == 3
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0].id == "3"
+    assert plan.rationale == "recovered"
+
+
+def test_all_attempts_fail_returns_empty_plan():
+    """When every attempt fails, plan() returns an empty plan instead of raising."""
     client = FakeLLMClient(response="not json at all")
     agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
-    try:
-        run(agent.plan("g"))
-        raised = False
-    except ValueError as e:
-        raised = True
-        assert "not json" in str(e) or "response" in str(e).lower() or len(str(e)) > 0
-    assert raised
+    plan = run(agent.plan("g"))
+    assert isinstance(plan, Plan)
+    assert plan.tasks == []
+    assert plan.rationale == "Planner output unparseable; goal treated as complete."
+    assert len(client.prompts) == MAX_PLANNER_ATTEMPTS
+
+
+def test_retry_prompt_gets_stricter():
+    """Each retry appends an increasingly strict instruction to the prompt."""
+    client = FakeLLMClient(response="not json at all")
+    agent = PlannerAgent(client=client, settings=Settings(_env_file=None))
+    run(agent.plan("g"))
+    assert len(client.prompts) == MAX_PLANNER_ATTEMPTS
+    assert client.prompts[0] == client.prompts[1][: len(client.prompts[0])]
+    for later, earlier in zip(client.prompts[1:], client.prompts[:-1]):
+        assert len(later) > len(earlier)
+        assert earlier == later[: len(earlier)]
 
 
 def test_context_included():

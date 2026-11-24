@@ -214,6 +214,44 @@ def test_web_reports_friendly_error_on_system_exit(
     assert "Furrow failed:" in result.output
 
 
+def test_web_calls_run_with_defaults(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``furrow web`` calls ``server.run`` with default host and port."""
+    called: dict[str, Any] = {}
+
+    def fake_run(host: str, port: int) -> None:
+        called["host"] = host
+        called["port"] = port
+
+    monkeypatch.setattr("furrow.web.server.run", fake_run)
+
+    result = runner.invoke(main, ["web"])
+
+    assert result.exit_code == 0
+    assert called["host"] == "127.0.0.1"
+    assert called["port"] == 8000
+
+
+def test_web_calls_run_with_custom_host_port(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``furrow web --host --port`` calls ``server.run`` with the given values."""
+    called: dict[str, Any] = {}
+
+    def fake_run(host: str, port: int) -> None:
+        called["host"] = host
+        called["port"] = port
+
+    monkeypatch.setattr("furrow.web.server.run", fake_run)
+
+    result = runner.invoke(main, ["web", "--host", "0.0.0.0", "--port", "9999"])
+
+    assert result.exit_code == 0
+    assert called["host"] == "0.0.0.0"
+    assert called["port"] == 9999
+
+
 def test_start_exits_1_on_failed_run(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:
