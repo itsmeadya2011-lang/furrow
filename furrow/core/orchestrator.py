@@ -334,6 +334,7 @@ class Orchestrator:
             skipped=bool(self._tests_skipped),
             usage=self._usage,
             files_changed=files_changed,
+            tasks=list(active),
         )
 
     def _context(self) -> str:
@@ -425,6 +426,8 @@ class Orchestrator:
                 task.status = "running"
                 task.started_at = datetime.now(timezone.utc).isoformat()
                 self.event_bus.emit(Event(type=EventType.TASK_STARTED, data={"task": task.id}))
+                # Capture usage before task execution for per-task cost tracking
+                usage_before = self._client_usage()
                 try:
                     result = await worker_for(task).run()
                 except asyncio.CancelledError:
@@ -436,6 +439,9 @@ class Orchestrator:
                     task.attempts += 1
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()
+                    # Track per-task cost even on exception
+                    usage_after = self._client_usage()
+                    task.cost_usd = max(0.0, usage_after.cost_usd - usage_before.cost_usd)
                     task.status = "pending" if task.attempts <= max_retries else "failed"
                     self.event_bus.emit(
                         Event(
@@ -475,6 +481,9 @@ class Orchestrator:
                     attempt_files = {str(p) for p in (getattr(result, "files_changed", None) or [])}
                     task.files_changed = sorted(set(task.files_changed) | attempt_files)
                     task.finished_at = datetime.now(timezone.utc).isoformat()
+                    # Track per-task cost
+                    usage_after = self._client_usage()
+                    task.cost_usd = max(0.0, usage_after.cost_usd - usage_before.cost_usd)
                     if success:
                         task.status = "completed"
                     elif task.attempts <= max_retries:
@@ -510,6 +519,9 @@ class Orchestrator:
                     task.attempts += 1
                     task.error = f"{type(exc).__name__}: {exc}"
                     task.finished_at = datetime.now(timezone.utc).isoformat()
+                    # Track per-task cost even on exception
+                    usage_after = self._client_usage()
+                    task.cost_usd = max(0.0, usage_after.cost_usd - usage_before.cost_usd)
                     task.status = "pending" if task.attempts <= max_retries else "failed"
                     self.event_bus.emit(
                         Event(

@@ -83,6 +83,14 @@ def _print_summary(result: RunResult) -> None:
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
             click.echo(f"  LLM cost:        ${cost:.6f}")
+    # Show per-task costs if any
+    tasks = getattr(result, "tasks", None)
+    if tasks:
+        task_costs = [(t.id, getattr(t, "cost_usd", 0.0) or 0.0) for t in tasks if getattr(t, "cost_usd", 0.0) > 0]
+        if task_costs:
+            click.echo("  Task costs:")
+            for task_id, cost in task_costs:
+                click.echo(f"    {task_id}: ${cost:.6f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
@@ -116,6 +124,9 @@ def _print_state(state: RunState) -> None:
             line = f"  {task.id}  {task.status}  {task.description}"
             if files_changed:
                 line += f"  [{', '.join(files_changed)}]"
+            cost = getattr(task, "cost_usd", 0.0) or 0.0
+            if cost > 0:
+                line += f"  ${cost:.6f}"
             click.echo(line)
     else:
         click.echo("Tasks:  (none)")
@@ -254,10 +265,20 @@ def web(host: str, port: int) -> None:
     """Run the Furrow web server."""
     from furrow.web.server import run
 
+    click.echo(f"Starting Furrow web server on http://{host}:{port}")
+    click.echo("Press Ctrl+C to stop")
     try:
         run(host=host, port=port)
     except KeyboardInterrupt:
-        raise
+        click.echo("\nFurrow web server stopped.")
+    except OSError as exc:
+        if exc.errno == 98:  # Address already in use
+            click.secho(f"Furrow failed: Port {port} is already in use. Try a different port with --port.", fg="red")
+        elif exc.errno == 13:  # Permission denied
+            click.secho(f"Furrow failed: Permission denied binding to {host}:{port}. Try a different host/port.", fg="red")
+        else:
+            click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
     except SystemExit as exc:
         message = str(exc.code) if exc.code is not None else "the server could not start"
         click.secho(f"Furrow failed: {message}", fg="red")

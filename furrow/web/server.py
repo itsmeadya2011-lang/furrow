@@ -589,6 +589,12 @@ async def api_state() -> dict[str, Any]:
     }
 
 
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for monitoring and load balancers."""
+    return {"status": "healthy", "service": "furrow"}
+
+
 @app.get("/api/status")
 async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""

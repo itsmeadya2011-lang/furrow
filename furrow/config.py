@@ -37,6 +37,7 @@ class TaskModel(BaseModel):
     started_at: str | None = None
     finished_at: str | None = None
     files_changed: list[str] = Field(default_factory=list)
+    cost_usd: float = 0.0
 
     @field_validator("status", mode="before")
     @classmethod
@@ -105,6 +106,7 @@ class RunResult(BaseModel):
     skipped: bool = False
     usage: Usage = Field(default_factory=Usage)
     files_changed: list[str] = Field(default_factory=list)
+    tasks: list[TaskModel] = Field(default_factory=list)
 
 
 class Settings(BaseSettings):
