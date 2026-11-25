@@ -41,9 +41,13 @@ You break the user's goal into a small set of parallelizable coding tasks,
 returned as JSON."""
 
 WORKER_SYSTEM = """You are a worker agent of Furrow, an autonomous coding system.
-You implement the assigned task by reading, writing, and running code in the
+You implement the assigned task by reading, writing, searching, and running code in the
 workspace using the available tools. Make minimal, targeted changes. When done,
-respond with a concise summary and no further tool calls."""
+respond with a concise summary and no further tool calls.
+
+Use grep_file to find definitions and usages across the codebase instead of
+reading files one by one. Use read_file to view full file contents when you
+need to see the surrounding context of a match."""
 
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
@@ -77,6 +81,24 @@ WORKER_TOOLS: list[dict] = [
             "type": "object",
             "properties": {"path": {"type": "string"}},
             "required": [],
+        },
+    },
+    {
+        "name": "grep_file",
+        "description": "search file contents for a regex pattern.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "regular expression to search for",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "directory or file to search in (defaults to workspace root)",
+                },
+            },
+            "required": ["pattern"],
         },
     },
     {

@@ -13,7 +13,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.llm import IGNORED_DIRECTORIES, LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -51,6 +51,9 @@ MAX_LIST_ENTRIES = 500
 
 # Maximum number of characters returned by the ``read_file`` tool.
 MAX_READ_CHARS = 20000
+
+# Maximum number of grep matches returned before truncating.
+GREP_MAX_MATCHES = 100
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
@@ -663,6 +666,11 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "grep_file":
+            return await self._grep_file(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else "",
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -739,6 +747,55 @@ class WorkerAgent:
             note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
             text = f"{text}\n{note}" if text else note
         return text
+
+    async def _grep_file(self, pattern: str, path: str) -> str:
+        """Search file contents for *pattern* under *path* (defaults to workspace root)."""
+        search_path = path if path else "."
+        resolved = resolve_in_workspace(self.workspace, search_path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+
+        if resolved.is_file():
+            file_list: list[Path] = [resolved]
+        elif resolved.is_dir():
+            file_list = []
+            for root, dirs, filenames in os.walk(resolved):
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+                ]
+                for name in filenames:
+                    file_list.append(Path(root) / name)
+            file_list.sort()
+        else:
+            return f"error: no such file or directory: {search_path}"
+
+        base = self.workspace.resolve()
+        matches: list[str] = []
+        count = 0
+        for file_path in file_list:
+            try:
+                content = await self.client.read_file(file_path)
+            except (OSError, ValueError, RuntimeError):
+                continue
+            for line_no, line in enumerate(content.splitlines(), start=1):
+                if regex.search(line):
+                    rel = str(file_path.relative_to(base))
+                    matches.append(f"{rel}:{line_no}:{line}")
+                    count += 1
+                    if count >= GREP_MAX_MATCHES:
+                        matches.append(
+                            f"[... {GREP_MAX_MATCHES} matches shown, more omitted ...]"
+                        )
+                        return "\n".join(matches)
+        if not matches:
+            return "no matches"
+        return "\n".join(matches)
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

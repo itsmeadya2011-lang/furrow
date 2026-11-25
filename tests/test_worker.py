@@ -378,8 +378,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["grep_file", "list_files", "read_file", "run_command", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -1319,3 +1319,112 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_file_finds_matches(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    return 1\n")
+    (tmp_path / "b.py").write_text("def bar():\n    return foo()\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file(r"def foo", ".")
+    assert "a.py:1:def foo():" in out
+    assert "b.py" not in out or "def foo" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_file_directory_search(tmp_path):
+    (tmp_path / "a.py").write_text("import os\nimport sys\n")
+    (tmp_path / "b.py").write_text("import json\n")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "c.py").write_text("import os\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file(r"^import os", ".")
+    assert "a.py:1:import os" in out
+    assert "sub/c.py:1:import os" in out
+    assert "b.py" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_file_no_matches(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file(r"def nonexistent", ".")
+    assert out == "no matches"
+
+
+@pytest.mark.asyncio
+async def test_grep_file_invalid_regex(tmp_path):
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file("[invalid", ".")
+    assert out.startswith("error: invalid regex")
+
+
+@pytest.mark.asyncio
+async def test_grep_file_path_escape_rejected(tmp_path):
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file(r"foo", "../etc/passwd")
+    assert out == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_grep_file_single_file_path(tmp_path):
+    (tmp_path / "a.py").write_text("def foo():\n    pass\n")
+    (tmp_path / "b.py").write_text("def bar():\n    pass\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file(r"def bar", "b.py")
+    assert "b.py:1:def bar():" in out
+    assert "a.py" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_file_truncates_at_max(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.agents.worker.GREP_MAX_MATCHES", 3)
+    for i in range(5):
+        (tmp_path / f"f{i}.txt").write_text("match here\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file(r"match", ".")
+    lines = out.splitlines()
+    assert len(lines) == 4  # 3 matches + 1 truncation note
+    assert "matches shown, more omitted" in lines[-1]
