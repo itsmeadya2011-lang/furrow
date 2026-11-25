@@ -42,11 +42,17 @@ def configure_logging(level: str = "INFO") -> None:
         _configure_stdlib_fallback(level)
         return
 
+    # Add a custom processor to include logger name in output
+    def add_logger_name(logger, method_name, event_dict):
+        event_dict["logger"] = logger.name
+        return event_dict
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
+            add_logger_name,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),

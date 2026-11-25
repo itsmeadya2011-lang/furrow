@@ -34,6 +34,12 @@ _FAILURE_KEYWORDS = (
     "segmentation fault",
     "core dumped",
     "fatal error",
+    "unexpected",
+    "mismatch",
+    "difference",
+    "timeout",
+    "crash",
+    "abort",
 )
 
 # Counter phrases that mention a failure keyword but report *zero* failures,
@@ -140,6 +146,54 @@ def parse_test_output(output: str) -> list[dict]:
             )
             seen_locations.add(location_key)
 
+    # Go test failures
+    go_fail_pattern = re.compile(r"^--- FAIL: (\S+)\s+\(.*\)", re.MULTILINE)
+    for match in go_fail_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"go::{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "Go test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # Rust test failures
+    rust_fail_pattern = re.compile(r"^test\s+(\S+)\s+...\s+FAILED", re.MULTILINE)
+    for match in rust_fail_pattern.finditer(output):
+        test_name = match.group(1)
+        location_key = f"rust::{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "Rust test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
+    # JavaScript/Jest/Vitest failures
+    js_fail_pattern = re.compile(r"^\s*●\s+(.+?)\s*$", re.MULTILINE)
+    for match in js_fail_pattern.finditer(output):
+        test_name = match.group(1).strip()
+        location_key = f"js::{test_name}"
+        if location_key not in seen_locations:
+            failures.append(
+                {
+                    "file": None,
+                    "line": None,
+                    "test": test_name,
+                    "error": "JavaScript test failed",
+                }
+            )
+            seen_locations.add(location_key)
+
     # Extract exception types and messages
     exception_pattern = re.compile(r"([A-Za-z]+Error|[A-Za-z]+Exception):\s*(.+)$", re.MULTILINE)
     if not failures:
@@ -206,18 +260,29 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_pom_xml = (self.workspace / "pom.xml").is_file()
+        has_build_gradle = (self.workspace / "build.gradle").is_file() or (self.workspace / "build.gradle.kts").is_file()
+        has_gradle_wrapper = (self.workspace / "gradlew").is_file()
+        has_composer_json = (self.workspace / "composer.json").is_file()
+        has_mix_exs = (self.workspace / "mix.exs").is_file()
+        has_rebar_config = (self.workspace / "rebar.config").is_file()
+        has_cargo_toml = (self.workspace / "Cargo.toml").is_file()
+        has_go_mod = (self.workspace / "go.mod").is_file()
+        has_makefile = (self.workspace / "Makefile").is_file() or (self.workspace / "makefile").is_file()
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            logger.info("Detected Python project with tests directory, using pytest")
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
         if has_package:
             # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
+            for pattern in ["jest.config.*", "vitest.config.*", "jest.config.js", "jest.config.ts", "vitest.config.js", "vitest.config.ts"]:
                 for _f in self.workspace.glob(pattern):
+                    logger.info("Detected Jest/Vitest config, using npm test")
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
@@ -229,6 +294,7 @@ class TesterAgent:
                     pkg_data = json.load(fh)
                 scripts = pkg_data.get("scripts", {})
                 if "test" in scripts:
+                    logger.info("Detected test script in package.json, using npm test")
                     if (self.workspace / "pnpm-lock.yaml").is_file():
                         return ["pnpm", "test", "--silent"]
                     if (self.workspace / "yarn.lock").is_file():
@@ -251,13 +317,68 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
+            logger.info("Detected Python project markers, using pytest")
             return [sys.executable, "-m", "pytest", "-q"]
 
-        if (self.workspace / "Cargo.toml").is_file():
+        # Java/Gradle
+        if has_gradle_wrapper:
+            logger.info("Detected Gradle wrapper, using ./gradlew test")
+            return ["./gradlew", "test", "--quiet"]
+        if has_build_gradle:
+            logger.info("Detected Gradle build file, using gradle test")
+            return ["gradle", "test", "--quiet"]
+        if has_pom_xml:
+            logger.info("Detected Maven pom.xml, using mvn test")
+            return ["mvn", "test", "-q"]
+
+        # PHP/Composer
+        if has_composer_json:
+            try:
+                with open(self.workspace / "composer.json", encoding="utf-8") as fh:
+                    composer_data = json.load(fh)
+                scripts = composer_data.get("scripts", {})
+                if "test" in scripts:
+                    logger.info("Detected PHP Composer test script, using composer test")
+                    return ["composer", "test"]
+            except (OSError, UnicodeError, ValueError) as exc:
+                logger.warning("Could not read composer.json: %s", exc)
+            # Check for PHPUnit
+            if (self.workspace / "vendor/bin/phpunit").is_file():
+                logger.info("Detected PHPUnit, using vendor/bin/phpunit")
+                return ["vendor/bin/phpunit", "--colors=never"]
+
+        # Elixir/Mix
+        if has_mix_exs:
+            logger.info("Detected Elixir Mix project, using mix test")
+            return ["mix", "test"]
+
+        # Erlang/Rebar
+        if has_rebar_config:
+            logger.info("Detected Erlang Rebar project, using rebar3 eunit")
+            return ["rebar3", "eunit"]
+
+        # Rust/Cargo
+        if has_cargo_toml:
+            logger.info("Detected Rust Cargo project, using cargo test")
             return ["cargo", "test", "-q"]
-        if (self.workspace / "go.mod").is_file():
+
+        # Go
+        if has_go_mod:
+            logger.info("Detected Go module, using go test")
             return ["go", "test", "./..."]
 
+        # Makefile (generic fallback)
+        if has_makefile:
+            try:
+                with open(self.workspace / "Makefile" if (self.workspace / "Makefile").is_file() else self.workspace / "makefile", encoding="utf-8") as fh:
+                    content = fh.read()
+                if "test:" in content:
+                    logger.info("Detected Makefile with test target, using make test")
+                    return ["make", "test"]
+            except (OSError, UnicodeError) as exc:
+                logger.warning("Could not read Makefile: %s", exc)
+
+        logger.info("No test runner detected for this project")
         return None
 
     def _finalize(
@@ -495,4 +616,25 @@ def _looks_like_failure(line: str) -> bool:
     # keyword survives is a genuine failure signal.
     remainder = _ALL_ZERO_SUMMARY_RE.sub(" ", text)
     remainder = _ZERO_COUNT_RE.sub(" ", remainder)
+    # Also filter out common success indicators, but only if they appear WITHOUT
+    # a preceding non-zero failure count. "1 failed, 4 passed" should still be a failure.
+    success_indicators = (
+        "passed",
+        "success",
+        "ok",
+        "all tests",
+        "tests passed",
+    )
+    # But don't filter if it says "not passed" or "not ok"
+    for indicator in success_indicators:
+        if indicator in remainder.lower() and f"not {indicator}" not in remainder.lower():
+            # Check if there's a non-zero failure count anywhere in the text
+            # Pattern: "X failed" where X > 0
+            if indicator == "passed":
+                import re
+                fail_match = re.search(r'(\d+)\s*failed', remainder.lower())
+                if fail_match and int(fail_match.group(1)) > 0:
+                    # There's a real failure count, don't filter
+                    continue
+            return False
     return any(k in remainder.lower() for k in _FAILURE_KEYWORDS)

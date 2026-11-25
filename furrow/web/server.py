@@ -75,6 +75,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
   }
   button:hover { border-color: #4c8dff; }
+  button:disabled {
+    opacity: 0.5; cursor: not-allowed;
+  }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
@@ -94,10 +97,33 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .progress-bar {
+    height: 6px; background: #2b3240; border-radius: 3px; overflow: hidden;
+    margin: .5rem 0;
+  }
+  .progress-fill {
+    height: 100%; background: #4c8dff; transition: width 0.3s ease;
+  }
+  .progress-text {
+    font-size: .8rem; color: #8a93a5; margin-top: .25rem;
+  }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
     background: #171b23;
+    transition: border-color 0.2s;
+  }
+  .panel.running {
+    border-color: #4c8dff;
+  }
+  .panel.completed {
+    border-color: #57d38c;
+  }
+  .panel.failed {
+    border-color: #e0685f;
+  }
+  .panel.blocked {
+    border-color: #f0b367;
   }
   .panel-head {
     display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
@@ -110,6 +136,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .panel-desc {
     margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
     word-break: break-word;
+  }
+  .panel-files {
+    font-size: .8rem; color: #4c8dff; margin-bottom: .3rem;
+    font-family: inherit;
   }
   .panel-meta {
     display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
@@ -132,6 +162,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  .cycle-info {
+    display: flex; gap: 1rem; flex-wrap: wrap; font-size: .85rem; color: #8a93a5;
+    margin-top: .5rem;
+  }
+  .cycle-info b { color: #d7dae0; }
+  .task-progress {
+    display: flex; align-items: center; gap: .5rem; margin-top: .25rem;
+  }
+  .task-progress-bar {
+    flex: 1; height: 4px; background: #2b3240; border-radius: 2px; overflow: hidden;
+  }
+  .task-progress-fill {
+    height: 100%; background: #57d38c; transition: width 0.3s ease;
+  }
+  .spinner {
+    display: inline-block; width: 12px; height: 12px;
+    border: 2px solid #2b3240; border-top-color: #4c8dff;
+    border-radius: 50%; animation: spin 1s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
 </style>
 </head>
 <body>
@@ -149,6 +199,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
   </div>
+  <div class="progress-bar" id="overall-progress" style="display: none;">
+    <div class="progress-fill" id="overall-progress-fill" style="width: 0%;"></div>
+  </div>
+  <div class="progress-text" id="overall-progress-text"></div>
+  <div class="cycle-info" id="cycle-info" style="display: none;"></div>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -161,8 +216,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const overallProgressEl = document.getElementById('overall-progress');
+  const overallProgressFillEl = document.getElementById('overall-progress-fill');
+  const overallProgressTextEl = document.getElementById('overall-progress-text');
+  const cycleInfoEl = document.getElementById('cycle-info');
   let socket = null;
   let lastSummary = null;
+  let taskElements = new Map(); // task id -> DOM element
 
   function append(line) {
     logEl.textContent += line + '\n';
@@ -173,8 +233,6 @@ INDEX_HTML = r"""<!DOCTYPE html>
     return value === undefined || value === null ? '' : String(value);
   }
 
-  // The task status is planned by the LLM, so it is untrusted input: it is
-  // mapped to a known token before it is used to build a class name.
   const SAFE_STATUSES = {
     pending: 'pending',
     running: 'running',
@@ -191,6 +249,52 @@ INDEX_HTML = r"""<!DOCTYPE html>
       return SAFE_STATUSES[key];
     }
     return 'unknown';
+  }
+
+  function updateOverallProgress(status) {
+    if (!status || !status.tasks) {
+      overallProgressEl.style.display = 'none';
+      cycleInfoEl.style.display = 'none';
+      return;
+    }
+    const tasks = status.tasks;
+    const total = tasks.length;
+    const completed = tasks.filter(t => t.status === 'completed').length;
+    const running = tasks.filter(t => t.status === 'running').length;
+    const failed = tasks.filter(t => t.status === 'failed').length;
+    const blocked = tasks.filter(t => t.status === 'blocked').length;
+    const pending = tasks.filter(t => t.status === 'pending').length;
+    
+    const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+    overallProgressFillEl.style.width = percent + '%';
+    overallProgressFillEl.style.background = failed > 0 ? '#e0685f' : (running > 0 ? '#4c8dff' : '#57d38c');
+    overallProgressTextEl.textContent = `Progress: ${completed}/${total} completed, ${running} running, ${failed} failed, ${blocked} blocked, ${pending} pending`;
+    overallProgressEl.style.display = 'block';
+    
+    cycleInfoEl.textContent = '';
+    const items = [
+      { label: 'Tasks: ', value: total, color: '#d7dae0' },
+      { label: 'Completed: ', value: completed, color: '#57d38c' },
+      { label: 'Running: ', value: running, color: '#4c8dff' },
+      { label: 'Failed: ', value: failed, color: '#e0685f' },
+      { label: 'Blocked: ', value: blocked, color: '#f0b367' },
+      { label: 'Pending: ', value: pending, color: '#8a93a5' },
+    ];
+    items.forEach((item, idx) => {
+      const span = document.createElement('span');
+      const label = document.createTextNode(item.label);
+      const b = document.createElement('b');
+      b.style.color = item.color;
+      b.textContent = item.value;
+      span.appendChild(label);
+      span.appendChild(b);
+      cycleInfoEl.appendChild(span);
+      if (idx < items.length - 1) {
+        // Add a small gap between items
+        cycleInfoEl.appendChild(document.createTextNode(' '));
+      }
+    });
+    cycleInfoEl.style.display = 'flex';
   }
 
   function renderStatus(status, result, running) {
@@ -210,54 +314,124 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    updateOverallProgress(status);
   }
 
   function renderTasks(tasks) {
-    while (tasksEl.firstChild) {
-      tasksEl.removeChild(tasksEl.firstChild);
-    }
     const list = tasks || [];
-    if (list.length === 0) {
+    const newTaskElements = new Map();
+    
+    if (list.length === 0 && taskElements.size === 0) {
       const hint = document.createElement('p');
       hint.className = 'panel-empty';
       hint.textContent = 'No run yet \u2014 enter a goal and click Start.';
       tasksEl.appendChild(hint);
       return;
     }
+    
+    // Clear empty hint if present
+    if (tasksEl.firstChild && tasksEl.firstChild.className === 'panel-empty') {
+      tasksEl.removeChild(tasksEl.firstChild);
+    }
+    
     list.forEach(function (task) {
       const status = text(task.status) || 'pending';
-
-      const panel = document.createElement('div');
-      panel.className = 'panel';
-      panel.id = 'task-' + text(task.id);
-
-      const head = document.createElement('div');
-      head.className = 'panel-head';
-      const idEl = document.createElement('span');
-      idEl.className = 'panel-id';
-      idEl.textContent = '#' + text(task.id);
-      const statusEl = document.createElement('span');
+      const taskId = text(task.id);
+      
+      let panel = taskElements.get(taskId);
+      const isNew = !panel;
+      
+      if (isNew) {
+        panel = document.createElement('div');
+        panel.className = 'panel';
+        panel.id = 'task-' + taskId;
+        
+        const head = document.createElement('div');
+        head.className = 'panel-head';
+        const idEl = document.createElement('span');
+        idEl.className = 'panel-id';
+        idEl.textContent = '#' + taskId;
+        const statusEl = document.createElement('span');
+        statusEl.className = 'panel-status';
+        head.appendChild(idEl);
+        head.appendChild(statusEl);
+        
+        const desc = document.createElement('div');
+        desc.className = 'panel-desc';
+        
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        
+        const meta = document.createElement('div');
+        meta.className = 'panel-meta';
+        const attempts = document.createElement('span');
+        meta.appendChild(attempts);
+        
+        const progressContainer = document.createElement('div');
+        progressContainer.className = 'task-progress';
+        progressContainer.style.display = 'none';
+        const progressBar = document.createElement('div');
+        progressBar.className = 'task-progress-bar';
+        const progressFill = document.createElement('div');
+        progressFill.className = 'task-progress-fill';
+        progressBar.appendChild(progressFill);
+        progressContainer.appendChild(progressBar);
+        
+        panel.appendChild(head);
+        panel.appendChild(desc);
+        panel.appendChild(filesEl);
+        panel.appendChild(meta);
+        panel.appendChild(progressContainer);
+        
+        tasksEl.appendChild(panel);
+      }
+      
+      // Update panel class based on status
+      panel.className = 'panel ' + statusClass(status);
+      
+      // Update status badge
+      const statusEl = panel.querySelector('.panel-status');
       statusEl.className = 'panel-status status-' + statusClass(status);
       statusEl.textContent = status;
-      head.appendChild(idEl);
-      head.appendChild(statusEl);
-
-      const desc = document.createElement('div');
-      desc.className = 'panel-desc';
-      desc.textContent = text(task.description);
-
-      const meta = document.createElement('div');
-      meta.className = 'panel-meta';
-      const attempts = document.createElement('span');
-      attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
-      meta.appendChild(attempts);
-
-      panel.appendChild(head);
-      panel.appendChild(desc);
-      panel.appendChild(meta);
-
+      
+      // Update description
+      panel.querySelector('.panel-desc').textContent = text(task.description);
+      
+      // Update files
+      const filesChanged = task.files_changed || [];
+      const filesEl = panel.querySelector('.panel-files');
+      if (filesChanged.length > 0) {
+        filesEl.textContent = 'Files: ' + filesChanged.join(', ');
+        filesEl.style.display = 'block';
+      } else {
+        filesEl.style.display = 'none';
+      }
+      
+      // Update attempts
+      panel.querySelector('.panel-meta span').textContent = 'attempts: ' + (Number(task.attempts) || 0);
+      
+      // Update progress bar for running tasks
+      const progressContainer = panel.querySelector('.task-progress');
+      if (status === 'running') {
+        progressContainer.style.display = 'flex';
+        progressFill.style.width = '50%';
+        progressFill.style.background = '#4c8dff';
+        progressFill.style.animation = 'pulse 1s ease-in-out infinite';
+      } else {
+        progressContainer.style.display = 'none';
+        progressFill.style.animation = 'none';
+      }
+      
+      // Update result/error
       const result = text(task.result);
       const error = text(task.error);
+      
+      // Remove old result/error elements
+      const oldResult = panel.querySelector('.panel-result');
+      const oldError = panel.querySelector('.panel-error');
+      if (oldResult) oldResult.remove();
+      if (oldError) oldError.remove();
+      
       if (result) {
         const resultEl = document.createElement('div');
         resultEl.className = 'panel-result';
@@ -270,9 +444,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
         errorEl.textContent = error;
         panel.appendChild(errorEl);
       }
-
-      tasksEl.appendChild(panel);
+      
+      newTaskElements.set(taskId, panel);
     });
+    
+    // Remove tasks no longer in the list
+    for (const [taskId, panel] of taskElements) {
+      if (!newTaskElements.has(taskId)) {
+        panel.remove();
+      }
+    }
+    
+    taskElements = newTaskElements;
   }
 
   async function loadState() {
@@ -312,10 +495,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
     socket.onopen = function () {
       append('> connected');
-      // A new run starts: forget the previous summary so this run always
-      // contributes its own summary line to the log.
       lastSummary = null;
       socket.send(JSON.stringify(payload));
+      // Disable buttons while running
+      document.getElementById('start').disabled = true;
+      document.getElementById('resume').disabled = true;
     };
     function truncate(value, max) {
       const s = text(value);
@@ -362,6 +546,11 @@ INDEX_HTML = r"""<!DOCTYPE html>
       } else if (type === 'done') {
         line = 'finished: ' + text(msg.message);
         color = '#57d38c';
+      } else if (type === 'cycle_finished') {
+        line = 'cycle ' + text(data.cycle) + ' finished';
+        if (data.tasks_completed !== undefined) {
+          line += ` (${data.tasks_completed} completed, ${data.tasks_failed || 0} failed, ${data.tasks_blocked || 0} blocked)`;
+        }
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
@@ -383,16 +572,20 @@ INDEX_HTML = r"""<!DOCTYPE html>
         return;
       }
       renderEvent(msg);
-      if (msg.type === 'task_started' || msg.type === 'task_finished') {
+      if (msg.type === 'task_started' || msg.type === 'task_finished' || msg.type === 'cycle_finished') {
         loadStatus();
       }
       if (msg.type === 'done') {
         loadStatus();
+        document.getElementById('start').disabled = false;
+        document.getElementById('resume').disabled = false;
       }
     };
     socket.onclose = function () {
       append('-- closed');
       socket = null;
+      document.getElementById('start').disabled = false;
+      document.getElementById('resume').disabled = false;
       loadStatus();
     };
     socket.onerror = function () {
@@ -409,6 +602,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
   loadState();
   loadStatus();
+  
+  // Add pulse animation style dynamically
+  const style = document.createElement('style');
+  style.textContent = `
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  `;
+  document.head.appendChild(style);
 </script>
 </body>
 </html>

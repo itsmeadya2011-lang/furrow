@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import re
 import shlex
@@ -14,6 +15,9 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -574,10 +578,12 @@ class WorkerAgent:
         try:
             return await self._run()
         except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Worker run failed with exception", task_id=self.task.id, error=str(exc))
             return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
 
     async def _run(self) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
+        logger.info("Starting worker", task_id=self.task.id, max_iterations=max_iters, model=self.settings.worker_model)
         messages: list[dict[str, Any]] = [
             {
                 "role": "user",
@@ -587,12 +593,14 @@ class WorkerAgent:
         iterations = 0
         for i in range(max_iters):
             iterations = i + 1
+            logger.debug("Worker iteration", task_id=self.task.id, iteration=iterations)
             response: LLMResponse = await self.client.chat(
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
                 if response.stop_reason in TRUNCATED_STOP_REASONS:
+                    logger.warning("Worker response truncated", task_id=self.task.id, stop_reason=response.stop_reason)
                     return WorkerResult(
                         summary=summary,
                         success=False,
@@ -600,6 +608,7 @@ class WorkerAgent:
                         iterations=iterations,
                         error=f"worker response truncated (stop_reason={response.stop_reason})",
                     )
+                logger.info("Worker completed task", task_id=self.task.id, iterations=iterations, success=True)
                 return WorkerResult(
                     summary=summary,
                     success=True,
@@ -614,12 +623,14 @@ class WorkerAgent:
                 blocks.append(
                     {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
                 )
+                logger.debug("Worker tool call", task_id=self.task.id, tool=tc.name, tool_id=tc.id)
             messages.append({"role": "assistant", "content": blocks})
 
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
                 result = await self._execute_tool(tc)
+                logger.debug("Worker tool result", task_id=self.task.id, tool=tc.name, tool_id=tc.id, success=not result.startswith("error:"))
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
                 )
@@ -628,6 +639,7 @@ class WorkerAgent:
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        logger.warning("Worker iteration budget exhausted", task_id=self.task.id, max_iterations=max_iters)
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -649,22 +661,34 @@ class WorkerAgent:
         name = tc.name
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
-            return "error: invalid tool arguments"
+            return "error: invalid tool arguments (must be a JSON object)"
+        
+        # Validate arguments per tool
         if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
+            path = args.get("path")
+            if not path or not isinstance(path, str) or not path.strip():
+                return "error: read_file requires a non-empty 'path' string"
+            return await self._read_file(path)
         if name == "write_file":
+            path = args.get("path")
+            if not path or not isinstance(path, str) or not path.strip():
+                return "error: write_file requires a non-empty 'path' string"
             if "content" not in args:
                 return "error: missing content"
             content = args["content"]
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
-            return await self._write_file(str(args.get("path", "")), content)
+            return await self._write_file(path, content)
         if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
+            path = args.get("path", ".")
+            if path is not None and not isinstance(path, str):
+                return "error: list_files 'path' must be a string or null"
+            return await self._list_files(str(path) if path is not None else ".")
         if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
+            command = args.get("command")
+            if not command or not isinstance(command, str) or not command.strip():
+                return "error: run_command requires a non-empty 'command' string"
+            return await self._run_command(command)
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -684,6 +708,7 @@ class WorkerAgent:
             if isinstance(parsed, dict):
                 return parsed
             return None
+        # Some providers may return a list or other type - reject it
         return None
 
     async def _read_file(self, path: str) -> str:
