@@ -248,6 +248,34 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
 
 
 @main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Skip the confirmation prompt.",
+)
+def clear(workspace: Path | None, yes: bool) -> None:
+    """Delete the persisted Furrow run state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if not store.exists():
+        click.echo("No furrow run state found.")
+        return
+    if not yes:
+        click.confirm(
+            f"Delete the persisted run state at {store.path}?",
+            abort=True,
+        )
+    store.clear()
+    click.echo("Furrow run state cleared.")
+
+
+@main.command()
 @click.option("--host", default="127.0.0.1", help="Host to bind the web server to.")
 @click.option("--port", type=int, default=8000, help="Port to bind the web server to.")
 def web(host: str, port: int) -> None:

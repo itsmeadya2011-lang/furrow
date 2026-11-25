@@ -476,6 +476,7 @@ def _on_run_done(task: asyncio.Task[RunResult]) -> None:
         _CURRENT["running"] = bool(current is not None and not current.done())
         return
     _CURRENT["running"] = False
+    _CURRENT["bus"] = None
     if task.cancelled():
         _CURRENT["error"] = "run cancelled"
         return
@@ -549,6 +550,21 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
         drain.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await drain
+        bus.unsubscribe(queue)
+
+
+async def _run_and_keep_bus(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
+    """Run an orchestrator in the background while keeping its event bus alive.
+
+    Unlike :func:`_run_and_drain`, the emitted events are not discarded: they
+    accumulate in the bus's bounded subscriber queues so that a websocket
+    client can subscribe to the bus of a run started through the REST API and
+    observe its progress.
+    """
+    queue = bus.subscribe()
+    try:
+        return await _run_orchestrator(orchestrator)
+    finally:
         bus.unsubscribe(queue)
 
 
@@ -634,13 +650,14 @@ async def api_start(request: StartRequest) -> JSONResponse:
             status_code=400,
             content={"started": False, "error": _describe_validation_error(validation_error)},
         )
-    run_task = asyncio.create_task(_run_and_drain(orchestrator, bus))
+    run_task = asyncio.create_task(_run_and_keep_bus(orchestrator, bus))
     _TASKS.add(run_task)
     run_task.add_done_callback(_on_run_done)
     _CURRENT.update(
         {
             "running": True,
             "orchestrator": orchestrator,
+            "bus": bus,
             "result": None,
             "task": run_task,
             "error": None,
@@ -651,11 +668,18 @@ async def api_start(request: StartRequest) -> JSONResponse:
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
-    """Run a goal and stream every event it emits to the client."""
+    """Run a goal and stream every event it emits to the client.
+
+    When a run is already in progress (e.g. started through the REST API), the
+    websocket subscribes to that run's event bus and observes it instead of
+    starting a second run. The run that owns the registry is the only one that
+    may be cancelled on client disconnect.
+    """
     await websocket.accept()
-    bus = EventBus()
-    queue = bus.subscribe()
+    bus: EventBus | None = None
+    queue: asyncio.Queue[Event] | None = None
     run_task: asyncio.Task[RunResult] | None = None
+    owned_run = False
     try:
         try:
             payload = await websocket.receive_json()
@@ -674,48 +698,66 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         except ValueError:
             await _send_error(websocket, "expected a JSON object with a goal")
             return
-        goal = request.goal.strip()
-        resume = request.resume
-        if not goal and not resume:
-            await _send_error(websocket, "goal is required")
-            return
+
+        # If a run is already in flight, observe it instead of starting a
+        # second one.
         if _CURRENT.get("running"):
-            # A run is already in flight: refuse to start a second one instead
-            # of overwriting the registry entry of the running one.
-            await _send_error(websocket, "a run is already in progress")
-            return
-        try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
-        except ValidationError as validation_error:
-            # Defence in depth: the run settings are validated, so an invalid
-            # override can never reach the orchestrator.
-            await _send_error(websocket, _describe_validation_error(validation_error))
-            return
-        run_task = asyncio.create_task(_run_orchestrator(orchestrator))
-        _TASKS.add(run_task)
-        run_task.add_done_callback(_on_run_done)
-        _CURRENT.update(
-            {
-                "running": True,
-                "orchestrator": orchestrator,
-                "result": None,
-                "task": run_task,
-                "error": None,
-            }
-        )
+            bus = _CURRENT.get("bus")
+            if bus is None:
+                await _send_error(websocket, "a run is already in progress")
+                return
+            queue = bus.subscribe()
+            run_task = _CURRENT.get("task")
+            if run_task is None:
+                await _send_error(websocket, "a run is already in progress")
+                return
+        else:
+            goal = request.goal.strip()
+            resume = request.resume
+            if not goal and not resume:
+                await _send_error(websocket, "goal is required")
+                return
+            bus = EventBus()
+            queue = bus.subscribe()
+            try:
+                orchestrator = _build_orchestrator(
+                    goal, resume, request.max_cycles, bus
+                )
+            except ValidationError as validation_error:
+                await _send_error(
+                    websocket, _describe_validation_error(validation_error)
+                )
+                return
+            run_task = asyncio.create_task(_run_orchestrator(orchestrator))
+            _TASKS.add(run_task)
+            run_task.add_done_callback(_on_run_done)
+            owned_run = True
+            _CURRENT.update(
+                {
+                    "running": True,
+                    "orchestrator": orchestrator,
+                    "bus": bus,
+                    "result": None,
+                    "task": run_task,
+                    "error": None,
+                }
+            )
+
         while True:
-            if run_task.done() and queue.empty():
+            if run_task is not None and run_task.done() and (queue is None or queue.empty()):
                 break
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=POLL_INTERVAL)
             except asyncio.TimeoutError:
                 continue
             await websocket.send_json(event.to_dict())
+
         if run_task is None:  # pragma: no cover - defensive
             return
         # The run is over: clear the flag right away instead of waiting for the
         # done-callback to be processed.
-        _clear_running_flag(run_task)
+        if owned_run:
+            _clear_running_flag(run_task)
         if run_task.cancelled():
             return
         exc = run_task.exception()
@@ -732,16 +774,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             }
         )
     except asyncio.CancelledError:
-        # The client went away (or the server is shutting down): stop the run
-        # and make sure the server does not stay stuck in the "running" state.
-        if run_task is not None and not run_task.done():
+        # The client went away (or the server is shutting down): cancel the run
+        # only if this websocket started it, and make sure the server does not
+        # stay stuck in the "running" state.
+        if owned_run and run_task is not None and not run_task.done():
             _cancel_run(run_task)
         raise
     except (WebSocketDisconnect, RuntimeError):
-        if run_task is not None and not run_task.done():
+        if owned_run and run_task is not None and not run_task.done():
             _cancel_run(run_task)
     finally:
-        bus.unsubscribe(queue)
+        if bus is not None and queue is not None:
+            bus.unsubscribe(queue)
 
 
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
