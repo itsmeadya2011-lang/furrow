@@ -46,11 +46,11 @@ def configure_logging(level: str = "INFO") -> None:
         processors=[
             structlog.contextvars.merge_contextvars,
             structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.TimeStamper(fmt="iso", utc=True),
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             structlog.processors.UnicodeDecoder(),
-            structlog.processors.JSONRenderer(),
+            structlog.processors.JSONRenderer(sort_keys=True),
         ],
         wrapper_class=structlog.make_filtering_bound_logger(log_level),
         context_class=dict,
@@ -64,3 +64,27 @@ def get_logger(name: str) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger(name)
     return logging.getLogger(name)
+
+
+def bind_run_context(logger: Any, run_id: str, goal: str, cycle: int = 0) -> Any:
+    """Bind run context to a logger for structured logging."""
+    if _STRUCTLOG_AVAILABLE:
+        return logger.bind(run_id=run_id, goal=goal, cycle=cycle)
+    return logger
+
+
+def bind_task_context(logger: Any, task_id: str, task_description: str) -> Any:
+    """Bind task context to a logger for structured logging."""
+    if _STRUCTLOG_AVAILABLE:
+        return logger.bind(task_id=task_id, task_description=task_description)
+    return logger
+
+
+def log_event(logger: Any, event: str, **kwargs: Any) -> None:
+    """Log a structured event with context."""
+    if _STRUCTLOG_AVAILABLE:
+        logger.info(event, **kwargs)
+    else:
+        # Fallback for stdlib logging
+        ctx = " ".join(f"{k}={v}" for k, v in kwargs.items())
+        logger.info(f"{event} {ctx}")

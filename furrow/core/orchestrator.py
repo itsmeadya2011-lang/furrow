@@ -345,6 +345,17 @@ class Orchestrator:
         self._skip_ids = set()
         by_id = {t.id: t for t in self.tasks}
         max_retries = max(0, self.settings.max_task_retries)
+
+        # Validate for duplicate task IDs in the new plan
+        seen_ids: set[str] = set()
+        for pt in plan.tasks:
+            if pt.id in seen_ids:
+                self.event_bus.emit(Event(
+                    type=EventType.LOG,
+                    message=f"duplicate task id in plan: {pt.id}, skipping duplicate"
+                ))
+            seen_ids.add(pt.id)
+
         for index, pt in enumerate(plan.tasks):
             old = by_id.get(pt.id)
             if old is not None:
@@ -384,6 +395,16 @@ class Orchestrator:
                 self.tasks.append(pt)
         self._active_ids = {t.id for t in plan.tasks}
 
+        # Log plan summary
+        self.event_bus.emit(Event(
+            type=EventType.LOG,
+            message=f"plan merged: {len(plan.tasks)} tasks ({len(self._skip_ids)} skipped, "
+                    f"{sum(1 for t in plan.tasks if t.status == 'pending')} pending, "
+                    f"{sum(1 for t in plan.tasks if t.status == 'completed')} completed, "
+                    f"{sum(1 for t in plan.tasks if t.status == 'failed')} failed, "
+                    f"{sum(1 for t in plan.tasks if t.status == 'blocked')} blocked)"
+        ))
+
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}
         waves: list[list[TaskModel]] = []
@@ -392,8 +413,20 @@ class Orchestrator:
         while remaining:
             wave = [t for t in remaining if all(d in done or d not in ids for d in t.dependencies)]
             if not wave:
+                # Circular dependency or missing dependency - block remaining tasks
                 for t in remaining:
                     t.status = "blocked"
+                    missing_deps = [d for d in t.dependencies if d not in ids]
+                    if missing_deps:
+                        self.event_bus.emit(Event(
+                            type=EventType.LOG,
+                            message=f"task {t.id} blocked: missing dependencies {missing_deps}"
+                        ))
+                    else:
+                        self.event_bus.emit(Event(
+                            type=EventType.LOG,
+                            message=f"task {t.id} blocked: circular dependency detected"
+                        ))
                 break
             waves.append(wave)
             for t in wave:

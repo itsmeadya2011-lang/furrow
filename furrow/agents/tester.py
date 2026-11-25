@@ -215,14 +215,20 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+            # Check for vitest config (prefers vitest over jest if both exist)
+            if any(self.workspace.glob("vitest.config.*")):
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
+            # Check for jest config
+            if any(self.workspace.glob("jest.config.*")):
+                if (self.workspace / "pnpm-lock.yaml").is_file():
+                    return ["pnpm", "test", "--silent"]
+                if (self.workspace / "yarn.lock").is_file():
+                    return ["yarn", "test", "--silent"]
+                return ["npm", "test", "--silent"]
             # Check package.json for test script
             try:
                 with open(self.workspace / "package.json", encoding="utf-8") as fh:
@@ -253,10 +259,57 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Rust
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
+
+        # Go
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+
+        # Java: Maven
+        if (self.workspace / "pom.xml").is_file():
+            mvnw = self.workspace / "mvnw"
+            return ["./mvnw", "test", "-q"] if mvnw.is_file() else ["mvn", "test", "-q"]
+
+        # Java: Gradle
+        has_gradle = (
+            (self.workspace / "build.gradle").is_file()
+            or (self.workspace / "build.gradle.kts").is_file()
+        )
+        if has_gradle:
+            gradlew = self.workspace / "gradlew"
+            if gradlew.is_file():
+                return ["./gradlew", "test", "--quiet"]
+            return ["gradle", "test", "--quiet"]
+
+        # Ruby: RSpec
+        if (self.workspace / "Gemfile").is_file() or (self.workspace / "Rakefile").is_file():
+            return ["bundle", "exec", "rspec"]
+
+        # PHP: PHPUnit
+        if (self.workspace / "composer.json").is_file():
+            phpunit_bin = self.workspace / "vendor/bin/phpunit"
+            if phpunit_bin.is_file():
+                return ["./vendor/bin/phpunit"]
+            has_xml = (
+                (self.workspace / "phpunit.xml").is_file()
+                or (self.workspace / "phpunit.xml.dist").is_file()
+            )
+            if has_xml:
+                return ["phpunit"]
+
+        # .NET
+        if any(self.workspace.glob("*.sln")) or any(self.workspace.glob("*.csproj")):
+            return ["dotnet", "test", "--no-restore", "--verbosity", "quiet"]
+
+        # Make-based projects
+        if (self.workspace / "Makefile").is_file() or (self.workspace / "makefile").is_file():
+            return ["make", "test"]
+
+        # Bun
+        if (self.workspace / "bun.lockb").is_file() or (self.workspace / "bun.lock").is_file():
+            return ["bun", "test"]
 
         return None
 
