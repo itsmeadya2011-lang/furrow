@@ -4,6 +4,10 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow clean           remove persisted run state
+    furrow plan            generate a plan for a goal without executing
+    furrow log             show event log from last run
+    furrow version         print Furrow version
     furrow web             serve the web UI
 """
 
@@ -11,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import logging
 import sys
 from pathlib import Path
@@ -18,15 +23,18 @@ from typing import Any
 
 import click
 
+from furrow.agents.planner import PlannerAgent
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
+from furrow.llm import LLMClient
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+VERSION = "0.1.0"
 
 
 def _run_settings(
@@ -90,8 +98,12 @@ def _print_summary(result: RunResult) -> None:
         click.echo(f"  Summary: {result.summary}")
 
 
-def _print_state(state: RunState) -> None:
+def _print_state(state: RunState, output_format: str = "text") -> None:
     """Print the persisted run state."""
+    if output_format == "json":
+        click.echo(state.model_dump_json(indent=2))
+        return
+
     click.echo("Furrow run status")
     click.echo(f"  Original goal: {state.original_goal}")
     click.echo(f"  Current goal:  {state.goal}")
@@ -119,6 +131,32 @@ def _print_state(state: RunState) -> None:
             click.echo(line)
     else:
         click.echo("Tasks:  (none)")
+
+
+def _print_plan(plan, output_format: str = "text") -> None:
+    """Print a generated plan."""
+    if output_format == "json":
+        click.echo(plan.model_dump_json(indent=2))
+        return
+
+    click.echo("Generated Plan")
+    click.echo(f"  Rationale: {plan.rationale}")
+    click.echo("  Tasks:")
+    for i, task in enumerate(plan.tasks, 1):
+        deps = f" (deps: {', '.join(task.dependencies)})" if task.dependencies else ""
+        click.echo(f"    {i}. {task.description}{deps}")
+        if task.files:
+            click.echo(f"       Files: {', '.join(task.files)}")
+
+
+async def _generate_plan(goal: str, run_settings: Settings) -> Any:
+    """Generate a plan using the PlannerAgent."""
+    client = LLMClient(settings=run_settings)
+    planner = PlannerAgent(client=client, settings=run_settings)
+    try:
+        return await planner.plan(goal)
+    finally:
+        await client.aclose()
 
 
 async def _release_client(client: Any) -> None:
@@ -179,9 +217,17 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
-def main() -> None:
+@click.option("-v", "--verbose", is_flag=True, help="Enable verbose (DEBUG) logging.")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress non-error output (WARNING level).")
+def main(verbose: bool, quiet: bool) -> None:
     """Furrow - an autonomous coding agent."""
-    configure_logging(settings.log_level)
+    if verbose:
+        log_level = "DEBUG"
+    elif quiet:
+        log_level = "WARNING"
+    else:
+        log_level = settings.log_level
+    configure_logging(log_level)
 
 
 @main.command()
@@ -195,17 +241,32 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option(
+    "--dry-run",
+    "--plan-only",
+    is_flag=True,
+    help="Generate the plan and show it, but do not execute.",
+)
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    dry_run: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+
+    if dry_run:
+        # Generate and show plan only
+        plan = asyncio.run(_generate_plan(goal, run_settings))
+        _print_plan(plan, output_format="text")
+        click.echo("\n(Dry run complete - plan shown above. Run without --dry-run to execute.)")
+        sys.exit(0)
+
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -216,15 +277,24 @@ def start(
     default=None,
     help=WORKSPACE_HELP,
 )
-def status(workspace: Path | None) -> None:
+@click.option(
+    "--output-format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format for scripting.",
+)
+def status(workspace: Path | None, output_format: str) -> None:
     """Show the state of the persisted Furrow run."""
     run_settings = _run_settings(workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
-        click.echo("No furrow run state found.")
+        if output_format == "json":
+            click.echo(json.dumps({"error": "No furrow run state found."}))
+        else:
+            click.echo("No furrow run state found.")
         return
-    _print_state(state)
+    _print_state(state, output_format=output_format)
 
 
 @main.command()
@@ -245,6 +315,98 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         sys.exit(1)
     goal = state.original_goal or state.goal
     _execute(goal=goal, run_settings=run_settings, resume=True)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def clean(workspace: Path | None) -> None:
+    """Remove persisted run state."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    if store.exists():
+        store.clear()
+        click.echo("Run state removed.")
+    else:
+        click.echo("No run state found.")
+
+
+@main.command()
+@click.argument("goal", required=False)
+@click.option("--model", default=None, help="Override the LLM model.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+@click.option(
+    "--output-format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format for scripting.",
+)
+def plan(goal: str | None, model: str | None, workspace: Path | None, output_format: str) -> None:
+    """Generate a plan for a goal without executing."""
+    if not goal:
+        goal = click.prompt("Enter your goal for Furrow")
+    run_settings = _run_settings(model=model, workspace=workspace)
+    plan_obj = asyncio.run(_generate_plan(goal, run_settings))
+    _print_plan(plan_obj, output_format=output_format)
+
+
+@main.command()
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help=WORKSPACE_HELP,
+)
+def log(workspace: Path | None) -> None:
+    """Show event log from last run."""
+    run_settings = _run_settings(workspace=workspace)
+    store = StateStore(run_settings.state_path())
+    state = store.load()
+    if state is None:
+        click.echo("No furrow run state found.")
+        return
+
+    if not state.history:
+        click.echo("No history entries found.")
+        return
+
+    click.echo("Furrow event log")
+    for entry in state.history:
+        click.echo(f"\n--- Cycle {entry.cycle} ({entry.timestamp}) ---")
+        if entry.goal:
+            click.echo(f"  Goal: {entry.goal}")
+        if entry.plan_rationale:
+            click.echo(f"  Plan: {entry.plan_rationale}")
+        if entry.task_summaries:
+            click.echo("  Tasks:")
+            for summary in entry.task_summaries:
+                click.echo(f"    - {summary}")
+        if entry.test_summary:
+            click.echo(f"  Tests: {entry.test_summary}")
+        if entry.usage and entry.usage.calls > 0:
+            click.echo(
+                f"  LLM usage: {entry.usage.calls} calls, "
+                f"{entry.usage.total_tokens} tokens "
+                f"(in {entry.usage.input_tokens} / out {entry.usage.output_tokens})"
+            )
+            cost = float(getattr(entry.usage, "cost_usd", 0.0) or 0.0)
+            if cost > 0:
+                click.echo(f"  LLM cost: ${cost:.6f}")
+
+
+@main.command()
+def version() -> None:
+    """Print Furrow version."""
+    click.echo(f"Furrow version {VERSION}")
 
 
 @main.command()

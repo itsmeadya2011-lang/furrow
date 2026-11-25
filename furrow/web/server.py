@@ -140,6 +140,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="cancel" style="display: none;">Cancel</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -293,6 +294,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = body.status || null;
       const result = body.result || null;
       renderStatus(status, result, running);
+      updateCancelButton(running);
       if (status && status.tasks) { renderTasks(status.tasks); }
       if (body.result) {
         const summary = text(body.result.summary);
@@ -406,9 +408,32 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('cancel').onclick = function () {
+    cancelRun();
+  };
+
+  async function cancelRun() {
+    try {
+      const res = await fetch('/api/cancel', { method: 'POST' });
+      const body = await res.json();
+      if (body.cancelled) {
+        append('-- cancel requested');
+      } else {
+        append('!! ' + (body.error || 'cancel failed'));
+      }
+    } catch (err) {
+      append('!! cancel request failed');
+    }
+  }
+
+  function updateCancelButton(running) {
+    const btn = document.getElementById('cancel');
+    btn.style.display = running ? '' : 'none';
+  }
 
   loadState();
   loadStatus();
+  setInterval(loadStatus, 1000);
 </script>
 </body>
 </html>
@@ -647,6 +672,16 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the currently running run."""
+    task = _CURRENT.get("task")
+    if task is not None and not task.done():
+        _cancel_run(task)
+        return JSONResponse({"cancelled": True})
+    return JSONResponse({"cancelled": False, "error": "no run in progress"})
 
 
 @app.websocket("/ws")

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import fnmatch
+import glob as globmod
 import json
 import os
 import re
@@ -13,7 +15,7 @@ from typing import Any
 from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
-from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.llm import IGNORED_DIRECTORIES, LLMClient, LLMResponse, ToolCall
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -665,6 +667,19 @@ class WorkerAgent:
             )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
+        if name == "grep":
+            return await self._grep(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else None,
+                args.get("include"),
+            )
+        if name == "patch":
+            return await self._apply_patch(str(args.get("path", "")), str(args.get("diff", "")))
+        if name == "glob":
+            return await self._glob(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") is not None else None,
+            )
         return f"unknown tool: {name}"
 
     @staticmethod
@@ -798,6 +813,115 @@ class WorkerAgent:
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
+
+    async def _grep(self, pattern: str, path: str | None, include: Any) -> str:
+        if not pattern:
+            return "error: missing pattern"
+        base = self.workspace.resolve()
+        search_root = base
+        if path:
+            resolved = resolve_in_workspace(self.workspace, path)
+            if resolved is None:
+                return "error: path escapes workspace"
+            search_root = resolved
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid regex: {exc}"
+        matches: list[str] = []
+        for root, dirs, files in os.walk(search_root):
+            dirs[:] = [d for d in dirs if d not in IGNORED_DIRECTORIES]
+            for fname in files:
+                if include and not fnmatch.fnmatch(fname, str(include)):
+                    continue
+                fpath = Path(root) / fname
+                try:
+                    with open(fpath, encoding="utf-8", errors="replace") as fh:
+                        for lineno, line in enumerate(fh, 1):
+                            if compiled.search(line):
+                                try:
+                                    rel = str(fpath.relative_to(base))
+                                except ValueError:
+                                    rel = str(fpath)
+                                matches.append(f"{rel}:{lineno}:{line.rstrip()}")
+                                if len(matches) >= 100:
+                                    break
+                except (OSError, UnicodeError):
+                    continue
+            if len(matches) >= 100:
+                break
+        if not matches:
+            return "no matches"
+        return "\n".join(matches)
+
+    async def _apply_patch(self, path: str, diff: str) -> str:
+        if not path or not diff:
+            return "error: missing path or diff"
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not resolved.exists():
+            return "error: file does not exist"
+        if "---" not in diff or "+++" not in diff:
+            return "error: invalid diff format"
+        backup = resolved.with_suffix(resolved.suffix + ".bak")
+        try:
+            import shutil
+            shutil.copy2(resolved, backup)
+        except OSError as exc:
+            return f"error: backup failed: {exc}"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "patch", str(resolved),
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(self.workspace),
+            )
+            stdout, stderr = await proc.communicate(diff.encode("utf-8"))
+        except FileNotFoundError:
+            return "error: patch command not available"
+        except (OSError, RuntimeError) as exc:
+            return f"error: {exc}"
+        out = stdout.decode("utf-8", errors="replace")
+        err = stderr.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            return f"patch failed:\n{out}\n{err}".strip()
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"patched {path}\n{out}".strip()
+
+    async def _glob(self, pattern: str, path: str | None) -> str:
+        if not pattern:
+            return "error: missing pattern"
+        base = self.workspace.resolve()
+        search_root = base
+        if path:
+            resolved = resolve_in_workspace(self.workspace, path)
+            if resolved is None:
+                return "error: path escapes workspace"
+            search_root = resolved
+        results: list[str] = []
+        try:
+            for match in globmod.iglob(pattern, root_dir=str(search_root), recursive=True):
+                full = search_root / match
+                parts = Path(match).parts
+                if any(p in IGNORED_DIRECTORIES for p in parts):
+                    continue
+                if full.is_dir():
+                    continue
+                try:
+                    rel = str(full.relative_to(base))
+                except ValueError:
+                    rel = str(full)
+                results.append(rel)
+                if len(results) >= 500:
+                    break
+        except (OSError, ValueError) as exc:
+            return f"error: {exc}"
+        if not results:
+            return "no matches"
+        return "\n".join(results)
 
     @staticmethod
     async def _kill_process_tree(proc: asyncio.subprocess.Process, new_session: bool) -> None:

@@ -132,6 +132,34 @@ class Settings(BaseSettings):
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
+    # Test configuration
+    test_command: list[str] | None = None  # Override auto-detection
+    test_args: list[str] = Field(default_factory=list)  # Additional test args
+
+    # Cost control
+    cost_limit_usd: float = Field(default=0.0, ge=0)  # 0 = unlimited
+
+    # Idle/timeout
+    idle_timeout: float = Field(default=0.0, ge=0)  # 0 = unlimited
+
+    # Git integration
+    auto_commit: bool = False
+    commit_message_template: str = "furrow: cycle {cycle} - {stopped_reason}"
+
+    # File filtering
+    exclude_patterns: list[str] = Field(default_factory=list)
+    include_patterns: list[str] = Field(default_factory=lambda: ["**/*"])
+
+    # LLM temperatures (0.0 = deterministic)
+    worker_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    planner_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+    tester_temperature: float = Field(default=0.0, ge=0.0, le=2.0)
+
+    # Advanced
+    parallel_test_runs: bool = False
+    notification_webhook: str | None = None
+    max_file_size_mb: int = Field(default=10, ge=1)
+
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
         base = Path(workspace) if workspace is not None else Path(self.workspace)

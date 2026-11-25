@@ -88,4 +88,62 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "grep",
+        "description": "Search for a pattern in files under the workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex pattern to search for",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Directory to search (default: workspace root)",
+                },
+                "include": {
+                    "type": "string",
+                    "description": "Glob pattern for files to include (e.g. '*.py')",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "patch",
+        "description": (
+            "Apply a unified diff to a file. "
+            "Use for surgical edits instead of full rewrites."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "diff": {
+                    "type": "string",
+                    "description": "Unified diff format (e.g. from 'diff -u')",
+                },
+            },
+            "required": ["path", "diff"],
+        },
+    },
+    {
+        "name": "glob",
+        "description": "Find files matching a glob pattern.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Glob pattern (e.g. '**/*.py')",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "Base directory (default: workspace root)",
+                },
+            },
+            "required": ["pattern"],
+        },
+    },
 ]

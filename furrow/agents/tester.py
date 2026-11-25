@@ -199,6 +199,13 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        # Check for explicit test command override in settings
+        if self.settings.test_command:
+            cmd = list(self.settings.test_command)
+            if self.settings.test_args:
+                cmd.extend(self.settings.test_args)
+            return cmd
+
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -215,33 +222,153 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
             try:
                 with open(self.workspace / "package.json", encoding="utf-8") as fh:
                     pkg_data = json.load(fh)
-                scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
+                scripts = pkg_data.get("scripts", {}) or {}
+                dependencies = {
+                    **pkg_data.get("dependencies", {}),
+                    **pkg_data.get("devDependencies", {}),
+                }
             except (OSError, UnicodeError, ValueError) as exc:
                 logger.warning("Could not read package.json: %s", exc)
-            # Fallback: npm test if package.json exists (Python case handled above)
+                scripts = {}
+                dependencies = {}
+
             if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+                pkg_manager = "pnpm"
+            elif (self.workspace / "yarn.lock").is_file():
+                pkg_manager = "yarn"
+            else:
+                pkg_manager = "npm"
+
+            def _run_script(name: str) -> list[str] | None:
+                script = scripts.get(name)
+                if isinstance(script, str) and script.strip():
+                    return [pkg_manager, "run", name, "--silent"]
+                return None
+
+            has_jest_config = any(self.workspace.glob("jest.config.*"))
+            has_vitest_config = any(self.workspace.glob("vitest.config.*"))
+            frameworks: list[tuple[str, bool, tuple[str, ...]]] = [
+                (
+                    "jest",
+                    has_jest_config or "jest" in dependencies or "jest" in scripts,
+                    ("test:unit", "test:jest", "test"),
+                ),
+                (
+                    "vitest",
+                    has_vitest_config or "vitest" in dependencies or "vitest" in scripts,
+                    ("test:unit", "test:vitest", "test"),
+                ),
+                (
+                    "mocha",
+                    "mocha" in dependencies or "mocha" in scripts,
+                    ("test:mocha", "test"),
+                ),
+                (
+                    "playwright",
+                    "playwright" in dependencies or "playwright" in scripts,
+                    ("test:playwright", "test"),
+                ),
+                (
+                    "cypress",
+                    "cypress" in dependencies or "cypress" in scripts,
+                    ("test:cypress", "test"),
+                ),
+            ]
+            for _name, detected, candidates in frameworks:
+                if not detected:
+                    continue
+                for candidate in candidates:
+                    command = _run_script(candidate)
+                    if command is not None:
+                        return command
+            # Fallback: generic test script if package.json exists
+            return [pkg_manager, "test", "--silent"]
+
+        if (self.workspace / "Cargo.toml").is_file():
+            return ["cargo", "test", "-q"]
+        if (self.workspace / "go.mod").is_file():
+            return ["go", "test", "./..."]
+
+        # Bazel
+        if any(
+            (self.workspace / marker).is_file()
+            for marker in ("WORKSPACE", "WORKSPACE.bazel", "BUILD.bazel")
+        ):
+            return ["bazel", "test", "//..."]
+
+        # Make
+        if any(
+            (self.workspace / marker).is_file()
+            for marker in ("Makefile", "makefile", "GNUmakefile")
+        ):
+            return ["make", "test"]
+
+        # Gradle
+        if any(
+            (self.workspace / marker).is_file()
+            for marker in ("build.gradle", "build.gradle.kts")
+        ):
+            if (self.workspace / "gradlew").is_file():
+                return ["./gradlew", "test"]
+            return ["gradle", "test"]
+
+        # Maven
+        if (self.workspace / "pom.xml").is_file():
+            return ["mvn", "test"]
+
+        # CMake
+        if (self.workspace / "CMakeLists.txt").is_file():
+            if (self.workspace / "build").is_dir():
+                return ["ctest"]
+            return ["cmake", "--build", "build", "--target", "test"]
+
+        # Meson
+        if (self.workspace / "meson.build").is_file():
+            return ["meson", "test", "-C", "builddir"]
+
+        def _pyproject_section(section: str) -> bool:
+            try:
+                with open(self.workspace / "pyproject.toml", encoding="utf-8") as fh:
+                    return any(line.strip() == f"[tool.{section}]" for line in fh)
+            except (OSError, UnicodeError):
+                return False
+
+        # Poetry
+        if has_pyproject and _pyproject_section("poetry"):
+            return ["poetry", "run", "pytest"]
+
+        # Tox
+        if has_tox_ini:
+            return ["tox"]
+
+        # Hatch
+        if has_pyproject and _pyproject_section("hatch"):
+            return ["hatch", "run", "test"]
+
+        # Rake
+        if (self.workspace / "Rakefile").is_file():
+            return ["rake", "test"]
+
+        def _gemfile_has_rake() -> bool:
+            try:
+                with open(self.workspace / "Gemfile", encoding="utf-8") as fh:
+                    return any(re.search(r"gem\s+['\"]rake['\"]", line) for line in fh)
+            except (OSError, UnicodeError):
+                return False
+
+        if (self.workspace / "Gemfile").is_file() and _gemfile_has_rake():
+            return ["rake", "test"]
+
+        # Mix (Elixir)
+        if (self.workspace / "mix.exs").is_file():
+            return ["mix", "test"]
+
+        # sbt (Scala)
+        if (self.workspace / "build.sbt").is_file():
+            return ["sbt", "test"]
 
         python_markers = [
             "pyproject.toml",
@@ -253,10 +380,6 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
-        if (self.workspace / "Cargo.toml").is_file():
-            return ["cargo", "test", "-q"]
-        if (self.workspace / "go.mod").is_file():
-            return ["go", "test", "./..."]
 
         return None
 
