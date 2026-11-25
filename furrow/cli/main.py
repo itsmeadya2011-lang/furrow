@@ -33,6 +33,8 @@ def _run_settings(
     model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
+    max_task_retries: int | None = None,
+    max_worker_iterations: int | None = None,
 ) -> Settings:
     """Return a validated copy of the global settings with the given overrides applied.
 
@@ -46,6 +48,10 @@ def _run_settings(
         updates["max_cycles"] = max_cycles
     if workspace is not None:
         updates["workspace"] = Path(workspace)
+    if max_task_retries is not None:
+        updates["max_task_retries"] = max_task_retries
+    if max_worker_iterations is not None:
+        updates["max_worker_iterations"] = max_worker_iterations
     merged = {**settings.model_dump(), **updates}
     return Settings.model_validate(merged)
 
@@ -184,6 +190,10 @@ def main() -> None:
     configure_logging(settings.log_level)
 
 
+MAX_TASK_RETRIES_HELP = "Maximum retry attempts for a failed task before it is marked failed."
+MAX_WORKER_ITERATIONS_HELP = "Maximum tool-call iterations per worker task."
+
+
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
@@ -195,17 +205,37 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option(
+    "--max-task-retries",
+    type=click.IntRange(min=0),
+    default=None,
+    help=MAX_TASK_RETRIES_HELP,
+)
+@click.option(
+    "--max-worker-iterations",
+    type=click.IntRange(min=1),
+    default=None,
+    help=MAX_WORKER_ITERATIONS_HELP,
+)
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    max_task_retries: int | None,
+    max_worker_iterations: int | None,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        max_cycles=max_cycles,
+        workspace=workspace,
+        max_task_retries=max_task_retries,
+        max_worker_iterations=max_worker_iterations,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +265,31 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option(
+    "--max-task-retries",
+    type=click.IntRange(min=0),
+    default=None,
+    help=MAX_TASK_RETRIES_HELP,
+)
+@click.option(
+    "--max-worker-iterations",
+    type=click.IntRange(min=1),
+    default=None,
+    help=MAX_WORKER_ITERATIONS_HELP,
+)
+def resume(
+    workspace: Path | None,
+    max_cycles: int | None,
+    max_task_retries: int | None,
+    max_worker_iterations: int | None,
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        workspace=workspace,
+        max_task_retries=max_task_retries,
+        max_worker_iterations=max_worker_iterations,
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
