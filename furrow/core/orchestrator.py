@@ -115,6 +115,7 @@ class Orchestrator:
             "original_goal": self.original_goal,
             "cycles": self.cycles,
             "stopped_reason": self._stopped_reason,
+            "error": self._stopped_reason or None,
             "tasks": [t.model_dump() for t in self.tasks],
             "usage": self._usage.model_dump(),
         }
@@ -322,6 +323,8 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
+        self.event_bus.emit(Event(type=EventType.DONE,
+                                  data={"cycles": self.cycles, "stopped_reason": self._stopped_reason}))
         return RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,

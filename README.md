@@ -44,6 +44,8 @@ Options:
 - `--model` — override the LLM model
 - `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
 - `--workspace PATH` — project directory to work in
+- `--max-worker-iterations N` — maximum tool-call iterations per worker task (default 12; must be >= 1)
+- `--max-task-retries N` — times a failed task is retried before it is marked failed (default 1; must be >= 0)
 - `--resume` — resume the persisted run instead of starting fresh
 
 If `goal` is omitted, Furrow will prompt for it.
@@ -66,7 +68,14 @@ Continue the persisted run.
 ```bash
 furrow resume
 furrow resume --workspace /path/to/project --max-cycles 5
+furrow resume --max-worker-iterations 8 --max-task-retries 2
 ```
+
+Options:
+- `--workspace PATH` — project directory to work in
+- `--max-cycles N` — maximum number of cycles (0 = unlimited; negative values are rejected)
+- `--max-worker-iterations N` — maximum tool-call iterations per worker task (default 12; must be >= 1)
+- `--max-task-retries N` — times a failed task is retried before it is marked failed (default 1; must be >= 0)
 
 The exit codes are the same as for `furrow start`: `1` when the resumed run ends `FAILED`, `0` for `PASSED`, `SKIPPED` and `NOT RUN`.
 
