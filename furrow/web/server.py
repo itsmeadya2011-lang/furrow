@@ -32,6 +32,26 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Furrow")
 
+# CORS middleware for development
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Request logging middleware
+@app.middleware("http")
+async def log_requests(request, call_next):
+    import time
+    start = time.time()
+    response = await call_next(request)
+    duration = time.time() - start
+    logger.info("%s %s %.3fs", request.method, request.url.path, duration)
+    return response
+
 POLL_INTERVAL = 0.05
 
 DEFAULT_CURRENT: dict[str, Any] = {
@@ -600,6 +620,26 @@ async def api_status() -> dict[str, Any]:
         "result": result.model_dump(mode="json") if result is not None else None,
         "error": _CURRENT.get("error"),
     }
+
+
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for load balancers and monitoring."""
+    return {"status": "ok", "service": "furrow"}
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running orchestrator, if any."""
+    task = _CURRENT.get("task")
+    if not task or task.done():
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run in progress"},
+        )
+    task.cancel()
+    # The done-callback (_on_run_done) will clear the running flag.
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.post("/api/start")

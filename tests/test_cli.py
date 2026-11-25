@@ -305,17 +305,17 @@ def test_main_passes_configured_log_level_to_configure_logging(
     """
     monkeypatch.setattr("furrow.cli.main.settings.log_level", "DEBUG")
 
-    captured: list[str] = []
+    captured: list[tuple] = []
 
-    def fake_configure_logging(level: str) -> None:
-        captured.append(level)
+    def fake_configure_logging(level: str, fmt: str | None = None) -> None:
+        captured.append((level, fmt))
 
     monkeypatch.setattr("furrow.cli.main.configure_logging", fake_configure_logging)
 
     result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
 
     assert result.exit_code == 0
-    assert captured == ["DEBUG"]
+    assert captured == [("DEBUG", None)]
 
 
 def test_summary_prints_skipped_when_no_test_runner(

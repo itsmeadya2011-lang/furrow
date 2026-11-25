@@ -179,9 +179,10 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
 
 
 @click.group()
-def main() -> None:
+@click.option("--log-format", type=click.Choice(["json", "console"]), default=None, help="Log output format.")
+def main(log_format: str | None) -> None:
     """Furrow - an autonomous coding agent."""
-    configure_logging(settings.log_level)
+    configure_logging(settings.log_level, log_format)
 
 
 @main.command()
@@ -264,6 +265,34 @@ def web(host: str, port: int) -> None:
         sys.exit(1)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
+        sys.exit(1)
+
+
+@main.command()
+@click.option("--host", default="127.0.0.1", help="Host of the web server.")
+@click.option("--port", type=int, default=8000, help="Port of the web server.")
+def stop(host: str, port: int) -> None:
+    """Stop a running orchestrator on the web server."""
+    import urllib.request
+    import urllib.error
+
+    url = f"http://{host}:{port}/api/stop"
+    try:
+        req = urllib.request.Request(url, method="POST")
+        with urllib.request.urlopen(req) as resp:
+            import json
+            data = json.load(resp)
+            if data.get("stopped"):
+                click.echo("Orchestrator stopped.")
+            else:
+                click.secho(f"Failed to stop: {data.get('error', 'unknown error')}", fg="red")
+                sys.exit(1)
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8")
+        click.secho(f"Failed to stop: {body}", fg="red")
+        sys.exit(1)
+    except Exception as exc:
+        click.secho(f"Failed to connect to web server: {exc}", fg="red")
         sys.exit(1)
 
 
