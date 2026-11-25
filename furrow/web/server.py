@@ -40,6 +40,7 @@ DEFAULT_CURRENT: dict[str, Any] = {
     "result": None,
     "task": None,
     "error": None,
+    "events": [],
 }
 
 # Registry of the run that is currently active (or of the last one that ran).
@@ -437,6 +438,18 @@ def _reset_registry() -> None:
     _CURRENT.update(DEFAULT_CURRENT)
 
 
+#: Maximum number of recent events kept in the registry for status retrieval.
+_MAX_REGISTRY_EVENTS = 200
+
+
+def _record_event(event: Event) -> None:
+    """Append *event* to the registry's recent-events list, bounded in size."""
+    events: list[dict[str, Any]] = _CURRENT.setdefault("events", [])
+    events.append(event.to_dict())
+    if len(events) > _MAX_REGISTRY_EVENTS:
+        del events[: len(events) - _MAX_REGISTRY_EVENTS]
+
+
 def _state_store() -> StateStore:
     """Store for the persisted run state of the current settings."""
     return StateStore(settings.state_path())
@@ -540,9 +553,14 @@ async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
 
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
-    """Run an orchestrator in the background and discard the emitted events."""
+    """Run an orchestrator in the background and keep its emitted events.
+
+    Events are recorded in the registry so that ``GET /api/status`` can surface
+    recent progress for HTTP-started runs (the websocket path reads directly
+    from its own queue and is unaffected).
+    """
     queue = bus.subscribe()
-    drain = asyncio.create_task(_drain(queue))
+    drain = asyncio.create_task(_drain_and_record(queue))
     try:
         return await _run_orchestrator(orchestrator)
     finally:
@@ -550,6 +568,13 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
         with contextlib.suppress(asyncio.CancelledError):
             await drain
         bus.unsubscribe(queue)
+
+
+async def _drain_and_record(queue: asyncio.Queue[Event]) -> None:
+    """Consume events from *queue* and record them in the run registry."""
+    while True:
+        event = await queue.get()
+        _record_event(event)
 
 
 def _build_orchestrator(
@@ -578,6 +603,25 @@ async def index() -> HTMLResponse:
     return HTMLResponse(content=INDEX_HTML)
 
 
+@app.get("/api/health")
+async def api_health() -> dict[str, Any]:
+    """Health check endpoint for monitoring.
+
+    Returns the server's uptime-adjacent status, whether a run is in progress,
+    and the persisted state file's existence. Never raises.
+    """
+    store = _state_store()
+    try:
+        state_exists = store.exists()
+    except OSError:
+        state_exists = False
+    return {
+        "status": "ok",
+        "running": bool(_CURRENT.get("running")),
+        "state_exists": state_exists,
+    }
+
+
 @app.get("/api/state")
 async def api_state() -> dict[str, Any]:
     """The persisted run state, if there is one."""
@@ -594,11 +638,13 @@ async def api_status() -> dict[str, Any]:
     """Status of the run that is currently active."""
     orchestrator = _CURRENT.get("orchestrator")
     result = _CURRENT.get("result")
+    events = _CURRENT.get("events", [])
     return {
         "running": bool(_CURRENT.get("running")),
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
         "error": _CURRENT.get("error"),
+        "events": list(events),
     }
 
 
@@ -644,9 +690,27 @@ async def api_start(request: StartRequest) -> JSONResponse:
             "result": None,
             "task": run_task,
             "error": None,
+            "events": [],
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/cancel")
+async def api_cancel() -> JSONResponse:
+    """Cancel the currently running furrow run, if any.
+
+    Returns ``{"cancelled": true}`` when a run was cancelled, or
+    ``{"cancelled": false, "error": "no run in progress"}`` otherwise.
+    """
+    task = _CURRENT.get("task")
+    if task is None or task.done():
+        return JSONResponse(
+            status_code=200,
+            content={"cancelled": False, "error": "no run in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"cancelled": True})
 
 
 @app.websocket("/ws")
