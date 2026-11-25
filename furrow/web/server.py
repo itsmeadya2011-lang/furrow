@@ -251,6 +251,26 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+      const filesChanged = Array.isArray(task.files_changed) && task.files_changed.length
+        ? ' files: ' + task.files_changed.join(', ')
+        : '';
+      if (filesChanged) {
+        const filesEl = document.createElement('span');
+        filesEl.textContent = filesChanged;
+        meta.appendChild(filesEl);
+      }
+      const startedAt = text(task.started_at);
+      if (startedAt) {
+        const startedEl = document.createElement('span');
+        startedEl.textContent = ' started: ' + startedAt;
+        meta.appendChild(startedEl);
+      }
+      const finishedAt = text(task.finished_at);
+      if (finishedAt) {
+        const finishedEl = document.createElement('span');
+        finishedEl.textContent = ' finished: ' + finishedAt;
+        meta.appendChild(finishedEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -724,13 +744,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, f"run failed: {exc}")
             return
         result = run_task.result()
-        await websocket.send_json(
-            {
-                "type": "done",
-                "message": result.summary,
-                "data": result.model_dump(mode="json"),
-            }
-        )
+        # The DONE event was already streamed via the event bus; no second
+        # "done" frame is needed.
     except asyncio.CancelledError:
         # The client went away (or the server is shutting down): stop the run
         # and make sure the server does not stay stuck in the "running" state.

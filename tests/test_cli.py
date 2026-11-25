@@ -273,6 +273,52 @@ def test_start_uses_max_cycles_and_workspace(
     assert global_settings.workspace == workspace_before
 
 
+def test_start_passes_model_options_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(
+        main,
+        [
+            "start",
+            "build a thing",
+            "--planner-model",
+            "claude-haiku-4-5",
+            "--worker-model",
+            "claude-sonnet-4",
+            "--tester-model",
+            "claude-3-5-haiku",
+        ],
+    )
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.planner_model == "claude-haiku-4-5"
+    assert run_settings.worker_model == "claude-sonnet-4"
+    assert run_settings.tester_model == "claude-3-5-haiku"
+
+
+def test_resume_passes_model_options_to_settings(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator], tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(
+        main,
+        [
+            "resume",
+            "--workspace",
+            str(tmp_path),
+            "--planner-model",
+            "claude-haiku-4-5",
+        ],
+    )
+
+    assert result.exit_code == 0
+    run_settings = fake_orchestrator.init_kwargs["settings"]
+    assert run_settings.planner_model == "claude-haiku-4-5"
+    assert fake_orchestrator.init_kwargs["resume"] is True
+
+
 def test_start_stops_gracefully_on_keyboard_interrupt(
     runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
 ) -> None:

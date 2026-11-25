@@ -31,6 +31,9 @@ MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
 
 def _run_settings(
     model: str | None = None,
+    planner_model: str | None = None,
+    worker_model: str | None = None,
+    tester_model: str | None = None,
     max_cycles: int | None = None,
     workspace: Path | None = None,
 ) -> Settings:
@@ -42,6 +45,12 @@ def _run_settings(
     updates: dict[str, Any] = {}
     if model is not None:
         updates["model"] = model
+    if planner_model is not None:
+        updates["planner_model"] = planner_model
+    if worker_model is not None:
+        updates["worker_model"] = worker_model
+    if tester_model is not None:
+        updates["tester_model"] = tester_model
     if max_cycles is not None:
         updates["max_cycles"] = max_cycles
     if workspace is not None:
@@ -187,6 +196,9 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
+@click.option("--planner-model", default=None, help="Override the planner LLM model.")
+@click.option("--worker-model", default=None, help="Override the worker LLM model.")
+@click.option("--tester-model", default=None, help="Override the tester LLM model.")
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
 @click.option(
     "--workspace",
@@ -198,6 +210,9 @@ def main() -> None:
 def start(
     goal: str | None,
     model: str | None,
+    planner_model: str | None,
+    worker_model: str | None,
+    tester_model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
@@ -205,7 +220,14 @@ def start(
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        model=model,
+        planner_model=planner_model,
+        worker_model=worker_model,
+        tester_model=tester_model,
+        max_cycles=max_cycles,
+        workspace=workspace,
+    )
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -235,9 +257,24 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--planner-model", default=None, help="Override the planner LLM model.")
+@click.option("--worker-model", default=None, help="Override the worker LLM model.")
+@click.option("--tester-model", default=None, help="Override the tester LLM model.")
+def resume(
+    workspace: Path | None,
+    max_cycles: int | None,
+    planner_model: str | None,
+    worker_model: str | None,
+    tester_model: str | None,
+) -> None:
     """Resume the persisted Furrow run."""
-    run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
+    run_settings = _run_settings(
+        max_cycles=max_cycles,
+        workspace=workspace,
+        planner_model=planner_model,
+        worker_model=worker_model,
+        tester_model=tester_model,
+    )
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
