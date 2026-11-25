@@ -355,23 +355,20 @@ class Orchestrator:
                 # retry budgets and dependency outcomes are not lost across cycles.
                 if old.status == "completed":
                     if old_desc == pt.description and old_files == pt.files:
-                        pt.status = "completed"
+                        new_status = "completed"
                         self._skip_ids.add(pt.id)
                     else:
-                        pt.status = "pending"
+                        new_status = "pending"
                 elif old.status == "failed":
-                    if old.attempts <= max_retries:
-                        pt.status = "pending"
-                    else:
-                        pt.status = "failed"
+                    new_status = "pending" if old.attempts <= max_retries else "failed"
                 elif old.status == "blocked":
-                    pt.status = "blocked"
+                    new_status = "blocked"
                 else:
-                    pt.status = "pending"
+                    new_status = "pending"
                 old.description = pt.description
                 old.files = pt.files
                 old.dependencies = pt.dependencies
-                old.status = pt.status
+                old.status = new_status
                 # A freshly planned task carries result=None and error=None,
                 # so never let that wipe a result or error already recorded by
                 # a previous cycle. Only adopt non-None values from the plan.
