@@ -94,6 +94,18 @@ def test_detect_empty(tmp_path):
     assert cmd is None
 
 
+def test_detect_unittest_with_tests_dir(tmp_path):
+    """A tests/ directory without any pytest config uses unittest discover."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_example.py").write_text("import unittest\n\nclass T(unittest.TestCase):\n    def test_x(self):\n        self.assertTrue(True)\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert cmd[0] == "python" or cmd[0].endswith("python")
+    assert "unittest" in cmd
+    assert "discover" in cmd
+
+
 def test_run_no_runner_is_reported_as_skipped(tmp_path):
     """No detected test runner means a skipped run, not a passed one."""
     agent = TesterAgent(

@@ -1237,3 +1237,44 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_done_event_is_emitted(tmp_path, monkeypatch):
+    """The orchestrator emits a DONE lifecycle event when the run finishes."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    q = orch.event_bus.subscribe()
+    result = await orch.run()
+    events = drain(q)
+    done_events = [e for e in events if e.type == EventType.DONE]
+    assert len(done_events) == 1
+    assert done_events[0].message == f"stopped: {result.stopped_reason}"
+    assert "result" in done_events[0].data
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_last_summary(tmp_path, monkeypatch):
+    """last_summary persisted in state is restored on resume."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True, skipped=False)
+    await orch.run()
+
+    st = store.load()
+    assert st is not None
+    assert st.last_summary == "s"
+
+    # Simulate a persisted last_summary
+    st.last_summary = "previous cycle summary"
+    store.save(st)
+
+    orch2 = Orchestrator(goal="x", settings=settings, state_store=store, resume=True)
+    assert orch2._last_summary == "previous cycle summary"

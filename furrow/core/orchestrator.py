@@ -44,6 +44,7 @@ class Orchestrator:
         self._resume = resume
         self._last_test_passed: bool | None = None
         self._tests_skipped: bool = False
+        self._last_summary: str = ""
         self._console_obj: Any = _UNSET
         self._resume_state_missing = False
         self._usage: Usage = Usage()
@@ -81,6 +82,7 @@ class Orchestrator:
                     self._tests_run = 0
                 self._last_test_passed = getattr(st, "last_passed", None)
                 self._tests_skipped = bool(getattr(st, "last_skipped", False))
+                self._last_summary = str(getattr(st, "last_summary", "") or "")
             else:
                 self._resume_state_missing = True
 
@@ -322,7 +324,7 @@ class Orchestrator:
         files_changed = sorted(
             {f for t in active for f in (getattr(t, "files_changed", None) or [])}
         )
-        return RunResult(
+        result = RunResult(
             passed=bool(self._last_test_passed),
             cycles=self.cycles,
             tasks_completed=completed,
@@ -335,6 +337,14 @@ class Orchestrator:
             usage=self._usage,
             files_changed=files_changed,
         )
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=result.summary,
+                data={"result": result.model_dump(mode="json")},
+            )
+        )
+        return result
 
     def _context(self) -> str:
         if self._feedback:

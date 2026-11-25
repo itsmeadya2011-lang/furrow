@@ -253,6 +253,11 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # A tests/ directory without any pytest configuration can still use
+        # the standard library's unittest runner.
+        if has_tests_dir:
+            return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-v"]
+
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
