@@ -729,10 +729,21 @@ class WorkerAgent:
         rels = []
         base = self.workspace.resolve()
         for e in entries[:MAX_LIST_ENTRIES]:
-            try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
-            except ValueError:
-                rels.append(str(e))
+            pe = Path(e)
+            if pe.is_absolute():
+                try:
+                    rels.append(str(pe.relative_to(base)))
+                except ValueError:
+                    rels.append(str(e))
+            else:
+                # client.list_files(resolved) returns paths relative to `resolved`;
+                # convert them to workspace-relative paths so they can be passed
+                # straight back to read_file / write_file.
+                full = resolved / pe
+                try:
+                    rels.append(str(full.relative_to(base)))
+                except ValueError:
+                    rels.append(str(e))
         text = "\n".join(rels)
         omitted = total - len(rels)
         if omitted > 0:

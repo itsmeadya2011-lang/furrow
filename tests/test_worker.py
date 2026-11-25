@@ -1319,3 +1319,91 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_list_files_returns_workspace_relative_paths(tmp_path):
+    """list_files on a subdirectory returns workspace-relative paths.
+
+    The real LLMClient.list_files returns paths relative to the directory
+    argument; the worker must convert them to workspace-relative paths so
+    they can be passed straight back to read_file / write_file.
+    """
+    from furrow.config import TaskModel
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("x")
+    (tmp_path / "src" / "bar.py").write_text("y")
+    (tmp_path / "top.py").write_text("z")
+
+    # Simulate the real client: return paths relative to the directory arg.
+    def relative_list_files(directory):
+        p = Path(directory)
+        return [
+            os.path.relpath(str(f), str(p))
+            for f in p.rglob("*")
+            if f.is_file()
+        ]
+
+    client = FakeLLMClient([])
+    client.list_files = relative_list_files
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files("src")
+    lines = out.splitlines()
+    assert "src/foo.py" in lines
+    assert "src/bar.py" in lines
+    assert "top.py" not in lines  # not under src/
+
+
+@pytest.mark.asyncio
+async def test_list_files_root_returns_workspace_relative_paths(tmp_path):
+    """list_files on the workspace root returns workspace-relative paths."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "foo.py").write_text("x")
+    (tmp_path / "top.py").write_text("z")
+
+    def relative_list_files(directory):
+        p = Path(directory)
+        return [
+            os.path.relpath(str(f), str(p))
+            for f in p.rglob("*")
+            if f.is_file()
+        ]
+
+    client = FakeLLMClient([])
+    client.list_files = relative_list_files
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files(".")
+    lines = out.splitlines()
+    assert "src/foo.py" in lines
+    assert "top.py" in lines
+
+
+def test_resolve_in_workspace_empty_path_returns_none():
+    ws = Path("/tmp/ws").resolve()
+    assert resolve_in_workspace(ws, "") is None
+
+
+def test_resolve_in_workspace_dot_returns_workspace():
+    ws = Path("/tmp/ws").resolve()
+    assert resolve_in_workspace(ws, ".") == ws
+
+
+def test_resolve_in_workspace_double_dot_stays_inside():
+    ws = Path("/tmp/ws").resolve()
+    (ws / "sub").mkdir()
+    inside = resolve_in_workspace(ws, "sub/../a.py")
+    assert inside == ws / "a.py"
+
+
+def test_resolve_in_workspace_double_dot_escapes():
+    ws = Path("/tmp/ws").resolve()
+    assert resolve_in_workspace(ws, "../../etc/passwd") is None

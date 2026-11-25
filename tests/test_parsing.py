@@ -173,3 +173,54 @@ def test_parse_test_result_falls_back_on_recursionerror(monkeypatch):
     monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
     r = parsing.parse_test_result("[[1]]")
     assert isinstance(r, TestResult)
+
+
+def test_strip_code_fences_single_fenced_block():
+    text = """```json
+{"a": 1}
+```"""
+    assert parsing.strip_code_fences(text) == '{"a": 1}'
+
+
+def test_strip_code_fences_no_fences_returns_unchanged():
+    text = '{"a": 1}'
+    assert parsing.strip_code_fences(text) == '{"a": 1}'
+
+
+def test_strip_code_fences_multiple_fenced_blocks_strips_fence_lines():
+    text = """```json
+{"a": 1}
+```
+some text
+```json
+{"b": 2}
+```"""
+    result = parsing.strip_code_fences(text)
+    assert "```" not in result
+    assert '"a": 1' in result
+    assert '"b": 2' in result
+    assert "some text" in result
+
+
+def test_strip_code_fences_opening_fence_only():
+    text = """```json
+{"a": 1}
+some trailing text"""
+    result = parsing.strip_code_fences(text)
+    assert "```" not in result
+    assert '"a": 1' in result
+
+
+def test_strip_code_fences_closing_fence_only():
+    text = '{"a": 1}\n```'
+    result = parsing.strip_code_fences(text)
+    assert "```" not in result
+    assert '"a": 1' in result
+
+
+def test_strip_code_fences_empty_input():
+    assert parsing.strip_code_fences("") == ""
+
+
+def test_strip_code_fences_non_string_input():
+    assert parsing.strip_code_fences(None) == "None"
