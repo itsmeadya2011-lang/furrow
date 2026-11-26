@@ -74,6 +74,11 @@ def resolve_test_timeout(settings: Settings) -> float:
     return timeout
 
 
+def _is_pytest_command(cmd: list[str]) -> bool:
+    """Return True when *cmd* invokes pytest (including ``python -m pytest``)."""
+    return any(Path(token).name == "pytest" for token in cmd)
+
+
 def parse_test_output(output: str) -> list[dict]:
     """Parse raw test output and return structured failure information."""
     failures: list[dict] = []
@@ -406,6 +411,26 @@ class TesterAgent:
             )
             if len(combined) > 20000:
                 combined = "[... output truncated ...]\n" + combined[-20000:]
+
+            # pytest exits with status 5 when it collects no tests.  That is
+            # "nothing to verify", not a failing run: report it as skipped
+            # (exactly like "no test runner detected") before involving the LLM,
+            # whose verdict there would only describe an empty run.
+            if (
+                not spawn_failed
+                and not timed_out
+                and returncode == 5
+                and _is_pytest_command(cmd)
+            ):
+                return TestResult(
+                    passed=True,
+                    skipped=True,
+                    summary=(
+                        "pytest collected no tests (exit code 5); "
+                        "the test run was skipped."
+                    ),
+                    failures=[],
+                )
 
             llm_result: TestResult | None = None
             if not spawn_failed:

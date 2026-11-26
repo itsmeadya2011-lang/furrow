@@ -109,7 +109,7 @@ def test_run_no_runner_is_reported_as_skipped(tmp_path):
     assert res.failures == []
 
 
-def test_run_llm_result(tmp_path):
+def test_run_llm_result(tmp_path, monkeypatch):
     client = FakeLLMClient(response='{"passed": false, "summary": "boom", "failures": ["x"]}')
     agent = TesterAgent(
         client=client,
@@ -118,14 +118,33 @@ def test_run_llm_result(tmp_path):
     )
     # create pyproject so detect_command returns pytest; empty workspace -> None.
     (tmp_path / "pyproject.toml").write_text("[project]\n")
-    # pytest with no tests collects 0 -> exit 0.
+
+    # Force a real (non-5) failing exit so the LLM verdict path is exercised.
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stdout=b"1 failed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
     res = run(agent.run("goal", []))
     assert res.passed is False
     assert res.failures == ["x"]
 
 
-def test_run_llm_raises_fallback(tmp_path):
+def test_run_llm_raises_fallback(tmp_path, monkeypatch):
     (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    # A non-5 failing exit with failure-looking output for the local fallback.
+    stderr_text = (
+        "=================================== FAILURES ===================================\n"
+        "FAILED tests/test_x.py::test_y - AssertionError: expected 1 got 2\n"
+        "=========================== 1 failed, 2 passed in 0.12s ===========================\n"
+    )
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stderr=stderr_text.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
     client = FakeLLMClient(raises=RuntimeError("boom"))
     agent = TesterAgent(
         client=client,
@@ -134,6 +153,32 @@ def test_run_llm_raises_fallback(tmp_path):
     )
     res = run(agent.run("goal", []))
     assert isinstance(res, TestResult)
+
+
+def test_run_pytest_no_tests_collected_is_skipped(tmp_path, monkeypatch):
+    """pytest exit code 5 (no tests collected) is skipped, not a failure."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=5, stdout=b"no tests ran in 0.00s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    # The LLM must not be consulted for an empty run.
+    client = FakeLLMClient(response='{"passed": false, "summary": "should not be used"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.skipped is True
+    assert res.passed is True
+    assert res.failures == []
+    assert "no tests" in res.summary.lower()
+    assert client.prompts == []
 
 
 def test_run_failed_command_uses_local_fallback_classification(tmp_path, monkeypatch):
