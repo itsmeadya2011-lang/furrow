@@ -1319,3 +1319,38 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_list_files_paths_are_workspace_relative(tmp_path):
+    """Entries listed under a subdirectory are relative to the workspace,
+    not to the listed directory."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "deep.py").write_text("x")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files("sub")
+
+    assert "sub/deep.py" in out
+    assert "deep.py" not in out.splitlines()
+
+
+@pytest.mark.asyncio
+async def test_list_files_root_dot_returns_workspace_relative(tmp_path):
+    """Listing the root returns workspace-relative paths."""
+    from furrow.config import TaskModel
+
+    (tmp_path / "top.py").write_text("x")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._list_files(".")
+
+    assert "top.py" in out

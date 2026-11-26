@@ -362,6 +362,10 @@ class Orchestrator:
                 elif old.status == "failed":
                     if old.attempts <= max_retries:
                         pt.status = "pending"
+                    elif old_desc != pt.description or old_files != pt.files:
+                        # Exhausted retry budget but the work changed: this is new work,
+                        # so reset to pending and execute again.
+                        pt.status = "pending"
                     else:
                         pt.status = "failed"
                 elif old.status == "blocked":

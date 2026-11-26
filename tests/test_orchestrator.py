@@ -1237,3 +1237,29 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_merge_plan_resets_exhausted_failed_task_when_work_changed(tmp_path):
+    """An exhausted failed task whose description or files changed counts as
+    new work and is reset to pending."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1, max_task_retries=0)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner()
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    task = orch.tasks[0]
+    task.status = "failed"
+    task.attempts = 1  # exhausted budget (max_task_retries == 0)
+    # Re-plan with a different description: same task id but new work.
+    plan = Plan(
+        tasks=[
+            TaskModel(id=task.id, description="do it differently", dependencies=task.dependencies)
+        ],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert plan.tasks[0].status == "pending"
+    assert plan.tasks[0].description == "do it differently"

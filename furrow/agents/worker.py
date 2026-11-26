@@ -728,11 +728,15 @@ class WorkerAgent:
         total = len(entries)
         rels = []
         base = self.workspace.resolve()
+        # Entries from list_files are relative to `resolved`. Rebase them so the
+        # reported paths are relative to the workspace, not to the directory
+        # that was listed.
+        try:
+            rel_dir = resolved.relative_to(base)
+        except ValueError:
+            rel_dir = Path(".")
         for e in entries[:MAX_LIST_ENTRIES]:
-            try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
-            except ValueError:
-                rels.append(str(e))
+            rels.append(str(rel_dir / e))
         text = "\n".join(rels)
         omitted = total - len(rels)
         if omitted > 0:
