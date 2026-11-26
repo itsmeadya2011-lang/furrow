@@ -262,9 +262,7 @@ class LLMClient:
             api_key = self.settings.anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
             if not api_key:
                 raise ValueError("ANTHROPIC_API_KEY is not set")
-            self._anthropic = AsyncAnthropic(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
+            self._anthropic = AsyncAnthropic(api_key=api_key, timeout=self.settings.request_timeout)
         return self._anthropic
 
     @property
@@ -273,9 +271,7 @@ class LLMClient:
             api_key = self.settings.openai_api_key or os.getenv("OPENAI_API_KEY")
             if not api_key:
                 raise ValueError("OPENAI_API_KEY is not set")
-            self._openai = AsyncOpenAI(
-                api_key=api_key, timeout=self.settings.request_timeout
-            )
+            self._openai = AsyncOpenAI(api_key=api_key, timeout=self.settings.request_timeout)
         return self._openai
 
     @property
@@ -310,6 +306,7 @@ class LLMClient:
             except Exception:
                 pass
             setattr(self, attr, None)
+
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.
 
@@ -336,7 +333,7 @@ class LLMClient:
                 last_exc = exc
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
-                await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
+                await asyncio.sleep(min(20.0, float(2**attempt_index)))
         if last_exc is not None:
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
@@ -478,9 +475,7 @@ class LLMClient:
                 args = getattr(block, "input", None)
                 if not isinstance(args, dict):
                     args = {}
-                tool_calls.append(
-                    ToolCall(id=tid, name=name, arguments=args)
-                )
+                tool_calls.append(ToolCall(id=tid, name=name, arguments=args))
         usage = _extract_anthropic_usage(response)
         try:
             usage.cost_usd = estimate_cost(model, usage, self.settings.pricing_overrides())
@@ -581,9 +576,7 @@ class LLMClient:
         for root, dirs, files in os.walk(p):
             # Prune ignored directories in place so os.walk never descends.
             dirs[:] = [
-                d
-                for d in dirs
-                if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+                d for d in dirs if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
             ]
             for name in files:
                 results.append(os.path.relpath(os.path.join(root, name), p))
