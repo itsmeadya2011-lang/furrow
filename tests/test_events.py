@@ -124,6 +124,39 @@ def test_dropped_count_is_zero_in_normal_case_and_counts_overflow_drops() -> Non
     assert bus.dropped_for(queue) == 15
 
 
+def test_overflow_drops_oldest_and_increments_counters_once_per_event() -> None:
+    """Fill queue to capacity without draining, emit one more, verify drop accounting."""
+    bus = EventBus()
+    queue = bus.subscribe()
+    # Fill the queue exactly to capacity
+    events = [Event(type=EventType.LOG, message=str(i)) for i in range(MAX_QUEUE_SIZE)]
+    for event in events:
+        bus.emit(event)
+    assert queue.qsize() == MAX_QUEUE_SIZE
+    assert bus.dropped_count == 0
+    assert bus.dropped_for(queue) == 0
+
+    # Emit one more event; oldest should be dropped, newest enqueued
+    new_event = Event(type=EventType.LOG, message="newest")
+    bus.emit(new_event)
+
+    # Queue still at capacity
+    assert queue.qsize() == MAX_QUEUE_SIZE
+
+    # Drain and verify contents
+    drained: list[Event] = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+    assert len(drained) == MAX_QUEUE_SIZE
+    # Oldest (events[0]) was dropped; newest is present at the end
+    assert drained[-1] is new_event
+    assert all(d is not events[0] for d in drained)
+
+    # Drop counters incremented exactly once
+    assert bus.dropped_count == 1
+    assert bus.dropped_for(queue) == 1
+
+
 @pytest.mark.asyncio
 async def test_emit_async_delivers_event_to_subscribers() -> None:
     bus = EventBus()

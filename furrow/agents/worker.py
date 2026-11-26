@@ -54,7 +54,7 @@ MAX_READ_CHARS = 20000
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
-_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|(?<!>)\||\n|\r)+")
+_SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|(?<!>)&(?!\>)|(?<!>)\||\n|\r)+")
 
 # Every spelling of the HOME variable. The look-ahead keeps "$HOME_DIR" and
 # friends untouched.
@@ -66,7 +66,7 @@ _HOME_VAR_RE = re.compile(
 
 # The target of a redirection: ">> file", ">| file" (clobber override) or
 # "> file". ``&>`` and ``>&`` are caught because their ``>`` is matched here.
-_REDIRECT_RE = re.compile(r"(?:>>|>\|?)\s*([^\s;|&<>]+)")
+_REDIRECT_RE = re.compile(r"(?:\d*\s*(?:>>|>\||>&|<>|>))\s*([^\s;|&<>]+)")
 
 # How deep command substitutions are followed: a substitution may contain
 # another substitution.
@@ -297,7 +297,8 @@ def _extract_command_substitutions(command: str) -> list[str]:
         if char == "`":
             end = command.find("`", index + 1)
             if end == -1:
-                break
+                index += 1
+                continue
             text = command[index + 1 : end]
             if text.strip():
                 substitutions.append(text)
@@ -316,7 +317,8 @@ def _extract_command_substitutions(command: str) -> list[str]:
                         break
                 cursor += 1
             if cursor >= length:
-                break  # unbalanced parentheses
+                index += 1
+                continue  # unbalanced parentheses
             text = command[index + 2 : cursor]
             if text.strip():
                 substitutions.append(text)
@@ -338,7 +340,8 @@ def _extract_command_substitutions(command: str) -> list[str]:
                         break
                 cursor += 1
             if cursor >= length:
-                break  # unbalanced parentheses
+                index += 1
+                continue  # unbalanced parentheses
             text = command[index + 2 : cursor]
             if text.strip():
                 substitutions.append(text)
@@ -360,12 +363,12 @@ def _target_inside_workspace(target: str, workspace: Path) -> bool:
     An absolute target is resolved as it is, a relative one against the
     workspace.
     """
-    base = workspace.resolve()
-    path = Path(_expand_home(target))
-    resolved = path if path.is_absolute() else base / path
     try:
+        base = workspace.resolve()
+        path = Path(_expand_home(target))
+        resolved = path if path.is_absolute() else base / path
         resolved.resolve().relative_to(base)
-    except ValueError:
+    except (ValueError, OSError, RuntimeError):
         return False
     return True
 
@@ -375,6 +378,10 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
     for match in _REDIRECT_RE.finditer(segment):
         target = match.group(1).strip().strip("\"'")
         if not target:
+            continue
+        # A purely numeric target is a file descriptor (e.g. 2>&1), not a
+        # file, so it is never a policy violation.
+        if target.isdigit():
             continue
         # /dev/null, /dev/stdout and /dev/stderr discard output rather than
         # write a real file, so they are never a policy violation.

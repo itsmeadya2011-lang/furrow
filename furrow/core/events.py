@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -87,22 +86,49 @@ class EventBus:
 
     def _deliver(self, queue: asyncio.Queue[Event], event: Event) -> None:
         """Put ``event`` on ``queue``, dropping the oldest event if it is full."""
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
+        try:
             queue.put_nowait(event)
             return
-        # The subscriber is not draining: drop the oldest queued event so that
-        # the newest event is always delivered.
+        except asyncio.QueueFull:
+            pass
+        except Exception:
+            return  # Defensive: unexpected error
+
+        # Queue is full; drop oldest to make room
+        dropped = False
         try:
             queue.get_nowait()
-        except asyncio.QueueEmpty:  # pragma: no cover - raced with a consumer
-            pass
-        except Exception:  # pragma: no cover - defensive, one bad subscriber
-            return
-        else:
+            dropped = True
+        except asyncio.QueueEmpty:
+            pass  # Raced with consumer
+        except Exception:
+            return  # Defensive
+
+        if dropped:
             self._dropped += 1
             self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
+
+        # Retry putting the new event
+        try:
             queue.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            # Consumer raced and filled the queue again; drop one more and retry once
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            except Exception:
+                return
+            else:
+                self._dropped += 1
+                self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
+            try:
+                queue.put_nowait(event)
+            except Exception:
+                return  # Final defensive guard
+        except Exception:
+            return  # Final defensive guard
 
     async def emit_async(self, event: Event) -> None:
         """Async variant of :meth:`emit`."""

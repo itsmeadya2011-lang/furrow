@@ -1319,3 +1319,25 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+def test_worker_hardening_redirects_and_substitutions(tmp_path):
+    # >& redirect outside workspace denied
+    assert is_command_denied("echo x >& /etc/passwd", tmp_path) is True
+    # <> redirect outside workspace denied
+    assert is_command_denied("exec 3<> /etc/passwd", tmp_path) is True
+    # numeric fd target allowed
+    assert is_command_denied("echo hi 2>&1", tmp_path) is False
+    # unbalanced $( followed by dangerous substitution still caught
+    assert is_command_denied("echo $(unbalanced then `rm -rf /`", tmp_path) is True
+    assert is_command_denied("echo $(unbalanced $(rm -rf /)", tmp_path) is True
+
+
+def test_target_inside_workspace_resolution_error_returns_false(tmp_path, monkeypatch):
+    from furrow.agents.worker import _target_inside_workspace
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("resolution failed")
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+    assert _target_inside_workspace("somefile", tmp_path) is False
