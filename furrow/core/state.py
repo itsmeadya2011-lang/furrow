@@ -33,6 +33,15 @@ STATE_VERSION = 1
 DEFAULT_STATE_RELATIVE_PATH = Path(".furrow/state.json")
 
 
+def _migrate_state(data: dict[str, Any], from_version: int) -> dict[str, Any]:
+    """Migrate state data from an older version to the current version."""
+    # Version 1 is the current version - no migrations needed yet
+    # This function will be extended when STATE_VERSION is incremented
+    migrated = dict(data)
+    migrated["version"] = STATE_VERSION
+    return migrated
+
+
 def utcnow() -> str:
     """ISO-8601 UTC timestamp string, e.g. 2026-10-20T12:30:04.395123+00:00"""
     return datetime.now(timezone.utc).isoformat()
@@ -132,7 +141,26 @@ class StateStore:
             logger.warning("Could not read state file %s: %s", self.path, exc)
             return None
         try:
-            return RunState.model_validate_json(raw)
+            data = json.loads(raw)
+        except (ValueError, RecursionError) as exc:
+            logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
+            return None
+
+        if not isinstance(data, dict):
+            logger.warning("Ignoring corrupt state file %s: expected object", self.path)
+            return None
+
+        # Handle version migration
+        file_version = data.get("version", 0)
+        if file_version < STATE_VERSION:
+            logger.info("Migrating state file %s from version %d to %d", self.path, file_version, STATE_VERSION)
+            data = _migrate_state(data, file_version)
+        elif file_version > STATE_VERSION:
+            logger.warning("State file %s is from future version %d (current: %d), loading anyway", 
+                          self.path, file_version, STATE_VERSION)
+        
+        try:
+            return RunState.model_validate(data)
         except (ValidationError, ValueError, RecursionError) as exc:
             logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
             return None

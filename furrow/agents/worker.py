@@ -659,6 +659,13 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "edit_file":
+            if "diff" not in args:
+                return "error: missing diff"
+            diff = args["diff"]
+            if not isinstance(diff, str):
+                return "error: invalid diff (expected a string)"
+            return await self._edit_file(str(args.get("path", "")), diff)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -713,6 +720,55 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _edit_file(self, path: str, diff: str) -> str:
+        """Apply a unified diff patch to a file."""
+        import subprocess
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        if not resolved.exists():
+            return f"error: file does not exist: {path}"
+        try:
+            # Read current content for verification
+            original_content = await self.client.read_file(resolved)
+            
+            # Write diff to a temporary file and apply with patch
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.patch', delete=False) as tmp:
+                tmp.write(diff)
+                tmp_path = tmp.name
+            
+            try:
+                # Apply the patch using the patch command
+                result = subprocess.run(
+                    ['patch', '-p1', '-i', tmp_path],
+                    cwd=str(resolved.parent),
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                if result.returncode != 0:
+                    return f"error: patch failed: {result.stderr}"
+                
+                # Read the new content
+                new_content = await self.client.read_file(resolved)
+                if new_content == original_content:
+                    return "warning: patch applied but file content unchanged"
+                
+                rel = str(resolved.relative_to(self.workspace.resolve()))
+                self.files_changed.add(rel)
+                return f"patched {path} ({len(new_content.encode('utf-8'))} bytes)"
+            finally:
+                import os
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+        except subprocess.TimeoutExpired:
+            return "error: patch command timed out"
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)

@@ -408,8 +408,7 @@ class TesterAgent:
                 combined = "[... output truncated ...]\n" + combined[-20000:]
 
             llm_result: TestResult | None = None
-            if not spawn_failed:
-                # A runner that never started has no output worth summarising.
+            if not spawn_failed and not timed_out:
                 prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
                 try:
                     response = await self.client.complete(

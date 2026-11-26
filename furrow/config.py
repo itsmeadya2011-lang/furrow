@@ -9,6 +9,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from furrow.costs import ModelPricing
 
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib
+
 
 class Provider(str, Enum):
     ANTHROPIC = "anthropic"
@@ -140,6 +145,64 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+
+def _load_furrow_toml(workspace: Path) -> dict[str, Any]:
+    """Load furrow.toml from workspace if it exists."""
+    config_path = workspace / "furrow.toml"
+    if config_path.is_file():
+        try:
+            with open(config_path, "rb") as f:
+                return tomllib.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+
+    provider: Provider = Provider.ANTHROPIC
+    model: str = "claude-sonnet-4-20250514"
+    planner_model: str = "claude-3-5-haiku-20241022"
+    worker_model: str = "claude-3-5-sonnet-20241022"
+    tester_model: str = "claude-3-5-sonnet-20241022"
+    anthropic_api_key: str | None = None
+    openai_api_key: str | None = None
+    ollama_base_url: str = "http://localhost:11434"
+    max_parallel_tasks: int = Field(default=5, ge=1)
+    max_cycles: int = Field(default=0, ge=0)
+    workspace: Path = Field(default_factory=Path.cwd)
+    log_level: str = "INFO"
+    max_worker_iterations: int = Field(default=12, ge=1)
+    max_retries: int = Field(default=3, ge=0)
+    max_task_retries: int = Field(default=1, ge=0)
+    request_timeout: float = Field(default=120.0, gt=0)
+    command_timeout: float = Field(default=300.0, gt=0)
+    test_timeout: float = Field(default=600.0, gt=0)
+    max_tokens: int = Field(default=4096, ge=1)
+    state_file: Path = Path(".furrow/state.json")
+    model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    def state_path(self, workspace: Path | None = None) -> Path:
+        """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
+        base = Path(workspace) if workspace is not None else Path(self.workspace)
+        return base / Path(self.state_file)
+
+    def pricing_overrides(self) -> dict[str, ModelPricing]:
+        """User-supplied price overrides that take precedence over the built-in table."""
+        return dict(self.model_pricing)
+
+    @classmethod
+    def from_workspace(cls, workspace: Path | None = None, **overrides) -> "Settings":
+        """Create Settings merged from furrow.toml, env, and overrides."""
+        ws = Path(workspace) if workspace is not None else Path.cwd()
+        toml_config = _load_furrow_toml(ws)
+        # Merge: defaults < toml < env (handled by BaseSettings) < overrides
+        merged = {**toml_config, **overrides}
+        if "workspace" not in merged:
+            merged["workspace"] = ws
+        return cls.model_validate(merged)
 
 
 settings = Settings()

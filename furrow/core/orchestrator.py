@@ -337,9 +337,50 @@ class Orchestrator:
         )
 
     def _context(self) -> str:
+        """Build context for the planner including history, diffs, and test results."""
+        parts = []
+        
+        # Previous test failures
         if self._feedback:
-            return self._feedback
-        return ""
+            parts.append("PREVIOUS TEST FAILURES:")
+            parts.append(self._feedback)
+            parts.append("")
+        
+        # Recent history (last 3 cycles)
+        if self.history:
+            parts.append("RECENT CYCLES:")
+            for entry in self.history[-3:]:
+                parts.append(f"  Cycle {entry.cycle}: {entry.plan_rationale}")
+                if entry.tests_passed is not None:
+                    status = "PASSED" if entry.tests_passed else "FAILED"
+                    parts.append(f"    Tests: {status} - {entry.test_summary}")
+                if entry.task_summaries:
+                    parts.append(f"    Tasks: {', '.join(entry.task_summaries)}")
+            parts.append("")
+        
+        # Completed tasks with results
+        completed_tasks = [t for t in self.tasks if t.status == "completed"]
+        if completed_tasks:
+            parts.append("COMPLETED TASKS:")
+            for t in completed_tasks[-5:]:  # Last 5 completed
+                parts.append(f"  {t.id}: {t.description}")
+                if t.result:
+                    parts.append(f"    Result: {t.result}")
+                if t.files_changed:
+                    parts.append(f"    Files changed: {', '.join(t.files_changed)}")
+            parts.append("")
+        
+        # Failed/blocked tasks
+        failed_tasks = [t for t in self.tasks if t.status in ("failed", "blocked")]
+        if failed_tasks:
+            parts.append("FAILED/BLOCKED TASKS:")
+            for t in failed_tasks:
+                parts.append(f"  {t.id} ({t.status}): {t.description}")
+                if t.error:
+                    parts.append(f"    Error: {t.error}")
+            parts.append("")
+        
+        return "\n".join(parts) if parts else ""
 
     def _merge_plan(self, plan: Plan) -> None:
         self._skip_ids = set()
@@ -385,7 +426,47 @@ class Orchestrator:
         self._active_ids = {t.id for t in plan.tasks}
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
+        """Plan execution waves with critical-path awareness.
+        
+        Tasks on the longest dependency chain (critical path) are prioritized
+        within each wave to minimize overall execution time.
+        """
         ids = {t.id for t in tasks}
+        task_map = {t.id: t for t in tasks}
+        
+        # Compute critical path length for each task (longest chain to a leaf)
+        # We memoize to avoid recomputation
+        critical_lengths: dict[str, int] = {}
+        
+        def compute_critical_length(task_id: str, visiting: set[str] | None = None) -> int:
+            if task_id in critical_lengths:
+                return critical_lengths[task_id]
+            if visiting is None:
+                visiting = set()
+            if task_id in visiting:
+                # Cycle detected - break it
+                return 0
+            visiting.add(task_id)
+            
+            task = task_map.get(task_id)
+            if not task:
+                return 0
+            
+            # Find dependents (tasks that depend on this one)
+            dependents = [t for t in tasks if task_id in t.dependencies]
+            if not dependents:
+                length = 1
+            else:
+                length = 1 + max(compute_critical_length(d.id, visiting) for d in dependents)
+            
+            visiting.remove(task_id)
+            critical_lengths[task_id] = length
+            return length
+        
+        # Compute critical lengths for all tasks
+        for task in tasks:
+            compute_critical_length(task.id)
+        
         waves: list[list[TaskModel]] = []
         done: set[str] = set()
         remaining = list(tasks)
@@ -395,6 +476,8 @@ class Orchestrator:
                 for t in remaining:
                     t.status = "blocked"
                 break
+            # Sort wave by critical path length (descending) so critical path tasks run first
+            wave.sort(key=lambda t: critical_lengths.get(t.id, 0), reverse=True)
             waves.append(wave)
             for t in wave:
                 done.add(t.id)
