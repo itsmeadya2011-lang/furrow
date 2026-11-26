@@ -5,11 +5,13 @@ Commands:
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
     furrow web             serve the web UI
+    furrow version         show the installed Furrow version
 """
 
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import inspect
 import logging
 import sys
@@ -265,6 +267,16 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+def version() -> None:
+    """Show the installed Furrow version."""
+    try:
+        version_str = importlib.metadata.version("furrow")
+    except importlib.metadata.PackageNotFoundError:
+        version_str = "unknown"
+    click.echo(f"furrow {version_str}")
 
 
 if __name__ == "__main__":

@@ -705,3 +705,63 @@ def test_api_start_resume_without_state_returns_400(
     assert body["started"] is False
     assert body["error"] == "no goal to resume"
     assert fake_orchestrator.instances == [], "no run may be started"
+
+
+def test_api_stop_with_no_running_run(client: TestClient) -> None:
+    """Stopping when no run is in progress returns stopped=False."""
+    server._reset_registry()
+
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stopped"] is False
+    assert "no run is in progress" in body["error"]
+
+
+def test_api_stop_cancels_running_run(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """Stopping cancels the running run and clears the running flag."""
+    # Simulate a run in progress.
+    server._CURRENT["running"] = True
+    server._CURRENT["orchestrator"] = fake_orchestrator("goal")
+
+    class CancellableTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+        def done(self) -> bool:
+            return False
+
+    task = CancellableTask()
+    server._CURRENT["task"] = task
+
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stopped"] is True
+    assert task.cancelled is True, "the run task must be cancelled"
+    assert server._CURRENT["running"] is False, "the running flag must be cleared"
+
+
+def test_api_stop_on_done_task_is_noop(client: TestClient) -> None:
+    """Stopping a done task returns stopped=False without error."""
+    server._reset_registry()
+
+    class DoneTask:
+        def done(self) -> bool:
+            return True
+
+    server._CURRENT["task"] = DoneTask()
+
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stopped"] is False
+    assert "no run is in progress" in body["error"]

@@ -6,6 +6,7 @@ always replaced by :class:`FakeOrchestrator`.
 
 from __future__ import annotations
 
+import importlib.metadata
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -714,3 +715,24 @@ def test_start_releases_the_llm_client_when_the_run_raises(
     assert "boom" in result.output
     assert len(releasing_orchestrator.instances) == 1
     assert releasing_orchestrator.instances[0].client.closed is True
+
+
+def test_version_command_shows_installed_version(runner: CliRunner) -> None:
+    result = runner.invoke(main, ["version"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "furrow 0.1.0"
+
+
+def test_version_command_unknown_when_package_missing(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def raise_not_found(dist: str) -> str:
+        raise importlib.metadata.PackageNotFoundError(dist)
+
+    monkeypatch.setattr(importlib.metadata, "version", raise_not_found)
+
+    result = runner.invoke(main, ["version"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == "furrow unknown"
