@@ -50,6 +50,15 @@ def _run_settings(
     return Settings.model_validate(merged)
 
 
+def _validate_settings(run_settings: Settings) -> list[str]:
+    """Validate settings and return a list of warnings."""
+    warnings = []
+    missing_keys = run_settings.validate_api_keys()
+    if missing_keys:
+        warnings.append(f"Missing API keys: {', '.join(missing_keys)}")
+    return warnings
+
+
 def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[str, str]:
     """Return the (verdict, colour) of the one-line result of a run."""
     if skipped:
@@ -63,36 +72,37 @@ def _result_line(passed: bool | None, skipped: bool, tests_run: int) -> tuple[st
 
 def _print_summary(result: RunResult) -> None:
     """Print the summary of a finished run."""
-    click.echo("Run summary")
-    click.echo(f"  Cycles:          {result.cycles}")
-    click.echo(f"  Tasks completed: {result.tasks_completed}")
-    click.echo(f"  Tasks failed:    {result.tasks_failed}")
+    click.secho("═══ Run Summary ═══", bold=True, fg="cyan")
+    click.echo(f"  Cycles:           {result.cycles}")
+    click.echo(f"  Tasks completed:  {result.tasks_completed}")
+    click.echo(f"  Tasks failed:     {result.tasks_failed}")
     blocked = getattr(result, "tasks_blocked", 0) or 0
-    click.echo(f"  Tasks blocked:  {blocked}")
-    click.echo(f"  Stopped reason:  {result.stopped_reason}")
+    click.echo(f"  Tasks blocked:    {blocked}")
+    click.echo(f"  Stopped reason:   {result.stopped_reason}")
     skipped = bool(getattr(result, "skipped", False))
     tests_run = getattr(result, "tests_run", 0) or 0
     text, colour = _result_line(result.passed, skipped, tests_run)
-    click.secho(f"  Result: {text}", fg=colour)
+    click.secho(f"  Result: {text}", fg=colour, bold=True)
     usage = getattr(result, "usage", None)
     if usage is not None and usage.calls > 0:
         click.echo(
-            f"  LLM usage:       {usage.calls} calls, {usage.total_tokens} tokens "
+            f"  LLM usage:        {usage.calls} calls, {usage.total_tokens} tokens "
             f"(in {usage.input_tokens} / out {usage.output_tokens})"
         )
         cost = float(getattr(usage, "cost_usd", 0.0) or 0.0)
         if cost > 0:
-            click.echo(f"  LLM cost:        ${cost:.6f}")
+            click.echo(f"  LLM cost:         ${cost:.6f}")
     files_changed = getattr(result, "files_changed", None) or []
     if files_changed:
         click.echo(f"  Files changed:    {', '.join(files_changed)}")
     if result.summary:
         click.echo(f"  Summary: {result.summary}")
+    click.secho("════════════════════════", fg="cyan")
 
 
 def _print_state(state: RunState) -> None:
     """Print the persisted run state."""
-    click.echo("Furrow run status")
+    click.secho("═══ Furrow Run Status ═══", bold=True, fg="cyan")
     click.echo(f"  Original goal: {state.original_goal}")
     click.echo(f"  Current goal:  {state.goal}")
     click.echo(f"  Cycles:        {state.cycles}")
@@ -113,12 +123,24 @@ def _print_state(state: RunState) -> None:
         click.echo("Tasks:")
         for task in state.tasks:
             files_changed = getattr(task, "files_changed", None) or []
-            line = f"  {task.id}  {task.status}  {task.description}"
+            status_color = {
+                "completed": "green",
+                "failed": "red",
+                "blocked": "yellow",
+                "running": "blue",
+                "pending": "white",
+                "skipped": "white",
+            }.get(task.status, "white")
+            line = f"  {task.id}  "
+            click.echo(line, nl=False)
+            click.secho(f"{task.status}", fg=status_color, nl=False)
+            click.echo(f"  {task.description}", nl=False)
             if files_changed:
-                line += f"  [{', '.join(files_changed)}]"
-            click.echo(line)
+                click.echo(f"  [{', '.join(files_changed)}]", nl=False)
+            click.echo()
     else:
         click.echo("Tasks:  (none)")
+    click.secho("════════════════════════════", fg="cyan")
 
 
 async def _release_client(client: Any) -> None:
@@ -154,6 +176,11 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
 
 def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     """Run the orchestrator and print the summary of the result."""
+    # Validate settings and show warnings
+    warnings = _validate_settings(run_settings)
+    for warning in warnings:
+        click.secho(f"⚠ {warning}", fg="yellow")
+
     store = StateStore(run_settings.state_path())
     orchestrator = Orchestrator(
         goal=goal,
@@ -164,7 +191,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
     try:
         result = asyncio.run(_run_and_release(orchestrator))
     except KeyboardInterrupt:
-        click.echo("Furrow stopped by user.")
+        click.echo("\nFurrow stopped by user.")
         sys.exit(0)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
@@ -187,7 +214,7 @@ def main() -> None:
 @main.command()
 @click.argument("goal", required=False)
 @click.option("--model", default=None, help="Override the LLM model.")
-@click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
+@click.option("--max-cycles", type=click.IntRange(min=0, max=100), default=None, help=MAX_CYCLES_HELP)
 @click.option(
     "--workspace",
     type=click.Path(file_okay=False, path_type=Path),
@@ -195,17 +222,30 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option("--provider", type=click.Choice(["anthropic", "openai", "ollama"]), default=None, help="Override the LLM provider.")
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    provider: str | None,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
-    run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
+    updates = {}
+    if model is not None:
+        updates["model"] = model
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if workspace is not None:
+        updates["workspace"] = Path(workspace)
+    if provider is not None:
+        from furrow.config import Provider
+        updates["provider"] = Provider(provider)
+    merged = {**settings.model_dump(), **updates}
+    run_settings = Settings.model_validate(merged)
     _execute(goal=goal, run_settings=run_settings, resume=resume)
 
 
@@ -234,7 +274,7 @@ def status(workspace: Path | None) -> None:
     default=None,
     help=WORKSPACE_HELP,
 )
-@click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
+@click.option("--max-cycles", type=click.IntRange(min=0, max=100), default=None, help=MAX_CYCLES_HELP)
 def resume(workspace: Path | None, max_cycles: int | None) -> None:
     """Resume the persisted Furrow run."""
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)

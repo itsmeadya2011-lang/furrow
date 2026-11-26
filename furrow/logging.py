@@ -64,3 +64,10 @@ def get_logger(name: str) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger(name)
     return logging.getLogger(name)
+
+
+def bind_context(logger: Any, **kwargs: Any) -> Any:
+    """Bind context variables to a logger for structured logging."""
+    if _STRUCTLOG_AVAILABLE and hasattr(logger, "bind"):
+        return logger.bind(**kwargs)
+    return logger

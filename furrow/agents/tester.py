@@ -199,6 +199,7 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        log = logger.bind(agent="tester", phase="detect_command")
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -211,6 +212,7 @@ class TesterAgent:
         if has_tests_dir and (
             has_pyproject or has_pytest_ini or has_setup_cfg or has_tox_ini or has_requirements
         ):
+            log.info("test_command_detected", runner="pytest", reason="tests_dir_with_python_markers")
             return [sys.executable, "-m", "pytest", "-q"]
 
         # Check for Node.js test runners
@@ -251,13 +253,50 @@ class TesterAgent:
             "requirements.txt",
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
+            log.info("test_command_detected", runner="pytest", reason="python_markers")
             return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
+            log.info("test_command_detected", runner="cargo", reason="rust_project")
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
+            log.info("test_command_detected", runner="go", reason="go_project")
             return ["go", "test", "./..."]
 
+        # Additional language/framework detection
+        if (self.workspace / "pom.xml").is_file():
+            log.info("test_command_detected", runner="maven", reason="java_maven")
+            return ["mvn", "test", "-q"]
+        if (self.workspace / "build.gradle").is_file() or (self.workspace / "build.gradle.kts").is_file():
+            log.info("test_command_detected", runner="gradle", reason="java_gradle")
+            return ["./gradlew", "test", "--quiet"]
+        if (self.workspace / "composer.json").is_file():
+            # PHP - check for phpunit or pest
+            try:
+                with open(self.workspace / "composer.json", encoding="utf-8") as fh:
+                    composer_data = json.load(fh)
+                scripts = composer_data.get("scripts", {})
+                if "test" in scripts:
+                    return ["composer", "test"]
+                # Check dev dependencies for phpunit or pest
+                dev_deps = {**composer_data.get("require-dev", {}), **composer_data.get("require", {})}
+                if "phpunit/phpunit" in dev_deps:
+                    return ["./vendor/bin/phpunit", "--no-coverage"]
+                if "pestphp/pest" in dev_deps:
+                    return ["./vendor/bin/pest", "--no-coverage"]
+            except (OSError, UnicodeError, ValueError) as exc:
+                logger.warning("Could not read composer.json: %s", exc)
+            log.info("test_command_detected", runner="phpunit", reason="php_composer")
+            return ["./vendor/bin/phpunit", "--no-coverage"]
+
+        if (self.workspace / "mix.exs").is_file():
+            log.info("test_command_detected", runner="mix", reason="elixir_project")
+            return ["mix", "test"]
+        if (self.workspace / "rebar.config").is_file() or (self.workspace / "erlang.mk").is_file():
+            log.info("test_command_detected", runner="rebar3", reason="erlang_project")
+            return ["rebar3", "eunit", "-q"]
+
+        log.info("test_command_not_found")
         return None
 
     def _finalize(
@@ -344,15 +383,20 @@ class TesterAgent:
         return TestResult(passed=passed, summary=summary, failures=failures)
 
     async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        log = logger.bind(agent="tester", goal_preview=goal[:100], task_count=len(tasks))
+        log.info("tester_started")
         try:
             cmd = await self.detect_command()
             if cmd is None:
+                log.info("tester_skipped", reason="no test runner detected")
                 return TestResult(
                     passed=True,
                     skipped=True,
                     summary="No test runner detected for this project (tests skipped).",
                     failures=[],
                 )
+
+            log.info("tester_command_detected", command=" ".join(cmd))
 
             # The test-suite timeout is a separate concern from the LLM request
             # timeout: `request_timeout` bounds a single API call, while a test
@@ -384,6 +428,7 @@ class TesterAgent:
                 spawn_error = (
                     f"{type(exc).__name__}: {message}" if message else type(exc).__name__
                 )
+                log.error("tester_spawn_failed", error=spawn_error)
                 returncode = 1
                 stdout = b""
                 stderr = b""
@@ -393,6 +438,7 @@ class TesterAgent:
                 except asyncio.TimeoutError:
                     await self._kill_process_tree(proc)
                     timed_out = True
+                    log.warning("tester_timed_out", timeout=timeout)
                     returncode = 1
                     stdout = b""
                     stderr = f"Test command timed out after {timeout:g}s.".encode()
@@ -416,10 +462,12 @@ class TesterAgent:
                         prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
-                except Exception:
+                    log.debug("tester_llm_result", passed=llm_result.passed, failures_count=len(llm_result.failures))
+                except Exception as exc:
+                    log.warning("tester_llm_failed", error=str(exc))
                     llm_result = None
 
-            return self._finalize(
+            result = self._finalize(
                 llm_result=llm_result,
                 returncode=returncode,
                 combined=combined,
@@ -428,8 +476,11 @@ class TesterAgent:
                 timed_out=timed_out,
                 timeout=timeout,
             )
+            log.info("tester_completed", passed=result.passed, skipped=result.skipped, failures_count=len(result.failures))
+            return result
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"
+            log.error("tester_error", error=message)
             return TestResult(
                 passed=False,
                 summary=f"Tester error: {message}",

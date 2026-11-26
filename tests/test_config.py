@@ -279,3 +279,98 @@ def test_pricing_overrides_returns_a_copy():
     overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
     assert s.model_pricing["my-model"].input_per_million == 1.0
 
+
+def test_settings_validation_log_level():
+    from pydantic import ValidationError
+    
+    with pytest.raises(ValidationError):
+        Settings(log_level="INVALID")
+    
+    s = Settings(log_level="DEBUG")
+    assert s.log_level == "DEBUG"
+    s = Settings(log_level="info")
+    assert s.log_level == "INFO"
+
+
+def test_settings_validation_ollama_url():
+    from pydantic import ValidationError
+    
+    with pytest.raises(ValidationError):
+        Settings(ollama_base_url="invalid-url")
+    
+    s = Settings(ollama_base_url="http://localhost:11434")
+    assert s.ollama_base_url == "http://localhost:11434"
+    s = Settings(ollama_base_url="https://ollama.example.com")
+    assert s.ollama_base_url == "https://ollama.example.com"
+
+
+def test_settings_validation_model_names_not_empty():
+    from pydantic import ValidationError
+    
+    with pytest.raises(ValidationError):
+        Settings(model="")
+    with pytest.raises(ValidationError):
+        Settings(planner_model="")
+    with pytest.raises(ValidationError):
+        Settings(worker_model="")
+    with pytest.raises(ValidationError):
+        Settings(tester_model="")
+
+
+def test_settings_validate_api_keys(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    
+    # Anthropic without key
+    s = Settings(provider=Provider.ANTHROPIC, anthropic_api_key=None)
+    missing = s.validate_api_keys()
+    assert "anthropic_api_key" in str(missing)
+    
+    # OpenAI without key
+    s = Settings(provider=Provider.OPENAI, openai_api_key=None)
+    missing = s.validate_api_keys()
+    assert "openai_api_key" in str(missing)
+    
+    # Ollama doesn't need key
+    s = Settings(provider=Provider.OLLAMA)
+    missing = s.validate_api_keys()
+    assert missing == []
+
+
+def test_task_model_validation():
+    from furrow.config import TaskModel
+    from pydantic import ValidationError
+    
+    # Empty description should fail
+    with pytest.raises(ValidationError):
+        TaskModel(id="1", description="")
+    
+    # Valid task
+    t = TaskModel(id="1", description="  test task  ")
+    assert t.description == "test task"
+    
+    # Files and dependencies are normalized
+    t = TaskModel(id="1", description="test", files=["  a.py  ", "b.py"], dependencies=["  1  ", "2"])
+    assert t.files == ["a.py", "b.py"]
+    assert t.dependencies == ["1", "2"]
+
+
+def test_plan_validation():
+    from furrow.config import Plan, TaskModel
+    from pydantic import ValidationError
+    
+    # Duplicate IDs should fail
+    with pytest.raises(ValidationError):
+        Plan(tasks=[
+            TaskModel(id="1", description="a"),
+            TaskModel(id="1", description="b"),
+        ], rationale="test")
+    
+    # Too many tasks should fail
+    with pytest.raises(ValidationError):
+        Plan(tasks=[TaskModel(id=str(i), description=f"task {i}") for i in range(11)], rationale="test")
+    
+    # Valid plan
+    p = Plan(tasks=[TaskModel(id="1", description="a")], rationale="  rationale  ")
+    assert p.rationale == "rationale"
+

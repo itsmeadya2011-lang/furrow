@@ -578,3 +578,66 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+def test_detect_maven(tmp_path):
+    (tmp_path / "pom.xml").write_text("<project></project>")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "mvn" in cmd
+
+
+def test_detect_gradle(tmp_path):
+    (tmp_path / "build.gradle").write_text("plugins { id 'java' }")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and any("gradlew" in c for c in cmd)
+
+
+def test_detect_gradle_kts(tmp_path):
+    (tmp_path / "build.gradle.kts").write_text("plugins { id('java') }")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and any("gradlew" in c for c in cmd)
+
+
+def test_detect_php_composer(tmp_path):
+    (tmp_path / "composer.json").write_text('{"require": {"phpunit/phpunit": "^10.0"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and any("phpunit" in c for c in cmd)
+
+
+def test_detect_php_pest(tmp_path):
+    (tmp_path / "composer.json").write_text('{"require-dev": {"pestphp/pest": "^2.0"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and any("pest" in c for c in cmd)
+
+
+def test_detect_php_composer_test_script(tmp_path):
+    (tmp_path / "composer.json").write_text('{"scripts": {"test": "phpunit"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and cmd == ["composer", "test"]
+
+
+def test_detect_elixir(tmp_path):
+    (tmp_path / "mix.exs").write_text('defmodule MyApp.MixProject do use Mix.Project end')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "mix" in cmd
+
+
+def test_detect_erlang_rebar3(tmp_path):
+    (tmp_path / "rebar.config").write_text("{erl_opts, [debug_info]}.")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "rebar3" in cmd
+
+
+def test_detect_erlang_erlang_mk(tmp_path):
+    (tmp_path / "erlang.mk").write_text("PROJECT = myapp\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "rebar3" in cmd

@@ -487,8 +487,12 @@ def test_index_script_never_concatenates_a_raw_status_into_a_class_name(
             f"the script concatenates a raw status into a class name: {pattern}"
         )
 
-    assert re.search(r"statusEl\.className\s*=\s*[^;]*statusClass\(", script), (
-        "the status class is not built from statusClass()"
+    # The script should use statusClass() to derive the status key (stored in statusKey)
+    # then use that safe key for class names.
+    assert "statusClass(" in script, "statusClass() is not used in the script"
+    assert "statusKey" in script, "statusKey variable not found (derived from statusClass)"
+    assert re.search(r"statusEl\.className\s*=\s*[^;]*statusKey", script), (
+        "the status class is not built from the safe statusKey"
     )
     assert re.search(r"statusEl\.textContent\s*=", script), (
         "the status text is not written with textContent"

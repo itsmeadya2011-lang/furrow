@@ -14,6 +14,9 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -571,12 +574,17 @@ class WorkerAgent:
         self.files_changed: set[str] = set()
 
     async def run(self) -> WorkerResult:
+        log = logger.bind(agent="worker", task_id=self.task.id, task_description=self.task.description[:100])
+        log.info("worker_started", max_iterations=self.settings.max_worker_iterations)
         try:
-            return await self._run()
+            result = await self._run(log)
+            log.info("worker_completed", success=result.success, iterations=result.iterations, files_changed=len(result.files_changed))
+            return result
         except Exception as exc:  # pragma: no cover - defensive
+            log.error("worker_failed", error=str(exc))
             return WorkerResult(summary=str(exc), success=False, error=str(exc), iterations=0)
 
-    async def _run(self) -> WorkerResult:
+    async def _run(self, log: Any) -> WorkerResult:
         max_iters = self.settings.max_worker_iterations
         messages: list[dict[str, Any]] = [
             {
@@ -587,12 +595,14 @@ class WorkerAgent:
         iterations = 0
         for i in range(max_iters):
             iterations = i + 1
+            log.debug("worker_iteration", iteration=iterations, message_count=len(messages))
             response: LLMResponse = await self.client.chat(
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
                 if response.stop_reason in TRUNCATED_STOP_REASONS:
+                    log.warning("worker_truncated", stop_reason=response.stop_reason)
                     return WorkerResult(
                         summary=summary,
                         success=False,
@@ -600,6 +610,7 @@ class WorkerAgent:
                         iterations=iterations,
                         error=f"worker response truncated (stop_reason={response.stop_reason})",
                     )
+                log.info("worker_finished", summary=summary[:200])
                 return WorkerResult(
                     summary=summary,
                     success=True,
@@ -619,6 +630,7 @@ class WorkerAgent:
             # execute tools
             result_blocks: list[dict[str, Any]] = []
             for tc in response.tool_calls:
+                log.debug("worker_tool_call", tool=tc.name, tool_id=tc.id)
                 result = await self._execute_tool(tc)
                 result_blocks.append(
                     {"type": "tool_result", "tool_use_id": tc.id, "content": result}
@@ -628,6 +640,7 @@ class WorkerAgent:
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
+        log.warning("worker_budget_exhausted", max_iterations=max_iters)
         return WorkerResult(
             summary="worker iteration budget exhausted",
             success=False,
@@ -659,6 +672,14 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "edit_file":
+            if "old_text" not in args or "new_text" not in args:
+                return "error: missing old_text or new_text"
+            old_text = args["old_text"]
+            new_text = args["new_text"]
+            if not isinstance(old_text, str) or not isinstance(new_text, str):
+                return "error: old_text and new_text must be strings"
+            return await self._edit_file(str(args.get("path", "")), old_text, new_text)
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -713,6 +734,28 @@ class WorkerAgent:
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
+
+    async def _edit_file(self, path: str, old_text: str, new_text: str) -> str:
+        """Edit a file by replacing old_text with new_text. The old_text must match exactly once."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        if old_text not in content:
+            return f"error: old_text not found in file (or not unique)"
+        if content.count(old_text) > 1:
+            return f"error: old_text matches multiple locations ({content.count(old_text)} matches); provide more context"
+        new_content = content.replace(old_text, new_text)
+        try:
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path} ({len(old_text)} chars -> {len(new_text)} chars)"
 
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)

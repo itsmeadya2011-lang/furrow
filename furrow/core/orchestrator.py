@@ -12,6 +12,9 @@ from furrow.config import settings as global_settings
 from furrow.core.events import Event, EventBus, EventType
 from furrow.core.state import HistoryEntry, RunState, StateStore
 from furrow.llm import LLMClient
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 _UNSET = object()
 
@@ -50,10 +53,8 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._log = logger.bind(orchestrator_id=id(self), original_goal=goal[:100])
         if resume:
-            # The state file is read exactly once, here: `run()` must not load it
-            # again, otherwise the values restored at start-up would be silently
-            # overwritten by a second (possibly different) read.
             st = self.state_store.load()
             if st is not None:
                 self.goal = st.goal
@@ -62,11 +63,7 @@ class Orchestrator:
                 self.tasks = list(st.tasks)
                 self.history = list(st.history)
                 self._usage = st.usage.model_copy()
-                # A resumed run starts a fresh client whose counter starts at
-                # zero, so the baseline for the per-cycle delta is the client's
-                # CURRENT usage, not the persisted total.
                 self._usage_seen = self._client_usage()
-                # Restore no-progress guard state from persisted run state
                 try:
                     self._no_progress = int(getattr(st, "no_progress", 0) or 0)
                 except Exception:
@@ -163,19 +160,25 @@ class Orchestrator:
         return str(escape(text))
 
     async def run(self) -> RunResult:
+        log = self._log.bind(run_id=id(self))
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
             self._resume_state_missing = False
             self.event_bus.emit(Event(type=EventType.LOG,
                                       message="no state file found, starting fresh"))
+            log.info("resume_state_missing", message="no state file found, starting fresh")
 
+        log.info("orchestrator_started", original_goal=self.original_goal[:200], max_cycles=self.settings.max_cycles)
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
         while True:
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
+                log.info("max_cycles_reached", cycles=self.cycles)
                 break
             self.cycles += 1
+            cycle_log = log.bind(cycle=self.cycles)
+            cycle_log.info("cycle_started")
             self._say(f"[bold]═══ Cycle {self.cycles} ═══[/bold]")
             self.event_bus.emit(Event(type=EventType.CYCLE_STARTED, data={"cycle": self.cycles}))
             try:
@@ -183,6 +186,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                cycle_log.error("planner_failed", error=str(e))
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
                 self.cycles -= 1
@@ -192,12 +196,14 @@ class Orchestrator:
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
             planned = len(plan.tasks)
             unit = "task" if planned == 1 else "tasks"
+            cycle_log.info("plan_created", tasks_count=planned, rationale=plan.rationale[:200])
             self._say(f"Plan: {self._escape(self._clip(plan.rationale))} ({planned} {unit})")
             if not plan.tasks:
                 self.event_bus.emit(
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
                 self._stopped_reason = "goal complete"
+                cycle_log.info("goal_complete", reason="no tasks planned")
                 break
             self._merge_plan(plan)
             try:
@@ -205,6 +211,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                cycle_log.error("execute_failed", error=str(e))
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
                 self.cycles -= 1
@@ -216,6 +223,7 @@ class Orchestrator:
             except asyncio.CancelledError:
                 raise
             except Exception as e:
+                cycle_log.error("tester_failed", error=str(e))
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
                 self.cycles -= 1
@@ -233,8 +241,10 @@ class Orchestrator:
             summary = self._escape(self._one_line(test_result.summary))
             if test_result.passed:
                 self._say(f"[green]Tests passed: {summary}[/green]")
+                cycle_log.info("tests_passed", summary=summary[:200])
             else:
                 self._say(f"[red]Tests failed: {summary}[/red]")
+                cycle_log.warning("tests_failed", summary=summary[:200], failures=test_result.failures[:5])
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
             if skipped:
@@ -243,6 +253,7 @@ class Orchestrator:
                 # does not chase a test runner that does not exist.
                 self.goal = self.original_goal
                 self._feedback = ""
+                cycle_log.info("tests_skipped", reason="no test runner detected")
             elif not test_result.passed:
                 failures = [f for f in test_result.failures if f and f.strip()]
                 if not failures:
@@ -254,6 +265,7 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+                cycle_log.info("feedback_updated", failures_count=len(failures))
             cycle_usage = self._accumulate_usage()
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
@@ -289,12 +301,14 @@ class Orchestrator:
                              last_summary=test_result.summary)
             try:
                 self.state_store.save(state)
+                cycle_log.debug("state_saved", path=str(self.state_store.path))
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 # The state was NOT written: report the failure (including the
                 # path that could not be written) and do NOT emit STATE_SAVED,
                 # which would tell consumers the state was saved when it was not.
+                cycle_log.error("state_save_failed", path=str(self.state_store.path), error=str(e))
                 self.event_bus.emit(
                     Event(type=EventType.ERROR,
                          message=f"could not save state to {self.state_store.path}: {e}")
@@ -303,6 +317,7 @@ class Orchestrator:
                 self.event_bus.emit(Event(type=EventType.STATE_SAVED,
                                         data={"path": str(self.state_store.path)}))
             if guard_tripped:
+                cycle_log.info("guard_tripped", reason=self._stopped_reason)
                 break
 
         if not self._stopped_reason:
@@ -311,6 +326,7 @@ class Orchestrator:
             else:
                 self._stopped_reason = "goal complete"
 
+        log.info("orchestrator_stopped", reason=self._stopped_reason, cycles=self.cycles)
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
         active = (
@@ -557,12 +573,23 @@ class Orchestrator:
                     raise res
 
         async def run_retries(tasks: list[TaskModel]) -> None:
-            """Re-run tasks that failed while retries remain, until the budget is spent."""
+            """Re-run tasks that failed while retries remain, until the budget is spent.
+
+            Uses exponential backoff between retry batches to avoid hammering
+            a failing service or rate limit.
+            """
             retry_queue = [t for t in tasks
                            if t.status == "pending" and t.attempts <= max_retries]
+            retry_batch = 0
             while retry_queue:
+                if retry_batch > 0:
+                    # Exponential backoff: 1s, 2s, 4s, 8s... capped at 30s
+                    backoff = min(30.0, 2.0 ** retry_batch)
+                    self._log.debug("retry_backoff", batch=retry_batch, backoff_seconds=backoff)
+                    await asyncio.sleep(backoff)
                 batch = retry_queue
                 retry_queue = []
+                retry_batch += 1
                 await run_tasks(batch)
                 for t in batch:
                     if t.status == "pending" and t.attempts <= max_retries:
@@ -589,6 +616,13 @@ class Orchestrator:
                     continue
                 if any(d in unavailable for d in t.dependencies):
                     t.status = "blocked"
+                    self.event_bus.emit(
+                        Event(
+                            type=EventType.LOG,
+                            message=f"task {t.id} blocked by failed dependency",
+                            data={"task": t.id, "dependencies": t.dependencies},
+                        )
+                    )
                     unavailable.add(t.id)
                     continue
                 runnable.append(t)
