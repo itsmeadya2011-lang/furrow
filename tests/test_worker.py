@@ -378,8 +378,8 @@ async def test_assistant_turn_blocks(tmp_path):
 
 def test_worker_tools():
     names = [t["name"] for t in WORKER_TOOLS]
-    assert sorted(names) == ["list_files", "read_file", "run_command", "write_file"]
-    assert len(WORKER_TOOLS) == 4
+    assert sorted(names) == ["grep_file", "list_files", "read_file", "run_command", "write_file"]
+    assert len(WORKER_TOOLS) == 5
     for t in WORKER_TOOLS:
         assert "name" in t and "description" in t and "parameters" in t
         p = t["parameters"]
@@ -1319,3 +1319,97 @@ async def test_read_file_reports_total_size(tmp_path):
 
     assert "[... output truncated ...]" in out
     assert "25000 chars total" in out
+
+
+@pytest.mark.asyncio
+async def test_grep_file_finds_matches(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("import os\nimport sys\ndef foo():\n    pass\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file("a.py", r"^import ")
+
+    assert "1: import os" in out
+    assert "2: import sys" in out
+    assert "def foo" not in out
+
+
+@pytest.mark.asyncio
+async def test_grep_file_no_matches(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("import os\nimport sys\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file("a.py", r"nothing here")
+
+    assert out == "no matches"
+
+
+@pytest.mark.asyncio
+async def test_grep_file_invalid_pattern(tmp_path):
+    from furrow.config import TaskModel
+
+    (tmp_path / "a.py").write_text("import os\n")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file("a.py", r"[")
+
+    assert out.startswith("error: invalid pattern")
+
+
+@pytest.mark.asyncio
+async def test_grep_file_path_escape(tmp_path):
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file("../evil.py", r".*")
+
+    assert out == "error: path escapes workspace"
+
+
+@pytest.mark.asyncio
+async def test_grep_file_missing_file(tmp_path):
+    from furrow.config import TaskModel
+
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file("does_not_exist.py", r".*")
+
+    assert out.startswith("error:")
+
+
+@pytest.mark.asyncio
+async def test_grep_file_caps_at_50_matches(tmp_path):
+    from furrow.config import TaskModel
+
+    lines = "\n".join(f"line {i}" for i in range(100))
+    (tmp_path / "a.txt").write_text(lines)
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="grep")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    out = await agent._grep_file("a.txt", r"line")
+
+    out_lines = out.splitlines()
+    assert len(out_lines) == 51  # 50 matches + 1 truncation note
+    assert "1: line 0" in out_lines[0]
+    assert "50 more matches not shown" in out_lines[-1]

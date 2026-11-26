@@ -88,4 +88,16 @@ WORKER_TOOLS: list[dict] = [
             "required": ["command"],
         },
     },
+    {
+        "name": "grep_file",
+        "description": "grep a text file with a regex pattern; return matching lines.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "pattern": {"type": "string"},
+            },
+            "required": ["path", "pattern"],
+        },
+    },
 ]

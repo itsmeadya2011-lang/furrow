@@ -663,6 +663,10 @@ class WorkerAgent:
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
             )
+        if name == "grep_file":
+            return await self._grep_file(
+                str(args.get("path", "")), str(args.get("pattern", ""))
+            )
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"
@@ -739,6 +743,35 @@ class WorkerAgent:
             note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
             text = f"{text}\n{note}" if text else note
         return text
+
+    async def _grep_file(self, path: str, pattern: str) -> str:
+        """Search *path* for *pattern* (a regex) and return matching lines with line numbers.
+
+        The file must live inside the workspace. Returns "no matches" when nothing
+        matches, an "error:" string on failure, and caps the result at 50 matches
+        so a huge match set cannot flood the context.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+        try:
+            regex = re.compile(pattern)
+        except re.error as exc:
+            return f"error: invalid pattern: {exc}"
+        matches: list[str] = []
+        for i, line in enumerate(content.splitlines(), 1):
+            if regex.search(line):
+                matches.append(f"{i}: {line}")
+        if not matches:
+            return "no matches"
+        result = "\n".join(matches[:50])
+        if len(matches) > 50:
+            result += f"\n[... {len(matches) - 50} more matches not shown]"
+        return result
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():
