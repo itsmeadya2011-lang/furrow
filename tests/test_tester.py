@@ -52,6 +52,21 @@ def test_detect_pyproject(tmp_path):
     assert cmd is not None and "pytest" in cmd
 
 
+def test_detect_setup_py_with_tests_dir(tmp_path):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_setup_py_only(tmp_path):
+    (tmp_path / "setup.py").write_text("from setuptools import setup\nsetup()\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
 def test_detect_packagejson(tmp_path):
     (tmp_path / "package.json").write_text("{}")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
