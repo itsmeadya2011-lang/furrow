@@ -10,15 +10,18 @@ Commands:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 import click
 
 from furrow.config import RunResult, Settings, settings
+from furrow.core.events import Event, EventBus, EventType
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
@@ -27,6 +30,111 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
+
+
+class ProgressReporter:
+    """Real-time progress reporter for Furrow runs."""
+    
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+        self.start_time = time.time()
+        self.current_cycle = 0
+        self.tasks_completed = 0
+        self.tasks_failed = 0
+        self.tasks_blocked = 0
+        self.last_event_time = time.time()
+    
+    def on_event(self, event: Event) -> None:
+        """Handle an event from the orchestrator."""
+        if event.type == EventType.CYCLE_STARTED:
+            self.current_cycle = event.data.get("cycle", 0)
+            elapsed = time.time() - self.start_time
+            if self.verbose:
+                click.echo(f"\n{'='*60}")
+                click.echo(f"Cycle {self.current_cycle} started (elapsed: {elapsed:.1f}s)")
+                click.echo(f"{'='*60}")
+            else:
+                click.echo(f"\n[Cycle {self.current_cycle}] Starting... ({elapsed:.1f}s elapsed)")
+        
+        elif event.type == EventType.PLAN_CREATED:
+            task_count = event.data.get("tasks", 0)
+            rationale = event.data.get("rationale", "")
+            if self.verbose:
+                click.echo(f"Plan: {rationale}")
+                click.echo(f"Tasks: {task_count}")
+            else:
+                click.echo(f"[Cycle {self.current_cycle}] Plan created: {task_count} tasks - {rationale[:80]}...")
+        
+        elif event.type == EventType.TASK_STARTED:
+            task_id = event.data.get("task", "unknown")
+            if self.verbose:
+                click.echo(f"  → Task {task_id} started")
+            else:
+                click.echo(f"  [Task {task_id}] Running...")
+        
+        elif event.type == EventType.TASK_FINISHED:
+            task_id = event.data.get("task", "unknown")
+            success = event.data.get("success", False)
+            summary = event.data.get("summary", "")
+            if success:
+                self.tasks_completed += 1
+                if self.verbose:
+                    click.echo(f"  ✓ Task {task_id} completed: {summary[:100]}")
+                else:
+                    click.echo(f"  [Task {task_id}] ✓ Completed")
+            else:
+                self.tasks_failed += 1
+                if self.verbose:
+                    click.echo(f"  ✗ Task {task_id} failed: {summary[:100]}")
+                else:
+                    click.echo(f"  [Task {task_id}] ✗ Failed")
+        
+        elif event.type == EventType.TEST_STARTED:
+            if self.verbose:
+                click.echo(f"\nRunning tests...")
+            else:
+                click.echo(f"[Cycle {self.current_cycle}] Running tests...")
+        
+        elif event.type == EventType.TEST_FINISHED:
+            passed = event.data.get("passed", False)
+            summary = event.data.get("summary", "")
+            if passed:
+                if self.verbose:
+                    click.echo(f"  ✓ Tests passed: {summary}")
+                else:
+                    click.secho(f"  [Tests] ✓ Passed", fg="green")
+            else:
+                if self.verbose:
+                    click.echo(f"  ✗ Tests failed: {summary}")
+                else:
+                    click.secho(f"  [Tests] ✗ Failed", fg="red")
+        
+        elif event.type == EventType.CYCLE_FINISHED:
+            cycle = event.data.get("cycle", 0)
+            elapsed = time.time() - self.start_time
+            if self.verbose:
+                click.echo(f"Cycle {cycle} finished (total elapsed: {elapsed:.1f}s)")
+            else:
+                click.echo(f"[Cycle {cycle}] Finished ({elapsed:.1f}s total)")
+        
+        elif event.type == EventType.STATE_SAVED:
+            if self.verbose:
+                path = event.data.get("path", "")
+                click.echo(f"State saved to {path}")
+        
+        elif event.type == EventType.LOG:
+            if self.verbose:
+                click.echo(f"  LOG: {event.message}")
+        
+        elif event.type == EventType.ERROR:
+            click.secho(f"  ERROR: {event.message}", fg="red")
+    
+    def print_final_summary(self, result: RunResult) -> None:
+        """Print final summary with timing info."""
+        elapsed = time.time() - self.start_time
+        click.echo(f"\n{'='*60}")
+        click.echo(f"Run completed in {elapsed:.1f}s")
+        click.echo(f"{'='*60}")
 
 
 def _run_settings(
@@ -152,7 +260,50 @@ async def _run_and_release(orchestrator: Orchestrator) -> RunResult:
         await _release_client(getattr(orchestrator, "client", None))
 
 
-def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
+async def _run_with_progress(orchestrator: Orchestrator, verbose: bool = False) -> RunResult:
+    """Run an orchestrator with real-time progress reporting."""
+    reporter = ProgressReporter(verbose=verbose)
+    
+    # Check if orchestrator has event_bus (for tests with FakeOrchestrator)
+    event_bus = getattr(orchestrator, "event_bus", None)
+    if event_bus is None:
+        # Fallback to simple run without progress reporting
+        return await _run_and_release(orchestrator)
+    
+    queue = event_bus.subscribe()
+    
+    async def process_events():
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=0.1)
+                reporter.on_event(event)
+                if event.type == EventType.CYCLE_FINISHED:
+                    # Check if this was the last cycle
+                    if event.data.get("cycle", 0) >= orchestrator.cycles and getattr(orchestrator, "_stopped_reason", ""):
+                        break
+            except asyncio.TimeoutError:
+                # Check if orchestrator is done
+                if getattr(orchestrator, "_stopped_reason", ""):
+                    break
+                continue
+    
+    # Run orchestrator and event processor concurrently
+    run_task = asyncio.create_task(_run_and_release(orchestrator))
+    event_task = asyncio.create_task(process_events())
+    
+    try:
+        result = await run_task
+    finally:
+        event_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await event_task
+        event_bus.unsubscribe(queue)
+    
+    reporter.print_final_summary(result)
+    return result
+
+
+def _execute(goal: str, run_settings: Settings, resume: bool, verbose: bool = False) -> None:
     """Run the orchestrator and print the summary of the result."""
     store = StateStore(run_settings.state_path())
     orchestrator = Orchestrator(
@@ -162,9 +313,9 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         resume=resume,
     )
     try:
-        result = asyncio.run(_run_and_release(orchestrator))
+        result = asyncio.run(_run_with_progress(orchestrator, verbose=verbose))
     except KeyboardInterrupt:
-        click.echo("Furrow stopped by user.")
+        click.echo("\nFurrow stopped by user.")
         sys.exit(0)
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
@@ -195,18 +346,20 @@ def main() -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--resume", is_flag=True, help="Resume the persisted run instead of starting fresh.")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed progress output.")
 def start(
     goal: str | None,
     model: str | None,
     max_cycles: int | None,
     workspace: Path | None,
     resume: bool,
+    verbose: bool,
 ) -> None:
     """Start a Furrow run for GOAL (prompted for when omitted)."""
     if not goal:
         goal = click.prompt("Enter your goal for Furrow")
     run_settings = _run_settings(model=model, max_cycles=max_cycles, workspace=workspace)
-    _execute(goal=goal, run_settings=run_settings, resume=resume)
+    _execute(goal=goal, run_settings=run_settings, resume=resume, verbose=verbose)
 
 
 @main.command()
@@ -235,7 +388,8 @@ def status(workspace: Path | None) -> None:
     help=WORKSPACE_HELP,
 )
 @click.option("--max-cycles", type=click.IntRange(min=0), default=None, help=MAX_CYCLES_HELP)
-def resume(workspace: Path | None, max_cycles: int | None) -> None:
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed progress output.")
+def resume(workspace: Path | None, max_cycles: int | None, verbose: bool) -> None:
     """Resume the persisted Furrow run."""
     run_settings = _run_settings(max_cycles=max_cycles, workspace=workspace)
     store = StateStore(run_settings.state_path())
@@ -244,7 +398,7 @@ def resume(workspace: Path | None, max_cycles: int | None) -> None:
         click.secho("No furrow run state found to resume.", fg="red")
         sys.exit(1)
     goal = state.original_goal or state.goal
-    _execute(goal=goal, run_settings=run_settings, resume=True)
+    _execute(goal=goal, run_settings=run_settings, resume=True, verbose=verbose)
 
 
 @main.command()

@@ -60,6 +60,47 @@ T = TypeVar("T")
 
 
 @dataclass(slots=True)
+class CircuitBreaker:
+    """Circuit breaker for LLM provider failures.
+    
+    Tracks consecutive failures and opens the circuit when threshold is exceeded,
+    preventing cascade failures and allowing the provider time to recover.
+    """
+    failure_threshold: int = 5
+    recovery_timeout: float = 60.0  # seconds
+    _failures: int = 0
+    _last_failure_time: float = 0.0
+    _is_open: bool = False
+    
+    def record_success(self) -> None:
+        """Record a successful call, resetting failure count."""
+        self._failures = 0
+        self._is_open = False
+    
+    def record_failure(self) -> None:
+        """Record a failure, potentially opening the circuit."""
+        self._failures += 1
+        self._last_failure_time = asyncio.get_event_loop().time()
+        if self._failures >= self.failure_threshold:
+            self._is_open = True
+    
+    def can_execute(self) -> bool:
+        """Check if a call can be executed (circuit closed or recovery timeout passed)."""
+        if not self._is_open:
+            return True
+        # Check if recovery timeout has passed
+        if asyncio.get_event_loop().time() - self._last_failure_time >= self.recovery_timeout:
+            self._is_open = False
+            self._failures = 0
+            return True
+        return False
+    
+    @property
+    def is_open(self) -> bool:
+        return self._is_open
+
+
+@dataclass(slots=True)
 class ToolCall:
     id: str
     name: str
@@ -255,6 +296,12 @@ class LLMClient:
         self._openai: AsyncOpenAI | None = None
         self._ollama: AsyncOpenAI | None = None
         self.total_usage: Usage = Usage()
+        # Circuit breakers per provider
+        self._circuit_breakers: dict[Provider, CircuitBreaker] = {
+            Provider.ANTHROPIC: CircuitBreaker(),
+            Provider.OPENAI: CircuitBreaker(),
+            Provider.OLLAMA: CircuitBreaker(),
+        }
 
     @property
     def anthropic(self) -> AsyncAnthropic:
@@ -315,7 +362,18 @@ class LLMClient:
 
         The call is retried up to ``settings.max_retries`` attempts. Errors that
         are not retryable (see :func:`_is_retryable`) are raised immediately.
+        Circuit breaker prevents cascade failures when a provider is consistently failing.
         """
+        provider = self.settings.provider
+        breaker = self._circuit_breakers.get(provider)
+        
+        # Check circuit breaker before attempting
+        if breaker is not None and not breaker.can_execute():
+            raise RuntimeError(
+                f"Circuit breaker open for provider {provider.value}. "
+                f"Too many consecutive failures. Try again later."
+            )
+        
         max_attempts = max(1, int(self.settings.max_retries))
 
         if _TENACITY_AVAILABLE:
@@ -326,18 +384,28 @@ class LLMClient:
                 reraise=True,
             ):
                 with attempt_manager:
-                    return await call()
+                    result = await call()
+                    if breaker is not None:
+                        breaker.record_success()
+                    return result
 
         last_exc: Exception | None = None
         for attempt_index in range(max_attempts):
             try:
-                return await call()
+                result = await call()
+                if breaker is not None:
+                    breaker.record_success()
+                return result
             except Exception as exc:
                 last_exc = exc
+                if breaker is not None:
+                    breaker.record_failure()
                 if attempt_index + 1 >= max_attempts or not _is_retryable(exc):
                     raise
                 await asyncio.sleep(min(20.0, float(2 ** attempt_index)))
         if last_exc is not None:
+            if breaker is not None:
+                breaker.record_failure()
             raise last_exc
         raise RuntimeError("LLM retry loop exited unexpectedly")
 

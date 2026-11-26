@@ -24,6 +24,28 @@ DENIED_COMMANDS = (
     "shutdown",
     "reboot",
     "> /dev/sda",
+    "> /dev/mmcblk",
+    "> /dev/nvme",
+    "> /dev/loop",
+    "chown -r",
+    "chown --recursive",
+    "mount ",
+    "umount ",
+    "eval ",
+    "base64 -d",
+    "base64 --decode",
+    "python -c",
+    "perl -e",
+    "ruby -e",
+    "node -e",
+    "deno eval",
+    "mkfifo",
+    "mknod",
+    "losetup",
+    "kexec",
+    "init ",
+    "systemctl ",
+    "service ",
 )
 
 # Programs that are denied by name: the basename of the first token of a
@@ -39,6 +61,15 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "chown",
+        "mount",
+        "umount",
+        "mkfifo",
+        "mknod",
+        "losetup",
+        "kexec",
+        "systemctl",
+        "service",
     }
 )
 
@@ -354,6 +385,60 @@ def _expand_home(target: str) -> str:
     return os.path.expanduser(_HOME_VAR_RE.sub(home, target))
 
 
+def _looks_like_base64(text: str) -> bool:
+    """Check if text looks like a base64 encoded string."""
+    text = text.strip()
+    if len(text) < 16:  # Too short to be meaningful base64
+        return False
+    # Check if it's valid base64 (only A-Z, a-z, 0-9, +, /, =)
+    if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", text):
+        return False
+    # Must decode to something that looks like a command
+    try:
+        import base64
+        decoded = base64.b64decode(text).decode("utf-8", errors="ignore")
+        # Check if decoded content looks like a shell command
+        decoded = decoded.strip()
+        if not decoded:
+            return False
+        # Look for shell command patterns
+        dangerous_patterns = [
+            "rm ", "wget ", "curl ", "bash", "sh -c", "eval ", "exec ",
+            "chmod ", "chown ", "dd ", "mkfs", "mount ", "> /dev/",
+            "/etc/passwd", "/etc/shadow", "reboot", "shutdown",
+        ]
+        decoded_lower = decoded.lower()
+        return any(pattern in decoded_lower for pattern in dangerous_patterns)
+    except Exception:
+        return False
+
+
+def _check_base64_in_command(text: str, workspace: Path) -> bool:
+    """Check if command contains base64 encoded dangerous commands."""
+    # Look for base64 -d, base64 --decode, or similar patterns followed by pipe to shell
+    # Pattern: echo "BASE64" | base64 -d | bash
+    base64_patterns = [
+        r"base64\s+-d\s*\|",
+        r"base64\s+--decode\s*\|",
+        r"base64\s+-d\s*>",
+        r"base64\s+--decode\s*>",
+        r"openssl\s+enc\s+-d\s+-base64\s*\|",
+        r"python\s+-c\s+[\"']?import base64",
+    ]
+    for pattern in base64_patterns:
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    
+    # Check for standalone base64 strings that might be piped to shell
+    # Look for: echo "BASE64_STRING" | base64 -d | sh
+    words = text.split()
+    for word in words:
+        word_clean = word.strip("\"'")
+        if _looks_like_base64(word_clean):
+            return True
+    return False
+
+
 def _target_inside_workspace(target: str, workspace: Path) -> bool:
     """Resolve a redirection target and report whether it stays in the workspace.
 
@@ -521,6 +606,9 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     # denied pattern cannot hide in an unusual position (inside quotes, in
     # the middle of a pipeline, ...).
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
+        return True
+    # Check for base64 encoded dangerous commands
+    if _check_base64_in_command(text, workspace):
         return True
     # Every segment of the text is checked on its own.
     if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):

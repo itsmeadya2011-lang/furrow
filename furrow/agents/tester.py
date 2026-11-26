@@ -215,33 +215,10 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
-            # Check for jest/vitest configs
-            for pattern in ["jest.config.*", "vitest.config.*"]:
-                for _f in self.workspace.glob(pattern):
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            # Check package.json for test script
-            try:
-                with open(self.workspace / "package.json", encoding="utf-8") as fh:
-                    pkg_data = json.load(fh)
-                scripts = pkg_data.get("scripts", {})
-                if "test" in scripts:
-                    if (self.workspace / "pnpm-lock.yaml").is_file():
-                        return ["pnpm", "test", "--silent"]
-                    if (self.workspace / "yarn.lock").is_file():
-                        return ["yarn", "test", "--silent"]
-                    return ["npm", "test", "--silent"]
-            except (OSError, UnicodeError, ValueError) as exc:
-                logger.warning("Could not read package.json: %s", exc)
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            # Try to detect the test framework from package.json and config files
+            test_cmd = await self._detect_node_test_command()
+            if test_cmd:
+                return test_cmd
 
         python_markers = [
             "pyproject.toml",
@@ -257,8 +234,135 @@ class TesterAgent:
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+        # Detect other language test runners
+        if (self.workspace / "composer.json").is_file():
+            # PHP - check for phpunit, pest, etc.
+            if (self.workspace / "phpunit.xml").is_file() or (self.workspace / "phpunit.xml.dist").is_file():
+                return ["./vendor/bin/phpunit"]
+            if (self.workspace / "pest.php").is_file():
+                return ["./vendor/bin/pest"]
+            # Default to phpunit if composer exists
+            return ["./vendor/bin/phpunit"]
+        if (self.workspace / "build.gradle").is_file() or (self.workspace / "build.gradle.kts").is_file():
+            # Java/Gradle
+            return ["./gradlew", "test"]
+        if (self.workspace / "pom.xml").is_file():
+            # Java/Maven
+            return ["mvn", "test"]
+        if (self.workspace / "mix.exs").is_file():
+            # Elixir
+            return ["mix", "test"]
+        if (self.workspace / "rebar.config").is_file() or (self.workspace / "rebar3").is_file():
+            # Erlang
+            return ["rebar3", "eunit"]
+        if (self.workspace / "dune-project").is_file() or (self.workspace / "dune-workspace").is_file():
+            # OCaml/Dune
+            return ["dune", "runtest"]
+        if (self.workspace / "CMakeLists.txt").is_file():
+            # C/C++ with CTest
+            if (self.workspace / "CTestTestfile.cmake").is_file() or (self.workspace / "build" / "CTestTestfile.cmake").is_file():
+                return ["ctest", "--output-on-failure"]
+        # Check for .NET
+        for pattern in ["*.csproj", "*.fsproj", "*.vbproj"]:
+            if list(self.workspace.glob(pattern)):
+                return ["dotnet", "test"]
 
         return None
+
+    async def _detect_node_test_command(self) -> list[str] | None:
+        """Detect the appropriate test command for a Node.js project."""
+        pkg_path = self.workspace / "package.json"
+        if not pkg_path.is_file():
+            return None
+        
+        # Read package.json to check for test scripts and dependencies
+        try:
+            with open(pkg_path, encoding="utf-8") as fh:
+                pkg_data = json.load(fh)
+        except (OSError, UnicodeError, ValueError) as exc:
+            logger.warning("Could not read package.json: %s", exc)
+            return self._default_node_test_command()
+        
+        scripts = pkg_data.get("scripts", {})
+        deps = {**pkg_data.get("dependencies", {}), **pkg_data.get("devDependencies", {})}
+        
+        # Determine package manager
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            pm = "pnpm"
+        elif (self.workspace / "yarn.lock").is_file():
+            pm = "yarn"
+        else:
+            pm = "npm"
+        
+        # Check for explicit test framework configs (highest priority)
+        # Vitest
+        if any(self.workspace.glob("vitest.config.*")) or "vitest" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "vitest", "run"]
+        
+        # Jest
+        if any(self.workspace.glob("jest.config.*")) or "jest" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "jest", "--silent"]
+        
+        # Mocha
+        if any(self.workspace.glob(".mocharc.*")) or any(self.workspace.glob("mocha.config.*")) or "mocha" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "mocha"]
+        
+        # Cypress (component/unit tests)
+        if (self.workspace / "cypress.config.*").is_file() or "cypress" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            # Cypress component tests
+            return [pm, "exec", "cypress", "run", "--component"]
+        
+        # Playwright
+        if (self.workspace / "playwright.config.*").is_file() or "@playwright/test" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "playwright", "test"]
+        
+        # uvu
+        if "uvu" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "uvu"]
+        
+        # ava
+        if "ava" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "ava"]
+        
+        # tape
+        if "tape" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "tape"]
+        
+        # Jasmine
+        if "jasmine" in deps:
+            if "test" in scripts:
+                return [pm, "test", "--silent"]
+            return [pm, "exec", "jasmine"]
+        
+        # Fallback to npm test script if defined
+        if "test" in scripts:
+            return [pm, "test", "--silent"]
+        
+        return self._default_node_test_command()
+
+    def _default_node_test_command(self) -> list[str]:
+        """Default Node.js test command based on lockfile."""
+        if (self.workspace / "pnpm-lock.yaml").is_file():
+            return ["pnpm", "test", "--silent"]
+        if (self.workspace / "yarn.lock").is_file():
+            return ["yarn", "test", "--silent"]
+        return ["npm", "test", "--silent"]
 
     def _finalize(
         self,
