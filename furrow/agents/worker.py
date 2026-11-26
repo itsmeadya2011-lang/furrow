@@ -15,6 +15,8 @@ from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
 
+MAX_LIST_ENTRIES = 500
+
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
 DENIED_COMMANDS = (
@@ -45,12 +47,6 @@ DENIED_PROGRAMS = frozenset(
 # Stop reasons that indicate the model response was truncated, so a worker
 # turn with no tool calls is a failure rather than a completed task.
 TRUNCATED_STOP_REASONS = frozenset({"max_tokens", "length"})
-
-# Maximum number of entries returned by the ``list_files`` tool.
-MAX_LIST_ENTRIES = 500
-
-# Maximum number of characters returned by the ``read_file`` tool.
-MAX_READ_CHARS = 20000
 
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
@@ -694,9 +690,10 @@ class WorkerAgent:
             content = await self.client.read_file(resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        if len(content) > MAX_READ_CHARS:
+        max_read_chars = self.settings.max_read_chars
+        if len(content) > max_read_chars:
             content = (
-                content[:MAX_READ_CHARS]
+                content[:max_read_chars]
                 + f"\n[... output truncated ...] ({len(content)} chars total)"
             )
         return content
@@ -722,13 +719,14 @@ class WorkerAgent:
             entries = await asyncio.to_thread(self.client.list_files, resolved)
         except (OSError, ValueError, RuntimeError) as exc:
             return f"error: {exc}"
-        # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the
+        # Cap the listing at max_list_entries so huge trees cannot flood the
         # context, and tell the model when entries were left out so it knows
         # to list a subdirectory instead of assuming it saw everything.
+        max_list_entries = min(self.settings.max_list_entries, MAX_LIST_ENTRIES)
         total = len(entries)
         rels = []
         base = self.workspace.resolve()
-        for e in entries[:MAX_LIST_ENTRIES]:
+        for e in entries[:max_list_entries]:
             try:
                 rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
             except ValueError:

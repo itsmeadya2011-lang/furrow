@@ -267,5 +267,37 @@ def web(host: str, port: int) -> None:
         sys.exit(1)
 
 
+@main.command()
+@click.option(
+    "--host", default="127.0.0.1", help="Host of the running web server."
+)
+@click.option("--port", type=int, default=8000, help="Port of the running web server.")
+def stop(host: str, port: int) -> None:
+    """Stop a background run on the web server."""
+    import urllib.error
+    import urllib.request
+
+    url = f"http://{host}:{port}/api/stop"
+    req = urllib.request.Request(url, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status == 200:
+                click.echo("Run stopped.")
+            elif response.status == 409:
+                click.secho("No run in progress.", fg="yellow")
+            else:
+                click.secho(f"Unexpected response: {response.status}", fg="red")
+                sys.exit(1)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 409:
+            click.secho("No run in progress.", fg="yellow")
+        else:
+            click.secho(f"Failed to stop run: HTTP {exc.code}", fg="red")
+            sys.exit(1)
+    except urllib.error.URLError as exc:
+        click.secho(f"Could not connect to web server at {host}:{port}: {exc}", fg="red")
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     main()
