@@ -819,3 +819,10 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+
+
+__all__ = [
+    "WorkerAgent",
+    "is_command_denied",
+    "resolve_in_workspace",
+]

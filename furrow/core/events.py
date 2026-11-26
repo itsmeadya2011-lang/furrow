@@ -130,3 +130,11 @@ class EventBus:
     def dropped_for(self, queue: asyncio.Queue[Event]) -> int:
         """Number of events dropped for a single subscriber queue."""
         return self._dropped_by_queue.get(queue, 0)
+
+
+__all__ = [
+    "MAX_QUEUE_SIZE",
+    "EventType",
+    "Event",
+    "EventBus",
+]

@@ -597,3 +597,6 @@ class Orchestrator:
             for t in wave:
                 if t.status in {"failed", "blocked"}:
                     unavailable.add(t.id)
+
+
+__all__ = ["Orchestrator"]

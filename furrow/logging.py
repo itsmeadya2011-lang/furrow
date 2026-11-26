@@ -64,3 +64,6 @@ def get_logger(name: str) -> Any:
     if _STRUCTLOG_AVAILABLE:
         return structlog.get_logger(name)
     return logging.getLogger(name)
+
+
+__all__ = ["configure_logging", "get_logger"]

@@ -496,3 +496,10 @@ def _looks_like_failure(line: str) -> bool:
     remainder = _ALL_ZERO_SUMMARY_RE.sub(" ", text)
     remainder = _ZERO_COUNT_RE.sub(" ", remainder)
     return any(k in remainder.lower() for k in _FAILURE_KEYWORDS)
+
+
+__all__ = [
+    "TesterAgent",
+    "resolve_test_timeout",
+    "parse_test_output",
+]

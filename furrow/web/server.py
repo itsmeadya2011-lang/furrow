@@ -747,3 +747,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 def run(host: str = "127.0.0.1", port: int = 8000) -> None:
     """Start the Furrow web server."""
     uvicorn.run(app, host=host, port=port)
+
+
+__all__ = ["app", "run"]

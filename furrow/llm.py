@@ -589,3 +589,17 @@ class LLMClient:
                 results.append(os.path.relpath(os.path.join(root, name), p))
         results.sort()
         return results
+
+
+__all__ = [
+    "LLMClient",
+    "ToolCall",
+    "LLMResponse",
+    "RETRYABLE_STATUS_CODES",
+    "IGNORED_DIRECTORIES",
+    "parse_tool_arguments",
+    "to_anthropic_tools",
+    "to_openai_tools",
+    "to_anthropic_messages",
+    "to_openai_messages",
+]

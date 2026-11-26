@@ -183,3 +183,14 @@ class StateStore:
             pass
         except OSError as exc:  # pragma: no cover - best effort cleanup
             logger.warning("Could not remove state file %s: %s", self.path, exc)
+
+
+__all__ = [
+    "utcnow",
+    "STATE_VERSION",
+    "DEFAULT_STATE_RELATIVE_PATH",
+    "HistoryEntry",
+    "RunState",
+    "state_path_for",
+    "StateStore",
+]
