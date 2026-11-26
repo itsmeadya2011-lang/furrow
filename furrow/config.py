@@ -118,7 +118,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
-    max_parallel_tasks: int = Field(default=5, ge=1)
+    max_parallel_tasks: int = Field(default=5, ge=1, le=64)
     max_cycles: int = Field(default=0, ge=0)
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"

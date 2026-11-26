@@ -59,6 +59,15 @@ def test_detect_packagejson(tmp_path):
     assert cmd is not None and "npm" in cmd
 
 
+def test_detect_mixed_python_and_packagejson_prefers_pytest(tmp_path):
+    """A repo with both a Python marker and package.json (no tests/) uses pytest."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "vitest"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
 def test_detect_command_unreadable_package_json_falls_back(tmp_path):
     """An unreadable / non-UTF-8 package.json must not crash detection.
 

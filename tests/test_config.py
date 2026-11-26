@@ -204,6 +204,14 @@ def test_numeric_settings_allow_valid_bounds():
     assert s.max_task_retries == 0
 
 
+def test_max_parallel_tasks_upper_bound():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(max_parallel_tasks=65)
+    assert Settings(max_parallel_tasks=64).max_parallel_tasks == 64
+
+
 def test_usage_cost_usd_defaults_to_zero():
     from furrow.config import Usage
 

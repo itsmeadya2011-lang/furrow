@@ -724,6 +724,30 @@ async def test_merge_plan_adopts_result_and_error_from_planned_task(tmp_path, mo
 
 
 @pytest.mark.asyncio
+async def test_merge_plan_prunes_tasks_absent_from_new_plan(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.tasks = [
+        TaskModel(id="a", description="do a", status="completed"),
+        TaskModel(id="b", description="do b", status="pending"),
+    ]
+    # Second plan contains only task a (unchanged); b is now stale.
+    plan = Plan(
+        tasks=[TaskModel(id="a", description="do a", dependencies=[])],
+        rationale="r",
+    )
+    orch._merge_plan(plan)
+    assert [t.id for t in orch.tasks] == ["a"]
+    assert [t["id"] for t in orch.status()["tasks"]] == ["a"]
+    surviving = orch.tasks[0]
+    assert surviving.id == "a"
+    assert surviving.description == "do a"
+    assert surviving.status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_resume_restores_no_progress_and_prev_sig(tmp_path, monkeypatch):
     monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
     settings = make_settings(tmp_path, max_cycles=1)

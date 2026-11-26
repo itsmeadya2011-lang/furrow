@@ -213,6 +213,18 @@ class TesterAgent:
         ):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # Generic Python markers take precedence over package.json when there is
+        # no tests/ dir, so a mixed repo is routed to pytest rather than npm.
+        python_markers = [
+            "pyproject.toml",
+            "pytest.ini",
+            "setup.cfg",
+            "tox.ini",
+            "requirements.txt",
+        ]
+        if any((self.workspace / m).is_file() for m in python_markers):
+            return [sys.executable, "-m", "pytest", "-q"]
+
         # Check for Node.js test runners
         if has_package:
             # Check for jest/vitest configs
@@ -242,16 +254,6 @@ class TesterAgent:
             if (self.workspace / "yarn.lock").is_file():
                 return ["yarn", "test", "--silent"]
             return ["npm", "test", "--silent"]
-
-        python_markers = [
-            "pyproject.toml",
-            "pytest.ini",
-            "setup.cfg",
-            "tox.ini",
-            "requirements.txt",
-        ]
-        if any((self.workspace / m).is_file() for m in python_markers):
-            return [sys.executable, "-m", "pytest", "-q"]
 
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]

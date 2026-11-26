@@ -383,6 +383,10 @@ class Orchestrator:
             else:
                 self.tasks.append(pt)
         self._active_ids = {t.id for t in plan.tasks}
+        # Tasks that are not part of the current plan are stale: they belong to a
+        # superseded plan and must not leak into persisted state or status().
+        # Prune them so self.tasks reflects only the active plan, preserving order.
+        self.tasks = [t for t in self.tasks if t.id in self._active_ids]
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}
