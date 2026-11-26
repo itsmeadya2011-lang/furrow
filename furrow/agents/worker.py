@@ -659,6 +659,29 @@ class WorkerAgent:
             if not isinstance(content, str):
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
+        if name == "edit_file":
+            if "edits" not in args:
+                return "error: missing edits"
+            edits = args["edits"]
+            if not isinstance(edits, list) or not edits:
+                return "error: edits must be a non-empty list"
+            return await self._edit_file(str(args.get("path", "")), edits)
+        if name == "search_files":
+            if "pattern" not in args:
+                return "error: missing pattern"
+            return await self._search_files(
+                str(args.get("pattern", "")),
+                str(args.get("path", "")) if args.get("path") else ".",
+                str(args.get("include", "")) if args.get("include") else None,
+                int(args.get("max_results", 50)) if args.get("max_results") else 50,
+            )
+        if name == "patch_file":
+            if "diff" not in args:
+                return "error: missing diff"
+            return await self._patch_file(
+                str(args.get("path", "")),
+                str(args.get("diff", "")),
+            )
         if name == "list_files":
             return await self._list_files(
                 str(args.get("path", "")) if args.get("path") is not None else "."
@@ -714,6 +737,207 @@ class WorkerAgent:
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
 
+    async def _edit_file(
+        self,
+        path: str,
+        edits: list[dict[str, Any]] | None = None,
+        diff: str | None = None,
+    ) -> str:
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+        try:
+            content = await self.client.read_file(resolved)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+        replacements: list[tuple[str, str]] = []
+        if diff is not None:
+            try:
+                new_content = _apply_unified_diff(content, diff)
+            except ValueError as exc:
+                return f"error: {exc}"
+        elif edits is not None:
+            for index, edit in enumerate(edits):
+                if not isinstance(edit, dict):
+                    return f"error: edit #{index} is not an object"
+                old_text = edit.get("old_text", "")
+                new_text = edit.get("new_text", "")
+                if not isinstance(old_text, str) or not isinstance(new_text, str):
+                    return f"error: edit #{index} old_text/new_text must be strings"
+                replacements.append((old_text, new_text))
+            new_content = content
+            for old_text, new_text in replacements:
+                count = new_content.count(old_text)
+                if count == 0:
+                    return f"error: old_text not found in {path}"
+                if count > 1:
+                    return (
+                        f"error: old_text appears {count} times in {path}; "
+                        f"edit is ambiguous"
+                    )
+                new_content = new_content.replace(old_text, new_text, 1)
+        else:
+            return "error: missing edits or diff"
+
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            await self.client.write_file(resolved, new_content)
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+        rel = str(resolved.relative_to(self.workspace.resolve()))
+        self.files_changed.add(rel)
+        return f"edited {path}"
+
+
+def _apply_unified_diff(content: str, diff: str) -> str:
+    """Apply a unified diff to `content`, returning the new content.
+
+    Raises ValueError if the diff cannot be parsed or applied.
+    Hunks are applied in reverse order so earlier line numbers stay valid.
+    """
+    original_lines = content.splitlines(keepends=True)
+    diff_lines = diff.splitlines()
+
+    # Locate the first hunk header (@@ ... @@).
+    hunk_index = 0
+    while hunk_index < len(diff_lines) and not diff_lines[hunk_index].startswith("@@"):
+        hunk_index += 1
+    if hunk_index >= len(diff_lines):
+        raise ValueError("no hunks found in diff")
+
+    hunks = []
+    cursor = hunk_index
+    while cursor < len(diff_lines):
+        line = diff_lines[cursor]
+        if not line.startswith("@@"):
+            break
+        header = line
+        m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)", header)
+        if not m:
+            raise ValueError(f"malformed hunk header: {header}")
+        old_start = int(m.group(1))
+        old_count = int(m.group(2) or 1)
+        new_start = int(m.group(3))
+        new_count = int(m.group(4) or 1)
+        cursor += 1
+
+        ops: list[tuple[str, str]] = []  # ("context"/"remove"/"add", text)
+        removed = 0
+        added = 0
+        while cursor < len(diff_lines):
+            dl = diff_lines[cursor]
+            if dl.startswith("@@"):
+                break
+            if dl.startswith("---") or dl.startswith("+++"):
+                cursor += 1
+                continue
+            if dl.startswith("+"):
+                ops.append(("add", dl[1:]))
+                added += 1
+            elif dl.startswith("-"):
+                ops.append(("remove", dl[1:]))
+                removed += 1
+            elif dl.startswith(" "):
+                ops.append(("context", dl[1:]))
+                removed += 1
+                added += 1
+            elif dl == "":
+                # Blank context line (a line that was empty becomes "" with no
+                # leading space in some diff emitters). Treat as context.
+                ops.append(("context", ""))
+                removed += 1
+                added += 1
+            else:
+                # Unexpected line: end of this hunk.
+                break
+            cursor += 1
+
+        if removed != old_count or added != new_count:
+            raise ValueError(
+                f"hunk counts mismatch: expected -{old_count}/+{new_count}, "
+                f"got -{removed}/+{added}"
+            )
+        hunks.append((old_start, old_count, ops))
+
+    # Apply hunks in reverse order so line numbers of earlier hunks are stable.
+    lines = list(original_lines)
+    for old_start, old_count, ops in reversed(hunks):
+        start = old_start - 1  # 1-based to 0-based
+        if start < 0 or start + old_count > len(lines):
+            raise ValueError(f"hunk at line {old_start} is out of range")
+        # Verify the removed lines match the original context.
+        segment = lines[start : start + old_count]
+        for i, (kind, text) in enumerate(ops):
+            if kind in ("remove", "context"):
+                expected = segment[i] if i < len(segment) else ""
+                if expected.rstrip("\n") != text:
+                    raise ValueError(
+                        f"context mismatch at line {old_start + i}: "
+                        f"expected {expected!r}, got {text!r}"
+                    )
+        replacement = [text + "\n" for kind, text in ops if kind in ("context", "add")]
+        lines[start : start + old_count] = replacement
+
+    return "".join(lines)
+
+    async def _edit_file(self, path: str, edits: list[dict]) -> str:
+        """Apply a list of search/replace edits to a file atomically.
+
+        Each edit is a dict with 'old_text' and 'new_text'. Empty old_text means
+        insert at the start of the file; empty new_text means delete.
+        """
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+
+        # Validate edits structure
+        for i, edit in enumerate(edits):
+            if not isinstance(edit, dict):
+                return f"error: edit {i} must be an object"
+            if "old_text" not in edit or "new_text" not in edit:
+                return f"error: edit {i} must have 'old_text' and 'new_text'"
+            if not isinstance(edit["old_text"], str) or not isinstance(edit["new_text"], str):
+                return f"error: edit {i} old_text and new_text must be strings"
+
+        try:
+            # Read current content
+            try:
+                content = await self.client.read_file(resolved)
+            except FileNotFoundError:
+                return f"error: file not found: {path}"
+            except (OSError, ValueError, RuntimeError) as exc:
+                return f"error: {exc}"
+
+            original_content = content
+            for i, edit in enumerate(edits):
+                old_text = edit["old_text"]
+                new_text = edit["new_text"]
+
+                if old_text == "":
+                    # Insert at the beginning of the file
+                    content = new_text + content
+                else:
+                    # Find the old_text
+                    if old_text not in content:
+                        return f"error: edit {i}: old_text not found in file"
+                    # Replace only the first occurrence
+                    content = content.replace(old_text, new_text, 1)
+
+            # Write the modified content
+            try:
+                await self.client.write_file(resolved, content)
+            except (OSError, ValueError, RuntimeError) as exc:
+                return f"error: {exc}"
+
+            rel = str(resolved.relative_to(self.workspace.resolve()))
+            self.files_changed.add(rel)
+            return f"edited {path} ({len(edits)} edit(s) applied)"
+
+        except Exception as exc:
+            return f"error: {exc}"
+
     async def _list_files(self, path: str) -> str:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
@@ -739,6 +963,114 @@ class WorkerAgent:
             note = f"[... {omitted} more entries not shown; list a subdirectory ...]"
             text = f"{text}\n{note}" if text else note
         return text
+
+    async def _search_files(
+        self, pattern: str, path: str, include: str | None, max_results: int
+    ) -> str:
+        """Search for a regex pattern in files under the workspace."""
+        search_path = resolve_in_workspace(self.workspace, path)
+        if search_path is None:
+            return "error: path escapes workspace"
+
+        try:
+            import re as regex_module
+
+            regex = regex_module.compile(pattern)
+        except regex_module.error as exc:
+            return f"error: invalid regex pattern: {exc}"
+
+        matches: list[str] = []
+        base = self.workspace.resolve()
+
+        try:
+            # Get all files to search
+            all_files = await asyncio.to_thread(self.client.list_files, search_path)
+
+            # Filter by include pattern if provided
+            if include:
+                import fnmatch
+
+                all_files = [f for f in all_files if fnmatch.fnmatch(f, include)]
+
+            for file_path in all_files:
+                if len(matches) >= max_results:
+                    break
+
+                # Resolve full path
+                full_path = (search_path / file_path) if not Path(file_path).is_absolute() else Path(file_path)
+                try:
+                    full_path = full_path.resolve()
+                    full_path.relative_to(base)
+                except ValueError:
+                    continue  # Skip files outside workspace
+
+                # Skip directories
+                if not full_path.is_file():
+                    continue
+
+                # Skip binary/large files
+                try:
+                    stat = full_path.stat()
+                    if stat.st_size > 1_000_000:  # 1MB limit
+                        continue
+                except OSError:
+                    continue
+
+                # Read and search file
+                try:
+                    content = await self.client.read_file(full_path)
+                except (OSError, ValueError, RuntimeError):
+                    continue
+
+                for line_num, line in enumerate(content.splitlines(), 1):
+                    if regex.search(line):
+                        rel_path = str(full_path.relative_to(base))
+                        # Show context: the matching line with line number
+                        matches.append(f"{rel_path}:{line_num}: {line.strip()}")
+                        if len(matches) >= max_results:
+                            break
+
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"error: {exc}"
+
+        if not matches:
+            return f"No matches found for pattern: {pattern}"
+
+        return "\n".join(matches)
+
+    async def _patch_file(self, path: str, diff: str) -> str:
+        """Apply a unified diff to a file."""
+        resolved = resolve_in_workspace(self.workspace, path)
+        if resolved is None:
+            return "error: path escapes workspace"
+
+        try:
+            # Read current content
+            try:
+                content = await self.client.read_file(resolved)
+            except FileNotFoundError:
+                return f"error: file not found: {path}"
+            except (OSError, ValueError, RuntimeError) as exc:
+                return f"error: {exc}"
+
+            # Apply the diff
+            try:
+                new_content = _apply_unified_diff(content, diff)
+            except ValueError as exc:
+                return f"error: failed to apply diff: {exc}"
+
+            # Write the modified content
+            try:
+                await self.client.write_file(resolved, new_content)
+            except (OSError, ValueError, RuntimeError) as exc:
+                return f"error: {exc}"
+
+            rel = str(resolved.relative_to(self.workspace.resolve()))
+            self.files_changed.add(rel)
+            return f"patched {path}"
+
+        except Exception as exc:
+            return f"error: {exc}"
 
     async def _run_command(self, command: str) -> str:
         if not command.strip():

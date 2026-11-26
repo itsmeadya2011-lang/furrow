@@ -32,7 +32,7 @@ class Orchestrator:
         self.state_store = (
             state_store if state_store is not None else StateStore(self.settings.state_path())
         )
-        self.planner = PlannerAgent(client=self.client, settings=self.settings)
+        self.planner = PlannerAgent(client=self.client, settings=self.settings, workspace=self.settings.workspace)
         self.tester = TesterAgent(client=self.client, settings=self.settings,
                                  workspace=self.settings.workspace)
         self.history: list[HistoryEntry] = []
@@ -172,6 +172,10 @@ class Orchestrator:
         self._say(f"[bold]Goal:[/bold] {self._escape(self._clip(self.original_goal))}")
 
         while True:
+            # Check cost budget before starting a new cycle
+            if self.settings.max_cost_usd and self._usage.cost_usd >= self.settings.max_cost_usd:
+                self._stopped_reason = f"max cost budget (${self.settings.max_cost_usd:.4f}) reached"
+                break
             if self.settings.max_cycles and self.cycles >= self.settings.max_cycles:
                 self._stopped_reason = "max_cycles reached"
                 break

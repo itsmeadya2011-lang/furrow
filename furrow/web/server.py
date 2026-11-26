@@ -132,6 +132,27 @@ INDEX_HTML = r"""<!DOCTYPE html>
   .status-blocked { color: #f0b367; }
   .status-skipped { color: #8a93a5; }
   .status-unknown { color: #8a93a5; }
+  /* Dependency graph styles */
+  .graph-container {
+    border: 1px solid #2b3240; border-radius: 8px; padding: 1rem;
+    background: #171b23; margin-top: 1rem;
+    min-height: 300px;
+    overflow: auto;
+  }
+  .graph-svg { width: 100%; height: 300px; }
+  .graph-node { cursor: pointer; transition: opacity 0.2s; }
+  .graph-node:hover { opacity: 0.7; }
+  .graph-node.completed { fill: #57d38c; }
+  .graph-node.running { fill: #4c8dff; }
+  .graph-node.failed { fill: #e0685f; }
+  .graph-node.blocked { fill: #f0b367; }
+  .graph-node.pending { fill: #8a93a5; }
+  .graph-node.skipped { fill: #8a93a5; }
+  .graph-edge { stroke: #4c8dff; stroke-width: 1.5; fill: none; marker-end: url(#arrowhead); }
+  .graph-label { font-size: 10px; pointer-events: none; fill: #d7dae0; }
+  .graph-legend { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: .5rem; font-size: .8rem; }
+  .legend-item { display: flex; align-items: center; gap: .3rem; }
+  .legend-color { width: 12px; height: 12px; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -152,6 +173,16 @@ INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
+<div class="graph-container">
+  <div class="graph-legend" id="graph-legend"></div>
+  <svg class="graph-svg" id="graph-svg" viewBox="0 0 800 300" preserveAspectRatio="xMidYMid meet">
+    <defs>
+      <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#4c8dff" />
+      </marker>
+    </defs>
+  </svg>
+</div>
 <script>
   const logEl = document.getElementById('log');
   const goalEl = document.getElementById('goal');
@@ -161,6 +192,8 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const graphSvg = document.getElementById('graph-svg');
+  const graphLegend = document.getElementById('graph-legend');
   let socket = null;
   let lastSummary = null;
 
@@ -273,6 +306,182 @@ INDEX_HTML = r"""<!DOCTYPE html>
 
       tasksEl.appendChild(panel);
     });
+    renderDependencyGraph(list);
+  }
+
+  function renderDependencyGraph(tasks) {
+    // Clear SVG
+    while (graphSvg.firstChild) {
+      if (graphSvg.firstChild.tagName === 'defs') {
+        graphSvg.firstChild = graphSvg.firstChild; // Keep defs
+        break;
+      }
+      graphSvg.removeChild(graphSvg.firstChild);
+    }
+    // Re-add defs if missing
+    if (!graphSvg.querySelector('#arrowhead')) {
+      const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+      defs.innerHTML = '<marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto"><polygon points="0 0, 10 3.5, 0 7" fill="#4c8dff" /></marker>';
+      graphSvg.insertBefore(defs, graphSvg.firstChild);
+    }
+
+    // Clear everything except defs
+    const children = Array.from(graphSvg.children);
+    children.forEach(child => {
+      if (child.tagName !== 'defs') graphSvg.removeChild(child);
+    });
+
+    if (tasks.length === 0) return;
+
+    // Build task map
+    const taskMap = {};
+    tasks.forEach(t => { taskMap[text(t.id)] = t; });
+
+    // Simple layout: arrange in topological order waves
+    const waves = computeWaves(tasks);
+    const nodeRadius = 20;
+    const waveSpacing = 200;
+    const nodeSpacing = 80;
+    const startY = 150;
+
+    const positions = {}; // id -> {x, y}
+
+    // Position nodes
+    waves.forEach((wave, waveIndex) => {
+      const waveX = 100 + waveIndex * waveSpacing;
+      wave.forEach((task, nodeIndex) => {
+        const taskId = text(task.id);
+        const waveWidth = (wave.length - 1) * nodeSpacing;
+        const startX = waveX - waveWidth / 2;
+        positions[taskId] = {
+          x: startX + nodeIndex * nodeSpacing,
+          y: startY
+        };
+      });
+    });
+
+    // Draw edges first (so they appear behind nodes)
+    tasks.forEach(task => {
+      const taskId = text(task.id);
+      const deps = task.dependencies || [];
+      const fromPos = positions[taskId];
+      if (!fromPos) return;
+
+      deps.forEach(depId => {
+        const toPos = positions[depId];
+        if (!toPos) return;
+        drawEdge(fromPos, toPos);
+      });
+    });
+
+    // Draw nodes
+    tasks.forEach(task => {
+      const taskId = text(task.id);
+      const pos = positions[taskId];
+      if (!pos) return;
+      drawNode(pos, task);
+    });
+
+    // Render legend
+    renderLegend(tasks);
+  }
+
+  function computeWaves(tasks) {
+    const ids = new Set(tasks.map(t => text(t.id)));
+    const waves = [];
+    const done = new Set();
+    const remaining = [...tasks];
+
+    while (remaining.length > 0) {
+      const wave = remaining.filter(t => 
+        (t.dependencies || []).every(d => done.has(d) || !ids.has(d))
+      );
+      if (wave.length === 0) {
+        // Cycle detected - add remaining as final wave
+        waves.push(remaining);
+        break;
+      }
+      waves.push(wave);
+      wave.forEach(t => done.add(text(t.id)));
+      remaining.splice(0, remaining.length, ...remaining.filter(t => !wave.includes(t)));
+    }
+    return waves;
+  }
+
+  function drawEdge(from, to) {
+    const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    line.setAttribute('x1', from.x);
+    line.setAttribute('y1', from.y);
+    line.setAttribute('x2', to.x);
+    line.setAttribute('y2', to.y);
+    line.setAttribute('class', 'graph-edge');
+    graphSvg.appendChild(line);
+  }
+
+  function drawNode(pos, task) {
+    const taskId = text(task.id);
+    const status = text(task.status) || 'pending';
+    const desc = text(task.description);
+
+    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    group.setAttribute('class', 'graph-node ' + statusClass(status));
+    group.setAttribute('title', taskId + ': ' + desc);
+
+    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    circle.setAttribute('cx', pos.x);
+    circle.setAttribute('cy', pos.y);
+    circle.setAttribute('r', 20);
+    group.appendChild(circle);
+
+    const label = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+    label.setAttribute('x', pos.x);
+    label.setAttribute('y', pos.y + 4);
+    label.setAttribute('text-anchor', 'middle');
+    label.setAttribute('class', 'graph-label');
+    label.textContent = taskId;
+    group.appendChild(label);
+
+    // Tooltip on hover
+    group.addEventListener('mouseenter', () => {
+      circle.setAttribute('stroke', '#f0f2f5');
+      circle.setAttribute('stroke-width', '2');
+    });
+    group.addEventListener('mouseleave', () => {
+      circle.removeAttribute('stroke');
+      circle.removeAttribute('stroke-width');
+    });
+
+    graphSvg.appendChild(group);
+  }
+
+  function renderLegend(tasks) {
+    const statuses = [...new Set(tasks.map(t => text(t.status) || 'pending'))];
+    graphLegend.innerHTML = '';
+    statuses.forEach(status => {
+      const item = document.createElement('span');
+      item.className = 'legend-item';
+      const color = document.createElement('span');
+      color.className = 'legend-color';
+      color.style.background = getStatusColor(status);
+      const label = document.createElement('span');
+      label.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+      item.appendChild(color);
+      item.appendChild(label);
+      graphLegend.appendChild(item);
+    });
+  }
+
+  function getStatusColor(status) {
+    const colors = {
+      completed: '#57d38c',
+      running: '#4c8dff',
+      failed: '#e0685f',
+      blocked: '#f0b367',
+      pending: '#8a93a5',
+      skipped: '#8a93a5',
+      unknown: '#8a93a5'
+    };
+    return colors[status] || '#8a93a5';
   }
 
   async function loadState() {
@@ -420,6 +629,7 @@ class StartRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -428,6 +638,7 @@ class SocketRequest(BaseModel):
 
     goal: str = ""
     max_cycles: int | None = Field(default=None, ge=0)
+    max_cost_usd: float | None = Field(default=None, ge=0)
     resume: bool = False
 
 
@@ -442,17 +653,22 @@ def _state_store() -> StateStore:
     return StateStore(settings.state_path())
 
 
-def _run_settings(max_cycles: int | None) -> Settings:
-    """Settings for a run, with an optional ``max_cycles`` override.
+def _run_settings(max_cycles: int | None, max_cost_usd: float | None = None) -> Settings:
+    """Settings for a run, with optional ``max_cycles`` and ``max_cost_usd`` overrides.
 
     The merged settings are *validated*: ``model_copy(update=...)`` skips the
     pydantic validation and would happily build a ``Settings`` object with an
     out-of-range value (a negative ``max_cycles`` for instance).  The module
     level ``settings`` object is never modified: a new one is built instead.
     """
-    if max_cycles is None:
+    updates = {}
+    if max_cycles is not None:
+        updates["max_cycles"] = max_cycles
+    if max_cost_usd is not None:
+        updates["max_cost_usd"] = max_cost_usd
+    if not updates:
         return settings
-    return Settings.model_validate({**settings.model_dump(), "max_cycles": max_cycles})
+    return Settings.model_validate({**settings.model_dump(), **updates})
 
 
 def _describe_validation_error(exc: ValidationError) -> str:
@@ -461,6 +677,8 @@ def _describe_validation_error(exc: ValidationError) -> str:
         location = ".".join(str(part) for part in error.get("loc", ()))
         if location == "max_cycles":
             return "max_cycles must be greater than or equal to 0"
+        if location == "max_cost_usd":
+            return "max_cost_usd must be greater than or equal to 0"
         if location == "goal":
             return "goal must be a string"
     return "invalid request payload"
@@ -553,10 +771,10 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
 
 
 def _build_orchestrator(
-    goal: str, resume: bool, max_cycles: int | None, bus: EventBus
+    goal: str, resume: bool, max_cycles: int | None, bus: EventBus, max_cost_usd: float | None = None
 ) -> Orchestrator:
     """Create an orchestrator wired to the event bus and the state store."""
-    run_settings = _run_settings(max_cycles)
+    run_settings = _run_settings(max_cycles, max_cost_usd)
     return Orchestrator(
         goal=goal,
         settings=run_settings,
@@ -626,7 +844,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
             )
     bus = EventBus()
     try:
-        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
+        orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus, request.max_cost_usd)
     except ValidationError as validation_error:
         # Defence in depth: the request model already bounds ``max_cycles``,
         # but an invalid run must never start.
@@ -685,7 +903,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await _send_error(websocket, "a run is already in progress")
             return
         try:
-            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus)
+            orchestrator = _build_orchestrator(goal, resume, request.max_cycles, bus, request.max_cost_usd)
         except ValidationError as validation_error:
             # Defence in depth: the run settings are validated, so an invalid
             # override can never reach the orchestrator.

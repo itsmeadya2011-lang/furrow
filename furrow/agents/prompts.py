@@ -71,6 +71,73 @@ WORKER_TOOLS: list[dict] = [
         },
     },
     {
+        "name": "edit_file",
+        "description": "make targeted edits to a file using search/replace. Provide a list of edits, each with old_text to find and new_text to replace it with. Use empty old_text to insert at the start, empty new_text to delete. All edits are applied atomically.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "edits": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "old_text": {"type": "string"},
+                            "new_text": {"type": "string"},
+                        },
+                        "required": ["old_text", "new_text"],
+                    },
+                    "minItems": 1,
+                },
+            },
+            "required": ["path", "edits"],
+        },
+    },
+    {
+        "name": "list_files",
+        "description": "list files under a workspace directory (relative paths).",
+        "parameters": {
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": [],
+        },
+    },
+    {
+        "name": "run_command",
+        "description": "run a shell command in the workspace and return its output.",
+        "parameters": {
+            "type": "object",
+            "properties": {"command": {"type": "string"}},
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "search_files",
+        "description": "search for a regex pattern in files under the workspace. Returns matching file paths with line numbers and context. Useful for finding code patterns, function definitions, or specific text.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "Directory to search (default: workspace root)"},
+                "include": {"type": "string", "description": "Glob pattern for files to include (e.g., '*.py')"},
+                "max_results": {"type": "integer", "description": "Maximum number of matches to return (default: 50)"},
+            },
+            "required": ["pattern"],
+        },
+    },
+    {
+        "name": "patch_file",
+        "description": "apply a unified diff to a file. Provide the diff in standard unified diff format (as produced by git diff or diff -u). The diff is applied atomically.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "diff": {"type": "string", "description": "Unified diff to apply"},
+            },
+            "required": ["path", "diff"],
+        },
+    },
+    {
         "name": "list_files",
         "description": "list files under a workspace directory (relative paths).",
         "parameters": {
