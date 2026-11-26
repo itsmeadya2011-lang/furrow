@@ -436,6 +436,20 @@ async def test_denied_command_table(tmp_path, tmp_path_factory, monkeypatch):
         "echo hi > ~/x",
         "echo hi > $HOME/x",
         "echo hi > ${HOME}/x",
+        # New security patterns
+        "chown -r /",
+        "chgrp -r /",
+        "mv / /",
+        "cp -r / /",
+        "rsync -r / /",
+        "tar -cf /dev/null /",
+        "tar -czf /dev/null /",
+        "wget -o /etc/passwd",
+        "curl -o /etc/passwd",
+        "bash -i",
+        "sh -i",
+        "eval rm -rf /",
+        "exec rm -rf /",
     ]
     from furrow.config import TaskModel
 
@@ -556,6 +570,20 @@ def test_is_command_denied_guard_level(tmp_path, tmp_path_factory, monkeypatch):
         "echo hi > ~/x",
         "echo hi > $HOME/x",
         "echo hi > ${HOME}/x",
+        # New security patterns
+        "chown -r /",
+        "chgrp -r /",
+        "mv / /",
+        "cp -r / /",
+        "rsync -r / /",
+        "tar -cf /dev/null /",
+        "tar -czf /dev/null /",
+        "wget -o /etc/passwd",
+        "curl -o /etc/passwd",
+        "bash -i",
+        "sh -i",
+        "eval rm -rf /",
+        "exec rm -rf /",
     ]
     allowed_commands = [
         "pytest -q",

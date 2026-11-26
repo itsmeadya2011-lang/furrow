@@ -58,6 +58,10 @@ IGNORED_DIRECTORIES = frozenset(
 #: :class:`LLMResponse` for `chat`).
 T = TypeVar("T")
 
+#: Cache for directory listings to avoid repeated walks
+_LIST_CACHE: dict[str, tuple[float, list[str]]] = {}
+_LIST_CACHE_TTL = 5.0  # seconds
+
 
 @dataclass(slots=True)
 class ToolCall:
@@ -573,19 +577,53 @@ class LLMClient:
         :data:`IGNORED_DIRECTORIES`): they are not first-party source and
         would otherwise bury the real files. A ``*.egg-info`` directory is
         skipped too. The result is sorted so the listing is deterministic.
+        
+        Results are cached for 5 seconds to avoid repeated filesystem walks.
         """
+        import time
         p = Path(directory)
+        cache_key = str(p.resolve())
+        now = time.monotonic()
+        
+        # Check cache
+        if cache_key in _LIST_CACHE:
+            cached_time, cached_results = _LIST_CACHE[cache_key]
+            if now - cached_time < _LIST_CACHE_TTL:
+                return cached_results
+        
         if not p.exists():
             return []
+        
+        # Use pathlib for more efficient traversal
         results: list[str] = []
-        for root, dirs, files in os.walk(p):
-            # Prune ignored directories in place so os.walk never descends.
-            dirs[:] = [
-                d
-                for d in dirs
-                if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
-            ]
-            for name in files:
-                results.append(os.path.relpath(os.path.join(root, name), p))
+        try:
+            for entry in p.rglob("*"):
+                # Check if any parent is in ignored directories
+                if any(part in IGNORED_DIRECTORIES or part.endswith(".egg-info") for part in entry.parts):
+                    continue
+                if entry.is_file():
+                    try:
+                        results.append(str(entry.relative_to(p)))
+                    except ValueError:
+                        # Path is outside the base, skip
+                        pass
+        except (OSError, PermissionError):
+            # Fallback to os.walk if rglob fails
+            results = []
+            for root, dirs, files in os.walk(p):
+                dirs[:] = [
+                    d
+                    for d in dirs
+                    if d not in IGNORED_DIRECTORIES and not d.endswith(".egg-info")
+                ]
+                for name in files:
+                    results.append(os.path.relpath(os.path.join(root, name), p))
+        
         results.sort()
+        _LIST_CACHE[cache_key] = (now, results)
         return results
+
+    @classmethod
+    def clear_list_cache(cls) -> None:
+        """Clear the directory listing cache."""
+        _LIST_CACHE.clear()

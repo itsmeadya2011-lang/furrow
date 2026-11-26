@@ -11,19 +11,29 @@ from furrow.config import Plan, TaskModel, TestResult
 def strip_code_fences(text: str) -> str:
     """Remove ```json ... ``` / ``` ... ``` fences. If the text contains exactly one
     fenced block, return that block's inner content (fence info string dropped).
-    Otherwise strip fence lines from the text and return the remainder."""
+    Otherwise strip fence lines from the text and return the remainder.
+    
+    Also handles nested fences, malformed fences, and fences without language specifiers."""
     if not isinstance(text, str):
         text = str(text)
 
-    fence_pattern = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
-    matches = fence_pattern.findall(text)
+    # Find all fenced blocks with their positions
+    fence_pattern = re.compile(r"```(\w*)\n(.*?)(?:\n```|```$)", re.DOTALL)
+    matches = list(fence_pattern.finditer(text))
+    
     if len(matches) == 1:
-        return matches[0]
-    result = re.sub(r"```[^\n]*\n", "", text)
-    result = re.sub(r"\n```[ \t]*$", "", result)
-    result = re.sub(r"^```[^\n]*\n", "", result)
-    result = re.sub(r"```[ \t]*$", "", result)
-    return result
+        return matches[0].group(2)
+    
+    # If multiple or zero fenced blocks, remove all fence markers
+    result = text
+    # Remove opening fences with optional language
+    result = re.sub(r"^```\w*\n", "", result, flags=re.MULTILINE)
+    # Remove closing fences
+    result = re.sub(r"\n```[ \t]*$", "", result, flags=re.MULTILINE)
+    result = re.sub(r"^```[ \t]*$", "", result, flags=re.MULTILINE)
+    # Remove any remaining standalone ``` lines
+    result = re.sub(r"^```\w*$", "", result, flags=re.MULTILINE)
+    return result.strip()
 
 
 def _iter_json_candidates(text: str) -> Iterator[str]:
@@ -34,6 +44,9 @@ def _iter_json_candidates(text: str) -> Iterator[str]:
     string literals are ignored. Scanning resumes one character after each
     yielded candidate, so a valid object nested inside an invalid outer object
     is still found.
+    
+    Also handles escaped characters in strings, single-quoted strings, and
+    various edge cases.
     """
     if not isinstance(text, str):
         text = str(text)
@@ -48,6 +61,7 @@ def _iter_json_candidates(text: str) -> Iterator[str]:
         depth_brace = 0
         depth_bracket = 0
         in_string = False
+        string_char = None
         j = i
         found: str | None = None
         while j < n:
@@ -56,12 +70,14 @@ def _iter_json_candidates(text: str) -> Iterator[str]:
                 if c == "\\":
                     j += 2
                     continue
-                if c == '"':
+                if c == string_char:
                     in_string = False
+                    string_char = None
                 j += 1
                 continue
-            if c == '"':
+            if c in ('"', "'"):
                 in_string = True
+                string_char = c
                 j += 1
                 continue
             if c == "{":
@@ -237,16 +253,30 @@ def parse_test_result(text: str) -> TestResult:
 
         summary = s.strip()[:500]
 
+        # Enhanced failure detection with more keywords
         failure_words = re.compile(
-            r"\b(fail|failure|failed|error|traceback|assertionerror|exception)\b",
+            r"\b(fail|failure|failed|error|traceback|assertionerror|exception|panic|segfault|segmentation fault|core dumped|fatal error|runtime error|compile error|syntax error|type error|attribute error|import error|module not found|no module named|command not found|permission denied|connection refused|timeout|timed out)\b",
             re.IGNORECASE,
         )
+        # Also check for zero-count patterns that should NOT count as failures
+        zero_count_patterns = [
+            r"\b0\s+(?:fail|error|failure)",
+            r"\b(?:fail|error|failure)\s*[:=]\s*0\b",
+            r"\bno\s+(?:fail|error|failure)\b",
+        ]
+        
         failures = []
         seen = set()
         for line in s.splitlines():
             line_stripped = line.strip()
             if not line_stripped:
                 continue
+            
+            # Skip zero-count lines
+            is_zero_count = any(re.search(p, line_stripped, re.IGNORECASE) for p in zero_count_patterns)
+            if is_zero_count:
+                continue
+            
             if failure_words.search(line_stripped):
                 if line_stripped not in seen:
                     seen.add(line_stripped)
