@@ -602,6 +602,18 @@ async def api_status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/health")
+async def api_health() -> JSONResponse:
+    """Health check endpoint.
+
+    Reports whether the server is up and whether a run is currently in progress.
+    """
+    return JSONResponse(
+        status_code=200,
+        content={"status": "ok", "running": bool(_CURRENT.get("running"))},
+    )
+
+
 @app.post("/api/start")
 async def api_start(request: StartRequest) -> JSONResponse:
     """Start a background run for the given goal."""
@@ -647,6 +659,28 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Cancel the run that is currently in progress.
+
+    Returns 409 when no run is running. Otherwise cancels the background task,
+    clears the registry, and reports that the run was stopped.
+    """
+    if not _CURRENT.get("running"):
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run is in progress"},
+        )
+    task = _CURRENT.get("task")
+    if task is not None:
+        _cancel_run(task)
+    else:
+        # Running flag set but no task tracked: clear it defensively.
+        _CURRENT["running"] = False
+        _CURRENT["error"] = "run cancelled"
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.websocket("/ws")

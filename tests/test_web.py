@@ -705,3 +705,52 @@ def test_api_start_resume_without_state_returns_400(
     assert body["started"] is False
     assert body["error"] == "no goal to resume"
     assert fake_orchestrator.instances == [], "no run may be started"
+
+
+def test_api_health_returns_ok(client: TestClient) -> None:
+    """GET /api/health reports the server is up and no run is in progress."""
+    response = client.get("/api/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["running"] is False
+
+
+def test_api_stop_without_running_run_returns_409(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """POST /api/stop returns 409 when no run is in progress."""
+    response = client.post("/api/stop")
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["stopped"] is False
+    assert "no run is in progress" in body["error"]
+
+
+def test_api_stop_cancels_a_running_run(
+    client: TestClient, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    """POST /api/stop cancels the in-flight run and clears the running flag."""
+    server._CURRENT["running"] = True
+
+    class _FakeTask:
+        def __init__(self) -> None:
+            self.cancelled = False
+
+        def cancel(self) -> None:
+            self.cancelled = True
+
+    fake_task = _FakeTask()
+    server._CURRENT["task"] = fake_task
+
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stopped"] is True
+    assert fake_task.cancelled is True
+    assert server._CURRENT["running"] is False
+    assert server._CURRENT["error"] == "run cancelled"
+    server._reset_registry()
