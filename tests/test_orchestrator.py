@@ -1034,6 +1034,24 @@ async def test_usage_cost_carried(tmp_path, monkeypatch):
     st = store.load()
     assert st.usage.cost_usd == 0.123456
 
+
+@pytest.mark.asyncio
+async def test_usage_accumulated_on_empty_plan(tmp_path, monkeypatch):
+    from furrow.config import Usage
+
+    class FakeClient:
+        def __init__(self):
+            self.total_usage = Usage(input_tokens=10, output_tokens=20, calls=1, cost_usd=0.5)
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store, client=FakeClient())
+    orch.planner = FakePlanner(tasks=[])
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+    assert result.usage.calls == 1
+    assert result.usage.input_tokens == 10
 @pytest.mark.asyncio
 async def test_dependents_of_a_blocked_task_are_blocked(tmp_path, monkeypatch):
     calls = []

@@ -728,9 +728,9 @@ class WorkerAgent:
                 return "error: invalid content (expected a string)"
             return await self._write_file(str(args.get("path", "")), content)
         if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
+            raw = args.get("path")
+            path = raw if (raw is not None and str(raw).strip()) else "."
+            return await self._list_files(str(path))
         if name == "run_command":
             return await self._run_command(str(args.get("command", "")))
         return f"unknown tool: {name}"

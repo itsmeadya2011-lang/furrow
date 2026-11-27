@@ -198,6 +198,7 @@ class Orchestrator:
                     Event(type=EventType.LOG, message="no tasks planned - goal complete")
                 )
                 self._stopped_reason = "goal complete"
+                self._accumulate_usage()
                 break
             self._merge_plan(plan)
             try:

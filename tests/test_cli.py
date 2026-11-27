@@ -145,6 +145,29 @@ def test_status_with_state(runner: CliRunner, tmp_path: Path) -> None:
     assert "do the thing" in result.output
 
 
+def test_status_shows_last_test_summary(runner: CliRunner, tmp_path: Path) -> None:
+    state = _write_state(tmp_path)
+    state.last_summary = "3 failed"
+    StateStore(tmp_path / ".furrow" / "state.json").save(state)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "3 failed" in result.output
+    assert "Last test:" in result.output
+
+
+def test_status_omits_last_test_summary_when_empty(
+    runner: CliRunner, tmp_path: Path
+) -> None:
+    _write_state(tmp_path)
+
+    result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "Last test:" not in result.output
+
+
 def test_reset_without_state(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["reset", "--workspace", str(tmp_path)])
 

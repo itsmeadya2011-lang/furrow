@@ -258,6 +258,13 @@ class TesterAgent:
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
 
+        # Fallback: root-level test files (test_*.py, *_test.py, conftest.py)
+        # indicate a pytest project even without config files.
+        for pattern in ("test_*.py", "*_test.py", "conftest.py"):
+            for _f in self.workspace.glob(pattern):
+                if _f.is_file():
+                    return [sys.executable, "-m", "pytest", "-q"]
+
         return None
 
     def _finalize(

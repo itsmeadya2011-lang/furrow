@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import asyncio
 
-from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
+from furrow.agents.tester import (
+    TesterAgent,
+    _looks_like_failure,
+    parse_test_output,
+    resolve_test_timeout,
+)
 from furrow.config import Settings, TestResult
 
 
@@ -578,3 +583,51 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+# --- parse_test_output unit tests ---
+
+def test_parse_test_output_pytest_failed_line():
+    """FAILED a.py::test_x - boom -> one failure with file, test, error."""
+    output = "FAILED a.py::test_x - boom"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    f = failures[0]
+    assert f["file"] == "a.py"
+    assert f["test"] == "test_x"
+    assert "boom" in f["error"]
+
+
+def test_parse_test_output_file_line_col_dedup():
+    """a.py:10:5 and a.py:10 in same output dedup to single file:line failure."""
+    output = "Error at a.py:10:5\nAlso at a.py:10"
+    failures = parse_test_output(output)
+    # Should only have one entry for a.py:10
+    relevant = [f for f in failures if f["file"] == "a.py" and f["line"] == 10]
+    assert len(relevant) == 1
+    assert relevant[0]["file"] == "a.py"
+    assert relevant[0]["line"] == 10
+    assert relevant[0]["test"] is None
+
+
+def test_parse_test_output_exception_only():
+    """Output with only ValueError: bad -> one exception failure."""
+    output = "ValueError: bad"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    f = failures[0]
+    assert f["file"] is None
+    assert f["line"] is None
+    assert f["test"] is None
+    assert "ValueError: bad" in f["error"]
+
+
+def test_parse_test_output_duplicate_failed_lines():
+    """Duplicate identical FAILED lines collapse to one failure."""
+    output = "FAILED a.py::test_x - boom\nFAILED a.py::test_x - boom"
+    failures = parse_test_output(output)
+    assert len(failures) == 1
+    f = failures[0]
+    assert f["file"] == "a.py"
+    assert f["test"] == "test_x"
+    assert "boom" in f["error"]

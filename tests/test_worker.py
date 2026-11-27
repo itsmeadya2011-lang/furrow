@@ -329,6 +329,22 @@ async def test_list_files_caps_at_500_entries(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_list_files_empty_path_lists_workspace(tmp_path):
+    """Regression: an empty/blank path should mean the workspace root, not an escape error."""
+    (tmp_path / "a.txt").write_text("x")
+    client = FakeLLMClient([])
+    settings = make_settings(tmp_path)
+    from furrow.config import TaskModel
+
+    task = TaskModel(id="1", description="list")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+    for args in ({"path": ""}, {"path": "   "}):
+        out = await agent._execute_tool(ToolCall(id="1", name="list_files", arguments=args))
+        assert "escapes workspace" not in out
+        assert "a.txt" in out
+
+
+@pytest.mark.asyncio
 async def test_client_exception(tmp_path):
     client = FakeLLMClient([RuntimeError("boom")])
     settings = make_settings(tmp_path)
