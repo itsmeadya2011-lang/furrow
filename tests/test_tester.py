@@ -88,6 +88,97 @@ def test_detect_cargo(tmp_path):
     assert cmd is not None and "cargo" in cmd
 
 
+def test_detect_bun_lockb(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bun.lockb").write_bytes(b"")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["bun", "test"]
+
+
+def test_detect_bun_bunfig(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bunfig.toml").write_text("[install]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["bun", "test"]
+
+
+def test_detect_bun_takes_precedence_over_npm_fallback(tmp_path):
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bun.lockb").write_bytes(b"")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["bun", "test"]
+
+
+def test_detect_deno_json(tmp_path):
+    (tmp_path / "deno.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["deno", "test"]
+
+
+def test_detect_deno_jsonc(tmp_path):
+    (tmp_path / "deno.jsonc").write_text("{}\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["deno", "test"]
+
+
+def test_detect_dotnet_csproj(tmp_path):
+    (tmp_path / "app.csproj").write_text('<Project Sdk="Microsoft.NET.Sdk"></Project>\n')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["dotnet", "test"]
+
+
+def test_detect_dotnet_sln(tmp_path):
+    (tmp_path / "app.sln").write_text("Microsoft Visual Studio Solution File\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["dotnet", "test"]
+
+
+def test_detect_dotnet_fsproj_and_vbproj(tmp_path):
+    for marker in ("lib.fsproj", "lib.vbproj"):
+        (tmp_path / marker).write_text("<Project></Project>\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["dotnet", "test"]
+
+
+def test_detect_python_precedence_over_bun(tmp_path):
+    # A Python project with tests/ must still use pytest even when a bun
+    # lockfile is present: the Python rule runs before the Node.js branch.
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "bun.lockb").write_bytes(b"")
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "tests").mkdir()
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_node_precedence_preserved_without_bun(tmp_path):
+    # package.json + jest config with no bun lockfile keeps the existing
+    # npm/pnpm/yarn behaviour.
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "jest.config.js").write_text("module.exports = {}\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["npm", "test", "--silent"]
+
+
+def test_detect_deno_does_not_shadow_python(tmp_path):
+    # deno.json alongside pyproject.toml keeps pytest (Python takes precedence).
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    (tmp_path / "deno.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
 def test_detect_empty(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())

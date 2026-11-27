@@ -206,6 +206,10 @@ class TesterAgent:
         has_setup_cfg = (self.workspace / "setup.cfg").is_file()
         has_tox_ini = (self.workspace / "tox.ini").is_file()
         has_requirements = (self.workspace / "requirements.txt").is_file()
+        has_bun = (
+            (self.workspace / "bun.lockb").is_file()
+            or (self.workspace / "bunfig.toml").is_file()
+        )
 
         # Python projects with tests/ dir always use pytest, even if package.json exists
         if has_tests_dir and (
@@ -215,6 +219,12 @@ class TesterAgent:
 
         # Check for Node.js test runners
         if has_package:
+            # Bun is a Node.js runtime: a bun.lockb / bunfig.toml is a strong
+            # signal that the project runs its tests with bun.  Check it ahead
+            # of the npm/pnpm/yarn family so a bun project is detected as bun
+            # rather than falling through to npm/pnpm/yarn.
+            if has_bun:
+                return ["bun", "test"]
             # Check for jest/vitest configs
             for pattern in ["jest.config.*", "vitest.config.*"]:
                 for _f in self.workspace.glob(pattern):
@@ -252,6 +262,30 @@ class TesterAgent:
         ]
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
+
+        # tox.ini is already covered by python_markers above, so a tox project
+        # is detected as pytest and pytest keeps precedence.  noxfile.py is
+        # intentionally NOT added here: a nox-only project currently returns
+        # None (skipped), and detecting it as pytest would change that
+        # behaviour.  nox support can be added separately without affecting
+        # the existing runners.
+
+        # Deno: deno.json / deno.jsonc mark a Deno project.  ``deno test`` is
+        # used without ``--allow-all`` to keep the command minimal and safe;
+        # permissions are granted by the test files themselves as needed.
+
+        # .NET: any solution or project file at the workspace root marks a
+        # .NET project.  These are checked after the Python/Node blocks so a
+        # project matching an already-supported runner keeps its detected
+        # command, and before cargo/go to give .NET a defined place in the
+        # precedence order.
+        deno_markers = ("deno.json", "deno.jsonc")
+        if any((self.workspace / m).is_file() for m in deno_markers):
+            return ["deno", "test"]
+
+        dotnet_patterns = ("*.sln", "*.csproj", "*.fsproj", "*.vbproj")
+        if any(any(self.workspace.glob(p)) for p in dotnet_patterns):
+            return ["dotnet", "test"]
 
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
