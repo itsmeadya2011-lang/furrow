@@ -132,10 +132,19 @@ class StateStore:
             logger.warning("Could not read state file %s: %s", self.path, exc)
             return None
         try:
-            return RunState.model_validate_json(raw)
+            state = RunState.model_validate_json(raw)
         except (ValidationError, ValueError, RecursionError) as exc:
             logger.warning("Ignoring corrupt state file %s: %s", self.path, exc)
             return None
+        if state.version != STATE_VERSION:
+            logger.warning(
+                "Ignoring state file %s: version %s != expected %s",
+                self.path,
+                state.version,
+                STATE_VERSION,
+            )
+            return None
+        return state
 
     def save(self, state: RunState) -> None:
         """Serialize state to JSON and write it ATOMICALLY.

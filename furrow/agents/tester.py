@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import re
+import shlex
 import signal
 import sys
 from pathlib import Path
@@ -199,6 +200,13 @@ class TesterAgent:
             await proc.wait()
 
     async def detect_command(self) -> list[str] | None:
+        # 1. Explicit override via settings
+        override = getattr(self.settings, "test_command", None)
+        if override:
+            parts = shlex.split(override)
+            if parts:
+                return parts
+
         has_package = (self.workspace / "package.json").is_file()
         has_pyproject = (self.workspace / "pyproject.toml").is_file()
         has_tests_dir = (self.workspace / "tests").is_dir()
@@ -253,10 +261,29 @@ class TesterAgent:
         if any((self.workspace / m).is_file() for m in python_markers):
             return [sys.executable, "-m", "pytest", "-q"]
 
+        # A bare tests/ directory with no other language markers -> pytest
+        if has_tests_dir:
+            has_cargo = (self.workspace / "Cargo.toml").is_file()
+            has_go_mod = (self.workspace / "go.mod").is_file()
+            if not has_package and not has_cargo and not has_go_mod:
+                return [sys.executable, "-m", "pytest", "-q"]
+
         if (self.workspace / "Cargo.toml").is_file():
             return ["cargo", "test", "-q"]
         if (self.workspace / "go.mod").is_file():
             return ["go", "test", "./..."]
+
+        # Makefile with a `test:` target
+        makefile = self.workspace / "Makefile"
+        if makefile.is_file():
+            try:
+                content = makefile.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                pass
+            else:
+                for line in content.splitlines():
+                    if re.match(r"^test\s*:", line):
+                        return ["make", "test"]
 
         return None
 

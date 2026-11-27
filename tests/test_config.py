@@ -279,3 +279,19 @@ def test_pricing_overrides_returns_a_copy():
     overrides["my-model"] = ModelPricing(input_per_million=9.0, output_per_million=9.0)
     assert s.model_pricing["my-model"].input_per_million == 1.0
 
+
+def test_settings_test_command_default_none():
+    s = Settings()
+    assert s.test_command is None
+
+
+def test_settings_test_command_explicit_value():
+    s = Settings(test_command="pytest -x")
+    assert s.test_command == "pytest -x"
+
+
+def test_settings_test_command_env_override(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("FURROW_TEST_COMMAND", "pytest --cov")
+    s = Settings(_env_file=None)
+    assert s.test_command == "pytest --cov"
+

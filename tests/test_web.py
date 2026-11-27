@@ -705,3 +705,77 @@ def test_api_start_resume_without_state_returns_400(
     assert body["started"] is False
     assert body["error"] == "no goal to resume"
     assert fake_orchestrator.instances == [], "no run may be started"
+
+
+def test_api_stop_when_idle_returns_stopped_false(client: TestClient) -> None:
+    """POST /api/stop with no run in progress returns 200 with stopped False."""
+    response = client.post("/api/stop")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stopped"] is False
+    assert body["error"] == "no run in progress"
+
+
+async def test_api_stop_cancels_running_task(client: TestClient) -> None:
+    """POST /api/stop with a running task cancels it and returns stopped True."""
+    # Create a real asyncio task that we can verify gets cancelled
+    async def dummy_coro() -> None:
+        await asyncio.sleep(10)
+
+    task = asyncio.create_task(dummy_coro())
+    server._CURRENT.update(
+        {
+            "running": True,
+            "orchestrator": None,
+            "result": None,
+            "task": task,
+            "error": None,
+        }
+    )
+
+    try:
+        response = client.post("/api/stop")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["stopped"] is True
+        # Give the event loop a chance to process the cancellation
+        await asyncio.sleep(0)
+        assert task.cancelled() or task.done()
+    finally:
+        server._reset_registry()
+
+
+async def test_api_stop_does_nothing_when_task_already_done(client: TestClient) -> None:
+    """POST /api/stop with an already-done task reports stopped False."""
+    async def dummy_coro() -> str:
+        return "done"
+
+    task = asyncio.create_task(dummy_coro())
+    await asyncio.sleep(0)  # let it complete
+    server._CURRENT.update(
+        {
+            "running": True,
+            "orchestrator": None,
+            "result": None,
+            "task": task,
+            "error": None,
+        }
+    )
+
+    try:
+        response = client.post("/api/stop")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["stopped"] is False
+        assert body["error"] == "no run in progress"
+    finally:
+        server._reset_registry()
+
+
+def test_index_contains_stop_button(client: TestClient) -> None:
+    """The served page includes a Stop button with id='stop'."""
+    html = client.get("/").text
+    assert 'id="stop"' in html

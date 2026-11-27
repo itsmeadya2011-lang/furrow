@@ -283,3 +283,29 @@ def test_save_survives_directory_fsync_failure(tmp_path: Path, monkeypatch) -> N
     assert loaded is not None
     assert loaded.goal == "survives"
 
+
+
+def test_load_correct_version_loads(tmp_path: Path) -> None:
+    store = StateStore(tmp_path / "s.json")
+    store.save(RunState(goal="g"))
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.goal == "g"
+
+
+def test_load_wrong_version_returns_none(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    data = {"version": 999, "goal": "g"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    store = StateStore(path)
+    assert store.load() is None
+
+
+def test_load_missing_version_defaults_to_state_version(tmp_path: Path) -> None:
+    path = tmp_path / "s.json"
+    data = {"goal": "g"}
+    path.write_text(json.dumps(data), encoding="utf-8")
+    store = StateStore(path)
+    loaded = store.load()
+    assert loaded is not None
+    assert loaded.version == STATE_VERSION

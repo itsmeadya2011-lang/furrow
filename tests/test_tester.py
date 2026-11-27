@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 from furrow.agents.tester import TesterAgent, _looks_like_failure, resolve_test_timeout
 from furrow.config import Settings, TestResult
@@ -92,6 +93,61 @@ def test_detect_empty(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is None
+
+
+def test_detect_command_override_via_settings(tmp_path):
+    """Explicit test_command in settings overrides all detection."""
+    settings = Settings(_env_file=None, workspace=tmp_path, test_command="pytest -x -v")
+    agent = TesterAgent(settings=settings, workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["pytest", "-x", "-v"]
+
+
+def test_detect_command_override_empty_string_falls_through(tmp_path):
+    """Empty test_command falls through to normal detection."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    settings = Settings(_env_file=None, workspace=tmp_path, test_command="")
+    agent = TesterAgent(settings=settings, workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None and "pytest" in cmd
+
+
+def test_detect_bare_tests_dir_returns_pytest(tmp_path):
+    """A bare tests/ directory with no language markers returns pytest."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.py").write_text("def test_ok(): pass\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert cmd == [sys.executable, "-m", "pytest", "-q"]
+
+
+def test_detect_makefile_with_test_target(tmp_path):
+    """A Makefile containing a `test:` target returns ['make', 'test'].""" 
+    (tmp_path / "Makefile").write_text("test:\n\tpytest\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd == ["make", "test"]
+
+
+def test_detect_makefile_without_test_target_falls_through(tmp_path):
+    """A Makefile without a `test:` target does not match."""
+    (tmp_path / "Makefile").write_text("build:\n\techo building\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
+def test_node_project_with_tests_dir_uses_npm_not_pytest(tmp_path):
+    """Node project (package.json) with tests/ dir still returns npm, not pytest."""
+    (tmp_path / "package.json").write_text('{"scripts": {"test": "jest"}}\n')
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_sample.js").write_text("test('ok', () => {});\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert "npm" in cmd
+    assert "pytest" not in cmd
 
 
 def test_run_no_runner_is_reported_as_skipped(tmp_path):

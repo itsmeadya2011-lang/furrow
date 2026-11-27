@@ -140,6 +140,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
   <input id="goal" placeholder="What should Furrow build?" autofocus />
   <button id="start">Start</button>
   <button id="resume">Resume</button>
+  <button id="stop">Stop</button>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -406,6 +407,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
   document.getElementById('resume').onclick = function () {
     connect({ goal: goalEl.value, resume: true });
   };
+  document.getElementById('stop').onclick = function () {
+    fetch('/api/stop', { method: 'POST' }).then(loadStatus);
+  };
 
   loadState();
   loadStatus();
@@ -647,6 +651,19 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running background run, if any."""
+    running = _CURRENT.get("running")
+    task = _CURRENT.get("task")
+    if running and isinstance(task, asyncio.Task) and not task.done():
+        _cancel_run(task)
+        return JSONResponse(status_code=200, content={"stopped": True})
+    return JSONResponse(
+        status_code=200, content={"stopped": False, "error": "no run in progress"}
+    )
 
 
 @app.websocket("/ws")

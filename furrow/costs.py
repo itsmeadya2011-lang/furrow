@@ -43,6 +43,10 @@ class ModelPricing(BaseModel):
     )
 
 
+# Built-in prices are a snapshot taken on this date; override them via
+# FURROW_MODEL_PRICING once they go stale.
+PRICING_SNAPSHOT_DATE = "2026-11-27"
+
 # DEFAULT SNAPSHOT of published per-1,000,000-token USD prices.
 #
 # These figures go stale: providers raise and cut prices regularly, and new

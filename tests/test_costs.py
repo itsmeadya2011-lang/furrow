@@ -3,6 +3,7 @@ from __future__ import annotations
 from furrow.config import Usage
 from furrow.costs import (
     DEFAULT_PRICING,
+    PRICING_SNAPSHOT_DATE,
     ModelPricing,
     estimate_cost,
     price_for_model,
@@ -19,6 +20,11 @@ def test_default_pricing_covers_the_mainstream_models() -> None:
         "gpt-4o-mini",
     ):
         assert model in DEFAULT_PRICING, model
+
+
+def test_pricing_snapshot_date_is_a_non_empty_string() -> None:
+    assert isinstance(PRICING_SNAPSHOT_DATE, str)
+    assert PRICING_SNAPSHOT_DATE.strip()
 
 
 def test_default_pricing_entries_are_model_pricing_instances() -> None:
