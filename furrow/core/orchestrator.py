@@ -313,6 +313,19 @@ class Orchestrator:
 
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
+        self.event_bus.emit(
+            Event(
+                type=EventType.DONE,
+                message=self._stopped_reason,
+                data={
+                    "cycles": self.cycles,
+                    "stopped_reason": self._stopped_reason,
+                    "skipped": bool(self._tests_skipped),
+                    "tests_run": int(getattr(self, "_tests_run", 0) or 0),
+                },
+            )
+        )
+
         active = (
             [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
         )
@@ -383,6 +396,9 @@ class Orchestrator:
             else:
                 self.tasks.append(pt)
         self._active_ids = {t.id for t in plan.tasks}
+        # Keep self.tasks in sync with the merged plan so persisted state
+        # reflects exactly what will be executed (same tasks, planner order).
+        self.tasks = list(plan.tasks)
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}
@@ -452,6 +468,7 @@ class Orchestrator:
                                 "task": task.id,
                                 "success": False,
                                 "summary": str(task.error or ""),
+                                "attempts": task.attempts,
                             },
                         )
                     )
@@ -488,6 +505,7 @@ class Orchestrator:
                                 "task": task.id,
                                 "success": task.status == "completed",
                                 "summary": str(task.result or ""),
+                                "attempts": task.attempts,
                             },
                         )
                     )
@@ -526,6 +544,7 @@ class Orchestrator:
                                 "task": task.id,
                                 "success": False,
                                 "summary": str(task.error or ""),
+                                "attempts": task.attempts,
                             },
                         )
                     )
