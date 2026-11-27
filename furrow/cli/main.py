@@ -4,6 +4,7 @@ Commands:
     furrow start "<goal>"  start (or resume) an agent run against a goal
     furrow status          show the persisted state of the last run
     furrow resume          continue the persisted run
+    furrow version         print the Furrow version
     furrow web             serve the web UI
 """
 
@@ -18,6 +19,7 @@ from typing import Any
 
 import click
 
+from furrow import __version__
 from furrow.config import RunResult, Settings, settings
 from furrow.core.orchestrator import Orchestrator
 from furrow.core.state import RunState, StateStore
@@ -216,15 +218,28 @@ def start(
     default=None,
     help=WORKSPACE_HELP,
 )
-def status(workspace: Path | None) -> None:
+@click.option(
+    "--json",
+    "json_output",
+    is_flag=True,
+    default=False,
+    help="Emit the status as machine-readable JSON.",
+)
+def status(workspace: Path | None, json_output: bool = False) -> None:
     """Show the state of the persisted Furrow run."""
     run_settings = _run_settings(workspace=workspace)
     store = StateStore(run_settings.state_path())
     state = store.load()
     if state is None:
-        click.echo("No furrow run state found.")
+        if json_output:
+            click.echo("{}")
+        else:
+            click.echo("No furrow run state found.")
         return
-    _print_state(state)
+    if json_output:
+        click.echo(state.model_dump_json(indent=2))
+    else:
+        _print_state(state)
 
 
 @main.command()
@@ -265,6 +280,12 @@ def web(host: str, port: int) -> None:
     except Exception as exc:
         click.secho(f"Furrow failed: {exc}", fg="red")
         sys.exit(1)
+
+
+@main.command()
+def version() -> None:
+    """Print the Furrow version."""
+    click.echo(f"furrow {__version__}")
 
 
 if __name__ == "__main__":
