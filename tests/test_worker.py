@@ -1267,6 +1267,29 @@ async def test_write_file_through_absolute_symlink_is_rejected(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_kill_process_tree_fallback_reaps_child():
+    """Regression: the fallback path awaits proc.wait() to reap the child."""
+
+    class FakeProc:
+        def __init__(self):
+            self.pid = 4242
+            self.killed = False
+            self.waited = False
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            self.waited = True
+            return 0
+
+    fake = FakeProc()
+    await WorkerAgent._kill_process_tree(fake, False)
+    assert fake.killed is True
+    assert fake.waited is True
+
+
+@pytest.mark.asyncio
 async def test_list_files_reports_omitted_entries(tmp_path, monkeypatch):
     """When the listing is capped, a note reports how many entries were omitted."""
     from furrow.config import TaskModel

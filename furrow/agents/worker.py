@@ -819,3 +819,6 @@ class WorkerAgent:
         # Fallback: no process group available (or killing it failed).
         with contextlib.suppress(ProcessLookupError, OSError):
             proc.kill()
+        # Reap the killed child so it does not linger as a zombie.
+        with contextlib.suppress(ProcessLookupError, OSError):
+            await proc.wait()
