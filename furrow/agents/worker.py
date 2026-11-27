@@ -7,6 +7,7 @@ import os
 import re
 import shlex
 import signal
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,9 @@ from furrow.agents.prompts import WORKER_SYSTEM, WORKER_TOOLS
 from furrow.config import Settings, TaskModel, WorkerResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient, LLMResponse, ToolCall
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 # Substring patterns that are denied in a command. They are matched
 # case-insensitively against the normalized command.
@@ -52,6 +56,9 @@ MAX_LIST_ENTRIES = 500
 # Maximum number of characters returned by the ``read_file`` tool.
 MAX_READ_CHARS = 20000
 
+# Maximum number of retries for transient tool failures
+MAX_TOOL_RETRIES = 2
+
 # Shell separators a command is split on. A lone ``&`` backgrounds a command,
 # so the command on each side is checked as its own segment.
 _SEGMENT_SPLIT_RE = re.compile(r"(?:&&|\|\||;|&|(?<!>)\||\n|\r)+")
@@ -81,6 +88,14 @@ _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
 # Targets that discard output rather than write a real file.
 _SPECIAL_WRITE_TARGETS = frozenset({"/dev/null", "/dev/stdout", "/dev/stderr"})
+
+@dataclass
+class ToolResult:
+    """Structured result of a tool execution."""
+    success: bool
+    content: str
+    error: str | None = None
+    metadata: dict[str, Any] | None = None
 
 
 def _normalize_command(command: str) -> str:
@@ -585,13 +600,21 @@ class WorkerAgent:
             }
         ]
         iterations = 0
+        logger.info("Starting worker", task_id=self.task.id, max_iterations=max_iters)
         for i in range(max_iters):
             iterations = i + 1
+            logger.debug("Worker iteration", iteration=iterations, task_id=self.task.id)
             response: LLMResponse = await self.client.chat(
                 messages, tools=WORKER_TOOLS, system=WORKER_SYSTEM, model=self.settings.worker_model
             )
             if not response.tool_calls:
                 summary = response.text.strip() if response.text.strip() else "Task completed."
+                logger.info(
+                    "Worker completed",
+                    task_id=self.task.id,
+                    iterations=iterations,
+                    success=response.stop_reason not in TRUNCATED_STOP_REASONS,
+                )
                 if response.stop_reason in TRUNCATED_STOP_REASONS:
                     return WorkerResult(
                         summary=summary,
@@ -615,6 +638,11 @@ class WorkerAgent:
                     {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.arguments}
                 )
             messages.append({"role": "assistant", "content": blocks})
+            logger.debug(
+                "LLM requested tools",
+                task_id=self.task.id,
+                tools=[tc.name for tc in response.tool_calls],
+            )
 
             # execute tools
             result_blocks: list[dict[str, Any]] = []
@@ -625,6 +653,11 @@ class WorkerAgent:
                 )
             messages.append({"role": "user", "content": result_blocks})
 
+        logger.warning(
+            "Worker iteration budget exhausted",
+            task_id=self.task.id,
+            max_iterations=max_iters,
+        )
         # budget exhausted: the worker was truncated, so this is NOT a success.
         # Reporting success here would make the orchestrator mark the task as
         # completed instead of retrying it.
@@ -643,29 +676,68 @@ class WorkerAgent:
         parts.append(f"Task: {self.task.description}")
         parts.append(f"Files to touch: {', '.join(self.task.files) if self.task.files else 'any'}")
         parts.append(f"Workspace: {self.workspace}")
+        
+        # Add workspace context - list root directory to give the model a sense of the project
+        try:
+            entries = self.client.list_files(self.workspace)
+            if entries:
+                # Show top-level structure (limited to avoid flooding context)
+                shown = entries[:30]
+                parts.append(f"Project root contains: {', '.join(shown)}")
+                if len(entries) > 30:
+                    parts.append(f"  ... and {len(entries) - 30} more entries")
+        except Exception:
+            pass  # Best effort, don't fail if listing doesn't work
+        
         return "\n".join(parts)
 
     async def _execute_tool(self, tc: ToolCall) -> str:
         name = tc.name
         args = self._coerce_tool_args(tc.arguments)
         if args is None:
+            logger.warning("Invalid tool arguments", tool=name, arguments=tc.arguments)
             return "error: invalid tool arguments"
-        if name == "read_file":
-            return await self._read_file(str(args.get("path", "")))
-        if name == "write_file":
-            if "content" not in args:
-                return "error: missing content"
-            content = args["content"]
-            if not isinstance(content, str):
-                return "error: invalid content (expected a string)"
-            return await self._write_file(str(args.get("path", "")), content)
-        if name == "list_files":
-            return await self._list_files(
-                str(args.get("path", "")) if args.get("path") is not None else "."
-            )
-        if name == "run_command":
-            return await self._run_command(str(args.get("command", "")))
-        return f"unknown tool: {name}"
+        
+        logger.info("Executing tool", tool=name, args=args)
+        
+        for attempt in range(MAX_TOOL_RETRIES + 1):
+            try:
+                if name == "read_file":
+                    return await self._read_file(str(args.get("path", "")))
+                if name == "write_file":
+                    if "content" not in args:
+                        return "error: missing content"
+                    content = args["content"]
+                    if not isinstance(content, str):
+                        return "error: invalid content (expected a string)"
+                    return await self._write_file(str(args.get("path", "")), content)
+                if name == "list_files":
+                    return await self._list_files(
+                        str(args.get("path", "")) if args.get("path") is not None else "."
+                    )
+                if name == "run_command":
+                    return await self._run_command(str(args.get("command", "")))
+                return f"unknown tool: {name}"
+            except (OSError, ValueError, RuntimeError) as exc:
+                if attempt < MAX_TOOL_RETRIES:
+                    logger.warning(
+                        "Tool execution failed, retrying",
+                        tool=name,
+                        attempt=attempt + 1,
+                        max_retries=MAX_TOOL_RETRIES,
+                        error=str(exc),
+                    )
+                    await asyncio.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                    continue
+                logger.error(
+                    "Tool execution failed after retries",
+                    tool=name,
+                    attempts=attempt + 1,
+                    error=str(exc),
+                )
+                return f"error: {exc}"
+        
+        return "error: unexpected tool execution failure"
 
     @staticmethod
     def _coerce_tool_args(arguments: Any) -> dict[str, Any] | None:
@@ -690,10 +762,7 @@ class WorkerAgent:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
             return "error: path escapes workspace"
-        try:
-            content = await self.client.read_file(resolved)
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+        content = await self.client.read_file(resolved)
         if len(content) > MAX_READ_CHARS:
             content = (
                 content[:MAX_READ_CHARS]
@@ -705,11 +774,8 @@ class WorkerAgent:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
             return "error: path escapes workspace"
-        try:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            await self.client.write_file(resolved, content)
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        await self.client.write_file(resolved, content)
         rel = str(resolved.relative_to(self.workspace.resolve()))
         self.files_changed.add(rel)
         return f"wrote {path} ({len(content.encode('utf-8'))} bytes)"
@@ -718,10 +784,7 @@ class WorkerAgent:
         resolved = resolve_in_workspace(self.workspace, path)
         if resolved is None:
             return "error: path escapes workspace"
-        try:
-            entries = await asyncio.to_thread(self.client.list_files, resolved)
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+        entries = await asyncio.to_thread(self.client.list_files, resolved)
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the
         # context, and tell the model when entries were left out so it knows
         # to list a subdirectory instead of assuming it saw everything.
@@ -760,30 +823,27 @@ class WorkerAgent:
         # killing the direct child only.
         new_session = os.name == "posix"
         spawn_kwargs: dict[str, Any] = {"start_new_session": True} if new_session else {}
-        try:
-            if os.name == "posix":
-                proc = await asyncio.create_subprocess_exec(
-                    "/bin/sh", "-c", command,
-                    cwd=str(self.workspace),
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-            else:
-                parts = shlex.split(command)
-                if not parts:
-                    return "error: empty command"
-                proc = await asyncio.create_subprocess_exec(
-                    *parts,
-                    cwd=str(self.workspace),
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    **spawn_kwargs,
-                )
-        except (OSError, ValueError, RuntimeError) as exc:
-            return f"error: {exc}"
+        if os.name == "posix":
+            proc = await asyncio.create_subprocess_exec(
+                "/bin/sh", "-c", command,
+                cwd=str(self.workspace),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
+        else:
+            parts = shlex.split(command)
+            if not parts:
+                return "error: empty command"
+            proc = await asyncio.create_subprocess_exec(
+                *parts,
+                cwd=str(self.workspace),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                **spawn_kwargs,
+            )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         except asyncio.TimeoutError:

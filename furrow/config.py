@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from furrow.costs import ModelPricing
@@ -108,7 +108,7 @@ class RunResult(BaseModel):
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env")
+    model_config = SettingsConfigDict(env_prefix="FURROW_", env_file=".env", extra="ignore")
 
     provider: Provider = Provider.ANTHROPIC
     model: str = "claude-sonnet-4-20250514"
@@ -118,19 +118,56 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     ollama_base_url: str = "http://localhost:11434"
-    max_parallel_tasks: int = Field(default=5, ge=1)
+    max_parallel_tasks: int = Field(default=5, ge=1, le=20)
     max_cycles: int = Field(default=0, ge=0)
     workspace: Path = Field(default_factory=Path.cwd)
     log_level: str = "INFO"
-    max_worker_iterations: int = Field(default=12, ge=1)
-    max_retries: int = Field(default=3, ge=0)
-    max_task_retries: int = Field(default=1, ge=0)
-    request_timeout: float = Field(default=120.0, gt=0)
-    command_timeout: float = Field(default=300.0, gt=0)
-    test_timeout: float = Field(default=600.0, gt=0)
-    max_tokens: int = Field(default=4096, ge=1)
+    max_worker_iterations: int = Field(default=12, ge=1, le=50)
+    max_retries: int = Field(default=3, ge=0, le=10)
+    max_task_retries: int = Field(default=1, ge=0, le=5)
+    request_timeout: float = Field(default=120.0, gt=0, le=600.0)
+    command_timeout: float = Field(default=300.0, gt=0, le=3600.0)
+    test_timeout: float = Field(default=600.0, gt=0, le=7200.0)
+    max_tokens: int = Field(default=4096, ge=1, le=100000)
     state_file: Path = Path(".furrow/state.json")
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def _validate_log_level(cls, v: Any) -> str:
+        if not isinstance(v, str):
+            return "INFO"
+        normalized = v.strip().upper()
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if normalized in valid:
+            return normalized
+        return "INFO"
+
+    @field_validator("ollama_base_url", mode="before")
+    @classmethod
+    def _validate_ollama_url(cls, v: Any) -> str:
+        if not isinstance(v, str):
+            return "http://localhost:11434"
+        url = v.strip()
+        if not url:
+            return "http://localhost:11434"
+        if not (url.startswith("http://") or url.startswith("https://")):
+            return "http://" + url
+        return url.rstrip("/")
+
+    @model_validator(mode="after")
+    def _validate_provider_keys(self) -> Settings:
+        """Validate that required API keys are present for the selected provider."""
+        if self.provider == Provider.ANTHROPIC and not self.anthropic_api_key:
+            import os
+            if not os.getenv("ANTHROPIC_API_KEY"):
+                # Don't raise here - let the LLM client raise with a better message
+                pass
+        elif self.provider == Provider.OPENAI and not self.openai_api_key:
+            import os
+            if not os.getenv("OPENAI_API_KEY"):
+                pass
+        return self
 
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
@@ -140,6 +177,24 @@ class Settings(BaseSettings):
     def pricing_overrides(self) -> dict[str, ModelPricing]:
         """User-supplied price overrides that take precedence over the built-in table."""
         return dict(self.model_pricing)
+
+    def validate_keys(self) -> tuple[bool, str]:
+        """Validate that required API keys are available.
+        
+        Returns:
+            Tuple of (is_valid, error_message).
+        """
+        import os
+        if self.provider == Provider.ANTHROPIC:
+            if not self.anthropic_api_key and not os.getenv("ANTHROPIC_API_KEY"):
+                return False, "ANTHROPIC_API_KEY is not set"
+        elif self.provider == Provider.OPENAI:
+            if not self.openai_api_key and not os.getenv("OPENAI_API_KEY"):
+                return False, "OPENAI_API_KEY is not set"
+        elif self.provider == Provider.OLLAMA:
+            # Ollama doesn't require an API key
+            pass
+        return True, ""
 
 
 settings = Settings()

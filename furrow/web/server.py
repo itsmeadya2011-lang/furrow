@@ -60,12 +60,13 @@ INDEX_HTML = r"""<!DOCTYPE html>
   body {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     margin: 0; padding: 1.25rem; background: #10131a; color: #d7dae0;
+    max-width: 1400px; margin: 0 auto;
   }
   h1 {
     font-size: 1.3rem; letter-spacing: .14em; text-transform: uppercase;
     margin: 0 0 1rem; color: #f0f2f5;
   }
-  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .bar { display: flex; gap: .5rem; flex-wrap: wrap; margin-bottom: 1rem; align-items: center; }
   input {
     flex: 1 1 20rem; padding: .55rem .7rem; background: #171b23; color: inherit;
     border: 1px solid #2b3240; border-radius: 6px; font: inherit;
@@ -73,13 +74,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
   button {
     padding: .55rem 1.1rem; border-radius: 6px; border: 1px solid #2b3240;
     background: #1d2430; color: inherit; font: inherit; cursor: pointer;
+    transition: border-color .15s, background .15s;
   }
-  button:hover { border-color: #4c8dff; }
+  button:hover:not(:disabled) { border-color: #4c8dff; background: #253045; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary { background: #2d4a3e; border-color: #4ade80; }
+  .btn-primary:hover:not(:disabled) { background: #3a5a4a; }
+  .btn-danger { background: #4a2d2d; border-color: #f87171; }
+  .btn-danger:hover:not(:disabled) { background: #5a3a3a; }
+  .btn-ghost { background: transparent; }
   #log {
     background: #0b0e13; border: 1px solid #2b3240; border-radius: 6px;
     padding: .75rem; height: 20rem; overflow: auto;
     white-space: pre-wrap; word-break: break-word; margin: 0;
+    font-size: .85rem; line-height: 1.5;
   }
+  .log-line { display: flex; gap: .5rem; margin-bottom: .15rem; }
+  .log-time { color: #6b7280; font-variant-numeric: tabular-nums; min-width: 6ch; }
+  .log-content { flex: 1; }
   .header {
     border: 1px solid #2b3240; border-radius: 8px; padding: .75rem 1rem;
     margin-bottom: 1rem; background: #171b23;
@@ -94,52 +106,78 @@ INDEX_HTML = r"""<!DOCTYPE html>
   }
   .header .meta b { color: #d7dae0; }
   .header .reason { color: #f0b367; }
+  .header .conn-status {
+    display: inline-flex; align-items: center; gap: .3rem;
+    font-size: .75rem; padding: .1rem .4rem; border-radius: 999px;
+  }
+  .conn-status.connected { background: #14532d; color: #86efac; }
+  .conn-status.disconnected { background: #450a0a; color: #fca5a5; }
+  .conn-status.connecting { background: #451a03; color: #fde047; }
   .panels { display: flex; flex-direction: column; gap: .5rem; margin-top: 1rem; }
   .panel {
     border: 1px solid #2b3240; border-radius: 8px; padding: .6rem .8rem;
-    background: #171b23;
+    background: #171b23; transition: border-color .15s;
   }
+  .panel:hover { border-color: #3b4558; }
+  .panel.completed { border-left: 3px solid #22c55e; }
+  .panel.failed { border-left: 3px solid #ef4444; }
+  .panel.running { border-left: 3px solid #3b82f6; }
+  .panel.blocked { border-left: 3px solid #f59e0b; }
   .panel-head {
-    display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem;
+    display: flex; gap: .5rem; align-items: baseline; margin-bottom: .3rem; flex-wrap: wrap;
   }
   .panel-id { font-size: .85rem; color: #8a93a5; }
   .panel-status {
-    font-size: .8rem; font-weight: 700; text-transform: uppercase;
-    padding: .05rem .4rem; border-radius: 3px;
+    font-size: .7rem; font-weight: 700; text-transform: uppercase;
+    padding: .1rem .5rem; border-radius: 999px;
   }
   .panel-desc {
-    margin: 0 0 .4rem; font-size: 1rem; color: #d7dae0;
+    margin: 0 0 .4rem; font-size: .95rem; color: #d7dae0;
     word-break: break-word;
   }
   .panel-meta {
-    display: flex; gap: .8rem; font-size: .85rem; color: #8a93a5;
+    display: flex; gap: .8rem; font-size: .8rem; color: #8a93a5;
     margin-bottom: .4rem; flex-wrap: wrap;
   }
+  .panel-files { font-size: .75rem; color: #6b7280; margin-top: .3rem; }
+  .panel-files summary { cursor: pointer; color: #9ca3af; }
+  .panel-files summary:hover { color: #d7dae0; }
+  .panel-files ul { margin: .3rem 0 0 1rem; padding: 0; }
+  .panel-files li { margin: .1rem 0; }
   .panel-result {
-    margin: 0 0 .3rem; font-size: .9rem; color: #57d38c;
+    margin: 0 0 .3rem; font-size: .85rem; color: #57d38c;
     white-space: pre-wrap;
   }
   .panel-error {
-    margin: 0; font-size: .9rem; color: #e0685f; white-space: pre-wrap;
+    margin: 0; font-size: .85rem; color: #e0685f; white-space: pre-wrap;
   }
   .panel-empty {
     color: #8a93a5; font-size: .95rem; margin-top: 1rem; text-align: center;
   }
-  .status-pending { color: #8a93a5; }
-  .status-running { color: #4c8dff; }
-  .status-completed { color: #57d38c; }
-  .status-failed { color: #e0685f; }
-  .status-blocked { color: #f0b367; }
-  .status-skipped { color: #8a93a5; }
-  .status-unknown { color: #8a93a5; }
+  .status-pending { background: #374151; color: #9ca3af; }
+  .status-running { background: #1e3a5f; color: #60a5fa; }
+  .status-completed { background: #14532d; color: #86efac; }
+  .status-failed { background: #450a0a; color: #fca5a5; }
+  .status-blocked { background: #451a03; color: #fde047; }
+  .status-skipped { background: #374151; color: #9ca3af; }
+  .status-unknown { background: #374151; color: #9ca3af; }
+  .toolbar { display: flex; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
+  .toolbar button { font-size: .75rem; padding: .35rem .7rem; }
+  kbd {
+    background: #1e293b; border: 1px solid #334155; border-radius: 4px;
+    padding: .1rem .35rem; font-size: .7rem; font-family: inherit;
+  }
 </style>
 </head>
 <body>
 <h1>Furrow</h1>
 <div class="bar">
   <input id="goal" placeholder="What should Furrow build?" autofocus />
-  <button id="start">Start</button>
+  <button id="start" class="btn-primary">Start <kbd>Enter</kbd></button>
   <button id="resume">Resume</button>
+  <button id="stop" class="btn-danger" disabled>Stop</button>
+  <button id="clear-log" class="btn-ghost" title="Clear log">Clear Log</button>
+  <span id="conn-status" class="conn-status disconnected">Disconnected</span>
 </div>
 <div class="header" id="header">
   <div class="goal" id="goal-display">\u2014</div>
@@ -149,6 +187,10 @@ INDEX_HTML = r"""<!DOCTYPE html>
     <span id="stopped-reason" class="reason"></span>
     <span>usage <b id="usage">0 calls, 0 tokens</b></span>
   </div>
+</div>
+<div class="toolbar">
+  <button id="copy-log" class="btn-ghost">Copy Log</button>
+  <button id="save-state" class="btn-ghost">Save State JSON</button>
 </div>
 <pre id="log"></pre>
 <div class="panels" id="tasks"></div>
@@ -161,16 +203,54 @@ INDEX_HTML = r"""<!DOCTYPE html>
   const stateEl = document.getElementById('state');
   const stoppedReasonEl = document.getElementById('stopped-reason');
   const usageEl = document.getElementById('usage');
+  const connStatusEl = document.getElementById('conn-status');
+  const startBtn = document.getElementById('start');
+  const resumeBtn = document.getElementById('resume');
+  const stopBtn = document.getElementById('stop');
+  const clearLogBtn = document.getElementById('clear-log');
+  const copyLogBtn = document.getElementById('copy-log');
+  const saveStateBtn = document.getElementById('save-state');
   let socket = null;
   let lastSummary = null;
+  let isRunning = false;
 
-  function append(line) {
-    logEl.textContent += line + '\n';
+  function append(line, isError = false) {
+    const div = document.createElement('div');
+    div.className = 'log-line';
+    const now = new Date();
+    const time = now.toLocaleTimeString([], {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    const timeSpan = document.createElement('span');
+    timeSpan.className = 'log-time';
+    timeSpan.textContent = time;
+    const contentSpan = document.createElement('span');
+    contentSpan.className = 'log-content';
+    contentSpan.textContent = line;
+    if (isError) contentSpan.style.color = '#e0685f';
+    div.appendChild(timeSpan);
+    div.appendChild(contentSpan);
+    logEl.appendChild(div);
     logEl.scrollTop = logEl.scrollHeight;
   }
 
   function text(value) {
     return value === undefined || value === null ? '' : String(value);
+  }
+
+  function setConnStatus(status) {
+    connStatusEl.className = `conn-status ${status}`;
+    connStatusEl.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+  }
+
+  function setRunning(running) {
+    isRunning = running;
+    startBtn.disabled = running;
+    resumeBtn.disabled = running;
+    stopBtn.disabled = !running;
   }
 
   // The task status is planned by the LLM, so it is untrusted input: it is
@@ -210,6 +290,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
     const cost = Number(usage.cost_usd) || 0;
     usageEl.textContent = calls + ' calls, ' + total + ' tokens' +
       (cost > 0 ? ', $' + cost.toFixed(6) : '');
+    setRunning(running);
   }
 
   function renderTasks(tasks) {
@@ -228,7 +309,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const status = text(task.status) || 'pending';
 
       const panel = document.createElement('div');
-      panel.className = 'panel';
+      panel.className = 'panel ' + statusClass(status);
       panel.id = 'task-' + text(task.id);
 
       const head = document.createElement('div');
@@ -251,6 +332,24 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const attempts = document.createElement('span');
       attempts.textContent = 'attempts: ' + (Number(task.attempts) || 0);
       meta.appendChild(attempts);
+
+      const files = task.files_changed || [];
+      if (files && files.length > 0) {
+        const filesEl = document.createElement('div');
+        filesEl.className = 'panel-files';
+        const summary = document.createElement('summary');
+        summary.textContent = 'files changed (' + files.length + ')';
+        const ul = document.createElement('ul');
+        files.forEach(function(f) {
+          const li = document.createElement('li');
+          li.textContent = f;
+          li.style.fontFamily = 'inherit';
+          ul.appendChild(li);
+        });
+        filesEl.appendChild(summary);
+        filesEl.appendChild(ul);
+        panel.appendChild(filesEl);
+      }
 
       panel.appendChild(head);
       panel.appendChild(desc);
@@ -281,7 +380,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       const body = await res.json();
       if (body.state && body.state.tasks) { renderTasks(body.state.tasks); }
     } catch (err) {
-      append('! could not load state');
+      append('! could not load state', true);
     }
   }
 
@@ -302,7 +401,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
         }
       }
     } catch (err) {
-      append('! could not load status');
+      append('! could not load status', true);
     }
   }
 
@@ -310,7 +409,9 @@ INDEX_HTML = r"""<!DOCTYPE html>
     if (socket) { socket.close(); }
     const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
     socket = new WebSocket(scheme + '://' + location.host + '/ws');
+    setConnStatus('connecting');
     socket.onopen = function () {
+      setConnStatus('connected');
       append('> connected');
       // A new run starts: forget the previous summary so this run always
       // contributes its own summary line to the log.
@@ -365,11 +466,18 @@ INDEX_HTML = r"""<!DOCTYPE html>
       } else {
         try { line = JSON.stringify(msg); } catch (e) { line = String(msg); }
       }
-      const span = document.createElement('span');
-      span.style.color = color;
-      span.textContent = time + ' ' + line;
-      logEl.appendChild(span);
-      logEl.appendChild(document.createTextNode('\n'));
+      const div = document.createElement('div');
+      div.className = 'log-line';
+      const timeSpan = document.createElement('span');
+      timeSpan.className = 'log-time';
+      timeSpan.textContent = time;
+      const contentSpan = document.createElement('span');
+      contentSpan.className = 'log-content';
+      contentSpan.textContent = line;
+      contentSpan.style.color = color;
+      div.appendChild(timeSpan);
+      div.appendChild(contentSpan);
+      logEl.appendChild(div);
       logEl.scrollTop = logEl.scrollHeight;
       return line;
     }
@@ -379,7 +487,7 @@ INDEX_HTML = r"""<!DOCTYPE html>
       try {
         msg = JSON.parse(ev.data);
       } catch (err) {
-        append(ev.data);
+        append(ev.data, true);
         return;
       }
       renderEvent(msg);
@@ -391,21 +499,96 @@ INDEX_HTML = r"""<!DOCTYPE html>
       }
     };
     socket.onclose = function () {
+      setConnStatus('disconnected');
       append('-- closed');
       socket = null;
       loadStatus();
     };
     socket.onerror = function () {
-      append('!! websocket error');
+      append('!! websocket error', true);
     };
   }
 
-  document.getElementById('start').onclick = function () {
-    connect({ goal: goalEl.value, resume: false });
-  };
-  document.getElementById('resume').onclick = function () {
-    connect({ goal: goalEl.value, resume: true });
-  };
+  function startRun(resume) {
+    const goal = goalEl.value.trim();
+    if (!goal && !resume) {
+      append('! goal is required', true);
+      return;
+    }
+    connect({ goal: goal, resume: resume });
+  }
+
+  async function stopRun() {
+    if (!isRunning) return;
+    try {
+      const res = await fetch('/api/stop', { method: 'POST' });
+      if (res.ok) {
+        append('> stop requested');
+      } else {
+        append('! failed to stop run', true);
+      }
+    } catch (err) {
+      append('! error stopping run: ' + err, true);
+    }
+  }
+
+  async function copyLog() {
+    try {
+      await navigator.clipboard.writeText(logEl.textContent);
+      append('> log copied to clipboard');
+    } catch (err) {
+      append('! failed to copy log', true);
+    }
+  }
+
+  async function saveState() {
+    try {
+      const res = await fetch('/api/state');
+      const body = await res.json();
+      const blob = new Blob([JSON.stringify(body, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download =
+        'furrow-state-' + new Date().toISOString().slice(0, 19).replace(/:/g, '-') + '.json';
+      a.click();
+      URL.revokeObjectURL(url);
+      append('> state saved');
+    } catch (err) {
+      append('! failed to save state', true);
+    }
+  }
+
+  function clearLog() {
+    logEl.textContent = '';
+    lastSummary = null;
+  }
+
+  startBtn.onclick = function () { startRun(false); };
+  resumeBtn.onclick = function () { startRun(true); };
+  stopBtn.onclick = stopRun;
+  clearLogBtn.onclick = clearLog;
+  copyLogBtn.onclick = copyLog;
+  saveStateBtn.onclick = saveState;
+
+  // Keyboard shortcuts
+  document.addEventListener('keydown', function(e) {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      if (!isRunning) startRun(false);
+    }
+    if (e.key === 'Escape' && isRunning) {
+      stopRun();
+    }
+    if (e.key === 'l' && e.ctrlKey) {
+      e.preventDefault();
+      clearLog();
+    }
+    if (e.key === 's' && e.ctrlKey) {
+      e.preventDefault();
+      saveState();
+    }
+  });
 
   loadState();
   loadStatus();
@@ -647,6 +830,19 @@ async def api_start(request: StartRequest) -> JSONResponse:
         }
     )
     return JSONResponse(status_code=200, content={"started": True, "goal": goal})
+
+
+@app.post("/api/stop")
+async def api_stop() -> JSONResponse:
+    """Stop the currently running background run."""
+    task = _CURRENT.get("task")
+    if not task or task.done():
+        return JSONResponse(
+            status_code=409,
+            content={"stopped": False, "error": "no run in progress"},
+        )
+    _cancel_run(task)
+    return JSONResponse(status_code=200, content={"stopped": True})
 
 
 @app.websocket("/ws")
