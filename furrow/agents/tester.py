@@ -105,7 +105,9 @@ def parse_test_output(output: str) -> list[dict]:
             seen_locations.add(location_key)
 
     # Pattern for file:line:col
-    file_line_col_pattern = re.compile(r"([^\s:]+\.py):(\d+):(\d+)")
+    file_line_col_pattern = re.compile(
+        r"([^\s:]+(?:\.(?:py|ts|tsx|js|jsx|rs|go|java|c|cc|cpp|cxx|h|hpp|cs|rb|php|swift|kt|scala))):(\d+):(\d+)"
+    )
     for match in file_line_col_pattern.finditer(output):
         file_path = match.group(1)
         line_num = int(match.group(2))
@@ -122,7 +124,9 @@ def parse_test_output(output: str) -> list[dict]:
             seen_locations.add(location_key)
 
     # Pattern for file:line (without col)
-    file_line_pattern = re.compile(r"([^\s:]+\.py):(\d+)(?!\d*:)")
+    file_line_pattern = re.compile(
+        r"([^\s:]+(?:\.(?:py|ts|tsx|js|jsx|rs|go|java|c|cc|cpp|cxx|h|hpp|cs|rb|php|swift|kt|scala))):(\d+)(?!\d*:)"
+    )
     for match in file_line_pattern.finditer(output):
         file_path = match.group(1)
         line_num = int(match.group(2))

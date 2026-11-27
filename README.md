@@ -119,6 +119,8 @@ Furrow reads environment variables with the `FURROW_` prefix (and a `.env` file 
 | `FURROW_STATE_FILE` | `.furrow/state.json` | State file path (relative to workspace) |
 | `FURROW_WORKSPACE` | current directory | Working directory for the agent |
 | `FURROW_MODEL_PRICING` | (built-in table) | JSON object mapping model ids to `{"input_per_million": ..., "output_per_million": ...}` prices |
+| `FURROW_COMMAND_TIMEOUT` | `300.0` | Timeout in seconds for worker commands (the whole process group is killed on timeout) |
+| `FURROW_TEST_TIMEOUT` | `600.0` | Timeout in seconds for the test command (the whole process group is killed on timeout) |
 
 A `.env` file is read automatically via pydantic-settings.
 

@@ -13,6 +13,8 @@ import asyncio
 import inspect
 import logging
 import sys
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +26,11 @@ from furrow.core.state import RunState, StateStore
 from furrow.logging import configure_logging
 
 logger = logging.getLogger(__name__)
+
+try:
+    __version__ = _pkg_version("furrow")
+except PackageNotFoundError:  # pragma: no cover - fallback when metadata missing
+    __version__ = "0.1.0"
 
 WORKSPACE_HELP = "Project directory the agent works in."
 MAX_CYCLES_HELP = "Maximum number of cycles (0 = unlimited)."
@@ -178,6 +185,7 @@ def _execute(goal: str, run_settings: Settings, resume: bool) -> None:
         sys.exit(1)
 
 
+@click.version_option(__version__, prog_name="furrow")
 @click.group()
 def main() -> None:
     """Furrow - an autonomous coding agent."""
