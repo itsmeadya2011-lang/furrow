@@ -753,6 +753,43 @@ def test_is_command_denied_wrapper_aware_tee_and_force_push(tmp_path):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_is_command_denied_shell_interpreter_and_cd_escapes(tmp_path):
+    """A shell ``-c`` script is inspected and a ``cd`` outside the workspace is denied.
+
+    ``bash -c 'rm -rf /'`` runs an arbitrary script that is not a separate
+    shell segment, so the script text has to be checked recursively.
+    ``cd / && echo x > etc/passwd`` changes the working directory before a
+    relative redirection, so the ``cd`` target itself must stay in the
+    workspace. ``eval``/``source`` run arbitrary text and are denied outright.
+    """
+    denied_commands = [
+        "bash -c 'rm -rf /'",
+        "sh -c 'echo hacked > /etc/passwd'",
+        "sudo bash -c 'fdisk /dev/sda'",
+        "zsh -lc 'chmod -R 777 /'",
+        "cd / && echo x > etc/passwd",
+        "cd .. && rm -rf build",
+        "cd ~",
+        "cd $HOME",
+        "cd",
+        "cd -",
+        "eval 'rm -rf /'",
+        "source /tmp/evil.sh",
+    ]
+    allowed_commands = [
+        "bash -c 'echo hi'",
+        "sh -c 'ls -la'",
+        f"cd {tmp_path} && pwd",
+        "cd sub && ls",
+        "cd subdir && make",
+    ]
+
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel

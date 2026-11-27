@@ -31,6 +31,7 @@ DENIED_COMMANDS = (
 DENIED_PROGRAMS = frozenset(
     {
         "dd",
+        "eval",
         "fdisk",
         "halt",
         "init",
@@ -39,6 +40,7 @@ DENIED_PROGRAMS = frozenset(
         "poweroff",
         "reboot",
         "shutdown",
+        "source",
     }
 )
 
@@ -75,6 +77,10 @@ _MAX_SUBSTITUTION_DEPTH = 3
 # Leading program names that are only wrappers: they run the command that
 # follows them, so a dangerous ``rm``/``chmod`` hides behind them.
 _WRAPPER_PROGRAMS = frozenset({"sudo", "doas", "command", "env", "nohup", "exec"})
+
+# Shell interpreters that run an arbitrary script passed to ``-c``. The script
+# is not a separate shell segment, so it is inspected recursively.
+_SHELL_PROGRAMS = frozenset({"ash", "bash", "dash", "ksh", "sh", "zsh"})
 
 # Regex for a leading variable assignment such as ``FOO=1`` or ``PATH=/bin``.
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
@@ -281,6 +287,59 @@ def _is_dangerous_chmod(args: list[str], workspace: Path) -> bool:
             if not _target_inside_workspace(target, workspace):
                 return True
     return False
+
+
+def _is_dangerous_cd(args: list[str], workspace: Path) -> bool:
+    """Report whether a ``cd`` leaves the workspace or cannot be resolved.
+
+    ``cd`` changes the working directory for the rest of the command, so a
+    relative redirection after ``cd /`` escapes the workspace even though the
+    target itself looks relative. Only a ``cd`` to a path that statically
+    resolves inside the workspace is allowed. A bare ``cd`` (which targets
+    ``$HOME``), ``cd -``, and a target that still contains a shell expansion
+    (``$`` or a backtick) are denied because they cannot be resolved statically.
+    """
+    target: str | None = None
+    for token in args:
+        if token == "--":
+            continue
+        if token.startswith("-") and token != "-":
+            continue
+        target = token
+        break
+    if target is None or target == "-":
+        return True
+    resolved = target.strip().strip("\"'")
+    if not resolved:
+        return True
+    if "$" in resolved or "`" in resolved:
+        return True
+    return not _target_inside_workspace(resolved, workspace)
+
+
+def _shell_script_argument(segment: str) -> str | None:
+    """Return the script of a ``shell -c <script>`` segment, or ``None``.
+
+    A shell invoked with ``-c`` runs the next argument as a command. That text
+    is not a separate shell segment, so it has to be inspected recursively with
+    the same rules as the command itself. Both ``-c script`` and a combined
+    short cluster such as ``-lc script`` are recognised; a trailing ``-c`` with
+    no script yields an empty string (nothing runs).
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return None
+    name, args = parsed
+    if name not in _SHELL_PROGRAMS:
+        return None
+    for index, token in enumerate(args):
+        if token == "--":
+            break
+        if token == "-c":
+            return args[index + 1] if index + 1 < len(args) else ""
+        if _is_short_flag_cluster(token) and "c" in token[1:]:
+            return args[index + 1] if index + 1 < len(args) else ""
+    return None
 
 
 def _extract_command_substitutions(command: str) -> list[str]:
@@ -503,6 +562,8 @@ def _is_dangerous_segment(segment: str, workspace: Path) -> bool:
             return True
         if name == "chmod" and _is_dangerous_chmod(args, workspace):
             return True
+        if name == "cd" and _is_dangerous_cd(args, workspace):
+            return True
 
     # DENY a force push
     if _is_force_push(segment, normalized):
@@ -523,8 +584,15 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
     if any(denied.lower() in normalized for denied in DENIED_COMMANDS):
         return True
     # Every segment of the text is checked on its own.
-    if any(_is_dangerous_segment(segment, workspace) for segment in _split_command_segments(text)):
-        return True
+    for segment in _split_command_segments(text):
+        if _is_dangerous_segment(segment, workspace):
+            return True
+        # A shell invoked with ``-c`` runs its script argument, which is not a
+        # separate segment: inspect it recursively with the same rules.
+        if depth < _MAX_SUBSTITUTION_DEPTH:
+            script = _shell_script_argument(segment)
+            if script is not None and _text_is_denied(script, workspace, depth + 1):
+                return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
         for substitution in _extract_command_substitutions(text):
