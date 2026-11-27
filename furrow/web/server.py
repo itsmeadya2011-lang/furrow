@@ -40,6 +40,7 @@ DEFAULT_CURRENT: dict[str, Any] = {
     "result": None,
     "task": None,
     "error": None,
+    "events": [],
 }
 
 # Registry of the run that is currently active (or of the last one that ran).
@@ -435,6 +436,7 @@ def _reset_registry() -> None:
     """Forget the active run (used by the tests)."""
     _CURRENT.clear()
     _CURRENT.update(DEFAULT_CURRENT)
+    _CURRENT["events"] = []
 
 
 def _state_store() -> StateStore:
@@ -540,7 +542,7 @@ async def _run_orchestrator(orchestrator: Orchestrator) -> RunResult:
 
 
 async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult:
-    """Run an orchestrator in the background and discard the emitted events."""
+    """Run an orchestrator in the background and store emitted events."""
     queue = bus.subscribe()
     drain = asyncio.create_task(_drain(queue))
     try:
@@ -550,6 +552,18 @@ async def _run_and_drain(orchestrator: Orchestrator, bus: EventBus) -> RunResult
         with contextlib.suppress(asyncio.CancelledError):
             await drain
         bus.unsubscribe(queue)
+
+
+MAX_STORED_EVENTS = 500
+
+
+async def _drain(queue: asyncio.Queue[Event]) -> None:
+    """Consume events and store them in the registry (bounded)."""
+    while True:
+        event = await queue.get()
+        _CURRENT["events"].append(event.to_dict())
+        if len(_CURRENT["events"]) > MAX_STORED_EVENTS:
+            _CURRENT["events"] = _CURRENT["events"][-MAX_STORED_EVENTS:]
 
 
 def _build_orchestrator(
@@ -599,6 +613,7 @@ async def api_status() -> dict[str, Any]:
         "status": orchestrator.status() if orchestrator is not None else None,
         "result": result.model_dump(mode="json") if result is not None else None,
         "error": _CURRENT.get("error"),
+        "events": _CURRENT.get("events", []),
     }
 
 
@@ -625,6 +640,7 @@ async def api_start(request: StartRequest) -> JSONResponse:
                 content={"started": False, "error": "no goal to resume"},
             )
     bus = EventBus()
+    _CURRENT["events"] = []  # Clear events from previous run
     try:
         orchestrator = _build_orchestrator(goal, request.resume, request.max_cycles, bus)
     except ValidationError as validation_error:

@@ -50,6 +50,7 @@ class Orchestrator:
         self._usage_seen: Usage = Usage()
         self._tests_run: int = 0
         self._skip_ids: set[str] = set()
+        self._post_resume_cycle_done: bool = False
         if resume:
             # The state file is read exactly once, here: `run()` must not load it
             # again, otherwise the values restored at start-up would be silently
@@ -75,6 +76,9 @@ class Orchestrator:
                     self._prev_sig = str(getattr(st, "prev_sig", "") or "")
                 except Exception:
                     self._prev_sig = ""
+                # Track whether we've completed a cycle after resume to avoid
+                # incorrectly tripping the no-progress guard on the first resumed cycle.
+                self._post_resume_cycle_done = False
                 try:
                     self._tests_run = int(getattr(st, "tests_run", 0) or 0)
                 except Exception:
@@ -269,17 +273,25 @@ class Orchestrator:
             # guard as well - otherwise the loop never stops.
             no_signal = (not test_result.passed) or skipped
             guard_tripped = False
-            if no_signal and sig == self._prev_sig:
-                self._no_progress += 1
-                if self._no_progress >= 2:
-                    self._stopped_reason = (
-                        "no test runner detected" if skipped else "no progress"
-                    )
-                    guard_tripped = True
-            else:
-                if sig != self._prev_sig or (test_result.passed and not skipped):
-                    self._no_progress = 0
-                self._prev_sig = sig
+            # Only evaluate the no-progress guard if we've completed at least one
+            # cycle after resume. On the first resumed cycle, _prev_sig holds the
+            # last completed cycle's signature, so comparing the new plan against
+            # it would incorrectly trip the guard when the plan is legitimately
+            # the same as the last successful cycle.
+            if self._post_resume_cycle_done or not self._resume:
+                if no_signal and sig == self._prev_sig:
+                    self._no_progress += 1
+                    if self._no_progress >= 2:
+                        self._stopped_reason = (
+                            "no test runner detected" if skipped else "no progress"
+                        )
+                        guard_tripped = True
+                else:
+                    if sig != self._prev_sig or (test_result.passed and not skipped):
+                        self._no_progress = 0
+                    self._prev_sig = sig
+            # Mark that we've completed a cycle after resume
+            self._post_resume_cycle_done = True
 
             state = RunState(goal=self.goal, original_goal=self.original_goal,
                              cycles=self.cycles, tasks=self.tasks, history=self.history,
