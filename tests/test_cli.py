@@ -145,6 +145,26 @@ def test_status_with_state(runner: CliRunner, tmp_path: Path) -> None:
     assert "do the thing" in result.output
 
 
+def test_reset_without_state(runner: CliRunner, tmp_path: Path) -> None:
+    result = runner.invoke(main, ["reset", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert "No furrow run state found" in result.output
+
+
+def test_reset_with_state_removes_the_file(runner: CliRunner, tmp_path: Path) -> None:
+    _write_state(tmp_path)
+
+    state_path = tmp_path / ".furrow" / "state.json"
+    assert state_path.is_file()
+
+    result = runner.invoke(main, ["reset", "--workspace", str(tmp_path)])
+
+    assert result.exit_code == 0
+    assert not state_path.is_file()
+    assert "Cleared" in result.output
+
+
 def test_resume_without_state(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["resume", "--workspace", str(tmp_path)])
 

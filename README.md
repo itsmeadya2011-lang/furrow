@@ -60,6 +60,14 @@ furrow status --workspace /path/to/project
 
 The status command shows the original goal, current goal, cycle count, last update time, token usage (if any), and per-task entries including which files each task changed, if any. The run summary includes completed/failed/blocked task counts, LLM usage, files changed, and a result line: `Result: PASSED - all tests passed.`, `Result: FAILED - tests did not pass.`, `Result: SKIPPED - no test runner detected.`, or `Result: NOT RUN - no tests were executed.` when a run completed without executing any tests.
 
+### `furrow reset`
+Delete the persisted run state (`.furrow/state.json`) so the next `furrow start` begins fresh instead of resuming the previous run. It is idempotent: running it when there is no saved state succeeds without error.
+
+```bash
+furrow reset
+furrow reset --workspace /path/to/project
+```
+
 ### `furrow resume`
 Continue the persisted run.
 
