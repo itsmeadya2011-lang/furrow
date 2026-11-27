@@ -323,8 +323,11 @@ def _shell_script_argument(segment: str) -> str | None:
     A shell invoked with ``-c`` runs the next argument as a command. That text
     is not a separate shell segment, so it has to be inspected recursively with
     the same rules as the command itself. Both ``-c script`` and a combined
-    short cluster such as ``-lc script`` are recognised; a trailing ``-c`` with
-    no script yields an empty string (nothing runs).
+    short cluster such as ``-lc script`` are recognised. When ``-c`` is
+    attached to its script in a single token (``bash -c'rm -rf /'`` is
+    tokenised by shlex as ``-crm -rf /``), the text after the first ``c`` is
+    the script. A trailing ``-c`` with no script yields an empty string
+    (nothing runs).
     """
     parsed = _program_and_args(segment)
     if parsed is None:
@@ -338,6 +341,10 @@ def _shell_script_argument(segment: str) -> str | None:
         if token == "-c":
             return args[index + 1] if index + 1 < len(args) else ""
         if _is_short_flag_cluster(token) and "c" in token[1:]:
+            cut = token.index("c", 1)
+            remainder = token[cut + 1 :]
+            if remainder:
+                return remainder
             return args[index + 1] if index + 1 < len(args) else ""
     return None
 

@@ -790,6 +790,28 @@ def test_is_command_denied_shell_interpreter_and_cd_escapes(tmp_path):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_is_command_denied_attached_c_script(tmp_path):
+    """An attached ``-c`` script (no space) is still inspected and denied.
+
+    ``shlex.split`` collapses ``bash -c'rm -rf /'`` into a single token such as
+    ``-crm -rf /``, so the script must be taken from the remainder of that token
+    after the first ``c``. A benign attached script that stays in the workspace
+    is still allowed.
+    """
+    denied_commands = [
+        "bash -c'rm -rf /'",
+        'sh -c"rm -rf /"',
+        "bash -lc'rm -rf /'",
+    ]
+    allowed_commands = [
+        "bash -c'echo hi'",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel
