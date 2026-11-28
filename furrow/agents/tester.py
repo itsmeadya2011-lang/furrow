@@ -244,12 +244,8 @@ class TesterAgent:
                     return ["npm", "test", "--silent"]
             except (OSError, UnicodeError, ValueError) as exc:
                 logger.warning("Could not read package.json: %s", exc)
-            # Fallback: npm test if package.json exists (Python case handled above)
-            if (self.workspace / "pnpm-lock.yaml").is_file():
-                return ["pnpm", "test", "--silent"]
-            if (self.workspace / "yarn.lock").is_file():
-                return ["yarn", "test", "--silent"]
-            return ["npm", "test", "--silent"]
+            # No `test` script (or unreadable package.json): do not run npm/pnpm/yarn
+            # test; fall through to other language markers (python, etc.).
 
         python_markers = [
             "pyproject.toml",

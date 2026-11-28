@@ -124,6 +124,50 @@ def test_dropped_count_is_zero_in_normal_case_and_counts_overflow_drops() -> Non
     assert bus.dropped_for(queue) == 15
 
 
+def test_deliver_drops_oldest_on_queue_full(monkeypatch) -> None:
+    """Test that _deliver drops oldest event when queue is full, keeping newest."""
+    # Use a small queue size for fast, deterministic testing
+    import furrow.core.events as events_module
+    monkeypatch.setattr(events_module, "MAX_QUEUE_SIZE", 5)
+
+    bus = EventBus()
+    queue = bus.subscribe()
+
+    # Fill the queue to capacity
+    for i in range(5):
+        bus.emit(Event(type=EventType.LOG, message=f"event-{i}"))
+
+    assert queue.qsize() == 5
+    assert bus.dropped_count == 0
+
+    # Emit 3 more events - each should drop the oldest
+    for i in range(5, 8):
+        bus.emit(Event(type=EventType.LOG, message=f"event-{i}"))
+
+    # Should have dropped 3 events (event-0, event-1, event-2)
+    assert bus.dropped_count == 3
+    assert bus.dropped_for(queue) == 3
+
+    # Queue should still be at max size
+    assert queue.qsize() == 5
+
+    # Drain and verify we have the NEWEST events (event-3, event-4, event-5, event-6, event-7)
+    drained: list[Event] = []
+    while not queue.empty():
+        drained.append(queue.get_nowait())
+
+    assert len(drained) == 5
+    # The newest event (event-7) should be present
+    assert drained[-1].message == "event-7"
+    # The oldest events (event-0, event-1, event-2) should be gone
+    messages = [e.message for e in drained]
+    assert "event-0" not in messages
+    assert "event-1" not in messages
+    assert "event-2" not in messages
+    # The retained events should be the most recent 5
+    assert messages == ["event-3", "event-4", "event-5", "event-6", "event-7"]
+
+
 @pytest.mark.asyncio
 async def test_emit_async_delivers_event_to_subscribers() -> None:
     bus = EventBus()

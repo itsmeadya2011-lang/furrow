@@ -38,6 +38,11 @@ class Orchestrator:
         self.history: list[HistoryEntry] = []
         self._feedback = ""
         self._active_ids: set[str] = set()
+        # Cumulative set of every task id ever planned across all cycles. The
+        # per-cycle `_active_ids` only reflects the latest plan, so a task
+        # completed in an earlier cycle but omitted from the final plan would be
+        # dropped from the final tally. This set keeps the final result honest.
+        self._all_active_ids: set[str] = set()
         self._prev_sig: str = ""
         self._no_progress = 0
         self._stopped_reason = ""
@@ -61,6 +66,9 @@ class Orchestrator:
                 self.cycles = st.cycles
                 self.tasks = list(st.tasks)
                 self.history = list(st.history)
+                # Seed the cumulative active-id set from the restored tasks so
+                # the final tally includes work completed before the restart.
+                self._all_active_ids = {t.id for t in self.tasks}
                 self._usage = st.usage.model_copy()
                 # A resumed run starts a fresh client whose counter starts at
                 # zero, so the baseline for the per-cycle delta is the client's
@@ -162,6 +170,35 @@ class Orchestrator:
             return text.replace("[", "\\[")
         return str(escape(text))
 
+    def _save_state(self, state: RunState) -> None:
+        """Persist *state*, emitting STATE_SAVED on success or ERROR on failure.
+
+        A failed save must never crash the run, and must NOT emit STATE_SAVED
+        (which would falsely tell consumers the state was written).
+        """
+        try:
+            self.state_store.save(state)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.event_bus.emit(
+                Event(type=EventType.ERROR,
+                     message=f"could not save state to {self.state_store.path}: {e}")
+            )
+        else:
+            self.event_bus.emit(Event(type=EventType.STATE_SAVED,
+                                    data={"path": str(self.state_store.path)}))
+
+    def _build_state(self, *, last_passed: bool | None = None,
+                     last_skipped: bool = False, last_summary: str = "") -> RunState:
+        """Build a RunState snapshot from the current run fields."""
+        return RunState(goal=self.goal, original_goal=self.original_goal,
+                        cycles=self.cycles, tasks=self.tasks, history=self.history,
+                        usage=self._usage, no_progress=self._no_progress,
+                        prev_sig=self._prev_sig, tests_run=self._tests_run,
+                        last_passed=last_passed, last_skipped=last_skipped,
+                        last_summary=last_summary)
+
     async def run(self) -> RunResult:
         if self._resume and self._resume_state_missing:
             # The state file was already looked up in __init__; it was missing.
@@ -185,8 +222,8 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"planner failed: {e}"
-                self.cycles -= 1
                 self._accumulate_usage()
+                self._save_state(self._build_state())
                 break
             self.event_bus.emit(Event(type=EventType.PLAN_CREATED,
                                     data={"rationale": plan.rationale, "tasks": len(plan.tasks)}))
@@ -207,8 +244,8 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"execute failed: {e}"
-                self.cycles -= 1
                 self._accumulate_usage()
+                self._save_state(self._build_state())
                 break
             self.event_bus.emit(Event(type=EventType.TEST_STARTED, data={}))
             try:
@@ -218,8 +255,8 @@ class Orchestrator:
             except Exception as e:
                 self.event_bus.emit(Event(type=EventType.ERROR, message=str(e)))
                 self._stopped_reason = f"tester failed: {e}"
-                self.cycles -= 1
                 self._accumulate_usage()
+                self._save_state(self._build_state())
                 break
             skipped = bool(getattr(test_result, "skipped", False))
             if not skipped:
@@ -284,27 +321,10 @@ class Orchestrator:
                     self._no_progress = 0
                 self._prev_sig = sig
 
-            state = RunState(goal=self.goal, original_goal=self.original_goal,
-                             cycles=self.cycles, tasks=self.tasks, history=self.history,
-                             usage=self._usage, no_progress=self._no_progress,
-                             prev_sig=self._prev_sig, tests_run=self._tests_run,
-                             last_passed=test_result.passed, last_skipped=skipped,
-                             last_summary=test_result.summary)
-            try:
-                self.state_store.save(state)
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                # The state was NOT written: report the failure (including the
-                # path that could not be written) and do NOT emit STATE_SAVED,
-                # which would tell consumers the state was saved when it was not.
-                self.event_bus.emit(
-                    Event(type=EventType.ERROR,
-                         message=f"could not save state to {self.state_store.path}: {e}")
-                )
-            else:
-                self.event_bus.emit(Event(type=EventType.STATE_SAVED,
-                                        data={"path": str(self.state_store.path)}))
+            state = self._build_state(last_passed=test_result.passed,
+                                      last_skipped=skipped,
+                                      last_summary=test_result.summary)
+            self._save_state(state)
             if guard_tripped:
                 break
 
@@ -317,7 +337,8 @@ class Orchestrator:
         self._say(f"Stopped: {self._escape(self._one_line(self._stopped_reason))}")
 
         active = (
-            [t for t in self.tasks if t.id in self._active_ids] if self._active_ids else self.tasks
+            [t for t in self.tasks if t.id in self._all_active_ids]
+            if self._all_active_ids else self.tasks
         )
         completed = sum(1 for t in active if t.status == "completed")
         failed = sum(1 for t in active if t.status == "failed")
@@ -386,6 +407,9 @@ class Orchestrator:
             else:
                 self.tasks.append(pt)
         self._active_ids = {t.id for t in plan.tasks}
+        # Track every task ever planned so the final tally is not limited to the
+        # most recent cycle's plan.
+        self._all_active_ids |= self._active_ids
 
     def _plan_waves(self, tasks: list[TaskModel]) -> list[list[TaskModel]]:
         ids = {t.id for t in tasks}

@@ -173,3 +173,13 @@ def test_parse_test_result_falls_back_on_recursionerror(monkeypatch):
     monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
     r = parsing.parse_test_result("[[1]]")
     assert isinstance(r, TestResult)
+
+
+def test_parse_test_result_total_failure_returns_false(monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("boom")
+
+    monkeypatch.setattr(parsing.re, "search", boom)
+    r = parsing.parse_test_result("some unparseable text")
+    assert isinstance(r, TestResult)
+    assert r.passed is False

@@ -57,7 +57,7 @@ def test_detect_packagejson(tmp_path):
     (tmp_path / "package.json").write_text("{}")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
-    assert cmd is not None and "npm" in cmd
+    assert cmd is None
 
 
 def test_detect_command_unreadable_package_json_falls_back(tmp_path):
@@ -69,8 +69,7 @@ def test_detect_command_unreadable_package_json_falls_back(tmp_path):
     (tmp_path / "package.json").write_bytes(b"\xff\xfe\x00")
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
-    assert cmd is not None
-    assert cmd == ["npm", "test", "--silent"]
+    assert cmd is None
 
 
 def test_detect_command_valid_package_json_with_test_script(tmp_path):
@@ -87,6 +86,22 @@ def test_detect_cargo(tmp_path):
     agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
     cmd = run(agent.detect_command())
     assert cmd is not None and "cargo" in cmd
+
+
+def test_detect_packagejson_no_test_script_returns_none(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"build": "tsc"}}')
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is None
+
+
+def test_detect_packagejson_no_test_script_with_pyproject_detects_pytest(tmp_path):
+    (tmp_path / "package.json").write_text('{"scripts": {"build": "tsc"}}')
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_command())
+    assert cmd is not None
+    assert "pytest" in cmd
 
 
 def test_detect_empty(tmp_path):

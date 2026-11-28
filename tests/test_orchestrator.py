@@ -1268,3 +1268,63 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+@pytest.mark.asyncio
+async def test_planner_failure_persists_state_and_counts_cycle(tmp_path, monkeypatch):
+    """A planner failure must persist state and count the cycle it started."""
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=3)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner(raise_valueerror=True)
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+
+    # The cycle was started, so it counts even though the planner raised.
+    assert result.cycles == 1
+    assert result.stopped_reason.startswith("planner failed")
+    # Progress must be persisted so resume can recover.
+    assert store.exists()
+    st = store.load()
+    assert st is not None
+    assert st.cycles == 1
+    assert st.original_goal == "g"
+
+
+@pytest.mark.asyncio
+async def test_completed_task_omitted_from_later_plan_is_still_counted(tmp_path, monkeypatch):
+    """A task completed in an early cycle counts even if a later plan omits it."""
+    class SeqPlanner:
+        """Returns a different task set on each successive call."""
+
+        def __init__(self):
+            self.calls = 0
+
+        async def plan(self, goal, context=""):
+            self.calls += 1
+            if self.calls == 1:
+                return Plan(tasks=[TaskModel(id="t1", description="do t1")], rationale="r")
+            return Plan(tasks=[TaskModel(id="t2", description="do t2")], rationale="r")
+
+    class FW(FakeWorker):
+        async def run(self):
+            return WorkerResult(
+                summary=f"did {self.task.id}",
+                success=True,
+                files_changed=[f"{self.task.id}.py"],
+            )
+
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    settings = make_settings(tmp_path, max_cycles=2)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = SeqPlanner()
+    orch.tester = FakeTester(passed=True)
+    result = await orch.run()
+
+    # The final plan only contains t2, but t1 was completed in cycle 1.
+    assert {t.id for t in orch.tasks} == {"t1", "t2"}
+    assert result.tasks_completed == 2
+    assert "t1.py" in result.files_changed
+    assert "t2.py" in result.files_changed

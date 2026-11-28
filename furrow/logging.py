@@ -17,6 +17,7 @@ def _configure_stdlib_fallback(level: str = "INFO") -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
         level=getattr(logging, level.upper(), logging.INFO),
         stream=sys.stdout,
+        force=True,
     )
 
 
@@ -31,16 +32,18 @@ except ImportError:
 def configure_logging(level: str = "INFO") -> None:
     """Configure structlog to wrap stdlib logging."""
     log_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        format="%(message)s",
-        level=log_level,
-        stream=sys.stdout,
-    )
 
     if not _STRUCTLOG_AVAILABLE:
         # Fall back to stdlib logging if structlog is not available
         _configure_stdlib_fallback(level)
         return
+
+    logging.basicConfig(
+        format="%(message)s",
+        level=log_level,
+        stream=sys.stdout,
+        force=True,
+    )
 
     structlog.configure(
         processors=[

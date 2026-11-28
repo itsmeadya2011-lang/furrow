@@ -260,4 +260,5 @@ def parse_test_result(text: str) -> TestResult:
             s = strip_code_fences(text) if isinstance(text, str) else str(text)
         except (ValueError, TypeError):
             s = str(text) if text is not None else ""
-        return TestResult(passed=True, summary=s[:500], failures=[])
+        summary = "Could not parse test output: " + s[:500]
+        return TestResult(passed=False, summary=summary, failures=[])

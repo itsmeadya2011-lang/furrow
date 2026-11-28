@@ -87,22 +87,23 @@ class EventBus:
 
     def _deliver(self, queue: asyncio.Queue[Event], event: Event) -> None:
         """Put ``event`` on ``queue``, dropping the oldest event if it is full."""
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
-            queue.put_nowait(event)
-            return
-        # The subscriber is not draining: drop the oldest queued event so that
-        # the newest event is always delivered.
         try:
-            queue.get_nowait()
-        except asyncio.QueueEmpty:  # pragma: no cover - raced with a consumer
-            pass
+            queue.put_nowait(event)
+        except asyncio.QueueFull:
+            # Queue is full: drop the oldest event to make room for the newest.
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:  # pragma: no cover - raced with a consumer
+                pass
+            except Exception:  # pragma: no cover - defensive, one bad subscriber
+                return
+            else:
+                self._dropped += 1
+                self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
+            with contextlib.suppress(Exception):  # pragma: no cover
+                queue.put_nowait(event)
         except Exception:  # pragma: no cover - defensive, one bad subscriber
             return
-        else:
-            self._dropped += 1
-            self._dropped_by_queue[queue] = self._dropped_by_queue.get(queue, 0) + 1
-        with contextlib.suppress(Exception):  # pragma: no cover - defensive
-            queue.put_nowait(event)
 
     async def emit_async(self, event: Event) -> None:
         """Async variant of :meth:`emit`."""
