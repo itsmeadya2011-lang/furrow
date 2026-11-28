@@ -126,6 +126,16 @@ def test_start_prompts_and_uses_the_typed_goal(
     assert fake_orchestrator.init_kwargs["goal"] == "build a thing"
 
 
+def test_start_blank_goal_exits_with_error(
+    runner: CliRunner, fake_orchestrator: type[FakeOrchestrator]
+) -> None:
+    result = runner.invoke(main, ["start", "   "])
+
+    assert result.exit_code == 1
+    assert "Goal cannot be empty." in result.output
+    assert fake_orchestrator.init_kwargs == {}
+
+
 def test_status_without_state(runner: CliRunner, tmp_path: Path) -> None:
     result = runner.invoke(main, ["status", "--workspace", str(tmp_path)])
 

@@ -18,6 +18,9 @@ from openai import AsyncOpenAI
 from furrow.config import Provider, Settings, Usage
 from furrow.config import settings as global_settings
 from furrow.costs import estimate_cost
+from furrow.logging import get_logger
+
+logger = get_logger(__name__)
 
 try:
     from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
@@ -307,8 +310,8 @@ class LLMClient:
                     result = close()
                     if asyncio.iscoroutine(result):
                         await result
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Failed to close client %s: %s", attr, exc)
             setattr(self, attr, None)
     async def _retry(self, call: Callable[[], Awaitable[T]]) -> T:
         """Run ``call`` and retry it while the error looks transient.

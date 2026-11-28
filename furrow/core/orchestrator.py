@@ -257,7 +257,10 @@ class Orchestrator:
             cycle_usage = self._accumulate_usage()
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,
-                task_summaries=[t.id for t in self.tasks],
+                task_summaries=[
+                    f"{t.id}: {self._clip(t.description, 60)} ({t.status})"
+                    for t in self.tasks
+                ],
                 tests_passed=test_result.passed, test_summary=test_result.summary,
                 timestamp=datetime.now(timezone.utc).isoformat(),
                 usage=cycle_usage,

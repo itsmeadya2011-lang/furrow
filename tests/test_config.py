@@ -295,3 +295,15 @@ def test_settings_test_command_env_override(monkeypatch: pytest.MonkeyPatch):
     s = Settings(_env_file=None)
     assert s.test_command == "pytest --cov"
 
+
+def test_settings_test_command_whitespace_becomes_none():
+    assert Settings(test_command="   ").test_command is None
+
+
+def test_settings_test_command_empty_becomes_none():
+    assert Settings(test_command="").test_command is None
+
+
+def test_settings_test_command_non_blank_preserved_verbatim():
+    assert Settings(test_command="pytest -q").test_command == "pytest -q"
+

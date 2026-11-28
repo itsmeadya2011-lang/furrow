@@ -133,6 +133,13 @@ class Settings(BaseSettings):
     test_command: str | None = None
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
+    @field_validator("test_command", mode="before")
+    @classmethod
+    def _blank_test_command_is_none(cls, v: Any) -> Any:
+        if isinstance(v, str) and not v.strip():
+            return None
+        return v
+
     def state_path(self, workspace: Path | None = None) -> Path:
         """Absolute path of the run-state file: (workspace or self.workspace) / self.state_file"""
         base = Path(workspace) if workspace is not None else Path(self.workspace)

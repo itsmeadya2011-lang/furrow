@@ -525,6 +525,28 @@ async def test_aclose_swallows_close_errors():
     assert client._openai is None
 
 
+async def test_aclose_logs_warning_on_close_error(monkeypatch):
+    warnings: list[tuple] = []
+
+    def fake_warning(*args, **kwargs):
+        warnings.append((args, kwargs))
+
+    monkeypatch.setattr("furrow.llm.logger.warning", fake_warning)
+    client = LLMClient(settings=Settings(provider=Provider.OPENAI))
+    fake = _FakeOpenAI("ok")
+
+    async def aclose() -> None:
+        raise RuntimeError("boom")
+
+    fake.aclose = aclose
+    client._anthropic = fake
+
+    await client.aclose()  # must not raise
+    assert client._anthropic is None
+    assert warnings, "expected a warning to be logged"
+    assert any("_anthropic" in str(w) and "boom" in str(w) for w in warnings)
+
+
 async def test_aclose_resets_so_fresh_client_created():
     client = LLMClient(settings=Settings(provider=Provider.OLLAMA))
     fake = _FakeOpenAI("ok")

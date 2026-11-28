@@ -126,6 +126,37 @@ async def test_tasks_tracked(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_history_task_summaries_include_id_description_and_status(tmp_path, monkeypatch):
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FakeWorker)
+    settings = make_settings(tmp_path, max_cycles=1)
+    store = StateStore(tmp_path / "state.json")
+    orch = Orchestrator(goal="g", settings=settings, state_store=store)
+    orch.planner = FakePlanner([TaskModel(id="1", description="the thing")])
+    orch.tester = FakeTester(passed=True)
+    await orch.run()
+    summaries = orch.history[-1].task_summaries
+    assert summaries == ["1: the thing (completed)"]
+    # A long description is clipped to one line but id and status are kept.
+    class FW(FakeWorker):
+        async def run(self):
+            return WorkerResult(summary="nope", success=False, files_changed=[], error="boom")
+
+    settings2 = make_settings(tmp_path / "ws2", max_cycles=1)
+    store2 = StateStore(tmp_path / "ws2" / "state.json")
+    orch2 = Orchestrator(goal="g", settings=settings2, state_store=store2)
+    long_desc = "a very long description that exceeds sixty characters and should be clipped"
+    orch2.planner = FakePlanner([TaskModel(id="2", description=long_desc)])
+    monkeypatch.setattr("furrow.core.orchestrator.WorkerAgent", FW)
+    orch2.tester = FakeTester(passed=False)
+    await orch2.run()
+    long_summary = orch2.history[-1].task_summaries[0]
+    assert long_summary.startswith("2: ")
+    assert long_summary.endswith("(failed)")
+    assert "…" in long_summary
+    assert len(long_summary.split("\n")) == 1
+
+
+@pytest.mark.asyncio
 async def test_dependency_ordering(tmp_path, monkeypatch):
     order = []
 
