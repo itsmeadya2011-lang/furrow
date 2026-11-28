@@ -857,6 +857,12 @@ class WorkerAgent:
         except asyncio.TimeoutError:
             await self._kill_process_tree(proc, new_session)
             return "command timed out"
+        except asyncio.CancelledError:
+            # The surrounding task was cancelled (e.g. websocket disconnect /
+            # Stop button). Kill the whole process group before letting the
+            # cancellation propagate so the child tree is not orphaned.
+            await self._kill_process_tree(proc, new_session)
+            raise
         out = stdout.decode("utf-8", errors="replace")
         err = stderr.decode("utf-8", errors="replace")
         combined = out + "\n[stderr]\n" + err if err.strip() else out

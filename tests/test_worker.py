@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from pathlib import Path
 
 import pytest
@@ -309,6 +310,105 @@ async def test_run_command_timeout_kills_grandchildren(tmp_path):
     assert out == "command timed out"
     await asyncio.sleep(1.0)
     assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_run_command_cancelled_kills_process_group(tmp_path, monkeypatch):
+    """Cancelling a run_command turn kills the whole process group and lets
+    asyncio.CancelledError propagate (worker.run() does not convert it into a
+    failed WorkerResult)."""
+    from furrow.config import TaskModel
+
+    killpg_calls = []
+    getpgid_calls = []
+
+    def fake_getpgid(pid):
+        getpgid_calls.append(pid)
+        return 1234
+
+    def fake_killpg(pgid, sig):
+        killpg_calls.append((pgid, sig))
+
+    monkeypatch.setattr(os, "getpgid", fake_getpgid)
+    monkeypatch.setattr(os, "killpg", fake_killpg)
+
+    spawned = asyncio.Event()
+    communicating = asyncio.Event()
+    blocker = asyncio.Event()  # keep communicate() blocked until released
+
+    class FakeProc:
+        def __init__(self, **kwargs):
+            self.pid = 999
+            self.returncode = None
+            self.kwargs = kwargs
+            spawned.set()
+
+        def kill(self):
+            self.killed = True
+
+        async def wait(self):
+            return 0
+
+        async def communicate(self):
+            communicating.set()
+            await blocker.wait()
+            return (b"", b"")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc(**kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    responses = [
+        LLMResponse(
+            text="",
+            tool_calls=[
+                ToolCall(id="t1", name="run_command", arguments={"command": "sleep 100"})
+            ],
+        ),
+        # Unreachable: the task is cancelled before the second LLM call.
+        LLMResponse(text="done", tool_calls=[]),
+    ]
+    client = FakeLLMClient(responses)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=client, settings=settings, workspace=tmp_path)
+
+    task_obj = asyncio.create_task(agent.run())
+    await spawned.wait()
+    await communicating.wait()  # communicate() is in flight
+    task_obj.cancel()
+    cancelled = False
+    try:
+        await task_obj
+    except asyncio.CancelledError:
+        cancelled = True
+    assert cancelled is True, "asyncio.CancelledError must propagate out of worker.run()"
+    assert getpgid_calls == [999], getpgid_calls
+    assert killpg_calls == [(1234, signal.SIGKILL)], killpg_calls
+
+
+@pytest.mark.asyncio
+async def test_run_command_returns_output(tmp_path, monkeypatch):
+    """Regression: a normal successful run_command returns its output unchanged."""
+    from furrow.config import TaskModel
+
+    class FakeProc:
+        def __init__(self, **kwargs):
+            self.returncode = 0
+
+        async def communicate(self):
+            return (b"hello output\n", b"")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc(**kwargs)
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command("echo hi")
+    assert out == "hello output\n"
 
 
 @pytest.mark.asyncio

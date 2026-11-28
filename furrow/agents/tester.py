@@ -423,6 +423,9 @@ class TesterAgent:
                     returncode = 1
                     stdout = b""
                     stderr = f"Test command timed out after {timeout:g}s.".encode()
+                except asyncio.CancelledError:
+                    await self._kill_process_tree(proc)
+                    raise
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
 

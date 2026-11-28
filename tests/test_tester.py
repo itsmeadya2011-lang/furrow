@@ -634,3 +634,98 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+def test_run_cancellation_kills_process_group_and_propagates(tmp_path, monkeypatch):
+    """When the run task is cancelled during communicate(), the process group is killed
+    and CancelledError propagates (not swallowed into a TestResult)."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    # Event to signal that communicate() has been entered, so we can cancel at the right time.
+    entered_communicate = asyncio.Event()
+
+    class FakeProc:
+        pid = 9999
+        returncode = None
+
+        async def communicate(self):
+            entered_communicate.set()
+            # Block indefinitely until cancelled.
+            await asyncio.Event().wait()
+            return b"", b""
+
+        async def wait(self):
+            self.returncode = -9
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return FakeProc()
+
+    killed = {"pg": False, "kill": False}
+
+    def fake_killpg(pgid, sig):
+        killed["pg"] = True
+        raise OSError("no pg")
+
+    def fake_kill(pid, sig=None):
+        killed["kill"] = True
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr("os.killpg", fake_killpg)
+    monkeypatch.setattr("os.getpgid", lambda pid: pid)
+    monkeypatch.setattr("os.kill", fake_kill)
+
+    settings = Settings(_env_file=None, workspace=tmp_path, request_timeout=30)
+    settings = settings.model_copy(update={"test_timeout": 600})
+    agent = TesterAgent(settings=settings, workspace=tmp_path)
+
+    async def run_and_cancel():
+        task = asyncio.create_task(agent.run("goal", []))
+        # Wait until the subprocess has been spawned and communicate() is blocking.
+        await entered_communicate.wait()
+        # Yield once more to ensure we're inside the wait_for.
+        await asyncio.sleep(0)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            # Re-raise to verify propagation.
+            raise
+
+    # The run() call should raise CancelledError, not return a TestResult.
+    try:
+        run(run_and_cancel())
+    except asyncio.CancelledError:
+        pass
+    else:
+        raise AssertionError("Expected CancelledError to propagate")
+
+    # Verify the process group was killed.
+    assert killed["pg"] is True or killed["kill"] is True
+
+
+def test_run_normal_completion_still_works_regression(tmp_path, monkeypatch):
+    """Regression guard: a normal (non-cancelled) run returns the same TestResult as before."""
+    (tmp_path / "pyproject.toml").write_text("[project]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"5 passed in 0.12s\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "all green"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run("goal", []))
+
+    assert res.passed is True
+    assert res.skipped is False
+    assert res.failures == []
+    assert "all green" in res.summary
