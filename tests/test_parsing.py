@@ -173,3 +173,23 @@ def test_parse_test_result_falls_back_on_recursionerror(monkeypatch):
     monkeypatch.setattr(parsing.json, "loads", _raise_recursionerror)
     r = parsing.parse_test_result("[[1]]")
     assert isinstance(r, TestResult)
+
+
+def test_parse_plan_rejects_empty_task_id():
+    with pytest.raises(ValueError):
+        parsing.parse_plan('{"tasks": [{"id": "", "description": "d"}], "rationale": "r"}')
+
+
+def test_parse_plan_rejects_whitespace_only_task_id():
+    with pytest.raises(ValueError):
+        parsing.parse_plan('{"tasks": [{"id": "   ", "description": "d"}], "rationale": "r"}')
+
+
+def test_parse_plan_rejects_missing_task_id():
+    with pytest.raises(ValueError):
+        parsing.parse_plan('{"tasks": [{"description": "d"}], "rationale": "r"}')
+
+
+def test_parse_plan_accepts_non_empty_task_id():
+    plan = parsing.parse_plan('{"tasks": [{"id": "t1", "description": "d"}], "rationale": "r"}')
+    assert plan.tasks[0].id == "t1"

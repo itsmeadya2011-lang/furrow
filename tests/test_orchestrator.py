@@ -1268,3 +1268,36 @@ async def test_usage_recorded_when_planner_raises(tmp_path, monkeypatch):
     assert result.usage.calls == 1
     assert result.usage.input_tokens == 10
     assert result.usage.output_tokens == 20
+
+
+def test_plan_waves_cycle_marks_all_blocked():
+    """A dependency cycle must leave every remaining task blocked and return no
+    waves, so the run terminates instead of looping."""
+    orch = Orchestrator.__new__(Orchestrator)
+    t1 = TaskModel(id="t1", description="one", dependencies=["t2"])
+    t2 = TaskModel(id="t2", description="two", dependencies=["t1"])
+    waves = orch._plan_waves([t1, t2])
+    assert waves == []
+    assert t1.status == "blocked"
+    assert t2.status == "blocked"
+
+
+def test_plan_waves_empty_returns_no_waves():
+    """An empty task list must yield no waves without error."""
+    orch = Orchestrator.__new__(Orchestrator)
+    assert orch._plan_waves([]) == []
+
+
+def test_plan_waves_partial_wave_then_cycle_breaks_cleanly():
+    """When some tasks can run but the rest are cyclic, the runnable wave is
+    returned and the cyclic remainder is marked blocked (no partial-wave loop)."""
+    orch = Orchestrator.__new__(Orchestrator)
+    t1 = TaskModel(id="t1", description="one")
+    t2 = TaskModel(id="t2", description="two", dependencies=["t3"])
+    t3 = TaskModel(id="t3", description="three", dependencies=["t2"])
+    waves = orch._plan_waves([t1, t2, t3])
+    assert len(waves) == 1
+    assert waves[0][0].id == "t1"
+    assert t1.status == "pending"
+    assert t2.status == "blocked"
+    assert t3.status == "blocked"

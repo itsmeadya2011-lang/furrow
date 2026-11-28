@@ -757,6 +757,20 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except (WebSocketDisconnect, RuntimeError):
         if run_task is not None and not run_task.done():
             _cancel_run(run_task)
+    except Exception as exc:
+        # Any other unexpected error while the run is in flight (a malformed
+        # event that cannot be serialised, for instance) must never leave the
+        # server stuck reporting a run "in progress": the done-callback cannot
+        # fire for a run that is still running, so the flag would stay set and
+        # block every later run.  Cancel the run, clear the flag and record the
+        # error so a new run can start.
+        logger.error("Furrow websocket run failed: %s", exc)
+        if run_task is not None:
+            if not run_task.done():
+                run_task.cancel()
+            if _CURRENT.get("task") is run_task:
+                _CURRENT["running"] = False
+                _CURRENT["error"] = str(exc)
     finally:
         bus.unsubscribe(queue)
 

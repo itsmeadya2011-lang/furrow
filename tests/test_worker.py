@@ -790,6 +790,67 @@ def test_is_command_denied_shell_interpreter_and_cd_escapes(tmp_path):
         assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
 
 
+def test_is_command_denied_interpreter_inline_code(tmp_path):
+    """Inline code passed to language interpreters is inspected like shell -c.
+
+    The flag's following argument is extracted and checked with the same
+    dangerous-segment rules. A bare ``python script.py`` or ``python -m pytest``
+    is not treated as inline code and stays allowed.
+    """
+    denied_commands = [
+        'python -c "rm -rf /"',
+        'python3 -c "rm -rf /"',
+        'node -e "rm -rf /"',
+        'node --eval "rm -rf /"',
+        'perl -e "rm -rf /"',
+        'ruby -e "rm -rf /"',
+        'php -r "rm -rf /"',
+        # wrappers are resolved to the real interpreter too
+        "sudo python -c 'rm -rf /'",
+    ]
+    allowed_commands = [
+        "python script.py",
+        "python -m pytest",
+        'python -c "print(1)"',
+        "node script.js",
+        "node --eval 'console.log(1)'",
+        "perl -e 'print 1'",
+        "ruby -e 'puts 1'",
+        "php -r 'echo 1;'",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
+def test_is_command_denied_file_copy_move_outside_workspace(tmp_path):
+    """cp/mv/install/rsync path arguments (sources and destination) must stay inside the workspace.
+
+    The destination is the last non-option argument; options (tokens starting
+    with ``-``) are never treated as paths.
+    """
+    denied_commands = [
+        "cp /etc/passwd /tmp/x",
+        "cp a.txt /tmp/x",
+        "mv ../outside ./x",
+        "install /etc/passwd ./x",
+        "rsync /etc/passwd ./x",
+    ]
+    allowed_commands = [
+        "cp a.txt b.txt",
+        "mv a.txt b.txt",
+        "cp a.txt b.txt c.txt",
+        "install -m 644 a.txt b.txt",
+        "rsync -a a.txt b.txt",
+        "cp a.txt /dev/null",
+    ]
+    for cmd in denied_commands:
+        assert is_command_denied(cmd, tmp_path) is True, f"'{cmd}' should be denied"
+    for cmd in allowed_commands:
+        assert is_command_denied(cmd, tmp_path) is False, f"'{cmd}' should be allowed"
+
+
 @pytest.mark.asyncio
 async def test_shell_and_chaining(tmp_path):
     from furrow.config import TaskModel
@@ -1051,6 +1112,27 @@ async def test_run_command_exit_status_zero_no_marker(tmp_path):
     out = await agent._run_command("echo hi")
     assert "[exit status" not in out
     assert "hi" in out
+
+
+@pytest.mark.asyncio
+async def test_run_command_output_truncation_keeps_head_and_tail(tmp_path):
+    """Over-limit output keeps head + tail with a truncation marker, so the
+    root cause at the top is not lost."""
+    from furrow.config import TaskModel
+
+    command = "python3 -c \"print('A'*8000 + 'B'*8000 + 'C'*8000)\""
+    settings = make_settings(tmp_path)
+    task = TaskModel(id="1", description="cmd")
+    agent = WorkerAgent(task=task, client=FakeLLMClient([]), settings=settings, workspace=tmp_path)
+    out = await agent._run_command(command)
+
+    assert out.startswith("A" * 8000)
+    assert out.rstrip("\n").endswith("C" * 8000)
+    assert "... [output truncated:" in out
+    # The middle block must be dropped, not just the tail kept.
+    assert "B" * 8000 not in out
+    # The result stays roughly capped (head + marker + tail).
+    assert len(out) <= 20000 + 80
 
 
 @pytest.mark.asyncio

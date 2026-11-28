@@ -154,6 +154,25 @@ def test_non_string_status_becomes_pending():
     assert t.status == "pending"
 
 
+def test_task_model_rejects_empty_id():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        TaskModel(id="", description="d")
+
+
+def test_task_model_rejects_whitespace_only_id():
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        TaskModel(id="   ", description="d")
+
+
+def test_task_model_accepts_non_empty_id():
+    t = TaskModel(id="t1", description="d")
+    assert t.id == "t1"
+
+
 def test_null_status_in_plan_becomes_pending():
     import json
 

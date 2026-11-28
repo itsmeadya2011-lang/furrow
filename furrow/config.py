@@ -49,6 +49,19 @@ class TaskModel(BaseModel):
             return s
         return "pending"
 
+    @field_validator("id", mode="before")
+    @classmethod
+    def _validate_id(cls, v: Any) -> str:
+        """Reject empty or whitespace-only task ids.
+
+        Task ids key ``_merge_plan`` and drive dependency resolution, so an
+        empty/whitespace-only id is invalid. Non-string input is left for
+        pydantic's normal str coercion/type handling.
+        """
+        if isinstance(v, str) and not v.strip():
+            raise ValueError("task id must be a non-empty string")
+        return v
+
 
 class Plan(BaseModel):
     tasks: list[TaskModel]

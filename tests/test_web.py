@@ -117,6 +117,21 @@ class HangingClientOrchestrator(ClientRecordingOrchestrator):
         raise AssertionError("the hanging run should have been cancelled")
 
 
+class BadEventThenHangOrchestrator(FakeOrchestrator):
+    """Fake orchestrator that emits an unserialisable event, then hangs.
+
+    The malformed event makes the websocket handler raise an unexpected
+    ``TypeError`` while the run is still in flight, so the done-callback cannot
+    fire and the registry would stay stuck in "running" without a fix.
+    """
+
+    async def run(self) -> RunResult:
+        if self.event_bus is not None:
+            self.event_bus.emit(Event(type=EventType.LOG, data={"bad": {1, 2, 3}}))
+        await asyncio.sleep(30)
+        raise AssertionError("the hanging run should have been cancelled")
+
+
 def _wait_until(predicate: Callable[[], bool], timeout: float = 5.0) -> bool:
     """Poll ``predicate`` until it holds or the timeout expires."""
     deadline = time.monotonic() + timeout
@@ -458,6 +473,51 @@ def test_websocket_disconnect_clears_the_running_flag(
     assert _wait_until(lambda: bool(run_task.cancelled())), "the run was not cancelled"
 
 
+def test_websocket_unexpected_exception_clears_running_and_records_error(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected error mid-run must not leave the server stuck "running".
+
+    The malformed event makes the websocket handler raise a ``TypeError`` while
+    the run is still in flight.  The done-callback cannot fire for a run that is
+    still running, so without a dedicated cleanup the "running" flag would stay
+    set forever and block every later run.
+    """
+    monkeypatch.setattr(
+        "furrow.web.server.Orchestrator", BadEventThenHangOrchestrator
+    )
+
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"goal": "x"})
+        # The malformed event makes the handler raise while the run is still in
+        # flight; the cleanup records the error.  Do not block on receive_json:
+        # the server closes without sending a final frame.
+        assert _wait_until(lambda: server._CURRENT.get("error") is not None), (
+            "the unexpected error was not recorded"
+        )
+
+    # (a) the running flag is cleared ...
+    assert _wait_until(lambda: client.get("/api/status").json()["running"] is False), (
+        "the running flag stayed stuck after an unexpected error"
+    )
+    body = client.get("/api/status").json()
+    assert body["running"] is False
+    # (b) ... and the error is recorded.
+    assert body["error"], "the unexpected error was not recorded"
+    run_task = server._CURRENT.get("task")
+    assert run_task is not None
+    assert _wait_until(lambda: bool(run_task.done())), "the run was not stopped"
+
+    # (c) a subsequent start is allowed again.
+    monkeypatch.setattr("furrow.web.server.Orchestrator", FakeOrchestrator)
+    response = client.post("/api/start", json={"goal": "again"})
+    assert response.status_code == 200
+    assert response.json()["started"] is True
+    assert _wait_until(lambda: client.get("/api/status").json()["running"] is False), (
+        "the subsequent run never finished"
+    )
+
+
 def _inline_script(client: TestClient) -> str:
     """The inline script of the served page."""
     html = client.get("/").text
@@ -542,7 +602,7 @@ def test_api_start_releases_the_llm_client_when_the_run_finishes(
 
     assert response.status_code == 200
     assert len(recording_orchestrator.instances) == 1
-    recorder = cast(RecordingClient, recording_orchestrator.instances[0].client)
+    recorder = cast(ClientRecordingOrchestrator, recording_orchestrator.instances[0]).client
     assert _wait_until(lambda: recorder.closed), "the run never released the client"
 
 

@@ -82,6 +82,20 @@ _WRAPPER_PROGRAMS = frozenset({"sudo", "doas", "command", "env", "nohup", "exec"
 # is not a separate shell segment, so it is inspected recursively.
 _SHELL_PROGRAMS = frozenset({"ash", "bash", "dash", "ksh", "sh", "zsh"})
 
+# Language interpreters that run inline code passed to a flag such as ``-c``,
+# ``-e``, ``-r`` or ``--eval``. The flag's following argument is the code and is
+# inspected recursively with the same rules as a shell ``-c`` script. Only a
+# flag that actually takes an argument is treated as code, so a bare
+# ``python script.py`` or ``python -m pytest`` is not affected.
+_INTERPRETER_CODE_FLAGS = {
+    "python": frozenset({"-c"}),
+    "python3": frozenset({"-c"}),
+    "perl": frozenset({"-e"}),
+    "ruby": frozenset({"-e"}),
+    "node": frozenset({"-e", "--eval"}),
+    "php": frozenset({"-r"}),
+}
+
 # Regex for a leading variable assignment such as ``FOO=1`` or ``PATH=/bin``.
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -342,6 +356,29 @@ def _shell_script_argument(segment: str) -> str | None:
     return None
 
 
+def _interpreter_code_argument(segment: str) -> str | None:
+    """Return the inline code of an interpreter invoked with a code flag, or None.
+
+    Only a flag that actually takes an argument (e.g. ``python -c``) is treated
+    as code; a bare ``python script.py`` or ``python -m pytest`` is not. After
+    ``--`` option parsing stops, so a following argument is a script file, not
+    code.
+    """
+    parsed = _program_and_args(segment)
+    if parsed is None:
+        return None
+    name, args = parsed
+    flags = _INTERPRETER_CODE_FLAGS.get(name)
+    if not flags:
+        return None
+    for index, token in enumerate(args):
+        if token == "--":
+            break
+        if token in flags:
+            return args[index + 1] if index + 1 < len(args) else ""
+    return None
+
+
 def _extract_command_substitutions(command: str) -> list[str]:
     """Return the text of every ``$(...)``, `` `...` `` and ``<(...)/>(...)`` substitution.
 
@@ -449,7 +486,12 @@ def _redirects_outside_workspace(segment: str, workspace: Path) -> bool:
 
 
 # Programs that write to path arguments rather than via shell redirections.
-_WRITE_PATH_PROGRAMS = frozenset({"tee"})
+# ``tee`` writes to every path argument. ``cp``/``mv``/``install``/``rsync`` take
+# multiple sources plus a final destination; every path argument (sources and
+# destination) must stay inside the workspace, so copying or moving from outside
+# is denied as well as writing outside. Options (tokens starting with ``-``) are
+# not paths.
+_WRITE_PATH_PROGRAMS = frozenset({"tee", "cp", "mv", "install", "rsync"})
 
 
 def _git_subcommand(args: list[str]) -> str | None:
@@ -507,9 +549,12 @@ def _writes_outside_workspace(segment: str, workspace: Path) -> bool:
     """Report whether a segment writes to a path argument outside the workspace.
 
     This catches programs that write files through arguments rather than shell
-    redirections (e.g. ``tee``). Non-option tokens are treated as path
-    arguments; a path outside the workspace or one that still contains a shell
-    expansion (``$`` or a backtick) is denied. A program with no path argument
+    redirections (e.g. ``tee``). ``cp``/``mv``/``install``/``rsync`` take multiple
+    sources plus a final destination; every non-option path argument (sources and
+    destination) is checked, so copying or moving from outside the workspace is
+    denied as well as writing outside. A path outside the workspace or one that
+    still contains a shell expansion (``$`` or a backtick) is denied. Options
+    (tokens starting with ``-``) are not paths. A program with no path argument
     is allowed.
     """
     parsed = _program_and_args(segment)
@@ -592,6 +637,13 @@ def _text_is_denied(text: str, workspace: Path, depth: int) -> bool:
         if depth < _MAX_SUBSTITUTION_DEPTH:
             script = _shell_script_argument(segment)
             if script is not None and _text_is_denied(script, workspace, depth + 1):
+                return True
+        # An interpreter invoked with an inline-code flag (``python -c``,
+        # ``node -e``, ``perl -e``, ...) runs the next argument as code: inspect
+        # it recursively with the same rules.
+        if depth < _MAX_SUBSTITUTION_DEPTH:
+            code = _interpreter_code_argument(segment)
+            if code is not None and _text_is_denied(code, workspace, depth + 1):
                 return True
     # The shell runs the substituted text, so it is checked as well.
     if depth < _MAX_SUBSTITUTION_DEPTH:
@@ -793,14 +845,10 @@ class WorkerAgent:
         # Cap the listing at MAX_LIST_ENTRIES so huge trees cannot flood the
         # context, and tell the model when entries were left out so it knows
         # to list a subdirectory instead of assuming it saw everything.
+        # ``client.list_files`` already returns paths relative to the directory,
+        # so the entries are used directly as the relative strings.
         total = len(entries)
-        rels = []
-        base = self.workspace.resolve()
-        for e in entries[:MAX_LIST_ENTRIES]:
-            try:
-                rels.append(str(Path(e).relative_to(base)) if Path(e).is_absolute() else e)
-            except ValueError:
-                rels.append(str(e))
+        rels = [str(e) for e in entries[:MAX_LIST_ENTRIES]]
         text = "\n".join(rels)
         omitted = total - len(rels)
         if omitted > 0:
@@ -862,7 +910,12 @@ class WorkerAgent:
         combined = out + "\n[stderr]\n" + err if err.strip() else out
         cap = 20000
         if len(combined) > cap:
-            combined = "[... output truncated ...]\n" + combined[-cap:]
+            half = cap // 2
+            combined = (
+                combined[:half]
+                + f"\n... [output truncated: {len(combined)} chars total] ...\n"
+                + combined[-half:]
+            )
         if proc.returncode is not None and proc.returncode != 0:
             combined += f"\n[exit status {proc.returncode}]"
         return combined
