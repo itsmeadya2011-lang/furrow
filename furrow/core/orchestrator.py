@@ -237,6 +237,45 @@ class Orchestrator:
                 self._say(f"[red]Tests failed: {summary}[/red]")
             self._last_test_passed = test_result.passed
             self._tests_skipped = skipped
+            # Run lint and typecheck when tests are not failing.
+            lint_typecheck_failures: list[str] = []
+            if not test_result.passed and not skipped:
+                # Tests failed: don't run lint/typecheck on broken code.
+                pass
+            else:
+                try:
+                    lint_result = await self.tester.run_lint(
+                        self.original_goal, self.tasks
+                    )
+                    self.event_bus.emit(
+                        Event(
+                            type=EventType.LOG,
+                            message=f"lint: {lint_result.summary}",
+                        )
+                    )
+                    if not lint_result.skipped and not lint_result.passed:
+                        lint_typecheck_failures.extend(lint_result.failures)
+                except Exception as exc:
+                    self.event_bus.emit(
+                        Event(type=EventType.ERROR, message=f"lint failed: {exc}")
+                    )
+                try:
+                    typecheck_result = await self.tester.run_typecheck(
+                        self.original_goal, self.tasks
+                    )
+                    self.event_bus.emit(
+                        Event(
+                            type=EventType.LOG,
+                            message=f"typecheck: {typecheck_result.summary}",
+                        )
+                    )
+                    if not typecheck_result.skipped and not typecheck_result.passed:
+                        lint_typecheck_failures.extend(typecheck_result.failures)
+                except Exception as exc:
+                    self.event_bus.emit(
+                        Event(type=EventType.ERROR, message=f"typecheck failed: {exc}")
+                    )
+
             if skipped:
                 # A skipped run (e.g. no test runner detected) is not a failure:
                 # keep the original goal and drop the stale feedback so the loop
@@ -254,6 +293,14 @@ class Orchestrator:
                 self.goal = (f"{self.original_goal}\n\n"
                              "The previous cycle left failing tests. Fix them:\n"
                              f"{self._feedback}")
+            elif lint_typecheck_failures:
+                # Tests passed but lint or typecheck failed: keep going to fix them.
+                self._feedback = "\n".join(lint_typecheck_failures)
+                self.goal = (f"{self.original_goal}\n\n"
+                             "The previous cycle left lint/typecheck issues. Fix them:\n"
+                             f"{self._feedback}")
+            else:
+                self._feedback = ""
             cycle_usage = self._accumulate_usage()
             self.history.append(HistoryEntry(
                 cycle=self.cycles, goal=self.goal, plan_rationale=plan.rationale,

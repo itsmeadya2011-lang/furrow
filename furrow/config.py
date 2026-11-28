@@ -131,11 +131,13 @@ class Settings(BaseSettings):
     max_tokens: int = Field(default=4096, ge=1)
     state_file: Path = Path(".furrow/state.json")
     test_command: str | None = None
+    lint_command: str | None = None
+    typecheck_command: str | None = None
     model_pricing: dict[str, ModelPricing] = Field(default_factory=dict)
 
-    @field_validator("test_command", mode="before")
+    @field_validator("test_command", "lint_command", "typecheck_command", mode="before")
     @classmethod
-    def _blank_test_command_is_none(cls, v: Any) -> Any:
+    def _blank_command_is_none(cls, v: Any) -> Any:
         if isinstance(v, str) and not v.strip():
             return None
         return v

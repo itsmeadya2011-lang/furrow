@@ -12,7 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from furrow.agents.parsing import parse_test_result
-from furrow.agents.prompts import TESTER_PROMPT, TESTER_SYSTEM
+from furrow.agents.prompts import (
+    LINT_PROMPT,
+    LINT_SYSTEM,
+    TESTER_PROMPT,
+    TESTER_SYSTEM,
+    TYPECHECK_PROMPT,
+    TYPECHECK_SYSTEM,
+)
 from furrow.config import Settings, TaskModel, TestResult
 from furrow.config import settings as global_settings
 from furrow.llm import LLMClient
@@ -287,6 +294,91 @@ class TesterAgent:
 
         return None
 
+    async def detect_lint_command(self) -> list[str] | None:
+        """Detect a lint command for the project, or None when none is configured.
+
+        Order of precedence:
+        1. Explicit ``lint_command`` setting override
+        2. Project-type detection from config files
+        """
+        override = getattr(self.settings, "lint_command", None)
+        if override:
+            parts = shlex.split(override)
+            if parts:
+                return parts
+
+        has_package = (self.workspace / "package.json").is_file()
+        has_pyproject = (self.workspace / "pyproject.toml").is_file()
+
+        # Python: ruff is the default linter when configured or available
+        if has_pyproject:
+            try:
+                content = (self.workspace / "pyproject.toml").read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                content = ""
+            if "ruff" in content or "flake8" in content or "pylint" in content:
+                return ["ruff", "check"]
+            if (self.workspace / "requirements.txt").is_file() or (
+                self.workspace / "setup.cfg"
+            ).is_file():
+                return ["ruff", "check"]
+
+        # Node.js: eslint when package.json exists
+        if has_package:
+            return ["npx", "eslint", "."]
+
+        # Rust: cargo clippy
+        if (self.workspace / "Cargo.toml").is_file():
+            return ["cargo", "clippy"]
+
+        # Go: go vet
+        if (self.workspace / "go.mod").is_file():
+            return ["go", "vet", "./..."]
+
+        return None
+
+    async def detect_typecheck_command(self) -> list[str] | None:
+        """Detect a typecheck command for the project, or None when none is configured.
+
+        Order of precedence:
+        1. Explicit ``typecheck_command`` setting override
+        2. Project-type detection from config files
+        """
+        override = getattr(self.settings, "typecheck_command", None)
+        if override:
+            parts = shlex.split(override)
+            if parts:
+                return parts
+
+        has_package = (self.workspace / "package.json").is_file()
+        has_pyproject = (self.workspace / "pyproject.toml").is_file()
+
+        # Python: mypy when configured
+        if has_pyproject:
+            try:
+                content = (self.workspace / "pyproject.toml").read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                content = ""
+            if "mypy" in content or "pyright" in content:
+                return ["mypy", "."]
+
+        # TypeScript: tsc --noEmit when tsconfig.json exists
+        if (self.workspace / "tsconfig.json").is_file():
+            return ["tsc", "--noEmit"]
+
+        if has_package:
+            # Check for TypeScript in package.json devDependencies
+            try:
+                with open(self.workspace / "package.json", encoding="utf-8") as fh:
+                    pkg_data = json.load(fh)
+                deps = {**pkg_data.get("dependencies", {}), **pkg_data.get("devDependencies", {})}
+                if "typescript" in deps:
+                    return ["tsc", "--noEmit"]
+            except (OSError, UnicodeError, ValueError):
+                pass
+
+        return None
+
     def _finalize(
         self,
         *,
@@ -370,21 +462,23 @@ class TesterAgent:
         summary = " ".join(part for part in notes if part).strip()
         return TestResult(passed=passed, summary=summary, failures=failures)
 
-    async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
-        try:
-            cmd = await self.detect_command()
-            if cmd is None:
-                return TestResult(
-                    passed=True,
-                    skipped=True,
-                    summary="No test runner detected for this project (tests skipped).",
-                    failures=[],
-                )
+    async def _run_verification(
+        self,
+        cmd: list[str],
+        goal: str,
+        prompt_template: str,
+        system_prompt: str,
+        timeout_resolver: Any,
+        skipped_message: str,
+    ) -> TestResult:
+        """Run a verification command and return a TestResult.
 
-            # The test-suite timeout is a separate concern from the LLM request
-            # timeout: `request_timeout` bounds a single API call, while a test
-            # suite may legitimately run for minutes.
-            timeout = resolve_test_timeout(self.settings)
+        Shared by :meth:`run`, :meth:`run_lint`, and :meth:`run_typecheck`.
+        Spawns the command, captures its output, asks the LLM to interpret it,
+        and combines the exit status with the LLM verdict via :meth:`_finalize`.
+        """
+        try:
+            timeout = timeout_resolver(self.settings)
 
             spawn_kwargs: dict[str, Any] = {}
             if os.name == "posix":
@@ -403,9 +497,6 @@ class TesterAgent:
                     **spawn_kwargs,
                 )
             except Exception as exc:
-                # The runner could not even be started.  That is an
-                # infrastructure error, not a test failure, and it has to be
-                # distinguishable from "the tests ran and failed".
                 spawn_failed = True
                 message = str(exc)
                 spawn_error = (
@@ -416,13 +507,15 @@ class TesterAgent:
                 stderr = b""
             else:
                 try:
-                    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+                    stdout, stderr = await asyncio.wait_for(
+                        proc.communicate(), timeout=timeout
+                    )
                 except asyncio.TimeoutError:
                     await self._kill_process_tree(proc)
                     timed_out = True
                     returncode = 1
                     stdout = b""
-                    stderr = f"Test command timed out after {timeout:g}s.".encode()
+                    stderr = f"Command timed out after {timeout:g}s.".encode()
                 else:
                     returncode = proc.returncode if proc.returncode is not None else 0
 
@@ -436,11 +529,10 @@ class TesterAgent:
 
             llm_result: TestResult | None = None
             if not spawn_failed:
-                # A runner that never started has no output worth summarising.
-                prompt = TESTER_PROMPT + "\n\nGoal: " + goal + "\n\nTest output:\n" + combined
+                prompt = prompt_template + "\n\nGoal: " + goal + "\n\nOutput:\n" + combined
                 try:
                     response = await self.client.complete(
-                        prompt, system=TESTER_SYSTEM, model=self.settings.tester_model
+                        prompt, system=system_prompt, model=self.settings.tester_model
                     )
                     llm_result = parse_test_result(response)
                 except Exception:
@@ -454,6 +546,96 @@ class TesterAgent:
                 spawn_error=spawn_error,
                 timed_out=timed_out,
                 timeout=timeout,
+            )
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            return TestResult(
+                passed=False,
+                summary=f"Tester error: {message}",
+                failures=[f"tester error: {message}"],
+            )
+
+    async def run(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        """Detect and run the test command for the project.
+
+        Returns a ``skipped`` result when no test runner is detectable.
+        """
+        try:
+            cmd = await self.detect_command()
+            if cmd is None:
+                return TestResult(
+                    passed=True,
+                    skipped=True,
+                    summary="No test runner detected for this project (tests skipped).",
+                    failures=[],
+                )
+            return await self._run_verification(
+                cmd=cmd,
+                goal=goal,
+                prompt_template=TESTER_PROMPT,
+                system_prompt=TESTER_SYSTEM,
+                timeout_resolver=resolve_test_timeout,
+                skipped_message="No test runner detected for this project (tests skipped).",
+            )
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            return TestResult(
+                passed=False,
+                summary=f"Tester error: {message}",
+                failures=[f"tester error: {message}"],
+            )
+
+    async def run_lint(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        """Detect and run the lint command for the project.
+
+        Returns a ``skipped`` result when no linter is detectable.
+        """
+        try:
+            cmd = await self.detect_lint_command()
+            if cmd is None:
+                return TestResult(
+                    passed=True,
+                    skipped=True,
+                    summary="No linter detected for this project (lint skipped).",
+                    failures=[],
+                )
+            return await self._run_verification(
+                cmd=cmd,
+                goal=goal,
+                prompt_template=LINT_PROMPT,
+                system_prompt=LINT_SYSTEM,
+                timeout_resolver=resolve_test_timeout,
+                skipped_message="No linter detected for this project (lint skipped).",
+            )
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            return TestResult(
+                passed=False,
+                summary=f"Tester error: {message}",
+                failures=[f"tester error: {message}"],
+            )
+
+    async def run_typecheck(self, goal: str, tasks: list[TaskModel]) -> TestResult:
+        """Detect and run the typecheck command for the project.
+
+        Returns a ``skipped`` result when no typechecker is detectable.
+        """
+        try:
+            cmd = await self.detect_typecheck_command()
+            if cmd is None:
+                return TestResult(
+                    passed=True,
+                    skipped=True,
+                    summary="No typechecker detected for this project (typecheck skipped).",
+                    failures=[],
+                )
+            return await self._run_verification(
+                cmd=cmd,
+                goal=goal,
+                prompt_template=TYPECHECK_PROMPT,
+                system_prompt=TYPECHECK_SYSTEM,
+                timeout_resolver=resolve_test_timeout,
+                skipped_message="No typechecker detected for this project (typecheck skipped).",
             )
         except Exception as exc:
             message = f"{type(exc).__name__}: {exc}"

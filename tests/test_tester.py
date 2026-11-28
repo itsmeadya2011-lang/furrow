@@ -634,3 +634,248 @@ def test_test_command_does_not_inherit_stdin(tmp_path, monkeypatch):
     run(agent.run("goal", []))
 
     assert captured.get("stdin") is asyncio.subprocess.DEVNULL
+
+
+# ---------------------------------------------------------------------------
+# Lint command detection
+# ---------------------------------------------------------------------------
+
+
+def test_detect_lint_command_override(tmp_path):
+    """Explicit lint_command setting overrides all detection."""
+    settings = Settings(_env_file=None, workspace=tmp_path, lint_command="ruff check --fix")
+    agent = TesterAgent(settings=settings, workspace=tmp_path)
+    cmd = run(agent.detect_lint_command())
+    assert cmd == ["ruff", "check", "--fix"]
+
+
+def test_detect_lint_command_pyproject_ruff(tmp_path):
+    """pyproject.toml mentioning ruff detects ruff check."""
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_lint_command())
+    assert cmd == ["ruff", "check"]
+
+
+def test_detect_lint_command_node(tmp_path):
+    """package.json detects eslint."""
+    (tmp_path / "package.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_lint_command())
+    assert cmd == ["npx", "eslint", "."]
+
+
+def test_detect_lint_command_cargo(tmp_path):
+    """Cargo.toml detects cargo clippy."""
+    (tmp_path / "Cargo.toml").write_text("[package]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_lint_command())
+    assert cmd == ["cargo", "clippy"]
+
+
+def test_detect_lint_command_go(tmp_path):
+    """go.mod detects go vet."""
+    (tmp_path / "go.mod").write_text("module example.com/foo\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_lint_command())
+    assert cmd == ["go", "vet", "./..."]
+
+
+def test_detect_lint_command_empty(tmp_path):
+    """No markers means no lint command."""
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_lint_command())
+    assert cmd is None
+
+
+# ---------------------------------------------------------------------------
+# Typecheck command detection
+# ---------------------------------------------------------------------------
+
+
+def test_detect_typecheck_command_override(tmp_path):
+    """Explicit typecheck_command setting overrides all detection."""
+    settings = Settings(_env_file=None, workspace=tmp_path, typecheck_command="mypy --strict .")
+    agent = TesterAgent(settings=settings, workspace=tmp_path)
+    cmd = run(agent.detect_typecheck_command())
+    assert cmd == ["mypy", "--strict", "."]
+
+
+def test_detect_typecheck_command_pyproject_mypy(tmp_path):
+    """pyproject.toml mentioning mypy detects mypy."""
+    (tmp_path / "pyproject.toml").write_text("[tool.mypy]\n")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_typecheck_command())
+    assert cmd == ["mypy", "."]
+
+
+def test_detect_typecheck_command_tsconfig(tmp_path):
+    """tsconfig.json detects tsc --noEmit."""
+    (tmp_path / "tsconfig.json").write_text("{}")
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_typecheck_command())
+    assert cmd == ["tsc", "--noEmit"]
+
+
+def test_detect_typecheck_command_typescript_dep(tmp_path):
+    """package.json with typescript dependency detects tsc --noEmit."""
+    (tmp_path / "package.json").write_text(
+        '{"devDependencies": {"typescript": "^5.0.0"}}'
+    )
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_typecheck_command())
+    assert cmd == ["tsc", "--noEmit"]
+
+
+def test_detect_typecheck_command_empty(tmp_path):
+    """No markers means no typecheck command."""
+    agent = TesterAgent(settings=Settings(_env_file=None, workspace=tmp_path), workspace=tmp_path)
+    cmd = run(agent.detect_typecheck_command())
+    assert cmd is None
+
+
+# ---------------------------------------------------------------------------
+# Lint execution
+# ---------------------------------------------------------------------------
+
+
+def test_run_lint_skipped_when_no_linter(tmp_path):
+    """No detected linter means a skipped lint run."""
+    agent = TesterAgent(
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+    res = run(agent.run_lint("goal", []))
+    assert isinstance(res, TestResult)
+    assert res.passed is True
+    assert res.skipped is True
+    assert "lint" in res.summary.lower()
+    assert res.failures == []
+
+
+def test_run_lint_passed(tmp_path, monkeypatch):
+    """A zero exit status plus a green LLM verdict is a lint pass."""
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"No lint issues found\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "lint clean"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run_lint("goal", []))
+
+    assert res.passed is True
+    assert res.skipped is False
+    assert res.failures == []
+
+
+def test_run_lint_failed(tmp_path, monkeypatch):
+    """A non-zero exit status reports lint failure."""
+    (tmp_path / "pyproject.toml").write_text("[tool.ruff]\n")
+
+    stderr_text = (
+        "src/foo.py:10:5: F401 'os' imported but unused\n"
+        "Found 1 error.\n"
+    )
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stderr=stderr_text.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(
+        response='{"passed": false, "summary": "lint issues found", "failures": ["F401"]}'
+    )
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run_lint("goal", []))
+
+    assert res.passed is False
+    assert res.skipped is False
+    assert res.failures
+    assert any("F401" in f for f in res.failures)
+
+
+# ---------------------------------------------------------------------------
+# Typecheck execution
+# ---------------------------------------------------------------------------
+
+
+def test_run_typecheck_skipped_when_no_typechecker(tmp_path):
+    """No detected typechecker means a skipped typecheck run."""
+    agent = TesterAgent(
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+    res = run(agent.run_typecheck("goal", []))
+    assert isinstance(res, TestResult)
+    assert res.passed is True
+    assert res.skipped is True
+    assert "typecheck" in res.summary.lower()
+    assert res.failures == []
+
+
+def test_run_typecheck_passed(tmp_path, monkeypatch):
+    """A zero exit status plus a green LLM verdict is a typecheck pass."""
+    (tmp_path / "pyproject.toml").write_text("[tool.mypy]\n")
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=0, stdout=b"Success: no issues found in 1 source file\n")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(response='{"passed": true, "summary": "types are sound"}')
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run_typecheck("goal", []))
+
+    assert res.passed is True
+    assert res.skipped is False
+    assert res.failures == []
+
+
+def test_run_typecheck_failed(tmp_path, monkeypatch):
+    """A non-zero exit status reports typecheck failure."""
+    (tmp_path / "pyproject.toml").write_text("[tool.mypy]\n")
+
+    stderr_text = (
+        "src/bar.py:15: error: Argument 1 to \"process\" has incompatible type \"str\"; "
+        "expected \"int\"\n"
+        "Found 1 error in 1 file.\n"
+    )
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        return fake_proc(returncode=1, stderr=stderr_text.encode())
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    client = FakeLLMClient(
+        response='{"passed": false, "summary": "type errors found", '
+        '"failures": ["type mismatch"]}'
+    )
+    agent = TesterAgent(
+        client=client,
+        settings=Settings(_env_file=None, workspace=tmp_path, request_timeout=30),
+        workspace=tmp_path,
+    )
+
+    res = run(agent.run_typecheck("goal", []))
+
+    assert res.passed is False
+    assert res.skipped is False
+    assert res.failures

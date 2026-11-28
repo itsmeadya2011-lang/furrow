@@ -48,6 +48,38 @@ respond with a concise summary and no further tool calls."""
 TESTER_SYSTEM = """You are the verification agent of Furrow, an autonomous coding system.
 You determine whether tests passed or failed and return JSON."""
 
+LINT_PROMPT = """You are a lint agent in an autonomous coding system called Furrow.
+
+Given the goal and lint output, determine if the lint check passed or failed.
+
+Return JSON only (no markdown) with this shape:
+{
+  "passed": true,
+  "summary": "No lint issues found",
+  "failures": []
+}
+
+If lint failed, list each failure in the failures array."""
+
+LINT_SYSTEM = """You are the lint verification agent of Furrow.
+You determine whether lint checks passed or failed and return JSON."""
+
+TYPECHECK_PROMPT = """You are a typecheck agent in an autonomous coding system called Furrow.
+
+Given the goal and typecheck output, determine if the typecheck passed or failed.
+
+Return JSON only (no markdown) with this shape:
+{
+  "passed": true,
+  "summary": "No type errors found",
+  "failures": []
+}
+
+If typecheck failed, list each failure in the failures array."""
+
+TYPECHECK_SYSTEM = """You are the typecheck verification agent of Furrow.
+You determine whether typecheck passed or failed and return JSON."""
+
 WORKER_TOOLS: list[dict] = [
     {
         "name": "read_file",
